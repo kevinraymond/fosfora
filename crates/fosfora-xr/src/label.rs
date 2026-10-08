@@ -293,10 +293,14 @@ pub use render::LabelTexture;
 
 #[cfg(target_os = "android")]
 mod render {
-    use egui::{Color32, FontId, Pos2, Rect, Vec2};
+    use egui::{FontId, Pos2, Rect, Vec2};
+    use fosfora_app::ui::theme::palette::Palette;
 
     use super::{Billboard, GROUND_ALPHA, LABEL_TEX};
     use crate::gfx::{Gfx, PanelPose};
+
+    /// The label's colors: the hand menu's theme (board #3523).
+    const PALETTE: Palette = Palette::BLUE_ORANGE;
 
     /// The text's largest size and the margin it keeps from the ground's
     /// ends (px); a longer text shrinks to fit, down to [`MIN_FONT_PX`].
@@ -399,10 +403,9 @@ mod render {
                 painter.rect_filled(
                     ground,
                     CORNER_PX,
-                    Color32::from_rgba_unmultiplied(18, 18, 22, 255)
-                        .gamma_multiply(GROUND_ALPHA * alpha),
+                    PALETTE.panel.gamma_multiply(GROUND_ALPHA * alpha),
                 );
-                let ink = Color32::WHITE.gamma_multiply(alpha);
+                let ink = PALETTE.text.gamma_multiply(alpha);
                 let room = ground.width() - 2.0 * MARGIN_PX;
                 let mut galley =
                     painter.layout_no_wrap(text.to_owned(), FontId::proportional(FONT_PX), ink);

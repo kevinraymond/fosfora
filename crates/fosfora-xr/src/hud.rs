@@ -29,6 +29,7 @@
 use std::collections::VecDeque;
 
 use egui::{Color32, Pos2, Rect, RichText, Stroke, Vec2};
+use fosfora_app::ui::theme::palette::Palette;
 use glam::{Quat, Vec3};
 
 use crate::gfx::{Beam, Gfx, PanelPose};
@@ -207,6 +208,17 @@ pub struct View<'a> {
     /// The room editor's status: the pointed surface and its behavior
     /// ("desk: embers"), "no surface" or "edit room off".
     pub edit_status: &'a str,
+}
+
+/// The panel's colors (board #3523): the Blue and orange theme, the same
+/// tokens the desktop draws with. Blue is the ground, the outlines and what
+/// is live; orange is what is pressed or under the pointer. No state rests
+/// on hue alone: the words and the outline carry it too.
+const PALETTE: Palette = Palette::BLUE_ORANGE;
+
+/// `c` at alpha `a`.
+fn with_alpha(c: Color32, a: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
 pub struct Hud {
@@ -498,7 +510,7 @@ impl Hud {
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::new()
-                        .fill(Color32::from_rgba_unmultiplied(18, 18, 22, 245))
+                        .fill(with_alpha(PALETTE.panel, 245))
                         .inner_margin(10.0)
                         .corner_radius(10.0),
                 )
@@ -521,15 +533,15 @@ impl Hud {
                             egui::Order::Foreground,
                             egui::Id::new("cursor"),
                         ));
-                        let outline = Stroke::new(1.5_f32, Color32::BLACK);
+                        let outline = Stroke::new(1.5_f32, PALETTE.bg);
                         if touch.pressed {
-                            painter.circle(at, 7.0, Color32::WHITE, outline);
+                            painter.circle(at, 7.0, PALETTE.accent, outline);
                         } else {
                             let r = touch
                                 .poke_depth
                                 .map_or(10.0, |d| 5.0 + (d.max(0.0) * 1000.0 * 0.5).min(20.0));
                             painter.circle_stroke(at, r + 1.0, outline);
-                            painter.circle_stroke(at, r, Stroke::new(2.5_f32, Color32::WHITE));
+                            painter.circle_stroke(at, r, Stroke::new(2.5_f32, PALETTE.accent));
                         }
                     }
                 });
@@ -727,7 +739,7 @@ impl Rows<'_> {
                         egui::Align2::CENTER_CENTER,
                         middle,
                         egui::FontId::proportional(FONT_VALUE),
-                        Color32::WHITE,
+                        PALETTE.text,
                     );
                 }
                 Control::Button(t, label) => self.button(painter, row, *t, label, on.is_some()),
@@ -754,14 +766,14 @@ impl Rows<'_> {
                                     egui::Align2::CENTER_TOP,
                                     label,
                                     egui::FontId::proportional(FONT_LABEL),
-                                    Color32::from_gray(200),
+                                    PALETTE.sub,
                                 );
                                 painter.text(
                                     Pos2::new(mid.center().x, mid.bottom() - 1.0),
                                     egui::Align2::CENTER_BOTTOM,
                                     value,
                                     egui::FontId::proportional(FONT_VALUE),
-                                    Color32::WHITE,
+                                    PALETTE.text,
                                 );
                             }
                             Some(Cell::Button(t, label)) => {
@@ -786,7 +798,7 @@ impl Rows<'_> {
         right: (Target, &str),
         on: Option<bool>,
     ) {
-        painter.rect_filled(rect(area), 6.0, Color32::from_gray(34));
+        painter.rect_filled(rect(area), 6.0, PALETTE.well);
         let (lh, rh) = area.halves();
         let (lb, rb) = area.end_boxes();
         for (target, label, half, boxed, is_right) in [
@@ -795,12 +807,12 @@ impl Rows<'_> {
         ] {
             let hovered = on == Some(is_right);
             if hovered {
-                painter.rect_filled(rect(half), 6.0, Color32::from_gray(52));
+                painter.rect_filled(rect(half), 6.0, PALETTE.rule);
             }
             let (fill, text) = if self.locked == Some(target) {
-                (Color32::WHITE, Color32::BLACK)
+                (PALETTE.sel_bg, PALETTE.sel_fg)
             } else {
-                (Color32::from_gray(70), Color32::WHITE)
+                (PALETTE.rule, PALETTE.text)
             };
             painter.rect_filled(rect(boxed), 6.0, fill);
             painter.text(
@@ -814,7 +826,7 @@ impl Rows<'_> {
                 painter.rect_stroke(
                     rect(half),
                     6.0,
-                    Stroke::new(3.0_f32, Color32::WHITE),
+                    Stroke::new(3.0_f32, PALETTE.accent),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -830,12 +842,12 @@ impl Rows<'_> {
         label: &str,
         on: bool,
     ) {
+        // Pressed inverts to orange on ink; under the pointer the outline
+        // says so; idle is the blue block every pressable thing is.
         let (fill, text) = if self.locked == Some(target) {
-            (Color32::WHITE, Color32::BLACK)
-        } else if on {
-            (Color32::from_gray(70), Color32::WHITE)
+            (PALETTE.sel_bg, PALETTE.sel_fg)
         } else {
-            (Color32::from_gray(45), Color32::WHITE)
+            (PALETTE.rule, PALETTE.text)
         };
         let r = rect(area);
         painter.rect_filled(r, 6.0, fill);
@@ -850,7 +862,7 @@ impl Rows<'_> {
             painter.rect_stroke(
                 r,
                 6.0,
-                Stroke::new(3.0_f32, Color32::WHITE),
+                Stroke::new(3.0_f32, PALETTE.accent),
                 egui::StrokeKind::Inside,
             );
         }
@@ -861,13 +873,13 @@ impl Rows<'_> {
 /// press), in the value font, or the label font when that does not fit.
 fn label(painter: &egui::Painter, area: grid::Rect, text: &str) {
     let r = rect(area);
-    painter.rect_filled(r, 6.0, Color32::from_gray(26));
+    painter.rect_filled(r, 6.0, PALETTE.well);
     let fits = |size: f32| {
         painter
             .layout_no_wrap(
                 text.to_owned(),
                 egui::FontId::proportional(size),
-                Color32::WHITE,
+                PALETTE.text,
             )
             .size()
             .x
@@ -883,7 +895,7 @@ fn label(painter: &egui::Painter, area: grid::Rect, text: &str) {
         egui::Align2::CENTER_CENTER,
         text,
         egui::FontId::proportional(size),
-        Color32::WHITE,
+        PALETTE.text,
     );
 }
 
@@ -896,7 +908,7 @@ fn panel_ui(
     controls: &mut Controls,
     mut rows: Rows<'_>,
 ) -> bool {
-    let dim = Color32::from_gray(150);
+    let dim = PALETTE.sub;
     let ms = |v: Option<f32>| v.map_or_else(|| "-".to_owned(), |v| format!("{v:.1}"));
 
     ui.horizontal(|ui| {
@@ -1129,7 +1141,7 @@ fn gpu_graph(ui: &mut egui::Ui, history: &[f32]) {
     let (rect, _) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 4.0, Color32::from_gray(30));
+    painter.rect_filled(rect, 4.0, PALETTE.well);
     let y = |ms: f32| rect.bottom() - (ms / GRAPH_MAX_MS).clamp(0.0, 1.0) * rect.height();
     // Budget: a dashed line with its label (not a color).
     painter.add(egui::Shape::dashed_line(
@@ -1137,7 +1149,7 @@ fn gpu_graph(ui: &mut egui::Ui, history: &[f32]) {
             Pos2::new(rect.left(), y(BUDGET_MS)),
             Pos2::new(rect.right(), y(BUDGET_MS)),
         ],
-        Stroke::new(1.0_f32, Color32::from_gray(160)),
+        Stroke::new(1.0_f32, PALETTE.dim),
         5.0,
         4.0,
     ));
@@ -1146,7 +1158,7 @@ fn gpu_graph(ui: &mut egui::Ui, history: &[f32]) {
         egui::Align2::RIGHT_BOTTOM,
         "13.9 ms",
         egui::FontId::proportional(FONT_GRAPH),
-        Color32::from_gray(160),
+        PALETTE.sub,
     );
     if history.len() > 1 {
         let step = rect.width() / (HISTORY - 1) as f32;
@@ -1158,7 +1170,7 @@ fn gpu_graph(ui: &mut egui::Ui, history: &[f32]) {
             .collect();
         painter.add(egui::Shape::line(
             points,
-            Stroke::new(2.0_f32, Color32::WHITE),
+            Stroke::new(2.0_f32, PALETTE.line),
         ));
     }
     painter.text(
@@ -1166,6 +1178,6 @@ fn gpu_graph(ui: &mut egui::Ui, history: &[f32]) {
         egui::Align2::LEFT_TOP,
         "GPU ms, 2 s",
         egui::FontId::proportional(FONT_GRAPH),
-        Color32::from_gray(160),
+        PALETTE.sub,
     );
 }
