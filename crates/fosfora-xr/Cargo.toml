@@ -46,6 +46,10 @@ ndk = { version = "0.9", default-features = false, features = ["audio", "api-lev
 # CLOCK_MONOTONIC for the playback tap's latency estimate (already in the
 # tree through ndk; MIT OR Apache-2.0).
 libc = "0.2"
+# JNI for the runtime permissions (`permissions.rs`, board #3264): the
+# `Activity` calls with no Java source. The same 0.21 android-activity
+# already pulls in (MIT OR Apache-2.0), so nothing new in the lock.
+jni = "0.21"
 
 # Host tests validate the XR-only WGSL (`ripple.rs`) at baseline WebGPU
 # capabilities; the same naga as wgpu 27 and the core, so the lock keeps one.
