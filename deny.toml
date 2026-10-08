@@ -43,6 +43,13 @@ exceptions = [
     # it), so shipped binaries stay MIT/Apache. The all-features graph scan
     # still walks the optional dep, hence this crate-scoped exception.
     { name = "rusty_link", allow = ["GPL-2.0-or-later"] },
+    # The XR voice path's speech to text (board #3751, Android only):
+    # whisper-rs and its -sys crate are Unlicense, a public-domain dedication
+    # that puts no condition on the MIT/Apache build; the whisper.cpp source
+    # they vendor is MIT. Crate-scoped so Unlicense stays out of the
+    # workspace-wide allow list.
+    { name = "whisper-rs", allow = ["Unlicense"] },
+    { name = "whisper-rs-sys", allow = ["Unlicense"] },
 ]
 
 [[licenses.clarify]]

@@ -50,6 +50,13 @@ libc = "0.2"
 # `Activity` calls with no Java source. The same 0.21 android-activity
 # already pulls in (MIT OR Apache-2.0), so nothing new in the lock.
 jni = "0.21"
+# On-device speech to text for the voice path (`voice.rs`, board #3751):
+# whisper.cpp (MIT) through whisper-rs (Unlicense, a public-domain
+# dedication; deny.toml allows it for these two crates). Android only, so
+# the desktop workspace never builds whisper.cpp. The cross build needs the
+# NDK cmake toolchain wrapper and the GGML_* flags `scripts/xr/run.sh` sets,
+# and links the NDK's `libc++_shared.so`, which run.sh packages.
+whisper-rs = "0.16"
 
 # Host tests validate the XR-only WGSL (`ripple.rs`) at baseline WebGPU
 # capabilities; the same naga as wgpu 27 and the core, so the lock keeps one.

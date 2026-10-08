@@ -6,7 +6,7 @@
 #   scripts/xr/run.sh [all|build|lint|install|launch|stop|log|uninstall] [--debug]
 #
 #   all      build + install + launch + log (default)
-#   build    cargo ndk (release unless --debug) + gradle assembleDebug
+#   build    cargo ndk (release unless --debug) + the speech model + gradle assembleDebug
 #   lint     cargo clippy for the Android target with -D warnings
 #   install  adb install -r the debug APK
 #   launch   adb shell am start the NativeActivity
@@ -42,10 +42,33 @@ for arg in "$@"; do
     esac
 done
 
+# whisper.cpp inside whisper-rs-sys (the voice path, board #3751) is built
+# by cmake, and whisper-rs-sys forwards only CMAKE_*, GGML_* and WHISPER_*
+# variables to it: the toolchain wrapper sets the NDK's ABI and platform,
+# GGML_NATIVE=OFF because the host is not the target, and the Quest 3's
+# Cortex-A78C ISA is named instead (dotprod and fp16, no i8mm).
+whisper_env() {
+    export CMAKE_TOOLCHAIN_FILE="$PWD/android/cmake/android.toolchain.cmake"
+    export GGML_NATIVE=OFF
+    export GGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16
+}
+
 cargo_build() {
     echo "== cargo ndk ($ABI, api $MIN_SDK, ${profile:-dev})"
+    whisper_env
     # shellcheck disable=SC2086
     cargo ndk -t "$ABI" --platform "$MIN_SDK" -o "$JNI_DIR" build -p fosfora-xr $profile
+    # whisper.cpp links the NDK's C++ runtime dynamically: package it next
+    # to the cdylib, as the loader AAR's libopenxr_loader.so is.
+    local host
+    host="$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64"
+    cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$host/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
+        "$JNI_DIR/$ABI/"
+    ls -la "$JNI_DIR/$ABI/"
+}
+
+fetch_model() {
+    scripts/xr/fetch-model.sh
 }
 
 gradle_build() {
@@ -56,6 +79,7 @@ gradle_build() {
 
 do_lint() {
     echo "== clippy ($ABI)"
+    whisper_env
     cargo ndk -t "$ABI" --platform "$MIN_SDK" clippy -p fosfora-xr --all-targets -- -D warnings
 }
 
@@ -86,8 +110,8 @@ do_log() {
 }
 
 case "$cmd" in
-    all)       cargo_build; gradle_build; do_install; do_launch; do_log ;;
-    build)     cargo_build; gradle_build ;;
+    all)       cargo_build; fetch_model; gradle_build; do_install; do_launch; do_log ;;
+    build)     cargo_build; fetch_model; gradle_build ;;
     lint)      do_lint ;;
     install)   do_install ;;
     launch)    do_launch ;;
