@@ -73,8 +73,9 @@ struct PhosphorUniforms {
     // continuous multi-bar clock.
     bar_index: f32,
     beat_index: f32,
-    _pad_clock0: f32,
-    _pad_clock1: f32,
+    // Tempo trust (#81): grid agreement 0-1, and 1.0 while the tempo is locked.
+    tempo_confidence: f32,
+    beat_locked: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: PhosphorUniforms;

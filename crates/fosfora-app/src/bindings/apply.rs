@@ -240,6 +240,9 @@ pub(crate) fn apply_binding_target(
                 "contrast_5" => ctx.uniforms.contrast_5 = v,
                 "contrast_mean" => ctx.uniforms.contrast_mean = v,
                 "timbre_flux" => ctx.uniforms.timbre_flux = v,
+                // Tempo trust (#81).
+                "tempo_confidence" => ctx.uniforms.tempo_confidence = v,
+                "beat_locked" => ctx.uniforms.beat_locked = v,
                 "feedback_decay" => ctx.uniforms.feedback_decay = v,
                 "time" => ctx.uniforms.time = value, // time not clamped
                 _ => {}

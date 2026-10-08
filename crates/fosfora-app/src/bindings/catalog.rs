@@ -122,6 +122,8 @@ pub const UNIFORM_TARGETS: &[&str] = &[
     "contrast_5",
     "contrast_mean",
     "timbre_flux",
+    "tempo_confidence",
+    "beat_locked",
     "feedback_decay",
     "time",
 ];

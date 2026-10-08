@@ -1761,6 +1761,8 @@ pub(crate) mod tests {
     /// ≤ 1e-7 last-digit rounding.
     /// Re-captured 2026-10-08 for #62: `rolloff`, `bandwidth` and `zcr` (12–14) moved onto
     /// the centroid's log-frequency axis; nothing else moves.
+    /// Re-captured 2026-10-08 for #81: `tempo_confidence`/`beat_locked` (83–84) appended.
+    /// The clip never locks, so only the late hop's confidence is non-zero.
     // Captured verbatim at 7 decimal places; left exactly as the harness printed them so a
     // re-capture diffs cleanly against this block.
     #[allow(clippy::unreadable_literal, clippy::excessive_precision)]
@@ -1779,7 +1781,8 @@ pub(crate) mod tests {
                 0.0194766, 0.9947287, 0.0000000, 0.2222967, 0.0000000, 0.1732833, 0.0598805,
                 0.9940155, 0.6009381, 0.9461797, 0.4126789, 0.9999693, 0.4485310, 0.4881209,
                 0.4763152, 0.4603756, 0.5333704, 0.1859715, 0.4986978, 0.4986971, 0.3528318,
-                0.4987957, 0.4993192, 0.4987762, 0.4986998, 0.0000000, 0.0000000,
+                0.4987957, 0.4993192, 0.4987762, 0.4986998, 0.0000000, 0.0000000, 0.0000000,
+                0.0000000,
             ],
         ),
         (
@@ -1796,7 +1799,8 @@ pub(crate) mod tests {
                 0.0201893, 0.9947813, 0.0000000, 0.4392110, 0.0000000, 0.3679971, 0.1145830,
                 0.9699730, 0.6012337, 0.9462099, 0.3652980, 0.9999987, 0.4890743, 0.5026374,
                 0.4690950, 0.4539478, 0.5269762, 0.0719375, 0.4999769, 0.5000178, 0.3531286,
-                0.5012278, 0.5197853, 0.5005888, 0.5000213, 0.0000000, 0.0000000,
+                0.5012278, 0.5197853, 0.5005888, 0.5000213, 0.0000000, 0.0000000, 0.0000000,
+                0.0000000,
             ],
         ),
         (
@@ -1813,7 +1817,8 @@ pub(crate) mod tests {
                 0.0193253, 0.9973397, 0.0000000, 0.4568526, 0.0000000, 0.1625745, 0.1114902,
                 0.9936647, 0.6007999, 0.9458395, 0.3599527, 0.9999986, 0.4310307, 0.4896301,
                 0.4748437, 0.4592255, 0.5218306, 0.0867677, 0.5000031, 0.4999986, 0.3532110,
-                0.5011370, 0.5022405, 0.5006987, 0.5000429, 0.0000000, 3.0000000,
+                0.5011370, 0.5022405, 0.5006987, 0.5000429, 0.0000000, 3.0000000, 0.5416813,
+                0.0000000,
             ],
         ),
     ];
@@ -1848,8 +1853,9 @@ pub(crate) mod tests {
         decay_features(&mut f, 0.5);
         for (i, &v) in f.as_slice().iter().enumerate() {
             match i {
-                // The beat (16), downbeat (52) and drop (60) triggers are forced to 0 on silence.
-                16 | 52 | 60 => {
+                // The beat (16), downbeat (52) and drop (60) triggers, and the #81 lock flag
+                // (84), are forced to 0 on silence.
+                16 | 52 | 60 | 84 => {
                     assert!(approx_eq(v, 0.0, 1e-6), "trigger {i} must be forced to 0");
                 }
                 // bpm (18), the categorical key fields key_class (49) / key_is_minor (50), the

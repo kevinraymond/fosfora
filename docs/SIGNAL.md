@@ -7,7 +7,7 @@ QLC+, grandMA, Chataigne, or anything else that speaks OSC.
 ```
 fosfora --signal                          # broadcast to 127.0.0.1:9010
 fosfora --signal --host 10.0.0.20 --port 9010 --rate 30
-fosfora --signal --feat-bus               # add the raw 83-feature bus
+fosfora --signal --feat-bus               # add the raw 85-feature bus
 fosfora --signal --device "BlackHole 2ch" # pick an input by name
 ```
 
@@ -52,6 +52,8 @@ process cannot, so treat more than ~3 s of status silence as offline.
 | Address | Args | Meaning |
 |---|---|---|
 | `/fosfora/v1/bpm` | float | Real BPM (not normalized) |
+| `/fosfora/v1/bpm/confidence` | float 0..1 | How much recent tempo evidence agrees with that BPM |
+| `/fosfora/v1/bpm/locked` | int 0\|1 | 1 while the tempo is locked — gate grid-synced cues on it |
 | `/fosfora/v1/bar_phase` | float 0..1 | Sawtooth over the current bar, hop-rate sampled |
 | `/fosfora/v1/build` | float 0..1 | Build/riser tension estimate |
 | `/fosfora/v1/energy` | float 0..1 | Short-term perceptual loudness (device-independent) |
@@ -108,7 +110,7 @@ deterministic.
 
 ### The raw feature bus (opt-in: `--feat-bus`)
 
-`/fosfora/v1/feat/<name>` — every one of the 83 analysis features, normalized 0..1
+`/fosfora/v1/feat/<name>` — every one of the 85 analysis features, normalized 0..1
 values verbatim, named exactly as in [AUDIO-FEATURES.md](AUDIO-FEATURES.md)
 (`sub_bass` … `mfcc.0` … `chroma.11` … `beat_index`). ~2.5k datagrams/s at 30 Hz —
 fine on loopback and wired LAN; turn it on only if you consume it.

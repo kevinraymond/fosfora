@@ -7,6 +7,7 @@
 
 ### Added
 - **Eight new trama nodes.** Strobe flashes on the tempo grid, the kick or any hit, in any color, as a blackout or as an invert, and stays within the flash limit set in Settings. Invert, Posterize, Threshold, Sharpen, Tile, Dither and CRT cover the other staple looks.
+- **`tempo_confidence` and `beat_locked`**, so effects, bindings and OSC clients can tell whether the beat grid is trustworthy, for example to keep a strobe off until the tempo locks. Signal also sends them as `/fosfora/v1/bpm/confidence` and `/fosfora/v1/bpm/locked`. `AudioFeatures` grows from 83 to 85 slots (332 → 340 bytes); the shader uniform block stays 448 bytes because the two values take its former padding, so existing shaders need no changes.
 
 ### Fixed
 - **Audio capture could drop out when the system was short on memory.** The capture callback allocated memory each time the device delivered audio, which can stall the realtime audio thread. It now writes straight into the capture buffer, and that buffer is no longer shared between threads unsoundly.

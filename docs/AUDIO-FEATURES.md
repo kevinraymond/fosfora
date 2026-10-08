@@ -2,7 +2,7 @@
 
 What Fosfora hears in your music, in plain English — and the research behind each measurement.
 
-Fosfora listens to your audio and turns it into 83 numbers, updated every 512 samples — 86 times a second at 44.1 kHz, 94 at 48 kHz. Every one of those numbers is available to every shader, every parameter slider, and every OSC client. This page explains what each one actually means musically, and links the paper or standard it comes from.
+Fosfora listens to your audio and turns it into 85 numbers, updated every 512 samples — 86 times a second at 44.1 kHz, 94 at 48 kHz. Every one of those numbers is available to every shader, every parameter slider, and every OSC client. This page explains what each one actually means musically, and links the paper or standard it comes from.
 
 ---
 
@@ -46,6 +46,7 @@ Fosfora listens to your audio and turns it into 83 numbers, updated every 512 sa
 | Flash only on the kick | `kick` | Ignores bass notes, snares and hats |
 | Stay locked to the groove | `beat_phase` | Smooth 0→1 ramp, one per beat |
 | Know where the bar starts | `downbeat`, `bar_phase` | Bar-level clock, not just beats |
+| Only strobe once the grid is solid | `beat_locked` | 1 while the tempo is locked, 0 otherwise |
 | Change color with the mood | `centroid` | How bright the music sounds |
 | Get dirty when the music does | `flatness` | Noisy versus musical |
 | React to melody but not drums | `harmonic_energy` | Drums have been filtered out |
@@ -170,6 +171,12 @@ Source: Fosfora-specific — the beat counter in [`audio/downbeat.rs`](../crates
 **`bar_index`** and **`beat_index`** — running counts of bars and beats since audio started, as plain whole numbers (0, 1, 2, …), **not** 0 to 1. Each steps up by one exactly when `bar_phase` or `beat_phase` wraps, so `bar_index + bar_phase` is a clock that never jumps backwards — use it for anything that should advance steadily over a whole set, like a slow rotation or a palette that walks forward every four bars (`floor(bar_index / 4)`). Shaders and bindings only.
 
 Source: Fosfora-specific — the bar and beat counters in [`audio/downbeat.rs`](../crates/fosfora-app/src/audio/downbeat.rs) and [`audio/beat.rs`](../crates/fosfora-app/src/audio/beat.rs).
+
+**`tempo_confidence`** — how much to trust `bpm` and the beat grid right now. It is the share of recent tempo measurements (over roughly the last 2.5 seconds) that agree with the tracked tempo, so a steady groove reads near 1, while a breakdown, a tempo change or beatless material drains it toward 0. It is not `beat_strength`, which says how hard a hit was.
+
+**`beat_locked`** — 1 while the tempo is locked and 0 otherwise. Lock engages once `tempo_confidence` climbs past about 0.6 and releases only when it falls below about 0.35, so it does not flicker on a single odd bar. Multiply a strobe or any grid-synced cue by it to keep it from firing on a beat grid the tracker has not confirmed. Also sent over OSC as `/audio/tempo_confidence` and `/audio/beat_locked`.
+
+Source: Fosfora-specific — the tempo estimator's lock support and hysteresis in [`audio/beat.rs`](../crates/fosfora-app/src/audio/beat.rs).
 
 ---
 

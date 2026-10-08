@@ -306,7 +306,7 @@ On Linux, Fosfora uses PulseAudio/PipeWire for monitor capture (loopback of syst
 
 ### What Gets Detected
 
-Fosfora extracts **83 audio features** from multi-resolution FFT analysis. The list below is a quick index. For what each feature *means* musically, what to hook it to, and the research behind it, see [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
+Fosfora extracts **85 audio features** from multi-resolution FFT analysis. The list below is a quick index. For what each feature *means* musically, what to hook it to, and the research behind it, see [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
 
 The core set below is joined by ten detector groups (loudness, key, downbeat, stereo, structure, harmonic/percussive split, pitch, spectral contrast, per-band pan, and the bar/beat counters) that fill the shader ABI's reserved tail (see [Detector features](#reserved-features)):
 
@@ -356,6 +356,7 @@ The remaining three groups fill the shader ABI v3 tail. All three are live as of
 Two more groups close out the tail:
 - **band_pan_sub_bass … band_pan_brilliance**: per-band pan: where each of the seven frequency bands sits in the stereo image, same convention as `pan` (0.5 = centred)
 - **bar_index / beat_index**: running bar and beat counts, as raw whole numbers rather than 0–1. `bar_index + bar_phase` is a continuous clock that never wraps
+- **tempo_confidence / beat_locked**: whether the beat grid is worth trusting: how much recent tempo evidence agrees with it (0–1), and 1 while the tempo is locked
 
 Alongside these, three live audio *textures* let effects read the signal directly, for oscilloscopes, spectrum bars and waterfalls. Sample them with the built-in helpers:
 - **`waveform(x)`** → `vec2f` (min, max) of the raw PCM at horizontal position `x`: a min/max-decimated, zero-crossing-triggered scope trace.
@@ -380,7 +381,7 @@ This is where the magic happens: audio features drive every aspect of the visual
 
 ### How It Works
 
-Every frame, Fosfora packs all **83 audio features** into the shader uniform buffer. Your shaders read these values and use them to modulate anything: color, position, size, speed, distortion, brightness.
+Every frame, Fosfora packs all **85 audio features** into the shader uniform buffer. Your shaders read these values and use them to modulate anything: color, position, size, speed, distortion, brightness.
 
 ### Available Uniforms in Shaders
 
@@ -437,6 +438,7 @@ band_pan_sub_bass, band_pan_bass, band_pan_low_mid,  // per-band stereo position
 band_pan_mid, band_pan_upper_mid, band_pan_presence,
 band_pan_brilliance
 bar_index, beat_index                               // raw bar/beat counts (not 0–1)
+tempo_confidence, beat_locked                       // is the beat grid trustworthy?
 
 // Audio textures: read the signal directly
 waveform(x)           // vec2f min/max of the PCM waveform at x = 0..1
@@ -444,7 +446,7 @@ spectrum(x)           // magnitude at log-frequency x = 0..1
 spectrogram(uv)       // scrolling mel-band history
 ```
 
-The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, the 12 chroma values, and the 37 detector scalars (listed above) are the full set of **83 audio features**, all available in every effect shader. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
+The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, the 12 chroma values, and the 39 detector scalars (listed above) are the full set of **85 audio features**, all available in every effect shader. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
 
 Not sure what one of these means, or which to reach for? Every field is explained in plain English in [AUDIO-FEATURES.md](AUDIO-FEATURES.md), including a [pick-by-what-you-want table](AUDIO-FEATURES.md#pick-a-feature-by-what-you-want).
 
@@ -980,7 +982,7 @@ The **Templates** dropdown wires up a whole set at once against the layer you ha
 
 ### Sources
 
-- **Audio**: all 83 detected features, grouped: Bands, Loudness, Features, Timbre, Beat, Structure, Harmonic, Stereo, Pitch, Key, Chroma, plus per-bin MFCC, Mel and ΔMFCC. See [Audio Features](AUDIO-FEATURES.md) for what each one means. The long groups start collapsed.
+- **Audio**: all 85 detected features, grouped: Bands, Loudness, Features, Timbre, Beat, Structure, Harmonic, Stereo, Pitch, Key, Chroma, plus per-bin MFCC, Mel and ΔMFCC. See [Audio Features](AUDIO-FEATURES.md) for what each one means. The long groups start collapsed.
 - **MIDI**: any CC on any channel. The **Learn** button captures the next knob you touch.
 - **OSC**: any address the app receives, whether or not it is one of Fosfora's own.
 - **Bridges**: hand, face and body tracking over WebSocket. See [bridges/README.md](../bridges/README.md).

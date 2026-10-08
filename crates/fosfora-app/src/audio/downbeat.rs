@@ -411,6 +411,8 @@ mod tests {
             beat_strength: 1.0,
             beat_time: 0.0,
             beat_index: 0,
+            tempo_confidence: 0.0,
+            beat_locked: false,
         }
     }
 
@@ -427,6 +429,8 @@ mod tests {
             beat_strength: 0.0,
             beat_time: 0.0,
             beat_index: 0,
+            tempo_confidence: 0.0,
+            beat_locked: false,
         }
     }
 
