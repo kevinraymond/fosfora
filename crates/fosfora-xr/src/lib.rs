@@ -40,6 +40,7 @@ pub mod instruments;
 pub mod intent;
 pub mod label;
 pub mod lanes;
+pub mod local;
 pub mod math;
 pub mod microgestures;
 pub mod music;
