@@ -6,8 +6,8 @@ source-level survey; line numbers drift, names don't. Single crate:
 
 ## Corrections to README/docs claims
 
-- **85 audio features**, not 74 (`audio/features.rs::NUM_FEATURES = 83`; struct pinned
-  at 332 bytes). `analyze/report.rs` comment says 81 — also stale.
+- **85 audio features**, not 74 (`audio/features.rs::NUM_FEATURES = 85`; struct pinned
+  at 340 bytes). `analyze/report.rs` comment says 81 — also stale.
 - Feature rate is `sample_rate / 512`: **86.13 Hz at 44.1 kHz only** (93.75 Hz at 48 k).
 - **No chord detection** (key detection only, `audio/key.rs`). README's "key and chord"
   is wrong.
