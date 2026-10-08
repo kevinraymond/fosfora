@@ -10,7 +10,9 @@
 //! menu's surface rows (board #3472, D3) step the pointed surface's color,
 //! band and strength through [`RoomLanes::set_params`], which writes the
 //! same entry fields the knob's `:<color>:<band>@<strength>` does, through
-//! the same path.
+//! the same path. The voice path's grammar (board #3751, `intent.rs`)
+//! writes through those calls too, and [`RoomLanes::set_kind`] for a kind
+//! named aloud.
 //!
 //! The rows are rebuilt only when the box list (UUIDs and kinds, in order)
 //! or an assignment changes: the boxes relocate once a second but keep
@@ -571,6 +573,31 @@ impl RoomLanes {
             .effective(k, boxes)
             .ok_or_else(|| format!("no box #{k} ({} boxes)", boxes.len()))?;
         self.assign(&Target::Kind(boxes[k].kind), behavior, strength, boxes)
+    }
+
+    /// The class assignment by name (board #3751, the voice path's
+    /// "every table streamlines"): `behavior` becomes `kind`'s default and
+    /// every anchor of that kind's, saved and logged through the path
+    /// [`Self::assign`] takes. Where [`Self::cycle_kind_of`] steps from a
+    /// pointed surface, this sets; the strength is the one the kind's first
+    /// surface in `boxes` runs (1 when the room has none of it), so a kind
+    /// dimmed as a whole stays dimmed.
+    pub fn set_kind(&mut self, kind: u32, behavior: SurfaceBehavior, boxes: &[LaneBox<'_>]) {
+        let strength = boxes
+            .iter()
+            .position(|b| b.kind == kind)
+            .and_then(|k| self.effective(k, boxes))
+            .map_or(1.0, |(_, s)| s);
+        let hits = resolve(&Target::Kind(kind), boxes).unwrap_or_default();
+        let a = Assignment {
+            target: Target::Kind(kind),
+            behavior,
+            strength,
+            color: None,
+            band: None,
+        };
+        let lines = self.write(&a, &hits, boxes);
+        self.commit(&lines);
     }
 
     /// Every kind default and every anchor of the room to none at full
@@ -1500,6 +1527,49 @@ mod tests {
         let mut again = RoomLanes::new(dir.clone());
         again.update(id, &boxes);
         assert_eq!(again.effective(0, &boxes), Some((B::None, 1.0)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_kind_sets_every_surface_of_the_kind_and_its_default() {
+        let (dir, boxes, id, mut lanes) = fresh("set-kind");
+        // The walls dimmed first: the kind keeps the first wall's strength.
+        lanes
+            .assign(&Target::Kind(KIND_WALL), B::Spectrum, 0.4, &boxes)
+            .unwrap();
+        lanes.set_kind(KIND_WALL, B::Aurora, &boxes);
+        for k in [1, 2] {
+            assert_eq!(
+                lanes.effective(k, &boxes),
+                Some((B::Aurora, 0.4)),
+                "wall {k}"
+            );
+        }
+        assert_eq!(lanes.file.kind_default(KIND_WALL), B::Aurora);
+        // The other kinds untouched.
+        assert_eq!(lanes.effective(0, &boxes), Some((B::Streamlines, 1.0)));
+        assert_eq!(lanes.effective(4, &boxes), Some((B::Curls, 1.0)));
+        // Both floors (the scene floor and the stage floor) at once, at full
+        // strength when nothing dimmed them.
+        lanes.set_kind(KIND_FLOOR, B::None, &boxes);
+        assert_eq!(lanes.effective(3, &boxes), Some((B::None, 1.0)));
+        assert_eq!(lanes.effective(5, &boxes), Some((B::None, 1.0)));
+        // A kind the room lacks: its default alone, at full strength.
+        lanes.set_kind(crate::surfaces::KIND_CEILING, B::Pulse, &boxes);
+        assert_eq!(
+            lanes.file.kind_default(crate::surfaces::KIND_CEILING),
+            B::Pulse
+        );
+        // Saved: a relaunch reads it back.
+        let mut again = RoomLanes::new(dir.clone());
+        again.update(id, &boxes);
+        assert_eq!(again.effective(2, &boxes), Some((B::Aurora, 0.4)));
+        assert_eq!(again.effective(5, &boxes), Some((B::None, 1.0)));
+        assert_eq!(again.file.kind_default(KIND_WALL), B::Aurora);
+        assert_eq!(
+            again.file.kind_default(crate::surfaces::KIND_CEILING),
+            B::Pulse
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
