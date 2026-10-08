@@ -195,6 +195,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.mode mr                  (S7: passthrough + hands + room, no quad)
     //   adb shell setprop debug.fosfora.passthrough 0|1          (override the mode's default)
     //   adb shell setprop debug.fosfora.hands 0|1                (hand joints as obstacles + pinch)
+    //   adb shell setprop debug.fosfora.micro 0|1                (board #3336: thumb microgestures, XR_META_hand_tracking_microgestures through one
+    //       action set on the EXT hand interaction profile; in world mode a thumb swipe right along the index steps to the next world
+    //       effect, left to the previous, either hand, not while the hand menu is up nor from the right hand in Edit room; forward,
+    //       backward and the thumb tap are logged and unassigned; default 1; 0 creates no action set; read at launch)
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
     //   adb shell setprop debug.fosfora.scenecapture 1           (no room anchors: launch Space Setup, then requery)
     //   adb shell setprop debug.fosfora.rescan 1|query           (once the room is in: launch Space Setup and requery (1), or requery alone (query), replacing the anchors; the hand menu's "Rescan the room" over adb)
@@ -470,6 +474,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             debug_prop("debug.fosfora.anchors").as_deref(),
         ),
         env_depth,
+        micro: toggle("debug.fosfora.micro", true),
     };
     let floor = toggle("debug.fosfora.floor", mixed);
     let gravity = debug_prop("debug.fosfora.gravity")
@@ -1353,6 +1358,39 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         "gesture: hold {} (unassigned in the world since board #3336)",
                         hand_name(hand)
                     ),
+                }
+            }
+            // Board #3336: thumb microgestures (`microgestures.rs`). A
+            // swipe right steps to the next world effect and left to the
+            // previous, either hand, by the path the menu's `<` `>` take;
+            // the gesture block's rules hold (nothing while the hand menu
+            // is up, nothing from the right hand in Edit room).
+            {
+                let micro = &input.micro;
+                let effects = if world { world_effects.len() } else { 0 };
+                let outcomes = [0, 1].map(|h| {
+                    micro.swipe[h].map(|s| {
+                        (s, crate::microgestures::outcome(s, h, panel_up, edit_on, effects))
+                    })
+                });
+                let right_steps = outcomes[1].is_some_and(|(_, o)| o.step().is_some());
+                for (h, swiped) in outcomes.iter().enumerate() {
+                    if let Some((s, o)) = swiped {
+                        let overruled = h == 0 && right_steps && o.step().is_some();
+                        info!(
+                            "microgesture: swipe {} ({} hand) -> {}{}",
+                            s.label(),
+                            hand_name(h),
+                            o.label(),
+                            if overruled { " (the right hand's swipe counts this frame)" } else { "" }
+                        );
+                    }
+                    if micro.tap[h] {
+                        info!("microgesture: tap thumb {}", hand_name(h));
+                    }
+                }
+                if let Some(step) = crate::microgestures::consume(micro, panel_up, edit_on, effects) {
+                    switch_to = cycle_index(&parked, world_index, if step > 0 { 1 } else { -1 });
                 }
             }
             if let Some(h) = hud.as_mut() {

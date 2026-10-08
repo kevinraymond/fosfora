@@ -292,6 +292,33 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   `next`): while its `SYSTEM_GESTURE` flag is on, the runtime's own menu
   gesture owns that hand and its pinch is suppressed here, so a pinch the
   system took never starts a gesture of ours. Controllers are not read (I5).
+- **Thumb microgestures (board #3336, step 4 of the gesture map).**
+  `XR_META_hand_tracking_microgestures`, enabled together with
+  `XR_EXT_hand_interaction` (the registry makes it depend on that extension,
+  whose profile its paths extend) when the runtime offers both; the launch
+  log says `microgestures (XR_META_hand_tracking_microgestures on
+  XR_EXT_hand_interaction): true`. `microgestures.rs` holds the app's only
+  action set, `fosfora`: five boolean actions (`swipe_left`, `swipe_right`,
+  `swipe_forward`, `swipe_backward`, `tap_thumb`), each with
+  `/user/hand/left` and `/user/hand/right` as subaction paths, suggested on
+  `/interaction_profiles/ext/hand_interaction_ext` at
+  `/user/hand/{left,right}/input/{swipe_left,swipe_right,swipe_forward,swipe_backward,tap_thumb}_meta/click`
+  (the registry's subpaths). No controller profile is bound (I5). The set
+  is attached in `XrSession::new`, after `xrCreateSession` and before the
+  READY event begins the session (`xrAttachSessionActionSets` must precede
+  `xrBeginSession`, once per session, so a later action set joins this
+  one). A refused binding is logged and the run goes on without it;
+  `INTERACTION_PROFILE_CHANGED` logs each hand's bound profile. Each frame,
+  right after the hands are located and only while the session is
+  `FOCUSED`, one `xrSyncActions`; each action's rising edge per hand
+  (changed since the last sync and now on) is the frame's microgesture, the
+  first in left, right, forward, backward order when two swipes fire at
+  once. In world mode with more than one effect a swipe right steps to the
+  next world effect and a swipe left to the previous, either hand, by the
+  path the menu's `<` `>` take; nothing while the hand menu is up, nothing
+  from the right hand in Edit room. Forward, backward and the thumb tap are
+  logged and reserved. The decision (`consume`) is plain data with desktop
+  tests. Knob `debug.fosfora.micro 0|1`, default 1; 0 creates no action set.
 - **Hand occluders.** The runtime's skinned hand mesh
   (`XR_FB_hand_tracking_mesh`, `xrGetHandMeshFB` once per hand through the
   `openxr-sys` function pointer: 1360 vertices, 2314 triangles, 26 joints

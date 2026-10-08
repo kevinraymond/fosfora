@@ -14,6 +14,7 @@ use crate::env_depth::{EnvDepthOptions, EnvDepthPasses, EnvDepthSlot};
 use crate::gfx::{EyeCamera, Gfx};
 use crate::input::{Hands, HandsFrame};
 use crate::math;
+use crate::microgestures::{MicroFrame, Microgestures};
 use crate::particles3d::{HandMeshData, ObstacleBox, Particles3d};
 use crate::perf::{PerfMetrics, PerfSample};
 use crate::room::{Passthrough, Room};
@@ -42,6 +43,10 @@ pub struct XrContext {
     pub has_scene: bool,
     /// `XR_META_environment_depth` (board #3324).
     pub has_env_depth: bool,
+    /// `XR_META_hand_tracking_microgestures` together with the
+    /// `XR_EXT_hand_interaction` profile its input paths extend (board
+    /// #3336).
+    pub has_microgestures: bool,
 }
 
 /// Which S7 features to bring up with the session.
@@ -64,6 +69,9 @@ pub struct MrOptions {
     /// The live environment depth as an occluder or its diagnostic
     /// (`debug.fosfora.envdepth*`); `None` creates no provider at all.
     pub env_depth: Option<EnvDepthOptions>,
+    /// Thumb microgestures through the app's action set
+    /// (`debug.fosfora.micro`, board #3336); off, no action set exists.
+    pub micro: bool,
 }
 
 /// Per-frame input the frame loop hands to `before_render`, by value.
@@ -74,6 +82,9 @@ pub struct FrameInput {
     /// Orientation of the first view (x, y, z, w) in the reference space.
     pub head_rot: [f32; 4],
     pub hands: HandsFrame,
+    /// This frame's thumb microgestures, rising edges per hand (empty
+    /// without the action set or while the session is not focused).
+    pub micro: MicroFrame,
     /// Scene anchors as oriented boxes in the reference space (empty until
     /// the query returns, or when the room is off).
     pub room_boxes: Vec<ObstacleBox>,
@@ -148,6 +159,13 @@ impl XrContext {
         enabled.fb_scene_capture = has_scene && available.fb_scene_capture;
         // The live depth map from the passthrough cameras (board #3324).
         enabled.meta_environment_depth = available.meta_environment_depth;
+        // Board #3336: thumb microgestures. Their input paths extend the
+        // EXT hand interaction profile, so the pair is enabled together or
+        // not at all.
+        let has_microgestures =
+            available.ext_hand_interaction && available.meta_hand_tracking_microgestures;
+        enabled.ext_hand_interaction = has_microgestures;
+        enabled.meta_hand_tracking_microgestures = has_microgestures;
         info!(
             "hand aim (XR_FB_hand_tracking_aim): {}",
             enabled.fb_hand_tracking_aim
@@ -170,6 +188,15 @@ impl XrContext {
                 .any(|n| n == "XR_META_spatial_entity_room_mesh"),
             available.meta_environment_depth,
         );
+        info!(
+            "microgestures (XR_META_hand_tracking_microgestures on XR_EXT_hand_interaction): {has_microgestures}"
+        );
+        if !has_microgestures {
+            info!(
+                "microgestures off: XR_EXT_hand_interaction {} · XR_META_hand_tracking_microgestures {}",
+                available.ext_hand_interaction, available.meta_hand_tracking_microgestures
+            );
+        }
 
         let instance = entry
             .create_instance(
@@ -267,6 +294,7 @@ impl XrContext {
             has_hand_aim: enabled.fb_hand_tracking_aim,
             has_scene,
             has_env_depth: enabled.meta_environment_depth,
+            has_microgestures,
         })
     }
 }
@@ -299,6 +327,11 @@ pub struct XrSession {
     hands: Option<Hands>,
     room: Option<Room>,
     perf: Option<PerfMetrics>,
+    /// The app's action set (board #3336); its actions belong to the
+    /// instance, not the session, so its place here is only for tidiness.
+    micro: Option<Microgestures>,
+    /// `xrSyncActions` failures so far (logged at powers of two).
+    micro_errors: u32,
     eyes: Vec<Eye>,
     space: xr::Space,
     stream: xr::FrameStream<xr::Vulkan>,
@@ -486,6 +519,32 @@ impl XrSession {
             }
         };
 
+        // Board #3336: thumb microgestures. The action set is attached
+        // here, after xrCreateSession and before the READY event that
+        // begins the session (`poll_events`), because
+        // xrAttachSessionActionSets must precede xrBeginSession and can run
+        // only once per session. A refused binding is logged and the run
+        // goes on without the feature.
+        let micro = match (mr.micro, ctx.has_microgestures) {
+            (false, _) => {
+                info!("microgestures off (debug.fosfora.micro 0)");
+                None
+            }
+            (true, false) => {
+                warn!(
+                    "microgestures requested but XR_EXT_hand_interaction + XR_META_hand_tracking_microgestures are missing"
+                );
+                None
+            }
+            (true, true) => match Microgestures::new(&ctx.instance, &session) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    warn!("microgestures off: {e:#}");
+                    None
+                }
+            },
+        };
+
         Ok(Self {
             env_depth,
             system: ctx.system,
@@ -493,6 +552,8 @@ impl XrSession {
             hands,
             room,
             perf,
+            micro,
+            micro_errors: 0,
             eyes,
             space,
             stream,
@@ -607,6 +668,11 @@ impl XrSession {
                 }
                 xr::Event::PassthroughStateChangedFB(e) => {
                     info!("passthrough state changed: {:?}", e.flags());
+                }
+                xr::Event::InteractionProfileChanged(_) => {
+                    if let Some(m) = self.micro.as_ref() {
+                        m.log_profiles(self.session.instance(), &self.session);
+                    }
                 }
                 _ => {}
             }
@@ -769,15 +835,34 @@ impl XrSession {
         if let Some(perf) = self.perf.as_mut() {
             perf.poll();
         }
+        let hands = self
+            .hands
+            .as_mut()
+            .map(|h| h.locate(&self.space, time))
+            .unwrap_or_default();
+        // Board #3336: the action set synced once a frame, after the hands,
+        // and only while focused (the actions are inactive otherwise).
+        let micro = match self.micro.as_ref() {
+            Some(m) if self.state == xr::SessionState::FOCUSED => {
+                m.sync(&self.session).unwrap_or_else(|e| {
+                    self.micro_errors += 1;
+                    if self.micro_errors.is_power_of_two() {
+                        warn!(
+                            "microgestures: sync failed ({} so far): {e:#}",
+                            self.micro_errors
+                        );
+                    }
+                    MicroFrame::default()
+                })
+            }
+            _ => MicroFrame::default(),
+        };
         let input = FrameInput {
             head,
             head_rot,
             perf: self.perf.as_ref().map(|p| p.latest).unwrap_or_default(),
-            hands: self
-                .hands
-                .as_mut()
-                .map(|h| h.locate(&self.space, time))
-                .unwrap_or_default(),
+            hands,
+            micro,
             room_boxes: match self.room.as_mut() {
                 Some(room) => {
                     room.locate(time);
