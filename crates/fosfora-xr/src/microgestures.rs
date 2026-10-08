@@ -88,7 +88,8 @@ impl Outcome {
         }
     }
 
-    fn step(self) -> Option<i32> {
+    /// The world effect step this outcome takes, if any.
+    pub fn step(self) -> Option<i32> {
         match self {
             Self::Next => Some(1),
             Self::Previous => Some(-1),
