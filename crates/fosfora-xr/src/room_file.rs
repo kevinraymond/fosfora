@@ -103,6 +103,18 @@ pub fn room_id(uuids: impl IntoIterator<Item = [u8; 16]>) -> Option<u64> {
 }
 
 /// A room id as the 16 lowercase hex digits its file is named by.
+/// Whether any room has ever been saved under `config` (a `rooms/*.json`
+/// exists). On a headset that has none, the first launch's empty scene
+/// query opens Space Setup by itself (board #3752): a wearer who has never
+/// scanned should not be told to find the hand menu first.
+pub fn any_saved(config: &Path) -> bool {
+    std::fs::read_dir(config.join(ROOMS_DIR)).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|e| e.path().extension().is_some_and(|x| x == "json"))
+    })
+}
+
 pub fn room_id_hex(id: u64) -> String {
     format!("{id:016x}")
 }
@@ -740,6 +752,22 @@ mod tests {
         let (_, skipped) =
             RoomFile::from_json(r#"{ "version": 1, "anchors": [] }"#).expect("reads");
         assert!(skipped.is_empty(), "{skipped:?}");
+    }
+
+    #[test]
+    fn space_setup_is_the_default_only_until_a_room_is_saved() {
+        let dir = std::env::temp_dir().join(format!("fosfora-room-any-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // No config dir, no rooms dir, an empty rooms dir, a stray file:
+        // nothing saved yet.
+        assert!(!any_saved(&dir));
+        std::fs::create_dir_all(dir.join(ROOMS_DIR)).unwrap();
+        assert!(!any_saved(&dir));
+        std::fs::write(dir.join(ROOMS_DIR).join("notes.txt"), "x").unwrap();
+        assert!(!any_saved(&dir));
+        std::fs::write(dir.join(ROOMS_DIR).join("a03160e5a4a3b311.json"), "{}").unwrap();
+        assert!(any_saved(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
