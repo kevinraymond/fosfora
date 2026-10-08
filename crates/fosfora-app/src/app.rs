@@ -551,6 +551,7 @@ impl App {
         // never sees this value, so threading it through construction would touch every
         // caller for nothing.
         audio.set_auto_reconnect(settings.auto_reconnect);
+        audio.set_input_trim_db(settings.input_trim_db);
         let midi = MidiSystem::new();
         let osc = OscSystem::new();
         let web = WebSystem::new();

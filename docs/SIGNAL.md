@@ -12,7 +12,7 @@ fosfora --signal --device "BlackHole 2ch" # pick an input by name
 ```
 
 Defaults persist in `~/.config/fosfora/signal.json`; CLI flags override for the run
-without saving. The input device, band scale and detector tuning come from your saved
+without saving. The input device, input trim, band scale and detector tuning come from your saved
 app settings, so the headless broadcast hears exactly what the windowed app heard.
 
 Signal **informs, it never triggers**: it is telemetry for the operator's rig. Every

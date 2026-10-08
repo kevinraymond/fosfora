@@ -8,6 +8,7 @@ pub mod downmix;
 pub mod features;
 pub mod hop;
 pub mod hpss;
+pub mod input_level;
 pub mod interp;
 pub mod key;
 pub mod key_sidecar;
@@ -32,6 +33,7 @@ pub mod timbre;
 pub mod wasapi_capture;
 
 pub use features::AudioFeatures;
+pub use input_level::InputLevel;
 
 /// A single analyzed audio frame handed from the audio thread to the render thread.
 /// Carries the scalar [`AudioFeatures`] plus the two array streams the A17 audio textures
@@ -148,6 +150,35 @@ struct OpenedBackend {
     /// merely idle. This is where the per-backend policy lives, so nothing downstream of
     /// `open_backend` has to know which platform it is on.
     silence_delivers_data: bool,
+}
+
+/// What the input meter shows (#84): the raw input, before the trim.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InputMeter {
+    /// Peak level with a falling hold, dBFS, floored at [`METER_FLOOR_DB`].
+    pub peak_dbfs: f32,
+    /// A sample clipped within the last [`CLIP_HOLD`].
+    pub clipping: bool,
+    /// Clipped samples since audio started.
+    pub clips: u64,
+}
+
+/// Bottom of the meter scale, dBFS.
+pub const METER_FLOOR_DB: f32 = -60.0;
+/// How fast the held peak falls, dB per second.
+const METER_FALL_DB_PER_SEC: f32 = 20.0;
+/// How long the clip light stays on after the last clipped sample.
+pub const CLIP_HOLD: Duration = Duration::from_secs(2);
+/// A meter not read for longer than this restarts instead of showing what built up.
+const METER_STALE: Duration = Duration::from_millis(500);
+
+/// UI-side meter ballistics, owned by the render thread.
+#[derive(Debug, Default)]
+struct MeterState {
+    peak_db: Option<f32>,
+    at: Option<Instant>,
+    clips_seen: u64,
+    clip_at: Option<Instant>,
 }
 
 /// How long `callback_count` may stay frozen before the watchdog calls it a stall.
@@ -309,6 +340,11 @@ pub struct AudioSystem {
     /// shared with the audio thread, snapshotted once per hop, threaded through
     /// `switch_device`. The mailbox half carries UI/MIDI/OSC overrides to the detector.
     tempo: Arc<Mutex<TempoControl>>,
+    /// Input trim and the raw-input meter (#84). Shared with the audio thread and threaded
+    /// through `switch_device`, so the trim survives a device change.
+    input: Arc<InputLevel>,
+    /// UI-side ballistics for [`input_meter`](Self::input_meter).
+    meter: MeterState,
     /// Beat taps for tap tempo (A7 #1458). Held as `Instant`s rather than offsets from
     /// `started_at`, which `switch_device` resets — a reset clock mid-sequence would turn
     /// the stored taps into garbage intervals.
@@ -392,6 +428,7 @@ impl AudioSystem {
             BandScale::default(),
             Arc::new(Mutex::new(StructureConfig::default())),
             Arc::new(Mutex::new(TempoControl::default())),
+            Arc::new(InputLevel::default()),
             Arc::new(RingBuffer::new()),
             None,
         );
@@ -412,6 +449,7 @@ impl AudioSystem {
             band_scale,
             tuning,
             tempo,
+            Arc::new(InputLevel::default()),
             Arc::new(RingBuffer::new()),
             None,
         )
@@ -449,6 +487,7 @@ impl AudioSystem {
             band_scale,
             tuning,
             tempo,
+            Arc::new(InputLevel::default()),
             Arc::new(RingBuffer::new()),
             None,
         );
@@ -473,6 +512,7 @@ impl AudioSystem {
         band_scale: BandScale,
         tuning: Arc<Mutex<StructureConfig>>,
         tempo: Arc<Mutex<TempoControl>>,
+        input: Arc<InputLevel>,
         recording_ring: Arc<RingBuffer>,
         recording_rate: Option<u32>,
     ) -> Self {
@@ -498,6 +538,7 @@ impl AudioSystem {
                 let drops = drop_counter.clone();
                 let tuning_thread = tuning.clone();
                 let tempo_thread = tempo.clone();
+                let input_thread = input.clone();
 
                 let thread_handle = thread::Builder::new()
                     .name("fosfora-audio".into())
@@ -515,6 +556,7 @@ impl AudioSystem {
                             band_scale,
                             tuning_thread,
                             tempo_thread,
+                            input_thread,
                         );
                     })
                     .expect("Failed to spawn audio thread");
@@ -549,6 +591,8 @@ impl AudioSystem {
                     band_scale,
                     tuning,
                     tempo,
+                    input,
+                    meter: MeterState::default(),
                     tap_times: Vec::new(),
                     beat_counter,
                     beats_seen: 0,
@@ -612,6 +656,8 @@ impl AudioSystem {
                     band_scale,
                     tuning,
                     tempo,
+                    input,
+                    meter: MeterState::default(),
                     tap_times: Vec::new(),
                     beat_counter,
                     beats_seen: 0,
@@ -697,6 +743,7 @@ impl AudioSystem {
             self.band_scale,
             self.tuning.clone(),
             self.tempo.clone(),
+            self.input.clone(),
             self.recording_ring.clone(),
             recording_rate,
         );
@@ -750,6 +797,72 @@ impl AudioSystem {
         // `self.reconnect` is likewise deliberately unswapped (A9 #1460): an episode spans the
         // backends it cycles through, so `new`'s fresh state must not clobber the live one.
         // `new` is dropped here — its Drop is a no-op since thread_handle is None and shutdown is true
+    }
+
+    /// Set the input trim in dB (#84), clamped to
+    /// [`TRIM_MIN_DB`](input_level::TRIM_MIN_DB)..[`TRIM_MAX_DB`](input_level::TRIM_MAX_DB).
+    /// Takes effect on the next capture read; survives a device switch.
+    pub fn set_input_trim_db(&self, db: f32) {
+        self.input.set_trim_db(db);
+    }
+
+    pub fn input_trim_db(&self) -> f32 {
+        self.input.trim_db()
+    }
+
+    /// The input meter (#84). Call once per UI frame: it drains the peak the audio thread
+    /// has collected since the previous call.
+    pub fn input_meter(&mut self) -> InputMeter {
+        let now = Instant::now();
+        let raw = self.input.take_peak();
+        let clips = self.input.clips();
+        // Not drawn for a while (the page was closed): what accumulated meanwhile is old news,
+        // so start fresh rather than flash a peak or a clip from minutes ago.
+        if self
+            .meter
+            .at
+            .is_none_or(|at| now.duration_since(at) > METER_STALE)
+        {
+            self.meter = MeterState {
+                clips_seen: clips,
+                at: Some(now),
+                ..MeterState::default()
+            };
+            return InputMeter {
+                peak_dbfs: METER_FLOOR_DB,
+                clipping: false,
+                clips,
+            };
+        }
+        let raw_db = if raw > 0.0 {
+            (20.0 * raw.log10()).max(METER_FLOOR_DB)
+        } else {
+            METER_FLOOR_DB
+        };
+        let dt = self
+            .meter
+            .at
+            .map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+        let held = self
+            .meter
+            .peak_db
+            .map_or(METER_FLOOR_DB, |p| p - METER_FALL_DB_PER_SEC * dt);
+        let peak_db = raw_db.max(held).max(METER_FLOOR_DB);
+        self.meter.peak_db = Some(peak_db);
+        self.meter.at = Some(now);
+
+        if clips > self.meter.clips_seen {
+            self.meter.clips_seen = clips;
+            self.meter.clip_at = Some(now);
+        }
+        InputMeter {
+            peak_dbfs: peak_db,
+            clipping: self
+                .meter
+                .clip_at
+                .is_some_and(|at| now.duration_since(at) < CLIP_HOLD),
+            clips,
+        }
     }
 
     /// The rate the analysis chain runs at: the device rate, halved while above 88.2 kHz
@@ -1338,6 +1451,7 @@ fn audio_thread(
     band_scale: BandScale,
     tuning: Arc<Mutex<StructureConfig>>,
     tempo: Arc<Mutex<TempoControl>>,
+    input: Arc<InputLevel>,
 ) {
     // Every stateful detector, in the one order that is correct (see `hop.rs`). The ring,
     // the recording mirror, the shared-config locks and the channel stay here.
@@ -1409,6 +1523,8 @@ fn audio_thread(
                 *s = 0.0;
             }
         }
+        // #84: meter the source as it arrived, before the trim.
+        input.record(&read_buf[..read]);
         // Interleaved L,R off the capture ring — always even-length (ring L/R parity invariant).
         let stereo = &read_buf[..read];
 
@@ -1426,6 +1542,16 @@ fn audio_thread(
         } else {
             recording_ring.push(&mono_scratch);
         }
+        // #84: the trim applies to analysis only — the recording above keeps the source level.
+        if let Some(gain) = input.gain() {
+            for s in &mut read_buf[..read] {
+                *s *= gain;
+            }
+            for m in &mut mono_scratch {
+                *m *= gain;
+            }
+        }
+        let stereo = &read_buf[..read];
         // Queue mono for hop-aligned analysis, and the interleaved stereo in lockstep.
         if decimator.is_active() {
             decimator.process(stereo, &mut decimated);
@@ -1574,8 +1700,23 @@ pub(crate) mod tests {
         signal: &[f32],
         sample_rate: f32,
     ) -> (Vec<AudioFrame>, PulseCounts) {
-        let ring = Arc::new(RingBuffer::new());
         let rec_ring = Arc::new(RingBuffer::new());
+        run_audio_thread_with(
+            signal,
+            sample_rate,
+            Arc::new(InputLevel::default()),
+            &rec_ring,
+        )
+    }
+
+    /// [`run_audio_thread_collecting`] with the input trim/meter and recording ring exposed.
+    fn run_audio_thread_with(
+        signal: &[f32],
+        sample_rate: f32,
+        input: Arc<InputLevel>,
+        rec_ring: &Arc<RingBuffer>,
+    ) -> (Vec<AudioFrame>, PulseCounts) {
+        let ring = Arc::new(RingBuffer::new());
         let (tx, rx) = crate::inbound::bounded::<AudioFrame>(signal.len() / ANALYSIS_HOP + 8);
         let shutdown = Arc::new(AtomicBool::new(false));
         let beat_counter = Arc::new(AtomicU32::new(0));
@@ -1602,6 +1743,7 @@ pub(crate) mod tests {
                         BandScale::Db,
                         Arc::new(Mutex::new(StructureConfig::default())),
                         Arc::new(Mutex::new(TempoControl::new(TempoConfig::default()))),
+                        input,
                     );
                 })
                 .expect("spawn golden audio thread")
@@ -1709,6 +1851,66 @@ pub(crate) mod tests {
                 "{name}: 48 kHz {x} vs 96 kHz {y}"
             );
         }
+    }
+
+    /// #84: the trim lifts what the analysis hears (absolute loudness rises by the trim) but
+    /// not what the recording mirror carries, and the meter counts clips on the raw input.
+    #[test]
+    fn input_trim_reaches_analysis_but_not_the_recording() {
+        const SR: f32 = 44100.0;
+        let mut signal: Vec<f32> = golden_signal(SR, 1.0).iter().map(|s| s * 0.5).collect();
+        signal[1000] = 1.0;
+        signal[1001] = -1.0;
+
+        let run = |trim_db: f32| {
+            let input = Arc::new(InputLevel::default());
+            input.set_trim_db(trim_db);
+            let rec = Arc::new(RingBuffer::new());
+            let (frames, _) = run_audio_thread_with(&signal, SR, input.clone(), &rec);
+            let mut recorded = vec![0.0f32; signal.len() / 2];
+            let n = rec.read(&mut recorded);
+            recorded.truncate(n);
+            (frames.last().expect("frames").features, recorded, input)
+        };
+        let (flat, rec_flat, input_flat) = run(0.0);
+        let (lifted, rec_lifted, input_lifted) = run(6.0);
+
+        // +6 dB of trim is +6 LU of loudness, 0.1 on the 60 LU feature scale.
+        let rise = lifted.loudness_m - flat.loudness_m;
+        assert!((rise - 0.1).abs() < 0.01, "loudness rose {rise}");
+        assert_eq!(rec_flat, rec_lifted, "the recording must not be trimmed");
+        assert!(!rec_flat.is_empty());
+        // Two clipped samples, counted before the trim either way.
+        assert_eq!(input_flat.clips(), 2);
+        assert_eq!(input_lifted.clips(), 2);
+    }
+
+    /// #84: the meter starts fresh after a pause, holds a peak, and latches the clip light.
+    #[test]
+    fn input_meter_ballistics() {
+        let mut sys = AudioSystem::offline();
+        sys.input.record(&[1.0]);
+        let first = sys.input_meter();
+        assert_eq!(
+            first.peak_dbfs, METER_FLOOR_DB,
+            "a stale peak must not show"
+        );
+        assert!(!first.clipping, "a stale clip must not light");
+
+        sys.input.record(&[0.5, -0.25]);
+        let m = sys.input_meter();
+        assert!((m.peak_dbfs - -6.02).abs() < 0.05, "peak {}", m.peak_dbfs);
+        assert!(!m.clipping);
+
+        // Nothing new: the held peak falls slowly rather than dropping to the floor.
+        let held = sys.input_meter();
+        assert!(held.peak_dbfs > -7.0 && held.peak_dbfs <= m.peak_dbfs);
+
+        sys.input.record(&[0.9995]);
+        let c = sys.input_meter();
+        assert!(c.clipping);
+        assert_eq!(c.clips, 2);
+        assert!(sys.input_meter().clipping, "the clip light holds");
     }
 
     /// A burst of NaN/Inf from the capture device must not leave any feature non-finite, then

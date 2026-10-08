@@ -1611,6 +1611,16 @@ impl ApplicationHandler for FosforaApp {
                     app.audio.set_band_scale(scale);
                 }
 
+                // Persist the input trim (#84). The slider already set it live.
+                let set_input_trim: Option<f32> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("set_input_trim")));
+                if let Some(db) = set_input_trim {
+                    app.settings.input_trim_db = db;
+                    app.settings.save();
+                }
+
                 // Handle auto-reconnect toggle from settings panel (A9 #1460)
                 let set_auto_reconnect: Option<bool> = app
                     .egui_overlay

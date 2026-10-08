@@ -475,7 +475,11 @@ mod tests {
             ((lcg >> 8) as f32 / 8_388_608.0 - 1.0) * 0.2
         });
         assert_eq!(noise.beat_locked, 0.0, "noise locked");
-        assert!(noise.tempo_confidence < 0.6, "confidence {}", noise.tempo_confidence);
+        assert!(
+            noise.tempo_confidence < 0.6,
+            "confidence {}",
+            noise.tempo_confidence
+        );
     }
 
     /// A DC offset larger than the tone it carries would leak into sub_bass through the Hann

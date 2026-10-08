@@ -193,6 +193,9 @@ pub struct SettingsConfig {
     pub audio_device: Option<String>,
     #[serde(default)]
     pub band_scale: BandScale,
+    /// Gain applied to the input before analysis, dB (#84). Recordings are not affected.
+    #[serde(default)]
+    pub input_trim_db: f32,
     #[serde(default)]
     pub particle_quality: ParticleQuality,
     #[serde(default)]
@@ -287,6 +290,7 @@ impl Default for SettingsConfig {
             theme: ThemeMode::Gray,
             audio_device: None,
             band_scale: BandScale::default(),
+            input_trim_db: 0.0,
             particle_quality: ParticleQuality::default(),
             webcam_device: None,
             webcam_device_name: None,

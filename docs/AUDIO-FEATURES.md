@@ -346,6 +346,8 @@ Source: Fosfora-specific — per-feature attack and release constants in [`audio
 
 One shared test decides whether there is any music at all: perceptual loudness below −55 LUFS counts as silence. When it trips, energy features fall to 0, the auto-leveling windows freeze so silence cannot rescale them, and values that should persist — tempo, key, pitch — hold their last reading instead of collapsing.
 
+A quiet line or microphone input can sit close to that gate. **Input trim** in Setup › Audio adds up to 24 dB before analysis (or takes it away from a hot source); its level meter shows the input before the trim and lights CLIP when the source itself is clipping.
+
 Source: Fosfora-specific — the gate lives in [`audio/loudness.rs`](../crates/fosfora-app/src/audio/loudness.rs) and is shared by every detector.
 
 ---

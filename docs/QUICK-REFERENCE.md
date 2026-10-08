@@ -113,7 +113,7 @@ A list of pages on the left, one page at a time.
 
 | Page                | What is on it                                                        |
 |---------------------|----------------------------------------------------------------------|
-| Audio               | Input device, what happens if it goes quiet, band scale              |
+| Audio               | Input device, level meter and trim, what happens if it goes quiet, band scale |
 | Control             | MIDI, OSC, the web remote, triggers                                  |
 | Outputs and streams | What black becomes, second window, recording, NDI, virtual camera (Spout and Syphon where available) |
 | Sync                | Ableton Link                                                         |
