@@ -73,6 +73,20 @@ pub fn cycle_text(name: &str, before: SurfaceBehavior, after: SurfaceBehavior) -
     format!("{name}: {}", result(before, after))
 }
 
+/// The label for a step of the hand menu's surface rows (board #3472,
+/// D3): the surface's name, its behavior and the three values it runs
+/// with now, color, band and strength (`lanes::RoomLanes::params_of`),
+/// "desk: curls · amber · mid · 0.7".
+pub fn param_text(name: &str, behavior: SurfaceBehavior, params: (u32, u32, f32)) -> String {
+    let (color, band, strength) = params;
+    format!(
+        "{name}: {} · {} · {} · {strength:.1}",
+        behavior.name(),
+        crate::surfaces::color_name(color),
+        crate::surface_fx::band_name(band)
+    )
+}
+
 /// A label's text for an action whose result `after` spawns particles
 /// (embers, sparks) on a surface whose top face is `outside` the volume
 /// the effect runs in (`surfaces::reaches`; its emitter weight is 0):
@@ -502,6 +516,26 @@ mod tests {
         assert_eq!(
             cycle_text("ceiling", B::Embers, B::Embers.next_for(KIND_CEILING)),
             "ceiling: rings"
+        );
+    }
+
+    #[test]
+    fn the_param_text_names_the_surface_the_behavior_and_the_three_values() {
+        assert_eq!(
+            param_text("desk", B::Curls, (4, 2, 0.7)),
+            "desk: curls · amber · mid · 0.7"
+        );
+        assert_eq!(
+            param_text("wall 12", B::Aurora, (0, 1, 1.0)),
+            "wall 12: aurora · kind · bass · 1.0"
+        );
+        assert_eq!(
+            param_text("lamp", B::Pulse, (crate::surfaces::COLOR_KEY, 3, 0.0)),
+            "lamp: pulse · key · high · 0.0"
+        );
+        assert_eq!(
+            param_text("floor", B::Rings, (3, 0, 0.5)),
+            "floor: rings · warm white · rms · 0.5"
         );
     }
 

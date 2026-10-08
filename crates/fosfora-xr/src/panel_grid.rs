@@ -32,13 +32,31 @@ pub const ROW_GAP: f32 = 6.0;
 pub const COL_GAP: f32 = 6.0;
 /// The -/+ and Prev/Next boxes at a cell's or a row's ends.
 pub const END_BOX_W: f32 = 40.0;
-/// The hand menu's rows, in both layouts at the bottom of the block: the
-/// pitcher and debug toggles over the room editor's (board #3326), over
-/// the cloud's (step 2c), over the music's (board #3472).
+/// The hand menu's rows with Edit room off, in both layouts at the bottom
+/// of the block: the pitcher and debug toggles over the room editor's
+/// (board #3326), over the cloud's (step 2c), over the music's (board
+/// #3472).
 pub const MENU_ROWS: usize = 4;
-/// The hand menu's height (points): the top of the texture the quad shows
-/// with debug off, a title over the menu rows.
-pub const MENU_H: f32 = 84.0 + (MENU_ROWS - 1) as f32 * (ROW_H + ROW_GAP);
+/// The rows Edit room adds under its own (board #3472, D3): the pointed
+/// surface's color, band and strength.
+pub const SURFACE_ROWS: usize = 3;
+
+/// The hand menu's rows: [`MENU_ROWS`], and the [`SURFACE_ROWS`] with
+/// them while Edit room is on.
+pub const fn menu_rows(editing: bool) -> usize {
+    if editing {
+        MENU_ROWS + SURFACE_ROWS
+    } else {
+        MENU_ROWS
+    }
+}
+
+/// The hand menu's height (points) with `rows` rows: the top of the
+/// texture the quad shows with debug off, a title over the menu rows. The
+/// quad keeps its bottom edge, so more rows grow it upward.
+pub const fn menu_h(rows: usize) -> f32 {
+    84.0 + (rows - 1) as f32 * (ROW_H + ROW_GAP)
+}
 /// Fonts (points): the title, a stepper's value and label, a button, the
 /// end boxes' glyphs, the graph's labels, and the smallest anywhere on the
 /// panel (legible at arm's length). The header lines are egui's body text
@@ -59,17 +77,27 @@ pub const HEADER_H: f32 = 320.0;
 pub const STEPPERS: usize = 10;
 /// The most rows the debug panel shows: Prev/Next, the steppers' pair
 /// rows, Recenter and Rescan, then the menu rows (Pitcher and Debug, Edit
-/// room and its status, Particles and All: none, Music).
-pub const DEBUG_ROWS: usize = 1 + STEPPERS.div_ceil(2) + 1 + MENU_ROWS;
+/// room and its status, with Edit room on the surface's Color, Band and
+/// Strength, Particles and All: none, Music).
+pub const fn debug_rows(editing: bool) -> usize {
+    1 + STEPPERS.div_ceil(2) + 1 + menu_rows(editing)
+}
 
 // A stepper's label over its value in one row, and the menu's title over
-// its bottom row.
+// its top row, in either menu.
 const _: () = assert!(FONT_LABEL + FONT_VALUE <= ROW_H - 4.0);
-const _: () =
-    assert!(MARGIN + FONT_TITLE * 1.4 + MENU_ROWS as f32 * (ROW_GAP + ROW_H) + MARGIN <= MENU_H);
-// The debug panel's header over its fullest control block.
 const _: () = assert!(
-    PANEL_H - MARGIN - DEBUG_ROWS as f32 * (ROW_H + ROW_GAP) + ROW_GAP * 0.5 >= MARGIN + HEADER_H
+    MARGIN + FONT_TITLE * 1.4 + menu_rows(false) as f32 * (ROW_GAP + ROW_H) + MARGIN
+        <= menu_h(menu_rows(false))
+);
+const _: () = assert!(
+    MARGIN + FONT_TITLE * 1.4 + menu_rows(true) as f32 * (ROW_GAP + ROW_H) + MARGIN
+        <= menu_h(menu_rows(true))
+);
+// The debug panel's header over its fullest control block: Edit room on.
+const _: () = assert!(
+    PANEL_H - MARGIN - debug_rows(true) as f32 * (ROW_H + ROW_GAP) + ROW_GAP * 0.5
+        >= MARGIN + HEADER_H
 );
 
 /// An axis-aligned rectangle in points.
@@ -200,7 +228,10 @@ mod tests {
 
     #[test]
     fn the_rows_tile_the_block_bottom_up() {
-        for (bottom, n) in [(PANEL_H, DEBUG_ROWS), (MENU_H, MENU_ROWS)] {
+        for (bottom, n) in [false, true].into_iter().flat_map(|editing| {
+            let menu = menu_rows(editing);
+            [(PANEL_H, debug_rows(editing)), (menu_h(menu), menu)]
+        }) {
             let top = block_top(bottom, n);
             let base = row(bottom, 0).max[1] + ROW_GAP * 0.5;
             assert!((base - (bottom - MARGIN + ROW_GAP * 0.5)).abs() < 1e-4);
@@ -238,10 +269,13 @@ mod tests {
     #[test]
     fn the_bottom_row_sits_as_far_above_the_edge_in_the_menu_and_the_panel() {
         // The quad keeps its bottom edge when debug toggles, so the row
-        // under the pointer stays under it.
-        let menu = MENU_H - row(MENU_H, 0).max[1];
+        // under the pointer stays under it; and when Edit room grows the
+        // menu, so its bottom rows stay where they were.
+        for editing in [false, true] {
+            let h = menu_h(menu_rows(editing));
+            assert_close!(h - row(h, 0).max[1], MARGIN);
+        }
         let panel = PANEL_H - row(PANEL_H, 0).max[1];
-        assert_close!(menu, MARGIN);
         assert_close!(panel, MARGIN);
     }
 
@@ -258,7 +292,7 @@ mod tests {
         let mut seen = Vec::new();
         let mut x = 0.0;
         while x < PANEL_W {
-            let h = hit(PANEL_H, DEBUG_ROWS, [x, y]).expect("on the row");
+            let h = hit(PANEL_H, debug_rows(false), [x, y]).expect("on the row");
             assert_eq!(h.row, 3);
             if seen.last() != Some(&(h.col, h.right)) {
                 seen.push((h.col, h.right));
@@ -269,9 +303,14 @@ mod tests {
         }
         assert_eq!(seen, [(0, false), (0, true), (1, false), (1, true)]);
         // A wide row's halves are the columns.
-        let h = hit(PANEL_H, DEBUG_ROWS, [PANEL_W * 0.5 - 1.0, y]).unwrap();
+        let h = hit(PANEL_H, debug_rows(false), [PANEL_W * 0.5 - 1.0, y]).unwrap();
         assert_eq!(h.col, 0);
-        assert_eq!(hit(PANEL_H, DEBUG_ROWS, [PANEL_W * 0.5, y]).unwrap().col, 1);
+        assert_eq!(
+            hit(PANEL_H, debug_rows(false), [PANEL_W * 0.5, y])
+                .unwrap()
+                .col,
+            1
+        );
         // The end boxes are END_BOX_W at the cell's ends, leaving the
         // middle for the label and the value.
         for c in [left, right] {
@@ -300,14 +339,25 @@ mod tests {
         // row's empty cell, board #3325), so no taller than with nine,
         // the room editor's row under the menu's (board #3326), the
         // cloud's under that (step 2c) and the music's at the bottom
-        // (board #3472).
-        assert_eq!(DEBUG_ROWS, 11);
-        assert!(block_top(PANEL_H, DEBUG_ROWS) >= MARGIN + HEADER_H);
-        // The hand menu: a title over four rows, 40 points taller for
-        // each past the first.
-        assert_eq!(MENU_ROWS, 4);
-        assert_close!(MENU_H, 204.0);
-        assert!(block_top(MENU_H, MENU_ROWS) >= MARGIN + FONT_TITLE * 1.4);
+        // (board #3472); with Edit room on, the surface's three rows under
+        // its own (D3), which is the headroom the header leaves.
+        assert_eq!(debug_rows(false), 11);
+        assert_eq!(debug_rows(true), 14);
+        for editing in [false, true] {
+            assert!(block_top(PANEL_H, debug_rows(editing)) >= MARGIN + HEADER_H);
+        }
+        assert!(block_top(PANEL_H, debug_rows(true) + 1) < MARGIN + HEADER_H);
+        // The hand menu: a title over four rows, or seven with Edit room
+        // on, 40 points taller for each past the first. No row or font
+        // shrinks for the three.
+        assert_eq!((menu_rows(false), menu_rows(true)), (4, 7));
+        assert_close!(menu_h(menu_rows(false)), 204.0);
+        assert_close!(menu_h(menu_rows(true)), 324.0);
+        for editing in [false, true] {
+            let n = menu_rows(editing);
+            assert!(block_top(menu_h(n), n) >= MARGIN + FONT_TITLE * 1.4);
+            assert!(menu_h(n) <= PANEL_H);
+        }
         // The texture is unchanged: 640 x 1472 at 1.6 px per point.
         assert_eq!((PANEL_W, PANEL_H), (400.0, 920.0));
     }

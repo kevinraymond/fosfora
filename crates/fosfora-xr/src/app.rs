@@ -1035,6 +1035,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // The panel's "All: none" this frame, applied once the frame's boxes
     // are known.
     let mut all_none = false;
+    // Board #3472, D3: a surface row's step this frame (which parameter,
+    // up or down), applied the same way to the surface under the beam.
+    let mut surface_step: Option<(crate::lanes::Param, bool)> = None;
     // Closest thumb-index approach per hand since the last log (meters):
     // shows near-miss pinches that never crossed the threshold.
     let mut tip_min = [f32::MAX; 2];
@@ -1310,6 +1313,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         reach: reach_now.map(|r| r.map(|r| (r.real_m, r.virtual_m))),
                         pose: &pose_text,
                         edit_status: &edit_status,
+                        // Last frame's hit (the editor steps below), held
+                        // while the panel is up; the file as it is now.
+                        surface_params: editor
+                            .hit()
+                            .filter(|_| controls.edit_room)
+                            .map(|h| surface_lanes.params_of(h.index, &lane_boxes)),
                     };
                     for action in h.render(&gfx, &view, &mut controls) {
                         info!("debug panel: {action:?}");
@@ -1338,6 +1347,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             // Logged with the cloud's change, below.
                             Action::SetCloud(_) => {}
                             Action::AllNone => all_none = true,
+                            Action::SurfaceParam(param, up) => surface_step = Some((param, up)),
                             Action::SetMusic(on) => music.set(on),
                             Action::SetPitcher(on) => info!(
                                 "pitcher {} ({}/s at {} m/s)",
@@ -1354,6 +1364,50 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 all_none = false;
                 info!("edit room: every surface -> none (the panel)");
                 surface_lanes.all_none(&lane_boxes);
+            }
+            // Board #3472, D3: a surface row's step, on the surface under
+            // the beam (the editor holds its hit while the panel is up, so
+            // it is the one the rows show), through the lanes' typed
+            // writer: the same entry fields the knob's
+            // `:<color>:<band>@<strength>` writes, saved and logged the
+            // same way. The label at the hit names the result.
+            if let Some((param, up)) = surface_step.take() {
+                let what = match param {
+                    crate::lanes::Param::Color => "color",
+                    crate::lanes::Param::Band => "band",
+                    crate::lanes::Param::Strength => "strength",
+                };
+                let dir = if up { "up" } else { "down" };
+                match editor.hit().filter(|_| controls.edit_room) {
+                    Some(h) => {
+                        let k = h.index;
+                        let name = crate::surfaces::friendly_name(k, &lane_boxes);
+                        let edit = crate::lanes::ParamEdit::step(
+                            param,
+                            up,
+                            surface_lanes.params_of(k, &lane_boxes),
+                        );
+                        info!("edit room: {name} {what} {dir} (the panel)");
+                        if surface_lanes.set_params(k, &lane_boxes, edit) {
+                            let behavior = surface_lanes
+                                .effective(k, &lane_boxes)
+                                .map(|(b, _)| b)
+                                .unwrap_or_default();
+                            label.show(
+                                crate::label::param_text(
+                                    &name,
+                                    behavior,
+                                    surface_lanes.params_of(k, &lane_boxes),
+                                ),
+                                h.point,
+                                h.normal,
+                            );
+                        }
+                    }
+                    None => info!(
+                        "edit room: {what} {dir} with no surface under the beam, nothing changed"
+                    ),
+                }
             }
             if let Some(p) = particles.as_ref() {
                 if recenter_on_wearer && !recentered {
