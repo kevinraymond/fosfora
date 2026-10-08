@@ -114,9 +114,13 @@ pub struct Hands {
     /// The pinch detector per hand (`pinch.rs`).
     pinch: [PinchDetector; 2],
     /// `xrLocateHandJointsEXT` through the function pointer, when the aim
-    /// state is chained onto it (`XR_FB_hand_tracking_aim` enabled); else the
-    /// crate's safe locate, which cannot chain.
+    /// state or the velocities are chained onto it; else the crate's safe
+    /// locate, which cannot chain.
     locate_fp: Option<sys::pfn::LocateHandJointsEXT>,
+    /// Chain the aim state (`XR_FB_hand_tracking_aim` enabled and asked).
+    aim: bool,
+    /// Lead the joints along their velocities by this long (board #3753).
+    lead_s: f32,
     /// The system gesture was on this hand last frame (log on change).
     system_logged: [bool; 2],
     /// The last locate's time, for the detector's frame length.
@@ -128,7 +132,7 @@ pub struct Hands {
 }
 
 impl Hands {
-    pub fn new(session: &xr::Session<xr::Vulkan>, aim: bool) -> Result<Self> {
+    pub fn new(session: &xr::Session<xr::Vulkan>, aim: bool, lead_s: f32) -> Result<Self> {
         let left = session
             .create_hand_tracker(xr::Hand::LEFT)
             .context("xrCreateHandTrackerEXT(left)")?;
@@ -180,16 +184,26 @@ impl Hands {
             }
         };
         let meshes = [mesh_for(0, &left), mesh_for(1, &right)];
-        let locate_fp = aim
+        let locate_fp = (aim || lead_s > 0.0)
             .then(|| session.instance().exts().ext_hand_tracking.as_ref())
             .flatten()
             .map(|fp| fp.locate_hand_joints);
+        let aim = aim && locate_fp.is_some();
+        let lead_s = if locate_fp.is_some() { lead_s } else { 0.0 };
         info!(
-            "hand aim state: {}",
-            if locate_fp.is_some() {
+            "hand aim state: {} · hand lead: {}",
+            if aim {
                 "chained onto the joint locate (XR_FB_hand_tracking_aim)"
             } else {
                 "off"
+            },
+            if lead_s > 0.0 {
+                format!(
+                    "{:.0} ms along the runtime's joint velocities",
+                    lead_s * 1000.0
+                )
+            } else {
+                "off".to_owned()
             }
         );
         Ok(Self {
@@ -197,6 +211,8 @@ impl Hands {
             meshes,
             pinch: [PinchDetector::new(), PinchDetector::new()],
             locate_fp,
+            aim,
+            lead_s,
             system_logged: [false; 2],
             last_time: None,
             was_tracked: [false; 2],
@@ -229,19 +245,20 @@ impl Hands {
             .clamp(1.0 / 120.0, 1.0 / 30.0);
         self.last_time = Some(now);
         for (h, tracker) in self.trackers.iter().enumerate() {
-            let (joints, aim) = match locate_joints(self.locate_fp, space, tracker, time) {
-                Ok(Some(located)) => located,
-                Ok(None) => {
-                    note_tracked(&mut self.was_tracked, h, false);
-                    self.pinch[h].reset();
-                    frame.pinching[h] = false;
-                    continue;
-                }
-                Err(e) => {
-                    log::warn!("xrLocateHandJointsEXT({h}): {e}");
-                    continue;
-                }
-            };
+            let (joints, aim) =
+                match locate_joints(self.locate_fp, self.aim, self.lead_s, space, tracker, time) {
+                    Ok(Some(located)) => located,
+                    Ok(None) => {
+                        note_tracked(&mut self.was_tracked, h, false);
+                        self.pinch[h].reset();
+                        frame.pinching[h] = false;
+                        continue;
+                    }
+                    Err(e) => {
+                        log::warn!("xrLocateHandJointsEXT({h}): {e}");
+                        continue;
+                    }
+                };
             let valid = |j: &xr::HandJointLocation| {
                 j.location_flags
                     .contains(xr::SpaceLocationFlags::POSITION_VALID)
@@ -568,11 +585,15 @@ fn fetch_mesh(instance: &xr::Instance, tracker: &xr::HandTracker) -> Result<Opti
 }
 
 /// Log a hand appearing or disappearing, once per change.
-/// Locate the joints at `time` in `space`, with the aim state chained on
-/// when `fp` is the raw locate (the crate's safe locate cannot chain a
-/// `next` struct). `None` when the hand is not tracked.
+/// Locate the joints at `time` in `space`, with the aim state and the
+/// joint velocities chained on when `fp` is the raw locate (the crate's
+/// safe locate cannot chain a `next` struct). With `lead_s` over 0 each
+/// joint with a valid linear velocity is moved ahead along it by that
+/// long (board #3753). `None` when the hand is not tracked.
 fn locate_joints(
     fp: Option<sys::pfn::LocateHandJointsEXT>,
+    aim: bool,
+    lead_s: f32,
     space: &xr::Space,
     tracker: &xr::HandTracker,
     time: xr::Time,
@@ -582,15 +603,28 @@ fn locate_joints(
             .locate_hand_joints(tracker, time)
             .map(|j| j.map(|j| (j, None)));
     };
+    let lead = lead_s > 0.0;
+    let mut velocities = [sys::HandJointVelocityEXT::default(); xr::HAND_JOINT_COUNT];
+    let mut vel = sys::HandJointVelocitiesEXT {
+        ty: sys::HandJointVelocitiesEXT::TYPE,
+        next: ptr::null_mut(),
+        joint_count: xr::HAND_JOINT_COUNT as u32,
+        joint_velocities: velocities.as_mut_ptr(),
+    };
+    let vel_ptr: *mut std::ffi::c_void = if lead {
+        (&raw mut vel).cast()
+    } else {
+        ptr::null_mut()
+    };
     let info = sys::HandJointsLocateInfoEXT {
         ty: sys::HandJointsLocateInfoEXT::TYPE,
         next: ptr::null(),
         base_space: space.as_raw(),
         time,
     };
-    let mut aim = sys::HandTrackingAimStateFB {
+    let mut aim_state = sys::HandTrackingAimStateFB {
         ty: sys::HandTrackingAimStateFB::TYPE,
-        next: ptr::null_mut(),
+        next: vel_ptr,
         status: sys::HandTrackingAimFlagsFB::EMPTY,
         aim_pose: sys::Posef::IDENTITY,
         pinch_strength_index: 0.0,
@@ -602,7 +636,11 @@ fn locate_joints(
         [xr::HandJointLocation::default(); xr::HAND_JOINT_COUNT];
     let mut locations = sys::HandJointLocationsEXT {
         ty: sys::HandJointLocationsEXT::TYPE,
-        next: (&raw mut aim).cast(),
+        next: if aim {
+            (&raw mut aim_state).cast()
+        } else {
+            vel_ptr
+        },
         is_active: false.into(),
         joint_count: xr::HAND_JOINT_COUNT as u32,
         joint_locations: joints.as_mut_ptr(),
@@ -611,8 +649,10 @@ fn locate_joints(
     // instance the tracker and the space came from (both from one session,
     // as the crate's own locate asserts); every pointer is to a live local:
     // `info` for the call, `locations` with `joint_count` entries of
-    // `joints` to fill and `aim` chained as its `next` (an output struct the
-    // extension defines for this call, with its `ty` set); nothing escapes
+    // `joints` to fill, and chained as `next` the output structs the
+    // extensions define for this call, each with its `ty` set: `aim_state`
+    // when asked, then `vel` with `joint_count` entries of `velocities`
+    // when a lead is asked (or `vel` alone, or neither); nothing escapes
     // the call.
     let result = unsafe { locate(tracker.as_raw(), &raw const info, &raw mut locations) };
     if result.into_raw() < 0 {
@@ -621,7 +661,21 @@ fn locate_joints(
     if !bool::from(locations.is_active) {
         return Ok(None);
     }
-    Ok(Some((joints, Some(AimState::from_sys(&aim)))))
+    if lead {
+        for (j, v) in joints.iter_mut().zip(&velocities) {
+            if j.location_flags
+                .contains(xr::SpaceLocationFlags::POSITION_VALID)
+                && v.velocity_flags
+                    .contains(sys::SpaceVelocityFlags::LINEAR_VALID)
+            {
+                let p = j.pose.position;
+                let l = v.linear_velocity;
+                let [x, y, z] = crate::math::led([p.x, p.y, p.z], [l.x, l.y, l.z], lead_s);
+                j.pose.position = sys::Vector3f { x, y, z };
+            }
+        }
+    }
+    Ok(Some((joints, aim.then(|| AimState::from_sys(&aim_state)))))
 }
 
 fn note_tracked(was_tracked: &mut [bool; 2], hand: usize, tracked: bool) {

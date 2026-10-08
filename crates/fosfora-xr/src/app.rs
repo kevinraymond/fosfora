@@ -155,6 +155,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Spike knobs, settable without a rebuild:
     //   adb shell setprop debug.fosfora.aim 0|1                  (board #3336: the runtime's aim state chained onto the hand locate; its
     //       system-gesture flag suppresses our pinch on that hand; default on; read at startup)
+    //   adb shell setprop debug.fosfora.handlead <ms>            (board #3753: the hand joints led along the runtime's velocities
+    //       (XR_EXT_hand_tracking's XrHandJointVelocitiesEXT) by this many ms, 0..100, so the skinned mesh trails less on fast motion;
+    //       default 0, off; read at startup; an A/B for the worn look)
     //   adb shell setprop debug.fosfora.mode world|mr|particles|quad  (default world, the room; board #3553. particles and quad are the
     //       spike's test scenes, mr the S7 setup under world)
     //   adb shell setprop debug.fosfora.audio synth|mic|micxr|aaudio|file  (default synth; mic needs RECORD_AUDIO;
@@ -463,6 +466,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         passthrough: toggle("debug.fosfora.passthrough", mixed),
         hands: toggle("debug.fosfora.hands", mixed),
         aim: toggle("debug.fosfora.aim", true),
+        hand_lead_s: debug_prop("debug.fosfora.handlead")
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .map_or(0.0, |ms| (ms / 1000.0).clamp(0.0, 0.1)),
         room: toggle("debug.fosfora.room", mixed),
         scene_capture: toggle("debug.fosfora.scenecapture", false),
         rescan_at_start: match debug_prop("debug.fosfora.rescan").as_deref() {
