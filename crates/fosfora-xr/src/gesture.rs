@@ -17,7 +17,13 @@ use glam::Vec3;
 /// Pinch-point travel (meters) that turns a pinch into a drag. Above the
 /// tracking jitter of a held pinch, below a deliberate hand move.
 pub const DRAG_START_M: f32 = 0.025;
-/// Seconds a pinch has to stay put to count as a hold.
+/// Seconds a pinch has to stay put to count as a hold. Only the room
+/// editor consumes a hold (Edit room on, the right hand, `room_edit.rs`:
+/// the first arms the class cycle, a second within 2.5 s fires it). In
+/// the world a hold does nothing since board #3336: a still pinch,
+/// aiming a throw or a hand at rest, cycled the world effect unasked, and
+/// the effect cycle is the hand menu's `<` `>` row. The HUD still shows
+/// a pinch's progress toward one.
 pub const HOLD_S: f32 = 0.7;
 
 /// One hand's pinch this frame, as the detector reports it.

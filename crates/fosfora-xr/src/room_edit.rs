@@ -27,13 +27,26 @@
 //! under the beam.
 //!
 //! **The gestures** act on the hit as it shows: a tap cycles its behavior
-//! through what renders on its kind ([`EditAction::Cycle`]), a hold cycles
-//! every surface of its kind one step from it ([`EditAction::AssignKind`]); either without a hit, or
-//! without a ray (the hand lost, the panel up) while a hit is still held,
-//! does nothing and says so ([`EditFrame::unaimed`]). A quick, short drag
+//! through what renders on its kind ([`EditAction::Cycle`]); a hold arms
+//! the class cycle on it ([`EditAction::Arm`]), and a second hold on the
+//! same box within [`ARM_S`] fires it, every surface of its kind one step
+//! from it ([`EditAction::AssignKind`]). Either without a hit, or without
+//! a ray (the hand lost, the panel up) while a hit is still held, does
+//! nothing and says so ([`EditFrame::unaimed`]). A quick, short drag
 //! counts as a tap ([`short_drag_is_tap`]; `app.rs` times it). The
-//! highlight pulses once ([`PULSE_S`]) for a cycle, twice for a class
-//! assignment.
+//! highlight pulses once ([`PULSE_S`]) for a cycle, twice for an arm and
+//! for a class assignment.
+//!
+//! **The arm** (board #3336): a hold rewrites every surface of a kind, a
+//! room-wide change from a gesture a hand can make by accident, so the
+//! first hold only arms it and the label says what a second would do. The
+//! arm goes, firing nothing, when [`ARM_S`] runs out, on a tap (which
+//! cycles as usual), on any gesture without a hit or a ray, when the hit
+//! goes to another box or clears, and with Edit room off; a hold on
+//! another box arms there instead. The panel up holds the hit, but the
+//! arm's clock keeps running, so the status cell can show it armed and an
+//! arm left while reading it still runs out. [`EditFrame::armed`] says
+//! which box is armed.
 //!
 //! **The cloud toggle** (step 2c, [`Cloud`]): the hand menu's Cloud row.
 //! Off, the world effect is hidden at once, whatever the effect
@@ -71,6 +84,9 @@ pub const PULSE_S: f32 = 0.3;
 /// Pulses for a cycle and for a class assignment.
 pub const CYCLE_PULSES: u32 = 1;
 pub const CLASS_PULSES: u32 = 2;
+/// Seconds after a hold arms the class cycle within which a second hold on
+/// the same box fires it (board #3336).
+pub const ARM_S: f32 = 2.5;
 /// A right drag shorter than this (s, from its start) and ...
 pub const SHORT_DRAG_S: f32 = 0.5;
 /// ... that ends nearer than this to where it started (m) is a tap.
@@ -132,8 +148,12 @@ pub enum EditAction {
     /// (`surfaces::SurfaceBehavior::next_for`).
     Cycle(usize),
     /// Every surface of box k's kind one step past k's behavior (the
-    /// class cycle; `lanes::RoomLanes::cycle_kind_of`).
+    /// class cycle; `lanes::RoomLanes::cycle_kind_of`): a second hold on k
+    /// while it is armed.
     AssignKind(usize),
+    /// A first hold on box k: the class cycle is armed on it, nothing
+    /// changes yet ([`ARM_S`]).
+    Arm(usize),
 }
 
 /// The editor's frame.
@@ -151,6 +171,9 @@ pub struct EditFrame {
     pub unaimed: Option<&'static str>,
     /// The highlight's pulse, 0..1.
     pub pulse: f32,
+    /// The box the class cycle is armed on, if any: a hold on it now fires
+    /// [`EditAction::AssignKind`].
+    pub armed: Option<usize>,
 }
 
 /// The editor's state across frames.
@@ -163,6 +186,9 @@ pub struct RoomEditor {
     off_s: f32,
     /// The pulse's age and its count.
     pulse: Option<(f32, u32)>,
+    /// The box the class cycle is armed on and the seconds since it was
+    /// armed; it goes at [`ARM_S`].
+    armed: Option<(usize, f32)>,
 }
 
 impl RoomEditor {
@@ -177,7 +203,10 @@ impl RoomEditor {
                 ..EditFrame::default()
             };
         }
+        let dt = input.dt.max(0.0);
         if input.frozen {
+            // The hit holds, but the arm's clock runs on.
+            self.age_arm(dt);
             return EditFrame {
                 hit: self.hit,
                 changed: false,
@@ -185,9 +214,9 @@ impl RoomEditor {
                 action: None,
                 unaimed: None,
                 pulse: self.pulse_now(),
+                armed: self.armed(),
             };
         }
-        let dt = input.dt.max(0.0);
         // A rescan can shrink the box list under a held hit.
         if self.hit.is_some_and(|h| h.index >= input.boxes.len()) {
             self.hit = None;
@@ -223,6 +252,12 @@ impl RoomEditor {
         if self.off_s >= MISS_S {
             self.hit = None;
         }
+        // The arm ages, and goes with its box: the hit cleared or moved.
+        self.age_arm(dt);
+        let hit = self.hit.map(|h| h.index);
+        if self.armed.is_some_and(|(k, _)| hit != Some(k)) {
+            self.armed = None;
+        }
         let beam = input.ray.map(|r| {
             let reach = raw
                 .or(self.hit)
@@ -235,30 +270,26 @@ impl RoomEditor {
             .map(|(age, n)| (age + dt, n))
             .filter(|&(age, n)| age < PULSE_S * n as f32);
         // A tap and a hold never fire in one frame (`gesture.rs`); a hold
-        // would win.
-        let gesture = if input.hold {
-            Some((
-                "hold",
-                EditAction::AssignKind as fn(usize) -> EditAction,
-                CLASS_PULSES,
-            ))
-        } else if input.tap {
-            Some((
-                "tap",
-                EditAction::Cycle as fn(usize) -> EditAction,
-                CYCLE_PULSES,
-            ))
-        } else {
-            None
-        };
+        // would win. Any gesture takes the arm: only a hold on the armed
+        // box fires it, a hold elsewhere arms there.
         let (mut action, mut unaimed) = (None, None);
-        if let Some((name, make, pulses)) = gesture {
+        if input.hold || input.tap {
+            let armed = self.armed.take().map(|(k, _)| k);
             match self.hit.filter(|_| input.ray.is_some()) {
                 Some(h) => {
-                    action = Some(make(h.index));
+                    let k = h.index;
+                    let (act, pulses) = if !input.hold {
+                        (EditAction::Cycle(k), CYCLE_PULSES)
+                    } else if armed == Some(k) {
+                        (EditAction::AssignKind(k), CLASS_PULSES)
+                    } else {
+                        self.armed = Some((k, 0.0));
+                        (EditAction::Arm(k), CLASS_PULSES)
+                    };
+                    action = Some(act);
                     self.pulse = Some((0.0, pulses));
                 }
-                None => unaimed = Some(name),
+                None => unaimed = Some(if input.hold { "hold" } else { "tap" }),
             }
         }
         EditFrame {
@@ -268,12 +299,26 @@ impl RoomEditor {
             action,
             unaimed,
             pulse: self.pulse_now(),
+            armed: self.armed(),
         }
     }
 
     /// The hit as the highlight shows it.
     pub fn hit(&self) -> Option<Hit> {
         self.hit
+    }
+
+    /// The box the class cycle is armed on, if any.
+    pub fn armed(&self) -> Option<usize> {
+        self.armed.map(|(k, _)| k)
+    }
+
+    /// Age the arm by `dt`; it goes at [`ARM_S`].
+    fn age_arm(&mut self, dt: f32) {
+        self.armed = self
+            .armed
+            .map(|(k, age)| (k, age + dt))
+            .filter(|&(_, age)| age < ARM_S);
     }
 
     /// The pulse now, 0..1: each of its pulses starts at 1 and falls
@@ -556,8 +601,23 @@ mod tests {
         assert!(f.beam.is_some());
     }
 
+    /// One frame pointing at `at` with a tap or a hold.
+    fn tap(e: &mut RoomEditor, boxes: &[RayBox], at: Vec3) -> EditFrame {
+        e.step(&EditInput {
+            tap: true,
+            ..input(boxes, at)
+        })
+    }
+
+    fn hold(e: &mut RoomEditor, boxes: &[RayBox], at: Vec3) -> EditFrame {
+        e.step(&EditInput {
+            hold: true,
+            ..input(boxes, at)
+        })
+    }
+
     #[test]
-    fn a_tap_cycles_and_a_hold_assigns_the_kind_on_the_hit() {
+    fn a_tap_cycles_and_two_holds_assign_the_kind_on_the_hit() {
         let b = boxes();
         let mut e = RoomEditor::default();
         point(&mut e, &b, TABLE, frames(CONFIRM_S));
@@ -567,6 +627,12 @@ mod tests {
         });
         assert_eq!(f.action, Some(EditAction::Cycle(1)));
         assert_eq!(f.unaimed, None);
+        // The first hold arms, the second fires (board #3336).
+        let f = e.step(&EditInput {
+            hold: true,
+            ..input(&b, TABLE)
+        });
+        assert_eq!(f.action, Some(EditAction::Arm(1)));
         let f = e.step(&EditInput {
             hold: true,
             ..input(&b, TABLE)
@@ -580,6 +646,123 @@ mod tests {
             ..input(&b, NOWHERE)
         });
         assert_eq!(f.action, Some(EditAction::Cycle(1)));
+    }
+
+    #[test]
+    fn a_hold_arms_and_a_second_within_the_arm_time_assigns() {
+        let b = boxes();
+        let mut e = RoomEditor::default();
+        point(&mut e, &b, TABLE, frames(CONFIRM_S));
+        assert_eq!(e.armed(), None);
+        let f = hold(&mut e, &b, TABLE);
+        assert_eq!(f.action, Some(EditAction::Arm(1)));
+        assert_eq!(f.armed, Some(1));
+        // Armed, nothing fired, up to just short of the arm time.
+        let f = point(&mut e, &b, TABLE, frames(ARM_S) - 2);
+        assert_eq!((f.action, f.armed), (None, Some(1)));
+        let f = hold(&mut e, &b, TABLE);
+        assert_eq!(f.action, Some(EditAction::AssignKind(1)));
+        assert_eq!(f.armed, None, "firing disarms");
+        // The next hold arms again.
+        assert_eq!(hold(&mut e, &b, TABLE).action, Some(EditAction::Arm(1)));
+    }
+
+    #[test]
+    fn a_second_hold_after_the_arm_time_only_arms_again() {
+        let b = boxes();
+        let mut e = RoomEditor::default();
+        point(&mut e, &b, TABLE, frames(CONFIRM_S));
+        hold(&mut e, &b, TABLE);
+        // One frame past it (the frames' sum rounds in f32).
+        let f = point(&mut e, &b, TABLE, frames(ARM_S) + 1);
+        assert_eq!(f.armed, None, "ran out");
+        let f = hold(&mut e, &b, TABLE);
+        assert_eq!((f.action, f.armed), (Some(EditAction::Arm(1)), Some(1)));
+    }
+
+    #[test]
+    fn a_tap_disarms() {
+        let b = boxes();
+        let mut e = RoomEditor::default();
+        point(&mut e, &b, TABLE, frames(CONFIRM_S));
+        hold(&mut e, &b, TABLE);
+        // A tap on the armed box cycles it as usual and disarms.
+        let f = tap(&mut e, &b, TABLE);
+        assert_eq!((f.action, f.armed), (Some(EditAction::Cycle(1)), None));
+        assert_eq!(hold(&mut e, &b, TABLE).action, Some(EditAction::Arm(1)));
+        // A tap without a ray (the hand lost) acts on nothing and disarms
+        // too.
+        let f = e.step(&EditInput {
+            ray: None,
+            tap: true,
+            ..input(&b, TABLE)
+        });
+        assert_eq!((f.action, f.unaimed, f.armed), (None, Some("tap"), None));
+        assert!(f.hit.is_some());
+        assert_eq!(hold(&mut e, &b, TABLE).action, Some(EditAction::Arm(1)));
+    }
+
+    #[test]
+    fn a_hold_on_another_box_arms_there_without_firing() {
+        let b = boxes();
+        let mut e = RoomEditor::default();
+        point(&mut e, &b, TABLE, frames(CONFIRM_S));
+        hold(&mut e, &b, TABLE);
+        // The hit goes to the wall: the table's arm goes with it.
+        let f = point(&mut e, &b, WALL, frames(CONFIRM_S));
+        assert_eq!((f.hit.map(|h| h.index), f.armed), (Some(0), None));
+        let f = hold(&mut e, &b, WALL);
+        assert_eq!((f.action, f.armed), (Some(EditAction::Arm(0)), Some(0)));
+        // Back on the table within the arm time: a hold there arms the
+        // table, it does not fire.
+        point(&mut e, &b, TABLE, frames(CONFIRM_S));
+        let f = hold(&mut e, &b, TABLE);
+        assert_eq!((f.action, f.armed), (Some(EditAction::Arm(1)), Some(1)));
+        // The hit lost (a miss past the miss time) disarms.
+        let f = point(&mut e, &b, NOWHERE, frames(MISS_S));
+        assert_eq!((f.hit, f.armed), (None, None));
+        // Edit room off disarms.
+        point(&mut e, &b, TABLE, frames(CONFIRM_S));
+        hold(&mut e, &b, TABLE);
+        let f = e.step(&EditInput {
+            on: false,
+            ..input(&b, TABLE)
+        });
+        assert_eq!(f.armed, None);
+        point(&mut e, &b, TABLE, frames(CONFIRM_S));
+        assert_eq!(hold(&mut e, &b, TABLE).action, Some(EditAction::Arm(1)));
+    }
+
+    #[test]
+    fn the_panel_up_keeps_the_arms_clock_running() {
+        let b = boxes();
+        let mut e = RoomEditor::default();
+        let up = EditInput {
+            ray: None,
+            frozen: true,
+            ..input(&b, TABLE)
+        };
+        point(&mut e, &b, TABLE, frames(CONFIRM_S));
+        hold(&mut e, &b, TABLE);
+        // Up for half the arm time: still armed, and the frame says so (the
+        // status cell shows it).
+        let mut f = EditFrame::default();
+        for _ in 0..frames(ARM_S * 0.5) {
+            f = e.step(&up);
+        }
+        assert_eq!((f.hit.map(|h| h.index), f.armed), (Some(1), Some(1)));
+        // Down again within the arm time: the second hold fires.
+        assert_eq!(
+            hold(&mut e, &b, TABLE).action,
+            Some(EditAction::AssignKind(1))
+        );
+        // Up past the arm time: the hit holds, the arm runs out.
+        hold(&mut e, &b, TABLE);
+        for _ in 0..=frames(ARM_S) {
+            f = e.step(&up);
+        }
+        assert_eq!((f.hit.map(|h| h.index), f.armed), (Some(1), None));
+        assert_eq!(hold(&mut e, &b, TABLE).action, Some(EditAction::Arm(1)));
     }
 
     #[test]
@@ -671,7 +854,8 @@ mod tests {
         assert!((half.pulse - 0.5).abs() < 0.05, "{}", half.pulse);
         let done = point(&mut e, &b, WALL, frames(PULSE_S * 0.5) + 1);
         assert_close!(done.pulse, 0.0);
-        // A hold: two pulses, the second starting again at full.
+        // A hold (it arms; a second would fire, with the same two): two
+        // pulses, the second starting again at full.
         e.step(&EditInput {
             hold: true,
             ..input(&b, WALL)

@@ -663,3 +663,21 @@ surface under the beam they say "Point at a surface" and press nothing.
 Each step is saved to the room file through the lanes, as the knob's
 `:<color>:<band>@<strength>` is, and the label at the hit names the
 result ("desk: curls · amber · mid · 0.7").
+
+**Amended, the arm (Oct 8, board #3336).** The editor's hold is now hold
+to arm, hold again within 2.5 s to apply to the kind: a first right hold on
+a surface changes nothing, pulses the highlight twice and labels the hit
+with what a second would do ("desk: hold again for all tables ->
+streamlines"), and the status cell reads "desk: curls · armed"; a second
+hold on the same surface within 2.5 s runs the class cycle as before (every
+surface of its kind one step past it, "all tables: streamlines"). The time
+running out, a tap (which cycles the surface as before), a gesture with no
+surface under the beam, the beam settling on another surface and Edit room
+off each disarm without firing; a hold on another surface arms that one.
+The panel up holds the surface, and the arm's clock runs on, so the status
+cell shows it armed. The reason is the gesture audit (`XR_DESIGN.md`,
+"Hands: the gesture vocabulary"): the class cycle rewrites a whole kind from
+a gesture a hand can make by accident. In the same change the hand menu
+gained the world effect's `<` `>` row on top, since the bare pinch-hold no
+longer cycles the effect, so the menu is five rows, eight with Edit room
+on.

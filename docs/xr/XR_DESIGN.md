@@ -574,8 +574,8 @@ the hand instruments.*
 *An audit after Kevin's worn pass of Sep 29: the pinch-hold that cycles the
 world effect fired when he did not mean it, thumb and index merely close.
 What the hands do today, where the actions collide, what the runtime offers
-beyond raw tip distance, and a proposal. The first fix (the closing gate) is
-built; the rest is a decision.*
+beyond raw tip distance, and a proposal. Steps 1, 3 and 5 are built (see
+"As built" at the end); steps 2 and 4 are pending.*
 
 ### What one pinch feeds today
 
@@ -674,6 +674,30 @@ longer dwell (1.2 s) and the ring visible? (b) Microgestures and the menu
 row, or the menu row alone (one fewer extension, one more reach for the
 menu)? (c) Is a confirm step on apply-to-kind worth the second hold? Default
 taken if silent: the map as proposed, both homes for the cycle, the confirm.
+**Taken (Oct 8):** Kevin away, his default stands ("merge and move on, test
+and refine later"): the map as proposed, both homes for the cycle (the menu
+row now, microgestures a later step), the confirm on apply-to-kind.
+
+**As built (steps 1, 3, 5).** Step 1, the closing gate, landed in PR #234
+(worn check pending). Step 3: the bare hold does nothing in the world (it
+logs `gesture: hold <hand> (unassigned in the world since board #3336)`), and
+the effect cycle is the hand menu's top row, the debug panel's `<` `>` row
+("Embers  1/3") moved under the menu's title; the menu is five rows, eight
+with Edit room on (244 and 364 points tall, its bottom rows where they were),
+and outside world mode the row is a status, "One effect in this mode", so the
+height does not change with the mode; the debug panel keeps its 11 and 14
+rows. Step 5: the editor's hold is armed first. A first right hold on a
+surface arms the class cycle (the highlight pulses twice, the label at the
+hit says what a second would do, "desk: hold again for all tables ->
+streamlines", the status cell appends " · armed"); a second hold on the same
+surface within 2.5 s (the proposal said 2 s) fires it; the time running out,
+a tap, a gesture with no surface, the beam moving to another surface or Edit
+room off disarm without firing, and the panel up holds the surface while the
+arm's clock runs on. The label is the arm's cue; no ring fills. And a tap's
+sprite size toggle runs only in `mode particles` (the S5 test sim the sweeps
+use); in mr and world a tap throws and nothing else. Steps 2 (`SYSTEM_GESTURE`
+from the aim extension) and 4 (microgestures, the cycle's second home) are
+pending, each its own PR with a worn gate.
 
 ## Android manifest essentials
 

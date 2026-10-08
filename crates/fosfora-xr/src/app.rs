@@ -38,7 +38,7 @@ const DEFAULT_EFFECT: &str = "Flux";
 /// editor's (Kevin, Sep 30; the names as the wearer sees them since then:
 /// Embers was Embers, Flux Cloud was Flux Cloud, Flock was
 /// Flock; Flux Cloud Coarse, a sprite-size diagnostic, left the
-/// pinch-hold cycle and stays reachable by `debug.fosfora.effect`).
+/// effect cycle and stays reachable by `debug.fosfora.effect`).
 const DEFAULT_WORLD_EFFECT: &str = "Embers";
 /// The world effects that read the per-hand lanes (board #3314): there the
 /// hand's pose picks its behavior and its pad. The others keep one behavior
@@ -230,7 +230,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.openkick 0.1             (Murmur: an open hand's kick, m/s)
     //   adb shell setprop debug.fosfora.holdradius 0.25          (Murmur: a palm-up hold's radius, m; a two-hand hold's is half the palms' distance, up to this)
     //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
-    //       as a pinch-hold does; for measuring the switch unworn)
+    //       as the hand menu's effect row does; for measuring the switch unworn)
     //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Embers: the floor's emitter weight, 0..1)
     //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
     //       emitting table inside the volume gets this, the others by top-face area against it)
@@ -259,8 +259,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (board #3488,
     //       the default first after none: table none, streamlines, curls, pulse, embers, sparks; floor none, rings, streamlines, curls,
     //       sparks; wall none, spectrum, streamlines, rings, pulse; ceiling none, rings, pulse, streamlines; frame none, pulse, rings,
-    //       streamlines; other and unlabeled none, curls, streamlines, pulse, embers), a pinch-hold cycles every surface
-    //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
+    //       streamlines; other and unlabeled none, curls, streamlines, pulse, embers), a pinch-hold arms and a second within
+    //       2.5 s cycles every surface of its kind one step past it (board #3336), through the same lanes and room file as
+    //       debug.fosfora.surface; default 0, not saved)
     //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
     //       off, the world effect is hidden at once, whatever the effect, its sim stepping on so on shows it as it would have been (the
     //       pitcher's pour and the throw's bursts are its particles and hide with it), Edit room on or off; default 1, not saved)
@@ -606,7 +607,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     {
         music.set(true);
     }
-    // The world effects a pinch-hold cycles through: every
+    // The world effects the hand menu's effect row cycles through: every
     // `*_xr_world*.pfx` staged into the effects dir, in file-name order,
     // starting at `debug.fosfora.effect` (added if it is not one of them).
     let mut world_effects = if mode == Mode::World {
@@ -624,7 +625,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             0
         });
     if mode == Mode::World {
-        info!("world effects (pinch-hold cycles): {world_effects:?}");
+        info!("world effects (the hand menu's effect row cycles them): {world_effects:?}");
     }
     let mut scene = None;
     // World mode: the effects not showing, by index in `world_effects`.
@@ -692,7 +693,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             if mode == Mode::World {
                 // Every world effect is built up front (~0.5 s each on the
-                // Quest 3) and parked, so a pinch-hold swaps in an instant
+                // Quest 3) and parked, so an effect switch is instant
                 // instead of stalling the frame loop for a rebuild.
                 for (i, effect) in world_effects.iter().enumerate() {
                     let started = Instant::now();
@@ -1207,8 +1208,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             });
             let mut moved = false;
             // Board #3326: with Edit room on, the right hand's gestures are
-            // the editor's (no throw, no size toggle, no anchor drag, no
-            // effect cycle); the left hand's are unchanged.
+            // the editor's (no throw, no size toggle, no anchor drag); the
+            // left hand's are unchanged.
             let edit_on = controls.edit_room;
             let (mut edit_tap, mut edit_hold) = (false, false);
             for g in gestures.step(pinches, dt) {
@@ -1248,13 +1249,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         if !panel_up {
                             tapped = Some(hand);
                         }
-                        size_boost = !size_boost;
-                        info!(
-                            "gesture: tap {} · sprite size x{} {}",
-                            hand_name(hand),
-                            PINCH_SIZE_BOOST,
-                            if size_boost { "on" } else { "off" }
-                        );
+                        // The sprite size toggle is the S5 test sim's, for
+                        // the sweeps (board #3336): in mr and world it drew
+                        // nothing and logged on every throw.
+                        if mode == Mode::Particles {
+                            size_boost = !size_boost;
+                            info!(
+                                "gesture: tap {} · sprite size x{} {}",
+                                hand_name(hand),
+                                PINCH_SIZE_BOOST,
+                                if size_boost { "on" } else { "off" }
+                            );
+                        } else {
+                            info!("gesture: tap {}", hand_name(hand));
+                        }
                     }
                     Gesture::DragStart { hand } => {
                         drag_total = glam::Vec3::ZERO;
@@ -1280,12 +1288,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         anchor[1],
                         anchor[2]
                     ),
-                    Gesture::Hold { hand } => {
-                        info!("gesture: hold {}", hand_name(hand));
-                        if world && world_effects.len() > 1 {
-                            switch_to = cycle_index(&parked, world_index, 1);
-                        }
-                    }
+                    // Board #3336: a hold no longer cycles the world effect
+                    // (a still pinch, aiming a throw or a hand at rest, fired
+                    // it unasked); the hand menu's effect row does.
+                    Gesture::Hold { hand } => info!(
+                        "gesture: hold {} (unassigned in the world since board #3336)",
+                        hand_name(hand)
+                    ),
                 }
             }
             if let Some(h) = hud.as_mut() {
@@ -1722,8 +1731,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         crate::label::space_text(text, after, out)
                     };
                     label.step(dt);
-                    // The label for an action: its text at the hit.
+                    // The label for an action: its text at the hit, and
+                    // how long it shows (the arm's for the whole arm).
                     let mut labeled = None;
+                    let mut label_s = crate::label::LABEL_S;
                     match frame.action {
                         Some(crate::room_edit::EditAction::Cycle(k)) => {
                             let before = effective(k).map(|(b, _)| b);
@@ -1741,6 +1752,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                     labeled = Some(placed(k, text, after));
                                 }
                                 Err(e) => log::warn!("edit room: {e}; nothing changed"),
+                            }
+                        }
+                        // Board #3336: a first hold only arms the class
+                        // cycle; the label says what a second hold within
+                        // `ARM_S` would do.
+                        Some(crate::room_edit::EditAction::Arm(k)) => {
+                            if let Some((b, _)) = effective(k) {
+                                let kind = lane_boxes[k].kind;
+                                let next = b.next_for(kind);
+                                info!(
+                                    "edit room: armed, every {} like {} -> {} on a second hold within {} s",
+                                    crate::surfaces::kind_name(kind),
+                                    named(k),
+                                    next.name(),
+                                    crate::room_edit::ARM_S
+                                );
+                                labeled = Some(crate::label::arm_text(
+                                    &crate::surfaces::friendly_name(k, &lane_boxes),
+                                    kind,
+                                    next,
+                                ));
+                                label_s = crate::room_edit::ARM_S;
                             }
                         }
                         Some(crate::room_edit::EditAction::AssignKind(k)) => {
@@ -1768,7 +1801,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         None => {}
                     }
                     if let (Some(text), Some(h)) = (labeled, frame.hit) {
-                        label.show(text, h.point, h.normal);
+                        label.show_for(text, h.point, h.normal, label_s);
                     }
                     if !edit_on {
                         label.clear();
@@ -1779,8 +1812,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         let behavior = surface_lanes
                             .effective(h.index, &lane_boxes)
                             .map_or("?", |(b, _)| b.name());
+                        // Board #3336: while the class cycle is armed on it.
+                        let armed = if frame.armed.is_some() { " · armed" } else { "" };
                         format!(
-                            "{}: {behavior}",
+                            "{}: {behavior}{armed}",
                             crate::surfaces::friendly_name(h.index, &lane_boxes)
                         )
                     } else {
@@ -2393,8 +2428,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             );
         }
         // The cloud density: the showing world effect's emission against
-        // the rate `new_world` set, applied when it changes and when a
-        // pinch-hold swaps in an effect set for another. The cloud toggle
+        // the rate `new_world` set, applied when it changes and when an
+        // effect switch swaps in one set for another. The cloud toggle
         // leaves it alone: off hides the effect (step 2e; 2c took the
         // emission to 0 here).
         if world
@@ -2414,7 +2449,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             );
         }
         // The space size: the showing world effect's volume, applied when
-        // the stepper moves, when a pinch-hold swaps in an effect set for
+        // the stepper moves, when an effect switch swaps in one set for
         // another, and for the surface-born effect when the room fit
         // changes (step 2h: the boxes or the anchor moved) while no size
         // is asked; the stepper shows the size it runs at.

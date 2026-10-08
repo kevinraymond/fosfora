@@ -1,7 +1,8 @@
 //! The room editor's label (board #3326, step 2b): after each tap or hold,
 //! a short line of text floats at the hit for [`LABEL_S`], naming the
 //! result ("desk: sparks", "all tables: none", "ceiling: nothing to
-//! change"), because the only other naming of it is the palm panel's
+//! change"), or after a first hold what a second would do ("desk: hold
+//! again for all tables -> curls", board #3336), because the only other naming of it is the palm panel's
 //! status cell, which the wearer is not looking at while pointing (Kevin,
 //! worn, Sep 29). The text, the fade and the pose are plain numbers, so
 //! they build and test on the desktop; on Android [`LabelTexture`]
@@ -15,8 +16,9 @@
 //! for its distance from the head, so it keeps about the same angular size
 //! from the chair to the far wall (step 2c: a fixed 0.28 m label was a few
 //! dozen eye pixels at 3 m, "just a blob of pixels", Kevin, worn, Sep 29);
-//! it holds for [`LABEL_S`] and fades out over the last [`FADE_S`] (the
-//! fade scales the ground and the text alike).
+//! it holds for [`LABEL_S`] (an arm's "hold again" for the whole arm,
+//! `room_edit::ARM_S`, [`Label::show_for`]) and fades out over the last
+//! [`FADE_S`] (the fade scales the ground and the text alike).
 //!
 //! **The pose.** A billboard: centered at the hit moved [`OUT_M`] out
 //! along the face normal and [`UP_M`] up, facing the head, its right the
@@ -108,6 +110,18 @@ pub fn class_text(kind: u32, before: SurfaceBehavior, after: SurfaceBehavior) ->
     format!("all {}: {}", kind_plural(kind), result(before, after))
 }
 
+/// The label for a first hold, which arms the class cycle (board #3336):
+/// the surface's name (`surfaces::friendly_name`), and what a second hold
+/// would do, in [`class_text`]'s words, "desk: hold again for all tables
+/// -> streamlines".
+pub fn arm_text(name: &str, kind: u32, next: SurfaceBehavior) -> String {
+    format!(
+        "{name}: hold again for all {} -> {}",
+        kind_plural(kind),
+        next.name()
+    )
+}
+
 /// A kind's name (`surfaces::kind_name`) for "all ...": "tables",
 /// "other surfaces", "unlabeled surfaces" for an anchor without labels.
 pub fn kind_plural(kind: u32) -> String {
@@ -129,7 +143,13 @@ pub fn label_w_m(distance_m: f32) -> f32 {
 /// The label's alpha at `age` seconds: 1 until the fade, then linearly to
 /// 0 at [`LABEL_S`].
 pub fn fade(age: f32) -> f32 {
-    ((LABEL_S - age) / FADE_S).clamp(0.0, 1.0)
+    fade_for(age, LABEL_S)
+}
+
+/// The alpha at `age` seconds of a label that shows for `life` seconds:
+/// 1 until the last [`FADE_S`], then linearly to 0 at `life`.
+pub fn fade_for(age: f32, life: f32) -> f32 {
+    ((life - age) / FADE_S).clamp(0.0, 1.0)
 }
 
 /// The label's quad: its center and the unit vectors along its right and
@@ -199,22 +219,30 @@ pub struct LabelFrame<'a> {
 /// The label across frames: at most one, the last action's.
 #[derive(Debug, Clone, Default)]
 pub struct Label {
-    shown: Option<(String, Vec3, Vec3, f32)>,
+    /// The text, the hit's point and normal, the age and the life (s).
+    shown: Option<(String, Vec3, Vec3, f32, f32)>,
 }
 
 impl Label {
     /// Show `text` at the hit `point` on a face with `normal`, from full,
     /// in place of any label showing.
     pub fn show(&mut self, text: String, point: Vec3, normal: Vec3) {
-        self.shown = Some((text, point, normal, 0.0));
+        self.show_for(text, point, normal, LABEL_S);
     }
 
-    /// Age the label by `dt`; it goes at [`LABEL_S`].
+    /// [`Label::show`] for `seconds` instead of [`LABEL_S`], fading over
+    /// its last [`FADE_S`] the same way: the arm's "hold again" stays up
+    /// for the whole arm (`room_edit::ARM_S`, board #3336).
+    pub fn show_for(&mut self, text: String, point: Vec3, normal: Vec3, seconds: f32) {
+        self.shown = Some((text, point, normal, 0.0, seconds));
+    }
+
+    /// Age the label by `dt`; it goes at its life.
     pub fn step(&mut self, dt: f32) {
-        if let Some((.., age)) = self.shown.as_mut() {
+        if let Some((.., age, _)) = self.shown.as_mut() {
             *age += dt.max(0.0);
         }
-        self.shown = self.shown.take().filter(|(.., age)| *age < LABEL_S);
+        self.shown = self.shown.take().filter(|(.., age, life)| *age < *life);
     }
 
     /// Drop the label (the mode went off).
@@ -226,9 +254,9 @@ impl Label {
     pub fn now(&self) -> Option<LabelFrame<'_>> {
         self.shown
             .as_ref()
-            .map(|(text, point, normal, age)| LabelFrame {
+            .map(|(text, point, normal, age, life)| LabelFrame {
                 text,
-                alpha: fade(*age),
+                alpha: fade_for(*age, *life),
                 point: *point,
                 normal: *normal,
             })
@@ -520,6 +548,33 @@ mod tests {
     }
 
     #[test]
+    fn the_arm_text_names_the_kind_and_what_a_second_hold_does() {
+        assert_eq!(
+            arm_text("desk", KIND_TABLE, B::Streamlines),
+            "desk: hold again for all tables -> streamlines"
+        );
+        assert_eq!(
+            arm_text("lamp", KIND_OTHER, B::Curls),
+            "lamp: hold again for all other surfaces -> curls"
+        );
+        // The next behavior is the class cycle's: the step after the
+        // surface's own in its kind's catalogue.
+        let next = B::None.next_for(KIND_CEILING);
+        assert_eq!(
+            arm_text("ceiling", KIND_CEILING, next),
+            "ceiling: hold again for all ceilings -> rings"
+        );
+        // The same words as the result the second hold labels.
+        assert_eq!(
+            class_text(KIND_FRAME, B::Rings, B::Streamlines),
+            "all frames: streamlines"
+        );
+        assert!(
+            arm_text("frame 4", KIND_FRAME, B::Streamlines).ends_with("all frames -> streamlines")
+        );
+    }
+
+    #[test]
     fn the_param_text_names_the_surface_the_behavior_and_the_three_values() {
         assert_eq!(
             param_text("desk", B::Curls, (4, 2, 0.7)),
@@ -607,6 +662,25 @@ mod tests {
         assert_eq!(f.text, "desk: embers");
         assert_close!(f.alpha, 1.0);
         l.clear();
+        // A longer life (the arm's): full until its last FADE_S, the same
+        // fade, gone at its time.
+        let life = crate::room_edit::ARM_S;
+        assert!(life > LABEL_S);
+        l.show_for("desk: hold again".to_owned(), Vec3::ONE, Vec3::Y, life);
+        let mut frames = 0;
+        while let Some(f) = l.now() {
+            let age = frames as f32 * dt;
+            if age <= life - FADE_S - dt {
+                assert_close!(f.alpha, 1.0);
+            }
+            // The frames' sum rounds in f32.
+            assert!((f.alpha - fade_for(age, life)).abs() < 1e-3, "{age}");
+            l.step(dt);
+            frames += 1;
+        }
+        assert!((frames as f32 * dt - life).abs() <= dt * 1.01, "{frames}");
+        assert_close!(fade_for(life - FADE_S * 0.5, life), 0.5);
+        assert_close!(fade_for(LABEL_S, LABEL_S), fade(LABEL_S));
         assert_eq!(l.now(), None);
     }
 

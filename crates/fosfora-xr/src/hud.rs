@@ -3,9 +3,11 @@
 //! it and turns the right hand's ray or fingertip into a pointer).
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
-//! turned more to the ceiling is a hold instead, `palm_panel.rs`): four
-//! rows, the particle pitcher's on/off toggle and the debug panel's, under
-//! them the room editor's toggle beside its status ("desk: embers",
+//! turned more to the ceiling is a hold instead, `palm_panel.rs`): five
+//! rows, the world effect's `<` `>` on top (board #3336: the effect cycle
+//! left the bare pinch-hold; "one effect in this mode" outside world mode),
+//! the particle pitcher's on/off toggle and the debug panel's under it,
+//! then the room editor's toggle beside its status ("desk: embers",
 //! board #3326), under that the cloud's toggle (`room_edit::Cloud`), and
 //! at the bottom the music's play/stop (`music.rs`, board #3472). With
 //! Edit room on, three more rows under the editor's (board #3472, D3):
@@ -14,7 +16,7 @@
 //! With debug on the same quad grows upward into the debug
 //! panel (frame timing, the effect, hands, reach, anchor and audio, and
 //! controls for what can change without a restart), the menu rows still
-//! at its bottom. The quad keeps its bottom edge when it resizes, so the
+//! at its bottom (the effect row at the top of its controls). The quad keeps its bottom edge when it resizes, so the
 //! toggles stay under the pointer either way.
 //!
 //! The controls are built for low precision (they must work without stereo
@@ -1044,14 +1046,11 @@ fn panel_ui(
     let header_end = ui.cursor().top();
 
     // Controls: rows at the bottom, picked by the pointer's height, then
-    // its side (`panel_grid.rs`).
+    // its side (`panel_grid.rs`). The effect row on top, as in the menu;
+    // outside world mode the panel leaves it out.
     let mut block = Vec::new();
-    if let Some((name, i, n)) = view.effect {
-        block.push(Control::Wide {
-            left: (Target::Prev, "<"),
-            right: (Target::Next, ">"),
-            middle: format!("{name}  {}/{n}", i + 1),
-        });
+    if view.effect.is_some() {
+        block.push(effect_row(view.effect));
     }
     let steppers: Vec<Cell<'_>> = STEPPERS
         .iter()
@@ -1096,6 +1095,7 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Ro
     ui.label(RichText::new("Fosfora").strong().size(FONT_TITLE));
     let editing = controls.edit_room;
     let mut block = Vec::with_capacity(grid::menu_rows(editing));
+    block.push(effect_row(view.effect));
     block.push(menu_row(false, controls.pitcher));
     block.push(edit_row(editing, view.edit_status));
     if editing {
@@ -1138,6 +1138,23 @@ fn surface_rows(params: Option<(u32, u32, f32)>) -> [Control<'static>; grid::SUR
         ),
         row(Target::Strength, format!("Strength  {strength:.1}")),
     ]
+}
+
+/// The world effect's row, the top of the menu and of the debug panel's
+/// block (board #3336): `<` and `>` around the effect's name and place,
+/// "Embers  1/3", the hand menu's home for the effect cycle since the bare
+/// pinch-hold stopped cycling it (`Action::PrevEffect` / `NextEffect`).
+/// With no world effect (`effect` `None`, not world mode) a status in its
+/// place, so the menu keeps its height and nothing presses.
+fn effect_row(effect: Option<(&str, usize, usize)>) -> Control<'static> {
+    match effect {
+        Some((name, i, n)) => Control::Wide {
+            left: (Target::Prev, "<"),
+            right: (Target::Next, ">"),
+            middle: format!("{name}  {}/{n}", i + 1),
+        },
+        None => Control::Text("One effect in this mode".to_owned()),
+    }
 }
 
 /// The music's row, the bottom row in both layouts: play or stop, the
