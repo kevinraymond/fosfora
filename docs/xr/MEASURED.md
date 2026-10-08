@@ -2300,3 +2300,42 @@ crate, scripts, results and notes live outside the repo
 models under `/data/local/tmp/s1/`. One loose end: the device benchmark
 aborts at exit while the runtime library unloads (every number prints
 first); it needs a look before anything ships.
+
+## Decima-small as a zero-shot decision model (board #3760)
+
+The one pre-trained decision model with a permissive license and an ONNX
+build, checked the same way as the System One spike above (the same 40
+sentences, cascade and scorer; the same `ort` bench on the Quest 3,
+int8, ONNX Runtime 1.28.0; headset asleep, 35 to 38 C): `decima-small`
+1.1 (122M, a multilingual-e5-small encoder with a late-interaction option
+scorer, code and weights Apache-2.0).
+
+**Accuracy, zero-shot (host):** 5 of 40 end to end, and those five are the
+non-requests: its yes/no gate answers "not a request" at 0.95 to 0.98 for
+every request however the question is worded (the ranking is right, 37 of
+40 at the best threshold, but nothing crosses 0.5). With the gate reworded
+against the test set, an upper bound rather than a score, 15 of 40, below
+the System One 68M's 18. The kind (14 of 35, pulled toward `all_none`) and
+the target (at most 7 of 19) stay poor in every layout.
+
+**Latency (Quest 3):** with the option encodings cached per room, as its
+own runtime does, the four-decision cascade takes 297 ms on 6 threads
+(spin off), 359 to 378 on 4, 503 on 2, at 265 MB; re-encoding the options
+every call, the like-for-like figure against System One, 776 ms to 1.4 s.
+Every op runs on the Android runtime; device answers match the host 20 of
+20.
+
+**License:** `release/LICENSING.md` and the model card say the small
+model's weights were trained on CC BY-NC data (ANLI, XNLI, 26lang-2mil7)
+and unlicensed sets, released under Apache-2.0 with disclosure. Not for
+us as weights. The code (Apache-2.0), the e5-small base (MIT) and its
+training format (one JSONL row per decision with soft targets, which our
+synthetic cases fit almost unchanged) are clean.
+
+**Verdict.** Not a zero-shot provider, and not shippable weights. As a
+training base it is clean but about 1.5 to 2 times slower and twice the
+memory of the System One 17M path, so the plan stands: train our own 17M
+from the Ettin base with the Bekko toolkit. Both device benches abort at
+teardown while the runtime library unloads (every number prints first);
+the same cause, to fix once before anything ships. The spike is kept under
+`fosfora-xr-kit/spikes/decima/`.
