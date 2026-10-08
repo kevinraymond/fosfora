@@ -564,6 +564,112 @@ the hand instruments.*
 - **Knobs.** `debug.fosfora.throw` (0/1, default 1), `burstcount`
   (6000), `lift` (0/1, default 1), `liftradius` (0.35).
 
+## Hands: the gesture vocabulary (board #3336)
+
+*An audit after Kevin's worn pass of Sep 29: the pinch-hold that cycles the
+world effect fired when he did not mean it, thumb and index merely close.
+What the hands do today, where the actions collide, what the runtime offers
+beyond raw tip distance, and a proposal. The first fix (the closing gate) is
+built; the rest is a decision.*
+
+### What one pinch feeds today
+
+- **The detector** (`pinch.rs`, fed by `input.rs`): thumb tip to index tip
+  under 15 mm is a pinch, over 30 mm releases it. Since board #3336 a
+  crossing counts only when the tips **closed** to get there: at least 12 mm
+  nearer than at their widest within the last 0.3 s. A relaxed hand's tips
+  sit 20 to 30 mm apart and a deliberate pinch closes 15 mm or more in a
+  tenth of a second; a hand settling on a desk drifts a millimeter or two
+  a second and is reported once in the log as `pinch … not taken`, nothing
+  fires. The check runs on every frame under the threshold, so a hand already
+  resting close that then pinches hard still fires.
+- **The gesture machine** (`gesture.rs`): one pinch at a time, either hand.
+  Released before moving 25 mm and before 0.7 s is a **tap**; moving past
+  25 mm is a **drag** until release; still for 0.7 s is a **hold**, which
+  fires once.
+- **The consumers** (`app.rs`, the gesture block): a tap not taken by the
+  hand menu **throws** a burst where the far hand points, and toggles the
+  S5 test sim's sprite size (a spike leftover that logs on every throw and
+  draws nothing in world mode); a drag **moves the cloud's home**; a hold
+  **cycles the world effect**. With Edit room on, the right hand's tap
+  **cycles the pointed surface's behavior**, its hold **applies it to the
+  kind**, its drag is swallowed (a short one counts as a tap), and the left
+  hand keeps the world vocabulary. While the hand menu shows (left palm
+  facing the head), the right hand's pinches are the menu's: a ray pinch
+  clicks or drags on the panel, a fingertip pokes it.
+- **The poses** (`pose.rs`, with 0.1 s dwell and hysteresis): fist (finger
+  curl under 55 mm), palm up (normal within 37° of up), open; hands together
+  under 0.30 m. Murmur's hand behaviors read them; the Flux lift reads an
+  open far palm held still, facing down.
+
+### Where the vocabulary collides
+
+1. **A resting hand is a pinch, and a still pinch is a hold.** The complaint.
+   Fingers settling together crossed 15 mm, and a hand that then stays still
+   on the desk reaches 0.7 s and cycles the effect. The closing gate removes
+   the first half; a deliberate pinch held still (aiming a throw, thinking)
+   still cycles the effect after 0.7 s with no warning but the HUD's
+   progress figure, which the menu-off wearer never sees.
+2. **A slow throw is a hold.** A pinch, a pause to aim, then the release: if
+   the pause reaches 0.7 s the effect cycles and the throw never happens.
+3. **The hold is destructive-adjacent.** It changes what the whole room
+   shows, from a gesture a hand makes by accident, with no arm step. The
+   editor's hold (apply to the kind) rewrites every surface of a kind the
+   same way.
+4. **The menu pose is the system gesture.** The Quest's own hand menu arms
+   on a palm facing the head and opens on a pinch of that hand. Our hand
+   menu shows on the same left palm; a left pinch while it shows is read by
+   the runtime first. We never see `SYSTEM_GESTURE` today, so a pinch the
+   runtime took can still start a gesture here.
+5. **Tap toggles a dead parameter.** Every throw logs `sprite size x3`.
+   Noise in the log, nothing visible in world mode.
+
+### What the runtime offers (v207 lists all of these)
+
+- **`XR_FB_hand_tracking_aim`**: chained to `xrLocateHandJointsEXT`, an aim
+  pose and flags per hand: `VALID`, `INDEX_PINCHING` … `LITTLE_PINCHING`,
+  `SYSTEM_GESTURE` (the runtime's menu gesture is armed or in progress),
+  `DOMINANT_HAND`, `MENU_PRESSED`, plus a pinch strength 0..1 per finger with
+  the runtime's own filtering and hysteresis. No extra call per frame. The
+  `openxr` crate exposes the flag and the struct (`HandTrackingAimStateFB`);
+  the chain needs a raw locate, as the scene query does.
+- **`XR_EXT_hand_interaction`**: an interaction profile with `pinch_ext`
+  (value and ready), `aim_activate_ext`, `grasp_ext` and `poke_ext` poses,
+  through action sets and `xrSyncActions` each frame; the runtime tunes the
+  thresholds and hysteresis. The app has no action sets today.
+- **`XR_META_hand_tracking_microgestures`**: thumb swipes (left, right,
+  forward, backward) and a thumb tap on the index, as input paths on the
+  hand interaction profile. Small, deliberate, hard to make by accident:
+  the natural home for "next effect".
+- `XR_MSFT_hand_interaction` (select and squeeze), `XR_FB_hand_tracking_capsules`,
+  `XR_META_hand_tracking_frequency_hint` are available and not needed.
+
+### Proposal: a per-action map
+
+| Action | Today | Proposed |
+|---|---|---|
+| Throw a burst | pinch tap | pinch tap (gated pinch), unchanged |
+| Move the cloud's home | pinch drag | pinch drag, unchanged |
+| Next / previous world effect | pinch hold 0.7 s | thumb swipe right / left (microgestures) **and** the menu's `<` `>` row; the bare hold goes |
+| Hand menu | left palm faces the head | unchanged; a hand flagged `SYSTEM_GESTURE` contributes no pinch that frame |
+| Edit room: cycle the surface | right tap | unchanged (an explicit mode) |
+| Edit room: apply to the kind | right hold 0.7 s | right hold with the in-world label showing the ring filling, and a second hold within 2 s to confirm (hold-to-arm for anything room-wide) |
+| Sprite size x3 | every tap | removed from world mode (stays in `particles` for the sweeps) |
+
+The order to build it: (1) the closing gate, done, worn check pending; (2)
+`SYSTEM_GESTURE` from the aim extension dropping that hand's pinch, cheap and
+removes a double-read; (3) the effect cycle onto the menu row (the row
+exists in the debug panel; it moves into the hand menu) and the hold off
+the world; (4) microgestures through a minimal action set, measured on the
+device (an `xrSyncActions` per frame; expect noise); (5) the editor's
+confirm. Each is its own PR with a worn gate.
+
+**Decision for Kevin.** (a) Take the map as proposed, or keep the hold with a
+longer dwell (1.2 s) and the ring visible? (b) Microgestures and the menu
+row, or the menu row alone (one fewer extension, one more reach for the
+menu)? (c) Is a confirm step on apply-to-kind worth the second hold? Default
+taken if silent: the map as proposed, both homes for the cycle, the confirm.
+
 ## Android manifest essentials
 
 *Verified (S1)* against Meta's public "Android Manifest Settings" page:
