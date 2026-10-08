@@ -2205,6 +2205,23 @@ prompt about 2000 to 2500 tokens with the room's JSON:
 | Make the room feel like the ocean. | 5.3 s | 6 actions, every one dropped: made-up kinds and packed values (`edit_room table*14 shards:amber:mid:full`) |
 | Give the ceiling a starry night. | 1.2 s | 1 action dropped (`edit_room ceiling stars`), "Ceiling set to stars effect." |
 
+**Anthropic (`claude-opus-5-5`, the hosted provider, Kevin's key in
+`voice.json`, the same five sentences, the app built from the merged tip
+884f4a0):**
+
+| sentence | round trip | tokens in / cached / out | result |
+|---|---|---|---|
+| Something like a campfire on table 14. | 6.7 s (first call, nothing cached) | 1359 / 0 / 76 | embers on table 14, amber; "Table 14: amber embers, like a campfire." |
+| Make the walls calmer. | 3.0 s | 1357 / 1392 / 51 | every wall's strength down; "Dimmed the walls for a calmer feel." |
+| Less going on. | 5.3 s | 1353 / 1392 / 359 | storage and the ceiling to none; "Turned off the ceiling and storage lights." |
+| Make the room feel like the ocean. | 3.2 s | 1355 / 1392 / 177 | walls teal, the floor streamlines in blue, the ceiling aurora in blue, and more (6 actions) |
+| Give the ceiling a starry night. | 2.8 s | 1363 / 1392 / 30 | no action; "No starry night behavior exists for the ceiling." |
+
+Every reply schema-valid and every action applied; the instruction is
+served from the cache from the second call on (1392 cached tokens); the
+output counts include the model's thinking. The log carries no key. The
+room file was restored byte-identical.
+
 **What this says.** The path holds: the headset reaches the LAN server,
 the schema is honored by both models, every reply is parsed or named as
 cut off or timed out, an invented kind or value is dropped and logged
@@ -2213,8 +2230,9 @@ and the label always says something. The quality is the model's: the 3 B
 model is fast (0.8 to 2.1 s for a short answer) and schema-obedient but
 picks wrong actions and packs values into one field; the thinking model
 answers well when it answers but spends its output budget on reasoning on
-the long prompt and takes 5 to 12 s on this desktop's GPU. A hosted model,
-or a local one of 7 B or more without thinking, is the practical setting;
+the long prompt and takes 5 to 12 s on this desktop's GPU. The hosted model answers in about 3 s once its instruction is cached, with
+the right actions; it, or a local one of 7 B or more without thinking, is
+the practical setting;
 the on-device decision-model spike measures the other direction. The
 12 s timeout was hit once while the server loaded a model: the first call
 after a long idle pays that.
