@@ -56,6 +56,9 @@ done
 headless_on() {
     adb shell am broadcast -a com.oculus.vrpowermanager.prox_close >/dev/null
     adb shell setprop debug.oculus.guardian_pause 1
+    # No permission dialog over an unworn run (board #3264): the runs rely
+    # on the grants made once with `adb shell pm grant`.
+    adb shell setprop debug.fosfora.ask 0
     # The first launch right after the proximity fake can start paused and
     # log nothing (seen as an empty first row); give the runtime a moment.
     sleep 3
@@ -69,6 +72,7 @@ headless_off() {
     for k in count hz eyescale sim size tri pull; do
         adb shell setprop "debug.fosfora.$k" '""'
     done
+    adb shell setprop debug.fosfora.ask '""'
     adb shell setprop debug.oculus.guardian_pause 0
     adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable >/dev/null
 }
