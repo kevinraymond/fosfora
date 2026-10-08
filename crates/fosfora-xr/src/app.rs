@@ -117,6 +117,9 @@ const VOICE_THREADS: i32 = 3;
 const VOICE_WAIT_LABEL_S: f32 = 10.0;
 /// What the label says when a window closes before the model has loaded.
 const VOICE_LOADING_LABEL: &str = "Voice is still loading";
+/// Board #3751, V5: the on-device provider loads after the speech model,
+/// or this long after launch if the speech model never does.
+const LOCAL_WAIT: Duration = Duration::from_secs(15);
 
 /// What the frame renders, from `debug.fosfora.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,7 +238,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       clear a debug property, so to say the same sentence again set it to "" first, or to another sentence)
     //   adb shell setprop debug.fosfora.agent 0|1                (board #3751, V3: a sentence the grammar cannot match goes to the language model
     //       voice.json under the config dir names (the label reads "Thinking…", then the model's sentence; the actions go through V2's
-    //       path); default 1 whenever voice.json configures a provider, 0 keeps the call off for sweeps; read at launch)
+    //       path); V5: with no voice.json, or one naming no provider, the on-device model (`local.rs`) when its files are installed;
+    //       default 1 whenever a provider is configured or installed, 0 keeps the agent off for sweeps; read at launch)
+    //   adb shell setprop debug.fosfora.localthreads 3           (board #3751, V5: the on-device provider's ONNX Runtime intra-op threads, 1..6;
+    //       default 3, as whisper's; read at launch)
+    //   adb shell setprop debug.fosfora.localmin 0.35            (board #3751, V5: the on-device provider's confidence floor on the action kind and
+    //       the value, 0..1; an answer under it is "Didn't catch that" with the grammar's hint and changes nothing; default 0.35; read
+    //       at launch)
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
     //   adb shell setprop debug.fosfora.scenecapture 0|1         (no room anchors after the retries: launch Space Setup, then requery; default
     //       on until a room has been saved (no rooms/*.json: the first launch, board #3752), off once one has; 1 forces, 0 forbids)
@@ -504,9 +513,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // V3, the agent (`agent.rs`): the provider `voice.json` names, read
     // once (the key never reaches the log), and the one call in flight. A
     // newer sentence's call replaces an older one, whose answer is then
-    // dropped.
-    let agent = match (
-        crate::agent::load(&dirs.config.join(crate::agent::CONFIG_FILE)),
+    // dropped. V5: with no `voice.json`, or one naming no provider, the
+    // on-device provider (`local.rs`) when its files are installed; its
+    // worker loads the model after the speech model (below).
+    let local_files = crate::local::Files::in_dir(&dirs.assets.join(crate::local::MODELS_DIR));
+    let choice = crate::agent::read(&dirs.config.join(crate::agent::CONFIG_FILE))
+        .and_then(|file| crate::agent::choose(file.as_deref(), local_files.check()));
+    let mut local: Option<LocalAgent> = None;
+    let mut agent: Option<std::sync::Arc<dyn crate::agent::Provider + Send + Sync>> = match (
+        choice,
         debug_prop("debug.fosfora.agent").as_deref(),
     ) {
         (Err(why), _) => {
@@ -517,12 +532,63 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             info!("voice agent: off (debug.fosfora.agent 0)");
             None
         }
-        (Ok(config), _) => {
+        (Ok(crate::agent::Choice::Network(config)), _) => {
             info!("voice agent: on \u{b7} {}", config.summary());
-            Some(config.provider())
+            let provider: std::sync::Arc<dyn crate::agent::Provider + Send + Sync> =
+                config.provider();
+            Some(provider)
+        }
+        (Ok(crate::agent::Choice::Local), _) => {
+            let threads = debug_prop("debug.fosfora.localthreads")
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .map_or(crate::local::THREADS, |n| n.clamp(1, 6));
+            let floor = debug_prop("debug.fosfora.localmin")
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .filter(|p| (0.0..=1.0).contains(p))
+                .unwrap_or(crate::local::FLOOR);
+            // The runtime by name (the app's native library directory
+            // is on the dynamic linker's search path, as for the
+            // OpenXR loader), then by the Activity's nativeLibraryDir.
+            let mut library = vec![std::path::PathBuf::from(crate::local::LIBRARY)];
+            if let Some(dir) = permissions.as_ref().and_then(|p| {
+                p.native_library_dir()
+                    .inspect_err(|e| log::warn!("voice local: {e:#}"))
+                    .ok()
+            }) {
+                library.push(std::path::Path::new(&dir).join(crate::local::LIBRARY));
+            }
+            let options = crate::local::Options {
+                threads,
+                floors: crate::local::Floors::both(floor),
+                library,
+            };
+            match crate::local::Local::start(local_files.clone(), options) {
+                Ok((handle, loaded)) => {
+                    info!(
+                        "voice agent: local \u{b7} {} loads after the speech model ({threads} threads, floor {floor:.2})",
+                        crate::local::MODEL_NAME
+                    );
+                    let handle = std::sync::Arc::new(handle);
+                    local = Some(LocalAgent {
+                        handle: handle.clone(),
+                        loaded,
+                        asked: false,
+                    });
+                    let provider: std::sync::Arc<dyn crate::agent::Provider + Send + Sync> = handle;
+                    Some(provider)
+                }
+                Err(e) => {
+                    error!("voice agent: off (local: no worker thread: {e})");
+                    None
+                }
+            }
         }
     };
     let mut agent_call: Option<AgentCall> = None;
+    // V5: a sentence for the on-device provider that waits for the voice
+    // window to close (a `say` sentence while a window is open or its
+    // transcription runs), so whisper and the cascade never run at once.
+    let mut pending_call: Option<PendingCall> = None;
     // A USE_SCENE grant whose requery waits for a query or Space Setup in
     // flight, retried once a second.
     let mut room_pickup = false;
@@ -2375,7 +2441,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     voice_mic_logged = true;
                     info!("voice: RECORD_AUDIO missing, the window stays closed");
                 }
-                let listens = voice_mic && controls.voice;
+                // V5: while the on-device provider decides, no window
+                // opens (and so no transcription starts), so whisper's
+                // threads and the cascade's never run at once.
+                let local_busy = local.is_some() && agent_call.is_some();
+                let listens = voice_mic && controls.voice && !local_busy;
                 let press = VoicePress {
                     fist: left_fist && listens,
                     tap: tap_hand.is_some() && listens,
@@ -2435,7 +2505,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                     None => {}
                 }
-                let idle = push_to_talk.window() == VoiceWindow::Closed;
+                let idle = push_to_talk.window() == VoiceWindow::Closed && !local_busy;
                 let note = v.step(dt, idle);
                 // V4: the microphone's level under "Listening…", this
                 // frame's.
@@ -2558,14 +2628,22 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         &surface_lanes,
                         &lane_boxes,
                     );
-                    let request = provider.request(asked, &room);
-                    agent_call = Some(AgentCall {
-                        reply: crate::agent::spawn(provider.clone(), request, crate::agent::TIMEOUT),
+                    let call = PendingCall {
                         sentence: asked.clone(),
+                        room,
                         pointed: vocab.pointed,
                         at: voice_at,
-                        started: Instant::now(),
-                    });
+                    };
+                    // V5: the on-device provider waits while a window is
+                    // open or transcribing; a newer sentence replaces a
+                    // waiting one.
+                    if local.is_some() && push_to_talk.window() != VoiceWindow::Closed {
+                        info!("voice local: waiting for the voice window to close");
+                        pending_call = Some(call);
+                    } else {
+                        pending_call = None;
+                        agent_call = Some(call.ask(provider.as_ref()));
+                    }
                 }
                 info!(
                     "{}",
@@ -2573,11 +2651,55 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 );
                 voice_label.show_for(response.label, voice_at.0, voice_at.1, response.seconds);
             }
+            // V5: the on-device provider loads once the speech model has
+            // (at once with voice off; after LOCAL_WAIT whatever whisper
+            // does), so the two loads never share the CPU; its outcome is
+            // logged once, and a failed load turns the agent off.
+            if let Some(l) = local.as_mut() {
+                if !l.asked
+                    && (voice.as_ref().is_none_or(Voice::ready) || started.elapsed() > LOCAL_WAIT)
+                {
+                    l.handle.load();
+                    l.asked = true;
+                }
+                match l.loaded.try_recv() {
+                    Ok(Ok(loaded)) => {
+                        info!(
+                            "voice agent: on \u{b7} local \u{b7} {} \u{b7} {} ms",
+                            crate::local::MODEL_NAME,
+                            loaded.ms
+                        );
+                        info!(
+                            "voice local: ONNX Runtime from {}{}",
+                            loaded.library,
+                            if loaded.reused {
+                                " \u{b7} the session parked by the last launch"
+                            } else {
+                                ""
+                            }
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        error!("voice agent: off (local: {e})");
+                        agent = None;
+                        local = None;
+                    }
+                    Err(_) => {}
+                }
+            }
+            if pending_call.is_some()
+                && push_to_talk.window() == VoiceWindow::Closed
+                && let (Some(call), Some(provider)) = (pending_call.take(), &agent)
+            {
+                agent_call = Some(call.ask(provider.as_ref()));
+            }
             // V3: the agent's answer, polled (never waited for). Its
             // actions map onto intents through the grammar's resolution
             // and apply through the grammar's path, in order; the label
             // shows the model's sentence (the actions' own labels are in
-            // the log), or what was skipped, or the error.
+            // the log), or what was skipped, or the error. V5: the
+            // on-device provider's miss shows as the grammar's own
+            // "Didn't catch that" with its hint.
             if let Some(call) = &agent_call {
                 use std::sync::mpsc::TryRecvError;
                 let answer = match call.reply.try_recv() {
@@ -2598,6 +2720,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     let pointed = call.pointed.filter(|&p| p < lane_boxes.len());
                     agent_call = None;
                     let (text, seconds) = match answer {
+                        Ok(crate::agent::Reply {
+                            miss: Some(miss), ..
+                        }) => {
+                            let vocab = crate::intent::Vocabulary {
+                                effects: &world_effects,
+                                behaviors: &crate::surfaces::SurfaceBehavior::ALL,
+                                surfaces: crate::intent::surfaces(&lane_boxes),
+                                pointed,
+                            };
+                            let text = format!(
+                                "{}\n{}",
+                                crate::intent::miss_text(&miss),
+                                crate::intent::hint(&miss.heard, &vocab)
+                            );
+                            info!(
+                                "voice agent: heard \"{}\" \u{2192} miss {:?} \u{b7} label \"{}\"",
+                                sentence.trim(),
+                                miss.reason,
+                                text.replace('\n', " | ")
+                            );
+                            (text, crate::intent::MISS_S)
+                        }
                         Ok(reply) => {
                             let vocab = crate::intent::Vocabulary {
                                 effects: &world_effects,
@@ -3690,6 +3834,36 @@ struct AgentCall {
     pointed: Option<usize>,
     at: (glam::Vec3, glam::Vec3),
     started: Instant,
+}
+
+/// Board #3751, V5: a call not yet asked: the sentence, the room as the
+/// agent sees it, the lane box pointed at, and where the label floats.
+struct PendingCall {
+    sentence: String,
+    room: crate::agent::RoomState,
+    pointed: Option<usize>,
+    at: (glam::Vec3, glam::Vec3),
+}
+
+impl PendingCall {
+    /// Ask `provider` now.
+    fn ask(self, provider: &(dyn crate::agent::Provider + Send + Sync)) -> AgentCall {
+        AgentCall {
+            reply: provider.answer(&self.sentence, &self.room),
+            sentence: self.sentence,
+            pointed: self.pointed,
+            at: self.at,
+            started: Instant::now(),
+        }
+    }
+}
+
+/// Board #3751, V5: the on-device provider: its handle, the load's
+/// outcome (once), and whether the load was asked for.
+struct LocalAgent {
+    handle: std::sync::Arc<crate::local::Local>,
+    loaded: std::sync::mpsc::Receiver<Result<crate::local::Loaded, String>>,
+    asked: bool,
 }
 
 /// Board #3751: one intent applied, the grammar's (V2) and the agent's

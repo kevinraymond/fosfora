@@ -129,7 +129,7 @@ pub use device::Permissions;
 mod device {
     use android_activity::AndroidApp;
     use anyhow::{Context, Result};
-    use jni::objects::{GlobalRef, JObject, JValue};
+    use jni::objects::{GlobalRef, JObject, JString, JValue};
     use jni::{JNIEnv, JavaVM};
 
     /// `requestPermissions`' request code; the result callback is never
@@ -215,6 +215,36 @@ mod device {
                 Ok(())
             })
             .with_context(|| format!("Activity.requestPermissions({names:?})"))
+        }
+    }
+
+    impl Permissions {
+        /// The app's native library directory
+        /// (`Activity.getApplicationInfo().nativeLibraryDir`): where the
+        /// voice path's on-device provider looks for `libonnxruntime.so`
+        /// when loading it by name fails (board #3751, V5).
+        pub fn native_library_dir(&self) -> Result<String> {
+            let mut env = self
+                .vm
+                .attach_current_thread()
+                .context("attaching to the VM")?;
+            call(&mut env, |env| {
+                let info = env
+                    .call_method(
+                        self.activity.as_obj(),
+                        "getApplicationInfo",
+                        "()Landroid/content/pm/ApplicationInfo;",
+                        &[],
+                    )?
+                    .l()?;
+                let dir = env
+                    .get_field(&info, "nativeLibraryDir", "Ljava/lang/String;")?
+                    .l()?;
+                let dir = JString::from(dir);
+                let dir: String = env.get_string(&dir)?.into();
+                Ok(dir)
+            })
+            .context("ApplicationInfo.nativeLibraryDir")
         }
     }
 

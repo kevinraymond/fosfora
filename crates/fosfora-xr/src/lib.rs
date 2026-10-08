@@ -11,7 +11,7 @@
 //! geometry as obstacles; the room's surfaces as emitters, the floor
 //! ripple, the wall spectrum, the hand instruments, the room editor, the
 //! thumb microgestures, and the voice path's push-to-talk window, its
-//! grammar and its agent.
+//! grammar, its agent and its on-device provider.
 
 // Declared first: `assert_close!` is textually scoped to the modules after it.
 #[cfg(test)]

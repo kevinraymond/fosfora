@@ -43,17 +43,37 @@
 //! onnxruntime-android AAR, dlopened by name (the app's native library
 //! directory is on the namespace's search path, as for the OpenXR loader),
 //! the Activity's `nativeLibraryDir` as the fallback; the tokenizer through
-//! `tokenizers`.
+//! `tokenizers`. One session, on the `fosfora-local` worker thread, loaded
+//! after the speech model, kept for the process ([`Local`]).
+//!
+//! **Teardown.** `ort` 2.0.0-rc.13, which the device bench ran, releases
+//! its environment from the executable's `.fini_array`, which on Android
+//! runs after the dlopened runtime's static destructors and aborts at
+//! libc `exit`. The app reaches neither: it runs `ort` 2.0.0-rc.11 (the
+//! core pins it, and one lock holds one `ort`), which keeps no exit-time
+//! release at all (its environment lives while a session does), and the
+//! app never returns through libc `exit`: `android_main` returning only
+//! finishes the activity (`android-activity`'s glue calls
+//! `ANativeActivity_finish` and the thread ends), the process stays cached
+//! until the system kills it with SIGKILL (force-stop, the low-memory
+//! killer), and nothing dlcloses `libfosfora_xr.so`. No vendored patch. The
+//! one hazard rc.11 does carry is a second environment in one process (ONNX
+//! Runtime cannot create one after releasing the first), which a relaunch
+//! in the cached process would hit; the session is therefore never
+//! dropped: the worker parks it in a process-wide slot when the app goes
+//! away, and the next launch takes it back.
 
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::agent::{RoomState, SurfaceState};
-use crate::intent::{AgentAction, Intent, Surface, Vocabulary};
+use crate::agent::{Reply, RoomState, SurfaceState};
+use crate::intent::{AgentAction, Intent, Miss, Reason, Surface, Vocabulary};
 use crate::surfaces::{KIND_NAMES, KIND_NONE, SurfaceBehavior, kind_from_name};
 
+/// The provider's name, as `voice.json` and the log use it.
+pub const PROVIDER: &str = crate::agent::LOCAL;
 /// The model's name in the log.
 pub const MODEL_NAME: &str = "s1-17m-int8";
 /// Where the files are under the assets dir, and their names
@@ -942,6 +962,26 @@ pub fn cascade(
     )
 }
 
+/// The provider's reply for an answer: the one action, or a miss
+/// (NoMatch, the sentence as heard), which the label shows as the
+/// grammar's "Didn't catch that" with its hint. No `say`: the model writes
+/// none, so the label is the intent's own reply text.
+pub fn reply(sentence: &str, answer: &Answer) -> Reply {
+    match &answer.verdict {
+        Verdict::Act(action) => Reply {
+            actions: vec![action.clone()],
+            ..Reply::default()
+        },
+        _ => Reply {
+            miss: Some(Miss {
+                reason: Reason::NoMatch,
+                heard: sentence.trim().to_owned(),
+            }),
+            ..Reply::default()
+        },
+    }
+}
+
 /// The room's vocabulary rebuilt from its state (the agent's room has the
 /// surfaces in lane box order, so a surface's index is its position): for
 /// the log's intent, resolved as the frame will resolve it.
@@ -1092,20 +1132,38 @@ impl Files {
     }
 }
 
+/// How the provider runs: the session's intra-op threads, the floors, and
+/// where to look for the runtime library, in order (`libonnxruntime.so` by
+/// name first).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Options {
+    pub threads: usize,
+    pub floors: Floors,
+    pub library: Vec<std::path::PathBuf>,
+}
+
 // ------------------------------------------------- the runtime and the worker
 
 #[cfg(any(target_os = "android", test))]
-pub use self::device::{Model, Tokens, init_runtime};
+pub use self::device::{Loaded, Local, Model, Tokens, init_runtime};
 
 #[cfg(any(target_os = "android", test))]
 mod device {
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::sync::mpsc::{Receiver, Sender, channel};
+    use std::time::Instant;
 
+    use log::{error, info};
     use ort::session::Session;
     use ort::session::builder::GraphOptimizationLevel;
     use ort::value::Tensor;
 
-    use super::{COLUMNS, Encode, SpecialIds};
+    use super::{
+        COLUMNS, Encode, Files, MODEL_NAME, Options, Reply, RoomState, Spec, SpecialIds, Step,
+        cascade, log_line, outcome_text, parse_spec, reply, softmax, steps_line,
+    };
+    use crate::agent::{AgentError, Provider};
 
     /// The tokenizer, with its own truncation and padding off (the
     /// renderer cuts each part itself).
@@ -1168,6 +1226,7 @@ mod device {
     /// The decision model's session.
     pub struct Model {
         session: Session,
+        path: PathBuf,
     }
 
     impl Model {
@@ -1183,7 +1242,10 @@ mod device {
                 .and_then(|b| b.with_intra_op_spinning(false))
                 .and_then(|b| b.commit_from_file(path))
                 .map_err(|e| format!("the model {}: {e}", path.display()))?;
-            Ok(Self { session })
+            Ok(Self {
+                session,
+                path: path.to_path_buf(),
+            })
         }
 
         /// One decision: one prefix, its candidates (padded with `pad`),
@@ -1221,11 +1283,200 @@ mod device {
             Ok((0..n).map(|i| logits[i * COLUMNS + column]).collect())
         }
     }
+
+    /// The session, parked for the process when the app goes away and
+    /// taken back by the next launch in the same process: ONNX Runtime
+    /// cannot create a second environment after releasing the first, so
+    /// the session (which holds the environment) is never released.
+    static PARKED: Mutex<Option<Model>> = Mutex::new(None);
+
+    /// Everything a sentence needs, loaded once.
+    struct Engine {
+        spec: Spec,
+        tokens: Tokens,
+        model: Model,
+        options: Options,
+    }
+
+    impl Engine {
+        fn load(files: &Files, options: &Options) -> Result<(Self, Loaded), String> {
+            let started = Instant::now();
+            let json = std::fs::read_to_string(files.spec())
+                .map_err(|e| format!("the spec {}: {e}", files.spec().display()))?;
+            let spec = parse_spec(&json)?;
+            let tokens = Tokens::load(
+                &files.tokenizer(),
+                &files.tokenizer_config(),
+                &spec.limits.ids,
+            )?;
+            let library = init_runtime(&options.library)?;
+            let parked = PARKED
+                .lock()
+                .map_or(None, |mut p| p.take())
+                .filter(|m| m.path == files.model());
+            let reused = parked.is_some();
+            let model = match parked {
+                Some(m) => m,
+                None => Model::load(&files.model(), options.threads)?,
+            };
+            let loaded = Loaded {
+                ms: started.elapsed().as_millis(),
+                library: library.display().to_string(),
+                reused,
+            };
+            Ok((
+                Self {
+                    spec,
+                    tokens,
+                    model,
+                    options: options.clone(),
+                },
+                loaded,
+            ))
+        }
+
+        /// One sentence through the cascade, logged; the reply.
+        fn answer(&mut self, sentence: &str, room: &RoomState) -> Result<Reply, AgentError> {
+            let started = Instant::now();
+            let mut steps: Vec<(Step, f32)> = Vec::new();
+            let mut prefix_tokens = 0;
+            let (spec, tokens, model) = (&self.spec, &self.tokens, &mut self.model);
+            let pad = i64::from(spec.limits.ids.pad);
+            let answer = cascade(spec, room, self.options.floors, |d| {
+                let t = Instant::now();
+                let (prefix, docs) = spec.render(tokens, d, sentence, room)?;
+                prefix_tokens = prefix_tokens.max(prefix.len());
+                let p = softmax(&model.logits(&prefix, &docs, pad, d.column)?);
+                steps.push((d.step, t.elapsed().as_secs_f32() * 1e3));
+                Ok(p)
+            });
+            let ms = started.elapsed().as_millis();
+            match answer {
+                Ok(answer) => {
+                    let outcome = outcome_text(spec, self.options.floors, &answer, room);
+                    info!("{}", log_line(ms, &answer.picks, &outcome));
+                    info!("{}", steps_line(&steps, prefix_tokens));
+                    Ok(reply(sentence, &answer))
+                }
+                Err(e) => {
+                    error!("voice local: {ms} ms \u{2192} failed: {e}");
+                    Err(AgentError::Parse(format!("local: {e}")))
+                }
+            }
+        }
+    }
+
+    /// The provider loaded: in how long, from which runtime library, and
+    /// whether the session was a parked one.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Loaded {
+        pub ms: u128,
+        pub library: String,
+        pub reused: bool,
+    }
+
+    /// A sentence for the worker, and where its reply goes.
+    struct Job {
+        sentence: String,
+        room: RoomState,
+        reply: Sender<Result<Reply, AgentError>>,
+    }
+
+    /// The on-device provider: a handle on the `fosfora-local` worker,
+    /// which loads the spec, the tokenizer and the session when told to
+    /// ([`Local::load`]) and then answers one sentence at a time, in order.
+    /// A sentence asked before the load has finished waits for it.
+    pub struct Local {
+        jobs: Sender<Job>,
+        go: Mutex<Option<Sender<()>>>,
+    }
+
+    impl Local {
+        /// Start the worker, waiting for [`Local::load`]; the receiver
+        /// gets the load's outcome once.
+        pub fn start(
+            files: Files,
+            options: Options,
+        ) -> std::io::Result<(Self, Receiver<Result<Loaded, String>>)> {
+            let (jobs, job_rx) = channel::<Job>();
+            let (go, go_rx) = channel::<()>();
+            let (loaded_tx, loaded) = channel();
+            std::thread::Builder::new()
+                .name("fosfora-local".to_owned())
+                .spawn(move || {
+                    // No go: the app went away before the load.
+                    if go_rx.recv().is_err() {
+                        return;
+                    }
+                    let mut engine = match Engine::load(&files, &options) {
+                        Ok((engine, l)) => {
+                            let _ = loaded_tx.send(Ok(l));
+                            engine
+                        }
+                        Err(e) => {
+                            let _ = loaded_tx.send(Err(e));
+                            return;
+                        }
+                    };
+                    while let Ok(job) = job_rx.recv() {
+                        let outcome = engine.answer(&job.sentence, &job.room);
+                        // The frame loop may have moved on (a newer
+                        // sentence): then the answer is dropped.
+                        let _ = job.reply.send(outcome);
+                    }
+                    if let Ok(mut parked) = PARKED.lock() {
+                        *parked = Some(engine.model);
+                    }
+                })?;
+            Ok((
+                Self {
+                    jobs,
+                    go: Mutex::new(Some(go)),
+                },
+                loaded,
+            ))
+        }
+
+        /// Load now (once; later calls do nothing).
+        pub fn load(&self) {
+            if let Some(go) = self.go.lock().ok().and_then(|mut g| g.take()) {
+                let _ = go.send(());
+            }
+        }
+    }
+
+    impl Provider for Local {
+        fn name(&self) -> &'static str {
+            super::PROVIDER
+        }
+
+        fn model(&self) -> &str {
+            MODEL_NAME
+        }
+
+        fn answer(&self, sentence: &str, room: &RoomState) -> Receiver<Result<Reply, AgentError>> {
+            let (reply, rx) = channel();
+            let job = Job {
+                sentence: sentence.trim().to_owned(),
+                room: room.clone(),
+                reply,
+            };
+            if let Err(e) = self.jobs.send(job) {
+                let _ = e.0.reply.send(Err(AgentError::Parse(
+                    "local: the worker thread is gone".to_owned(),
+                )));
+            }
+            rx
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{Choice, choose};
+    use crate::intent::{Strength, Target};
+    use crate::surfaces::{KIND_FLOOR, KIND_TABLE, KIND_WALL};
     use serde_json::json;
 
     /// The committed spec, the training pipeline's `provider-spec.json`
@@ -1776,6 +2027,16 @@ mod tests {
         );
         assert_eq!(a.verdict, Verdict::Unsure(Step::Value));
         assert_eq!(asked.len(), 4);
+        // A miss is the grammar's NoMatch with the sentence: nothing applies.
+        let reply = reply(" Make it amber-ish. ", &a);
+        assert!(reply.actions.is_empty());
+        assert_eq!(
+            reply.miss,
+            Some(Miss {
+                reason: Reason::NoMatch,
+                heard: "Make it amber-ish.".to_owned()
+            })
+        );
         assert_eq!(
             outcome_text(&s, f, &a, &r),
             "miss NoMatch (value under 0.35)"
@@ -1819,7 +2080,12 @@ mod tests {
             target: "table 14".into(),
             value: "amber".into(),
         };
-        assert_eq!(a.verdict, Verdict::Act(action));
+        assert_eq!(a.verdict, Verdict::Act(action.clone()));
+        let reply = reply("Table fourteen like a sunset.", &a);
+        assert_eq!(
+            (reply.actions, reply.miss, reply.say),
+            (vec![action], None, String::new())
+        );
         let outcome = outcome_text(&s, Floors::default(), &a, &r);
         assert_eq!(outcome, "Color { target: Surface(14), color: 4 }");
         assert_eq!(
@@ -1854,6 +2120,244 @@ mod tests {
         assert_eq!(a.verdict, Verdict::Nothing(Step::Value));
     }
 
+    /// The spec's ids through the grammar's resolution, as the frame
+    /// applies them.
+    fn intent(kind: &str, target: &str, value: &str) -> Result<Intent, Miss> {
+        let r = room();
+        let v = RoomVocabulary::of(&r);
+        Intent::from_json(
+            &AgentAction {
+                kind: kind.into(),
+                target: target.into(),
+                value: value.into(),
+            },
+            &v.vocabulary(),
+        )
+    }
+
+    #[test]
+    fn the_spec_ids_map_onto_intents() {
+        use crate::surface_fx::{BAND_BASS, BAND_HIGH, BAND_MID, BAND_RMS};
+        let pointed = Target::Pointed;
+        let cases = [
+            (("next_effect", "", ""), Intent::NextEffect),
+            (("previous_effect", "", ""), Intent::PrevEffect),
+            (("effect", "", "Embers"), Intent::Effect(1)),
+            (("edit_room", "", "on"), Intent::EditRoom(true)),
+            (("particles", "", "off"), Intent::Cloud(false)),
+            (("pitcher", "", "on"), Intent::Pitcher(true)),
+            (("music", "", "off"), Intent::Music(false)),
+            (("rescan", "", ""), Intent::Rescan),
+            (("recenter", "", ""), Intent::Recenter),
+            (("all_none", "", ""), Intent::AllNone),
+            (
+                ("behavior", "all tables", "streamlines"),
+                Intent::Behavior {
+                    target: Target::Kind(KIND_TABLE),
+                    behavior: SurfaceBehavior::Streamlines,
+                },
+            ),
+            (
+                ("behavior", "pointed", "embers"),
+                Intent::Behavior {
+                    target: pointed,
+                    behavior: SurfaceBehavior::Embers,
+                },
+            ),
+            (
+                ("behavior", "ceiling", "none"),
+                Intent::Behavior {
+                    target: Target::Surface(10),
+                    behavior: SurfaceBehavior::None,
+                },
+            ),
+            (
+                ("color", "pointed", "own color"),
+                Intent::Color {
+                    target: pointed,
+                    color: 0,
+                },
+            ),
+            (
+                ("color", "all walls", "warm white"),
+                Intent::Color {
+                    target: Target::Kind(KIND_WALL),
+                    color: 3,
+                },
+            ),
+            (
+                ("band", "table 14", "level"),
+                Intent::Band {
+                    target: Target::Surface(14),
+                    band: BAND_RMS,
+                },
+            ),
+            (
+                ("band", "floor", "bass"),
+                Intent::Band {
+                    target: Target::Surface(7),
+                    band: BAND_BASS,
+                },
+            ),
+            (
+                ("strength", "wall 5", "brighter"),
+                Intent::Strength {
+                    target: Target::Surface(5),
+                    strength: Strength::Up,
+                },
+            ),
+            (
+                ("strength", "wall 5", "dimmer"),
+                Intent::Strength {
+                    target: Target::Surface(5),
+                    strength: Strength::Down,
+                },
+            ),
+            (
+                ("strength", "shelf 4", "off"),
+                Intent::Strength {
+                    target: Target::Surface(4),
+                    strength: Strength::Off,
+                },
+            ),
+            (
+                ("describe", "window", ""),
+                Intent::Describe(Target::Surface(8)),
+            ),
+            (("describe", "pointed", ""), Intent::Describe(pointed)),
+        ];
+        for ((k, t, v), want) in cases {
+            assert_eq!(intent(k, t, v), Ok(want), "{k} {t} {v}");
+        }
+        // Every candidate id of every list maps: each kind, each group the
+        // room has, every color, band, strength and toggle value, every
+        // behavior on a surface of its kind.
+        let s = spec();
+        let r = room();
+        for k in &s.kind.candidates {
+            let target = if s.target.only_for.contains(&k.id) {
+                "pointed"
+            } else {
+                ""
+            };
+            let value = s
+                .value_decision(&k.id, Some("pointed"), &r)
+                .map(|d| d.candidates[0].id.clone())
+                .unwrap_or_default();
+            assert!(intent(&k.id, target, &value).is_ok(), "{} {value}", k.id);
+        }
+        for t in s.target_decision("describe", &r).unwrap().candidates {
+            assert!(intent("describe", &t.id, "").is_ok(), "{}", t.id);
+        }
+        assert_eq!(
+            intent("describe", "all floors", ""),
+            Ok(Intent::Describe(Target::Kind(KIND_FLOOR)))
+        );
+        for kind in ["color", "band", "strength", "music", "edit_room"] {
+            for c in &s
+                .value_decision(kind, Some("table 0"), &r)
+                .unwrap()
+                .candidates
+            {
+                assert!(intent(kind, "table 0", &c.id).is_ok(), "{kind} {}", c.id);
+            }
+        }
+        let bands: Vec<u32> = ["level", "bass", "mid", "high"]
+            .iter()
+            .map(|b| match intent("band", "wall 2", b) {
+                Ok(Intent::Band { band, .. }) => band,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(bands, [BAND_RMS, BAND_BASS, BAND_MID, BAND_HIGH]);
+        for surface in &r.surfaces {
+            for b in &s
+                .value_decision("behavior", Some(&surface.name), &r)
+                .unwrap()
+                .candidates
+            {
+                assert!(
+                    intent("behavior", &surface.name, &b.id).is_ok(),
+                    "{} {}",
+                    surface.name,
+                    b.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_provider_rule() {
+        let none = || Err("no s1-17m-int8.onnx at /m".to_owned());
+        // No file: local when installed, else off with both reasons.
+        assert_eq!(choose(None, Ok(())), Ok(Choice::Local));
+        assert_eq!(
+            choose(None, none()),
+            Err("no voice.json, and no s1-17m-int8.onnx at /m".to_owned())
+        );
+        // A file naming no provider: local when installed, else V3's
+        // Anthropic default.
+        let keyed = r#"{"api_key": "sk-test"}"#;
+        assert_eq!(choose(Some(keyed), Ok(())), Ok(Choice::Local));
+        assert_eq!(choose(Some("{}"), Ok(())), Ok(Choice::Local));
+        match choose(Some(keyed), none()) {
+            Ok(Choice::Network(c)) => assert_eq!(c.provider, crate::agent::ProviderKind::Anthropic),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            choose(Some("{}"), none()),
+            Err("no api_key in voice.json".to_owned())
+        );
+        // Named: local by name, or a network provider as V3 has it.
+        assert_eq!(
+            choose(Some(r#"{"provider": "local"}"#), Ok(())),
+            Ok(Choice::Local)
+        );
+        assert_eq!(
+            choose(Some(r#"{"provider": "local"}"#), none()),
+            Err("provider local in voice.json, but no s1-17m-int8.onnx at /m".to_owned())
+        );
+        let openai = r#"{"provider": "openai", "model": "qwen3.5", "base_url": "http://192.168.1.20:11434/v1"}"#;
+        match choose(Some(openai), Ok(())) {
+            Ok(Choice::Network(c)) => assert_eq!(c.model, "qwen3.5"),
+            other => panic!("{other:?}"),
+        }
+        match choose(
+            Some(r#"{"provider": "anthropic", "api_key": "sk-test"}"#),
+            Ok(()),
+        ) {
+            Ok(Choice::Network(c)) => assert_eq!(c.provider, crate::agent::ProviderKind::Anthropic),
+            other => panic!("{other:?}"),
+        }
+        // A broken file is V3's error, installed or not.
+        assert!(
+            choose(Some("{"), Ok(()))
+                .unwrap_err()
+                .starts_with("voice.json is not valid")
+        );
+        assert!(choose(Some(r#"{"provider": "elsewhere"}"#), Ok(())).is_err());
+    }
+
+    #[test]
+    fn the_files_say_which_are_missing() {
+        let dir = std::env::temp_dir().join(format!("fosfora-local-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = Files::in_dir(&dir);
+        let e = f.check().unwrap_err();
+        assert!(e.starts_with("no s1-17m-int8.onnx, s1-17m-spec.json, s1-17m-tokenizer.json, s1-17m-tokenizer_config.json at "), "{e}");
+        for name in [MODEL_FILE, SPEC_FILE, TOKENIZER_FILE] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        assert!(
+            f.check()
+                .unwrap_err()
+                .starts_with("no s1-17m-tokenizer_config.json at ")
+        );
+        std::fs::write(dir.join(TOKENIZER_CONFIG_FILE), b"x").unwrap();
+        assert_eq!(f.check(), Ok(()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The host's ONNX Runtime (`ORT_DYLIB_PATH`, 1.23 or newer, e.g. the
     /// `onnxruntime` Python wheel's `capi/libonnxruntime.so.1.*`) and the
     /// model in `assets/xr/models/` (or `FOSFORA_S1_DIR`).
@@ -1871,7 +2375,7 @@ mod tests {
     /// probabilities within 0.05 and the same argmax) and every room
     /// decision (the int8 model's probabilities through ONNX Runtime,
     /// within 1e-3), first on the fixture's token ids, then rendered from
-    /// the sentence. Run with
+    /// the sentence; then the provider itself, end to end. Run with
     /// `ORT_DYLIB_PATH=… cargo test -p fosfora-xr local -- --ignored`.
     #[test]
     #[ignore = "needs a host ONNX Runtime (ORT_DYLIB_PATH) and the model in assets/xr/models/"]
@@ -1933,6 +2437,45 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+        // The provider, end to end, on the worker thread.
+        let options = Options {
+            threads: 3,
+            floors: Floors::default(),
+            library: vec![std::env::var_os("ORT_DYLIB_PATH").unwrap().into()],
+        };
+        let (local, loaded) = Local::start(files, options).unwrap();
+        local.load();
+        let loaded = loaded.recv().unwrap().unwrap();
+        eprintln!("loaded: {loaded:?}");
+        for (said, want) in [
+            ("Table 14 in amber.", Some(("color", "table 14", "amber"))),
+            (
+                "Make the floor pump with the kick drum.",
+                Some(("band", "floor", "bass")),
+            ),
+            ("Hello.", None),
+        ] {
+            let reply = crate::agent::Provider::answer(&local, said, &r)
+                .recv()
+                .unwrap()
+                .unwrap();
+            match want {
+                Some((k, t, v)) => assert_eq!(
+                    reply.actions,
+                    [AgentAction {
+                        kind: k.into(),
+                        target: t.into(),
+                        value: v.into()
+                    }],
+                    "{said}"
+                ),
+                None => assert_eq!(
+                    reply.miss.map(|m| m.reason),
+                    Some(Reason::NoMatch),
+                    "{said}"
+                ),
             }
         }
     }
