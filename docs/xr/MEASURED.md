@@ -2236,3 +2236,67 @@ the practical setting;
 the on-device decision-model spike measures the other direction. The
 12 s timeout was hit once while the server loaded a model: the first call
 after a long idle pays that.
+
+## A System One decision model on the headset (board #3760)
+
+A feasibility spike for a third, on-device provider for the voice agent
+(`VOICE_DESIGN.md`): an encoder that scores candidates against a shared
+instruction-and-state prefix instead of generating text, run as a cascade
+of four typed decisions per sentence (is it a request; which action kind of
+fifteen; which target of twenty-one; which value from the list the kind
+allows). Models: `hotchpotch/bekko-system-one-v0-17m` and `-68m` (ModernBERT
+based, trained from the Apache-2.0 `cross-encoder/ettin-reranker` family
+with an MIT toolkit; the bekko weights themselves carry no license yet).
+Runtime on the Quest 3: ONNX Runtime 1.28.0 from the onnxruntime-android
+AAR (MIT) through the Rust `ort` crate with `load-dynamic`, cross-built with
+cargo-ndk, the tokens made on the host so the device times only the
+encoder. Headset idle, 32 to 35 C. Median of 10 warm runs over five
+sentences, the cascade's four decisions summed:
+
+| model | threads | load | cascade (five sentences) | peak RSS |
+|---|---|---|---|---|
+| 17M | 2 | 500 ms | 359 to 381 ms (med 363) | 130 MB |
+| 17M | 4 | 538 ms | 222 to 239 ms (med 229) | 131 MB |
+| 17M | 6 | 503 ms | 187 to 204 ms (med 194) | 131 MB |
+| 68M | 2 | 2.7 s | 2.96 to 3.28 s | 417 MB |
+| 68M | 4 | 2.7 s | 1.76 to 1.91 s | 418 MB |
+| 68M | 6 | 2.5 s | 1.34 to 1.45 s | 418 MB |
+
+The target decision (twenty-one candidates padded to 31 tokens) is about
+half the cost; bare-name candidates cut it. With the headset awake and the
+VR shell busy (38 to 45 C) the 17M ran 270 to 420 ms and six threads lost
+to the system. The device's top answers matched the host's PyTorch
+reference in 20 of 20 decisions (17M) and 18 of 20 (68M, near-ties from
+the 8-bit embeddings).
+
+**Zero-shot accuracy on the host** (40 sentences: 25 the grammar matches,
+10 it misses but a person reads, 5 that are not requests; the replayed room
+with a table pointed; the best of five prompt layouts):
+
+| model | gate | kind | target | value | end to end | grammar 25 | miss 10 | none 5 |
+|---|---|---|---|---|---|---|---|---|
+| 17M | 29/40 | 14/35 | 1/19 | 10/26 | 9/40 | 5/25 | 2/10 | 2/5 |
+| 68M | 32/40 | 18/35 | 13/19 | 22/26 | 18/40 | 9/25 | 4/10 | 5/5 |
+
+The 17M is near uniform zero-shot (it picks the first table for most
+targets and "describe" for most kinds; its request gate sits at 0.4 to 0.6
+for everything); the 68M's bottleneck is the action kind ("rescan" for many
+sentences), and with the kind given it gets the target 13 of 19 and the
+value 22 of 26.
+
+**Verdict.** The speed is there with room to spare: the 17M runs a whole
+sentence in 0.2 to 0.4 s at 130 MB, on two threads if the renderer needs
+the rest. The accuracy is not, zero-shot, and the bekko weights could not
+ship anyway. The path is to train our own 17M from the Apache-2.0 base with
+the MIT toolkit on synthetic cases generated from the catalogue (300 to
+1000 rooms named as `friendly_name` names them, the grammar's phrasings
+and paraphrases, whisper's spellings such as "base", soft labels, not-a-
+request negatives; 50 to 150 K cases; whole rooms and phrasings held out,
+these 40 sentences never trained on), about 2 hours on one 4090 for the
+17M. The pass bar: beat the grammar on the ten sentences it misses without
+losing any of the twenty-five it matches, at the 17M's cost. The spike's
+crate, scripts, results and notes live outside the repo
+(`fosfora-xr-kit/spikes/system-one/`); the device keeps the binary and
+models under `/data/local/tmp/s1/`. One loose end: the device benchmark
+aborts at exit while the runtime library unloads (every number prints
+first); it needs a look before anything ships.
