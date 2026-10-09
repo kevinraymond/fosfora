@@ -4,8 +4,9 @@
 //! collide against a depth atlas, run headless behind the loader's compute
 //! preamble; the particle pitcher's pour (board #3402) through the same
 //! sim onto a floor box; and the surface behavior lanes (board #3326),
-//! which move the room's emission from box to box; and the box cell list
-//! (board #3808) against the full box loop. The GPU tests are
+//! which move the room's emission from box to box; the box cell list
+//! (board #3808) against the full box loop; and the flow samples lane in
+//! its header (board #3810), which picks the flow's diagonals. The GPU tests are
 //! `#[ignore]`d like the core's probes (they need an adapter); run them
 //! with `cargo test -p fosfora-xr --test depth_collide_gpu -- --ignored`.
 #![cfg(not(target_os = "android"))]
@@ -520,6 +521,15 @@ struct SimOptions {
     /// Room's `surface_emit`), with the bass at 1 and the beat phase at 0,
     /// so both the embers' and the sparks' gates are fully open.
     surface: bool,
+    /// A flow field (on, at unit strength): the side of the cubic RGBA8
+    /// texture and its texels (little-endian RGBA per `u32`), sampled
+    /// with repeat as the core's is, at `flow_scale` (else no flow).
+    flow: Option<(u32, Vec<u32>, f32)>,
+    /// The clock at the first frame (s); each frame adds 1 / [`FPS`].
+    time0: f32,
+    /// `u.frame_index` at the first frame; each frame adds 1, as
+    /// `ParticleSystem::flip` does.
+    frame0: u32,
 }
 
 impl Default for SimOptions {
@@ -531,6 +541,9 @@ impl Default for SimOptions {
             aux_from: None,
             emit: 0,
             surface: false,
+            flow: None,
+            time0: 0.0,
+            frame0: 0,
         }
     }
 }
@@ -676,6 +689,12 @@ fn run_sim_raw(setup: &SimSetup, opts: &SimOptions, capture: &[u32]) -> Vec<[Vec
     u.f32("size_end", 0.004);
     u.f32("drag", opts.drag);
     u.f32("flow_enabled", 0.0);
+    if let Some((_, _, scale)) = &opts.flow {
+        u.f32("flow_enabled", 1.0);
+        u.f32("flow_strength", 1.0);
+        u.f32("flow_scale", *scale);
+        u.f32("flow_speed", 1.0);
+    }
     let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("sim-test-uniforms"),
         size: u.bytes.len() as u64,
@@ -724,7 +743,16 @@ fn run_sim_raw(setup: &SimSetup, opts: &SimOptions, capture: &[u32]) -> Vec<[Vec
     let dead = storage("sim-test-dead", &vec![0u8; count as usize * 4]);
     let alive = storage("sim-test-alive", &vec![0u8; count as usize * 4]);
 
-    let flow = rgba_texture(device, queue, [1, 1, 1], wgpu::TextureDimension::D3, &[0]);
+    let flow = match &opts.flow {
+        Some((side, texels, _)) => rgba_texture(
+            device,
+            queue,
+            [*side; 3],
+            wgpu::TextureDimension::D3,
+            texels,
+        ),
+        None => rgba_texture(device, queue, [1, 1, 1], wgpu::TextureDimension::D3, &[0]),
+    };
     let obstacle = match &setup.atlas {
         Some((texels, side)) => rgba_texture(
             device,
@@ -738,6 +766,15 @@ fn run_sim_raw(setup: &SimSetup, opts: &SimOptions, capture: &[u32]) -> Vec<[Vec
     let water = rgba_texture(device, queue, [1, 1, 1], wgpu::TextureDimension::D2, &[0]);
     let fluid = rgba_texture(device, queue, [1, 1, 1], wgpu::TextureDimension::D2, &[0]);
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    // The flow field repeats (the core's flow sampler); unused without one.
+    let flow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        address_mode_w: wgpu::AddressMode::Repeat,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
         ..Default::default()
@@ -809,7 +846,10 @@ fn run_sim_raw(setup: &SimSetup, opts: &SimOptions, capture: &[u32]) -> Vec<[Vec
         layout: &layout1,
         entries: &[
             view(0, &flow),
-            samp(1),
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&flow_sampler),
+            },
             view(2, &obstacle),
             samp(3),
             view(4, &water),
@@ -837,7 +877,8 @@ fn run_sim_raw(setup: &SimSetup, opts: &SimOptions, capture: &[u32]) -> Vec<[Vec
     let frames = capture.iter().copied().max().unwrap_or(0);
     let mut out = Vec::new();
     for frame in 0..frames {
-        u.f32("time", frame as f32 / FPS);
+        u.f32("time", opts.time0 + frame as f32 / FPS);
+        u.set("frame_index", opts.frame0 + frame);
         queue.write_buffer(&uniforms, 0, &u.bytes);
         queue.write_buffer(&counters, 0, &[0u8; 16]);
         if let Some((from, next)) = &opts.aux_from
@@ -1899,4 +1940,143 @@ fn the_cell_list_moves_every_particle_as_the_full_loop_does() {
         particles.len(),
         touched.len()
     );
+}
+
+// ---- The flow samples lane ----------------------------------------------------
+
+/// The sim's flow samples modes are [`box_cells::FlowSamples`]'s ids.
+#[test]
+fn the_flow_samples_modes_match_the_sim() {
+    let module = naga::front::wgsl::parse_str(&sim_source()).expect("flux_xr_sim.wgsl parses");
+    for (name, mode) in [
+        ("XR_FLOW_TWO", box_cells::FlowSamples::Two),
+        ("XR_FLOW_ONE", box_cells::FlowSamples::One),
+        ("XR_FLOW_ALT", box_cells::FlowSamples::Alternate),
+        ("XR_FLOW_ALT_FRAME", box_cells::FlowSamples::AlternateFrame),
+    ] {
+        assert_eq!(sim_const(&module, name), mode.id(), "{name}");
+    }
+    assert_eq!(
+        box_cells::header(8, 1.5)[box_cells::FLOW_SAMPLES_LANE].to_bits(),
+        0
+    );
+}
+
+/// Each particle's flow (m/s) on one frame at `frame_index` `frame0`,
+/// with the flow samples lane at `mode` (`None`: unwritten, the 0 a
+/// hand-built row has): at rest, no drag, no features and the turbulence
+/// cut, the velocity after the frame is the flow times dt.
+fn flow_of(particles: &[Vec3], mode: Option<box_cells::FlowSamples>, frame0: u32) -> Vec<Vec3> {
+    // 8^3 texels of a fixed hash: a field that changes from texel to texel.
+    let texels: Vec<u32> = (0..512u32)
+        .map(|i| {
+            let mut h = i.wrapping_mul(0x9e37_79b9) ^ 0x85eb_ca6b;
+            h ^= h >> 15;
+            h = h.wrapping_mul(0x2c1b_3c6d);
+            h ^= h >> 12;
+            h | 0xff00_0000
+        })
+        .collect();
+    let mut aux = vec![[0.0; 4]; WORLD_AUX_ROWS];
+    // The sim-cut mask: turbulence (XR_CUT_TURB) only.
+    aux[2][0] = f32::from_bits(2);
+    if let Some(mode) = mode {
+        mode.write(&mut aux[AUX_CELLS]);
+    }
+    let setup = SimSetup {
+        particles: particles.iter().map(|&p| (p, Vec3::ZERO)).collect(),
+        aux,
+        atlas: None,
+        every: 1,
+    };
+    // A scale of 4 puts the particles' +-1 m over about six texels per
+    // axis; at 2 s the drift (0.5 m) moves each diagonal's sample over a
+    // texel or more, so the two diagonals read different texels.
+    let opts = SimOptions {
+        flow: Some((8, texels, 4.0)),
+        time0: 2.0,
+        frame0,
+        ..SimOptions::default()
+    };
+    run_sim_with(&setup, &opts, &[1])[0]
+        .iter()
+        .map(|s| s.vel * FPS)
+        .collect()
+}
+
+/// The flow samples lane picks the diagonals (board #3810): an unwritten
+/// lane and a lane of 0 take the two samples' average; 1 takes the first
+/// diagonal (a) alone, as is; 2 takes a when (frame + idx) is even and the
+/// second (b) otherwise, as is, so neighboring particles take different
+/// diagonals on the same frame and each takes the other on the next frame;
+/// and the pair is (a + b) / sqrt(2) of the single samples.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn the_flow_samples_lane_picks_the_diagonals() {
+    use box_cells::FlowSamples;
+    let mut s = 0x1234_5679_u32;
+    let mut next = move || {
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        (s >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+    };
+    let particles: Vec<Vec3> = (0..512)
+        .map(|_| Vec3::new(next(), next(), next()))
+        .collect();
+    let unwritten = flow_of(&particles, None, 0);
+    let two = flow_of(&particles, Some(FlowSamples::Two), 0);
+    let one = flow_of(&particles, Some(FlowSamples::One), 0);
+    let alt = [0, 1].map(|f| flow_of(&particles, Some(FlowSamples::Alternate), f));
+    let by_frame = [0, 1].map(|f| flow_of(&particles, Some(FlowSamples::AlternateFrame), f));
+    let close = |x: Vec3, y: Vec3| (x - y).abs().max_element() < 1e-4;
+    let mut differ = 0;
+    for i in 0..particles.len() {
+        assert_eq!(
+            unwritten[i], two[i],
+            "particle {i}: a 0 lane is the unwritten one"
+        );
+        // On the frame where (frame + i) is even, the alternate is a, times
+        // sqrt(2) so two frames of it move the particle as the pair does.
+        let (even, odd) = if i % 2 == 0 { (0, 1) } else { (1, 0) };
+        let a = alt[even][i] * std::f32::consts::FRAC_1_SQRT_2;
+        let b = alt[odd][i] * std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            close(a, one[i]),
+            "particle {i}: {a} is not the first diagonal {}",
+            one[i]
+        );
+        assert!(
+            close(two[i], (a + b) * std::f32::consts::FRAC_1_SQRT_2),
+            "particle {i}: the pair {} is not (a + b) / sqrt(2) of {a} and {b}",
+            two[i]
+        );
+        if !close(a, b) {
+            differ += 1;
+        }
+        // By the frame alone: every particle takes a on frame 0, b on 1.
+        assert!(
+            close(by_frame[0][i] * std::f32::consts::FRAC_1_SQRT_2, a)
+                && close(by_frame[1][i] * std::f32::consts::FRAC_1_SQRT_2, b),
+            "particle {i}: the by-frame mode does not take a then b"
+        );
+    }
+    // The diagonals read different texels for nearly every particle, so the
+    // checks above tell a from b; and on one frame, neighbors alternate.
+    assert!(differ > 450, "only {differ} of 512 particles see a != b");
+    let mixed = (0..particles.len() - 1)
+        .filter(|&i| {
+            let first = |j: usize| close(alt[0][j] * std::f32::consts::FRAC_1_SQRT_2, one[j]);
+            first(i) != first(i + 1)
+        })
+        .count();
+    assert!(
+        mixed > 400,
+        "only {mixed} neighbors take different diagonals"
+    );
+    let max = one
+        .iter()
+        .map(|v| v.abs().max_element())
+        .fold(0.0, f32::max);
+    assert!(max > 0.1, "the flow is too weak to tell apart: {max}");
 }

@@ -213,6 +213,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.boxcells 8               (board #3808: the world sim's box cell list, N x N x N cells over the
     //       volume, each with the boxes that can touch it, so a particle tests only those; N in 2..16, 0 or 1 off (every particle
     //       against every box, the same result); default 8; read at launch)
+    //   adb shell setprop debug.fosfora.flowsamples alt          (board #3810: flow-field samples per particle per frame in the world
+    //       sim: 2 (two diagonals of the drift averaged, the swirl evolving in place), 1 (one diagonal: the field translates as a
+    //       block, the cheap reference), alt (one, alternating the two diagonals frame to frame and particle to particle, so each
+    //       particle averages them over time), altframe (one, alternating the diagonals frame to frame only, the whole cloud
+    //       on the same one, which keeps a wave's texture reads local); unknown values are logged and keep the default;
+    //       default altframe; read at launch)
     //   adb shell setprop debug.fosfora.size 0.5                 (sprite radius multiplier)
     //   adb shell setprop debug.fosfora.tri 0                    (6-vertex quads instead of 3-vertex sprites)
     //   adb shell setprop debug.fosfora.pull 0                   (instanced draw instead of vertex pulling)
@@ -829,6 +835,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 crate::box_cells::DEFAULT_CELLS
             })
         });
+    let flow_samples = debug_prop("debug.fosfora.flowsamples").map_or_else(
+        crate::box_cells::FlowSamples::default,
+        |v| {
+            crate::box_cells::FlowSamples::parse(&v).unwrap_or_else(|| {
+                let keep = crate::box_cells::FlowSamples::default();
+                log::warn!(
+                    "debug.fosfora.flowsamples: '{v}' is not 2, 1, alt or altframe (keeping {})",
+                    keep.describe()
+                );
+                keep
+            })
+        },
+    );
     let size_scale = debug_prop("debug.fosfora.size")
         .and_then(|v| v.parse::<f32>().ok())
         .filter(|s| (0.01..=10.0).contains(s))
@@ -842,9 +861,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .filter(|s| (0.1..=2.0).contains(s))
         .unwrap_or(1.0);
     info!(
-        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · sim cut {} · box cells {} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale} · mr {mr:?} · floor {floor} · gravity {gravity} · near cull {near_cull} · cube ({:.2}, {:.2}, {:.2}) half {cube_half}",
+        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · sim cut {} · box cells {} · flow samples {} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale} · mr {mr:?} · floor {floor} · gravity {gravity} · near cull {near_cull} · cube ({:.2}, {:.2}, {:.2}) half {cube_half}",
         crate::sim_cut::describe(sim_cut),
         crate::box_cells::describe(box_cells),
+        flow_samples.describe(),
         cube_center[0],
         cube_center[1],
         cube_center[2]
@@ -1021,6 +1041,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             sim_enabled,
                             sim_cut,
                             box_cells,
+                            flow_samples,
                             anchor: cube_center,
                         },
                     );

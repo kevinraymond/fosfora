@@ -91,7 +91,10 @@ const _: () = assert!(
     SURFACE_END == 213,
     "flux_xr_sim.wgsl reads the surface lanes 181..213"
 );
-const CELLS_END: usize = SURFACE_END + crate::box_cells::ROWS;
+/// The box cell list's header row (`XR_AUX_CELLS`), right after the
+/// surface lanes.
+const CELLS_HEADER: usize = SURFACE_END;
+const CELLS_END: usize = CELLS_HEADER + crate::box_cells::ROWS;
 const _: () = assert!(
     CELLS_END == 1238,
     "flux_xr_sim.wgsl reads the box cell list 213..1238"
@@ -113,6 +116,10 @@ struct World {
     /// Cells per axis of the box cell list (`crate::box_cells`,
     /// `debug.fosfora.boxcells`); 0 runs the full box loop.
     box_cells: u32,
+    /// Flow-field samples per particle per frame
+    /// (`crate::box_cells::FlowSamples`, `debug.fosfora.flowsamples`), in
+    /// the cell list header's z lane.
+    flow_samples: crate::box_cells::FlowSamples,
     /// Dispatches before a frozen sim stops: long enough for the emitter to
     /// fill the particle count, and never shorter than the S5 test sim's.
     warmup: u32,
@@ -162,6 +169,8 @@ pub struct WorldOptions {
     pub sim_cut: u32,
     /// See `World::box_cells`.
     pub box_cells: u32,
+    /// See `World::flow_samples`.
+    pub flow_samples: crate::box_cells::FlowSamples,
     /// Initial anchor in the reference space.
     pub anchor: [f32; 3],
 }
@@ -301,6 +310,7 @@ impl XrScene {
                 sim_enabled: options.sim_enabled,
                 sim_cut: options.sim_cut,
                 box_cells: options.box_cells,
+                flow_samples: options.flow_samples,
                 warmup,
                 dispatches: 0,
                 aux: Vec::new(),
@@ -442,6 +452,9 @@ impl XrScene {
                 .into_iter()
                 .map(|home| ParticleAux { home }),
         );
+        // The header's spare z lane: the flow samples mode
+        // (`flux_xr_sim.wgsl`, aux[213].z; Murmur ignores it).
+        world.flow_samples.write(&mut world.aux[CELLS_HEADER].home);
         world.depth_frame = world.depth_frame.wrapping_add(1);
         debug_assert_eq!(world.aux.len(), WORLD_AUX_ROWS);
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
