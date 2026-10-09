@@ -382,7 +382,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       was asked and what the runtime answered)
     //   adb shell setprop debug.fosfora.envdepthfilter 0|1|2     (the occluder's lookup: 2, the default, bilinear over the 2x2 texels around the
     //       ray, across silhouettes too, for softer object edges (board #3402); 1 edge-aware, interpolated when the four are within
-    //       0.25 m of each other, else the nearest, which cut silhouettes on the texel grid ("very chonky" worn); 0 the texel under the ray)
+    //       0.25 m of each other, else the nearest, which cut silhouettes on the texel grid ("very chonky" worn); 0 the texel under the ray;
+    //       0 and 1 exist on the full-screen pass only: with envdepthmesh on they log a warning and draw the full-screen pass)
+    //   adb shell setprop debug.fosfora.envdepthmesh 0|1|2|4|8   (board #3813: the occluder as a mesh, one vertex per 1, 2, 4 or 8 texels of
+    //       the depth map in the eye pass (320, 161, 81 or 41 per side of 320: every step-th texel and the last), the depth interpolated
+    //       between them like envdepthfilter 2; the faces pass, at half the eye's resolution, at twice the step, capped at 8; default 2
+    //       (faces 4), about 0.9 ms a frame under the full-screen pass, 4 about 1.3, 1 slower than it; 0 the full-screen pass, a
+    //       per-pixel lookup)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
     //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 0 reads texture row 0 as the bottom of the view, the default; the
     //       runtime renders the map in GL order, verified by envdepthcheck against the room's boxes; 1 as the top)
@@ -667,6 +673,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 Some("0") => 0.0,
                 Some("1") => crate::env_depth::FILTER_EDGE_M,
                 _ => d.filter_edge_m,
+            },
+            mesh_step: match debug_prop("debug.fosfora.envdepthmesh").as_deref() {
+                Some("0") => 0,
+                Some("1") => 1,
+                Some("2") => 2,
+                Some("4") => 4,
+                Some("8") => 8,
+                _ => d.mesh_step,
             },
             collide: env_collide,
             collide_res: match debug_prop("debug.fosfora.depthcollideres").as_deref() {
