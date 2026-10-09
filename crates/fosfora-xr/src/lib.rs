@@ -28,6 +28,7 @@ mod assets;
 mod audio;
 pub mod canvas;
 pub mod env_depth;
+pub mod faces_layer;
 pub mod gesture;
 #[cfg(target_os = "android")]
 mod gfx;

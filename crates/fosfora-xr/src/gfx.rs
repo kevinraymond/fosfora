@@ -18,7 +18,7 @@ use openxr as xr;
 use wgpu::hal;
 use wgpu::hal::api::Vulkan as HalVk;
 
-use crate::env_depth::{AtlasOutcome, EnvDepthPasses};
+use crate::env_depth::{AtlasOutcome, EnvDepthPasses, OccluderTarget};
 use crate::particles3d::{DEPTH_FORMAT, Particles3d};
 use crate::scene::XrScene;
 use crate::xr::XrContext;
@@ -101,6 +101,9 @@ pub struct Gfx {
     eyes: Vec<EyeUniform>,
     /// Per-eye depth attachment at the swapchain size (`set_eye_extent`).
     depth: Vec<wgpu::TextureView>,
+    /// Per-eye depth attachment of the faces pass at the faces swapchain's
+    /// size (`set_faces_extent`, board #3793); empty without a faces layer.
+    faces_depth: Vec<wgpu::TextureView>,
     pipeline: wgpu::RenderPipeline,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -475,6 +478,7 @@ impl Gfx {
             ghost_pipeline,
             eyes,
             depth: Vec::new(),
+            faces_depth: Vec::new(),
             pipeline,
             device,
             queue,
@@ -825,8 +829,22 @@ impl Gfx {
     /// Size the eye's depth attachment to its swapchain. Call once per eye,
     /// in eye order, after the swapchains exist.
     pub fn set_eye_extent(&mut self, eye: usize, width: u32, height: u32) {
+        let view = self.depth_view("xr-eye-depth", width, height);
+        set_slot(&mut self.depth, eye, view);
+    }
+
+    /// Size the eye's faces-pass depth attachment to its faces swapchain
+    /// (board #3793). Call once per eye, in eye order, only when the faces
+    /// layer exists: `render` draws the surfaces into the faces targets it
+    /// is given only for eyes that have one.
+    pub fn set_faces_extent(&mut self, eye: usize, width: u32, height: u32) {
+        let view = self.depth_view("xr-faces-depth", width, height);
+        set_slot(&mut self.faces_depth, eye, view);
+    }
+
+    fn depth_view(&self, label: &str, width: u32, height: u32) -> wgpu::TextureView {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("xr-eye-depth"),
+            label: Some(label),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -839,13 +857,7 @@ impl Gfx {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        if eye < self.depth.len() {
-            self.depth[eye] = view;
-        } else {
-            debug_assert_eq!(eye, self.depth.len());
-            self.depth.push(view);
-        }
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
 
     /// Wrap an OpenXR swapchain image as a wgpu texture plus a full view. The
@@ -980,6 +992,50 @@ impl Gfx {
         Ok((texture, view))
     }
 
+    /// Whether any surface draws this frame: a lit slot of the surfaces
+    /// pass or a ported effect.
+    fn faces_lit(&self) -> bool {
+        self.surface_count.get() > 0
+            || self
+                .ports
+                .as_ref()
+                .is_some_and(|p| !p.lit.borrow().is_empty())
+    }
+
+    /// The surfaces into `pass` for eye `i` (`eye` its camera), after the
+    /// occluders, so a desk or a hand in front of a surface hides its
+    /// light: the eye pass's (before the sprites, so embers on a surface
+    /// draw over it) or the faces pass's (board #3793). The one draw code
+    /// for both; the pipelines and their depth state are the same in
+    /// either.
+    fn draw_faces(&self, pass: &mut wgpu::RenderPass<'_>, eye: &EyeUniform, i: usize) {
+        // The surfaces pass: one draw per lit face, its slot bound (board
+        // #3472; the floor ripple drew here before it became the rings,
+        // and the wall spectrum right after until D2 folded it in as a
+        // slot, board #3488).
+        let lit = self.surface_count.get();
+        if lit > 0 {
+            pass.set_pipeline(&self.surface_pipeline);
+            pass.set_bind_group(0, &eye.bind_group, &[]);
+            for slot in &self.surfaces[..lit] {
+                pass.set_bind_group(1, &slot.bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
+        }
+        // The ported desktop effects on the same terms, after them: each
+        // lit face its effect's pipeline, the effect's uniform at group 0
+        // and this eye's camera with the port block at group 1 (board
+        // #3489).
+        if let Some(ports) = &self.ports {
+            for (slot, &effect) in ports.slots.iter().zip(ports.lit.borrow().iter()) {
+                pass.set_pipeline(&ports.pipelines[effect]);
+                pass.set_bind_group(0, &slot.effect_group, &[]);
+                pass.set_bind_group(1, &slot.eye_groups[i], &[]);
+                pass.draw(0..6, 0..1);
+            }
+        }
+    }
+
     /// Render both eyes and submit once: the depth atlas pass with its copy
     /// into the world effect's obstacle texture (returning what it did)
     /// and the environment depth occluder (`env_depth`, each when there is
@@ -989,9 +1045,15 @@ impl Gfx {
     /// depth the occluders and the primer wrote. The render pass is the last
     /// use of each swapchain image this frame, so it ends in
     /// `COLOR_ATTACHMENT_OPTIMAL` as `xrReleaseSwapchainImage` requires.
+    ///
+    /// `faces` (board #3793): the faces layer's targets, in eye order, when
+    /// it exists; the surfaces then draw into them in a pass of their own
+    /// ahead of each eye pass, and not in the eye pass. `None` keeps them
+    /// in the eye pass.
     pub fn render(
         &self,
         targets: &[&wgpu::TextureView],
+        faces: Option<&[&wgpu::TextureView]>,
         cameras: &[EyeCamera],
         clear: [f32; 4],
         particles: Option<&Particles3d>,
@@ -1036,46 +1098,46 @@ impl Gfx {
         }
         for (i, ((eye, target), cam)) in self.eyes.iter().zip(targets).zip(cameras).enumerate() {
             let depth = self.depth.get(i);
+            // Board #3793: with a faces layer, the surfaces draw into its
+            // smaller target first, in their own pass, behind the same
+            // occluders; the eye pass then leaves them out. Without one
+            // (the knob off, no passthrough) they draw in the eye pass.
+            let faces_pass = faces.and_then(|f| f.get(i)).zip(self.faces_depth.get(i));
+            if let Some((faces_target, faces_depth)) = faces_pass {
+                // Transparent black under premultiplied light, as the eye
+                // pass's clear is over passthrough: the compositor then
+                // blends the same light over the camera image.
+                let mut pass = begin_eye_pass(
+                    &mut encoder,
+                    "xr-faces",
+                    faces_target,
+                    [0.0; 4],
+                    Some(faces_depth),
+                );
+                // The occluders only matter under a lit face; the cleared
+                // layer is submitted either way.
+                if self.faces_lit() {
+                    if let Some(d) = &env_depth.occluder {
+                        d.draw(&mut pass, OccluderTarget::Faces, i);
+                    }
+                    if let Some(p) = particles {
+                        p.draw_occluders(&mut pass, i);
+                    }
+                    self.draw_faces(&mut pass, eye, i);
+                }
+            }
             // Pipeline and camera slot before the pass; the draw goes inside it.
             // Neither while the world effect is hidden (`set_world_visible`).
             let world_draw = scene
                 .as_deref_mut()
                 .filter(|_| self.world_visible.get())
                 .and_then(|s| s.prepare_world(&self.device, cam));
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("xr-eye"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: f64::from(clear[0]),
-                            g: f64::from(clear[1]),
-                            b: f64::from(clear[2]),
-                            a: f64::from(clear[3]),
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: depth.map(|view| {
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Discard,
-                        }),
-                        stencil_ops: None,
-                    }
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+            let mut pass = begin_eye_pass(&mut encoder, "xr-eye", target, clear, depth);
             // The live depth map first, right after the clear: it writes
             // the real room's depth (compare Always) and everything after
             // tests against it.
             if let Some(d) = &env_depth.occluder {
-                d.draw(&mut pass, i);
+                d.draw(&mut pass, OccluderTarget::Eye, i);
             }
             if let Some(quad) = &self.quad {
                 pass.set_pipeline(&self.pipeline);
@@ -1086,34 +1148,11 @@ impl Gfx {
             if let Some(p) = particles {
                 p.draw_occluders(&mut pass, i);
             }
-            // The surfaces pass after the occluders, so a desk or a hand
-            // in front of a surface hides its light, and before the
-            // sprites, so embers on a surface draw over it: one draw per
-            // lit face, its slot bound (board #3472; the floor ripple drew
-            // here before it became the rings, and the wall spectrum right
-            // after until D2 folded it in as a slot, board #3488).
-            let lit = self.surface_count.get();
-            if lit > 0 {
-                pass.set_pipeline(&self.surface_pipeline);
-                pass.set_bind_group(0, &eye.bind_group, &[]);
-                for slot in &self.surfaces[..lit] {
-                    pass.set_bind_group(1, &slot.bind_group, &[]);
-                    pass.draw(0..6, 0..1);
-                }
+            if faces_pass.is_none() {
+                self.draw_faces(&mut pass, eye, i);
             }
-            // The ported desktop effects on the same terms, after them:
-            // each lit face its effect's pipeline, the effect's uniform at
-            // group 0 and this eye's camera with the port block at group 1
-            // (board #3489).
-            if let Some(ports) = &self.ports {
-                for (slot, &effect) in ports.slots.iter().zip(ports.lit.borrow().iter()) {
-                    pass.set_pipeline(&ports.pipelines[effect]);
-                    pass.set_bind_group(0, &slot.effect_group, &[]);
-                    pass.set_bind_group(1, &slot.eye_groups[i], &[]);
-                    pass.draw(0..6, 0..1);
-                }
-            }
-            // The room editor's highlight on the same terms, after it.
+            // The room editor's highlight on the surfaces' terms, after
+            // them; it stays in the eye pass with the faces layer on.
             if self.highlight_visible.get() {
                 pass.set_pipeline(&self.highlight_pipeline);
                 pass.set_bind_group(0, &eye.bind_group, &[]);
@@ -1155,6 +1194,55 @@ impl Gfx {
         self.queue.submit([encoder.finish()]);
         atlas
     }
+}
+
+/// Put `view` at `slot` of `views`: replace it, or append it as the next.
+fn set_slot(views: &mut Vec<wgpu::TextureView>, slot: usize, view: wgpu::TextureView) {
+    if slot < views.len() {
+        views[slot] = view;
+    } else {
+        debug_assert_eq!(slot, views.len());
+        views.push(view);
+    }
+}
+
+/// Begin one eye's render pass into `target`: color cleared to `clear` and
+/// stored (the compositor reads it), depth (when there is an attachment)
+/// cleared to 1.0 and discarded.
+fn begin_eye_pass<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    label: &str,
+    target: &wgpu::TextureView,
+    clear: [f32; 4],
+    depth: Option<&wgpu::TextureView>,
+) -> wgpu::RenderPass<'e> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color {
+                    r: f64::from(clear[0]),
+                    g: f64::from(clear[1]),
+                    b: f64::from(clear[2]),
+                    a: f64::from(clear[3]),
+                }),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: depth.map(|view| wgpu::RenderPassDepthStencilAttachment {
+            view,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Clear(1.0),
+                store: wgpu::StoreOp::Discard,
+            }),
+            stencil_ops: None,
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    })
 }
 
 fn record_limits(l: &wgpu::Limits) -> RecordedLimits {

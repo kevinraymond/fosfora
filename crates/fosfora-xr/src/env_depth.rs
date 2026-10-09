@@ -937,6 +937,7 @@ impl DepthCollide {
 #[cfg(target_os = "android")]
 pub use runtime::{
     AtlasOutcome, AtlasPass, EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthPasses, EnvDepthSlot,
+    OccluderTarget,
 };
 
 /// The OpenXR provider, its swapchain wrapped as wgpu textures, and the
@@ -1097,17 +1098,31 @@ mod runtime {
         pub views: [DepthView; 2],
     }
 
+    /// The pass an occluder draw goes into. Each has its own target size
+    /// (`EyeReprojection::target_size`, the fragment position's NDC), so
+    /// each has its own uniform per eye (board #3793).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum OccluderTarget {
+        /// The eye pass, at the eye swapchain's size.
+        Eye = 0,
+        /// The faces pass, at the faces swapchain's size.
+        Faces = 1,
+    }
+
     /// The occluder draw for one frame: its uniforms are written, the
     /// bind groups point at the acquired image.
     pub struct EnvDepthDraw<'a> {
         pipeline: &'a wgpu::RenderPipeline,
-        bind_groups: &'a [wgpu::BindGroup; 2],
+        /// Per target (`OccluderTarget`), per eye.
+        bind_groups: &'a [[wgpu::BindGroup; 2]; 2],
     }
 
     impl EnvDepthDraw<'_> {
-        /// One full-screen triangle for `eye` (0 left, 1 right).
-        pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, eye: usize) {
-            let Some(group) = self.bind_groups.get(eye) else {
+        /// One full-screen triangle for `eye` (0 left, 1 right) into
+        /// `target`'s pass; that target's uniforms must have been written
+        /// (`EnvDepth::prepare`).
+        pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, target: OccluderTarget, eye: usize) {
+            let Some(group) = self.bind_groups[target as usize].get(eye) else {
                 return;
             };
             pass.set_pipeline(self.pipeline);
@@ -1173,10 +1188,12 @@ mod runtime {
         /// The depth atlas for the sim's collide
         /// (`debug.fosfora.depthcollide`), when asked for.
         atlas: Option<Atlas>,
-        /// Per swapchain image, per eye: the eye's uniform and the image.
-        bind_groups: Vec<[wgpu::BindGroup; 2]>,
+        /// Per swapchain image, per target (`OccluderTarget`), per eye:
+        /// that target's eye uniform and the image.
+        bind_groups: Vec<[[wgpu::BindGroup; 2]; 2]>,
         _images: Vec<(wgpu::Texture, wgpu::TextureView)>,
-        uniforms: [wgpu::Buffer; 2],
+        /// Per target, per eye.
+        uniforms: [[wgpu::Buffer; 2]; 2],
         pipeline: wgpu::RenderPipeline,
         provider: Provider,
         size: [u32; 2],
@@ -1326,35 +1343,42 @@ mod runtime {
             let atlas = opts
                 .collide
                 .then(|| build_atlas(&gfx.device, &images, opts.collide_res));
-            let uniforms = [0, 1].map(|eye| {
-                gfx.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(if eye == 0 {
-                        "xr-env-depth-eye-0"
-                    } else {
-                        "xr-env-depth-eye-1"
-                    }),
-                    size: (UNIFORM_ROWS * 16) as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
+            // One uniform set per target: the eye pass and the faces pass
+            // differ only in `target_size` (board #3793). The faces set is
+            // written only while a faces layer exists.
+            let uniforms = [
+                ["xr-env-depth-eye-0", "xr-env-depth-eye-1"],
+                ["xr-env-depth-faces-0", "xr-env-depth-faces-1"],
+            ]
+            .map(|labels| {
+                labels.map(|label| {
+                    gfx.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some(label),
+                        size: (UNIFORM_ROWS * 16) as u64,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    })
                 })
             });
             let bind_groups = images
                 .iter()
                 .map(|(_, view)| {
-                    [0, 1].map(|eye| {
-                        gfx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("xr-env-depth"),
-                            layout: &layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: uniforms[eye].as_entire_binding(),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: wgpu::BindingResource::TextureView(view),
-                                },
-                            ],
+                    uniforms.each_ref().map(|target| {
+                        target.each_ref().map(|uniform| {
+                            gfx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("xr-env-depth"),
+                                layout: &layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: uniform.as_entire_binding(),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::TextureView(view),
+                                    },
+                                ],
+                            })
                         })
                     })
                 })
@@ -1558,17 +1582,45 @@ mod runtime {
         /// `None` when neither the occluder nor the diagnostic is on (the
         /// self-check alone). `cameras` and `extents` (the eye targets'
         /// sizes) are in eye order, left first, like the depth map's
-        /// layers.
+        /// layers; `faces_extents`, the faces targets' sizes in the same
+        /// order, when the faces layer exists (board #3793): its uniforms
+        /// differ from the eye's only in the target size.
         pub fn prepare(
             &self,
             queue: &wgpu::Queue,
             frame: &EnvDepthFrame,
             cameras: &[EyeCamera],
             extents: &[[u32; 2]],
+            faces_extents: Option<&[[u32; 2]]>,
         ) -> Option<EnvDepthDraw<'_>> {
             if !self.opts.occlude && !self.opts.show {
                 return None;
             }
+            let targets = [
+                (OccluderTarget::Eye, Some(extents)),
+                (OccluderTarget::Faces, faces_extents),
+            ];
+            for (target, extents) in targets {
+                let Some(extents) = extents else {
+                    continue;
+                };
+                self.write_uniforms(queue, frame, cameras, extents, target);
+            }
+            Some(EnvDepthDraw {
+                pipeline: &self.pipeline,
+                bind_groups: &self.bind_groups[frame.index as usize],
+            })
+        }
+
+        /// One target's per-eye uniforms for `frame` (`prepare`).
+        fn write_uniforms(
+            &self,
+            queue: &wgpu::Queue,
+            frame: &EnvDepthFrame,
+            cameras: &[EyeCamera],
+            extents: &[[u32; 2]],
+            target: OccluderTarget,
+        ) {
             for (eye, (cam, extent)) in cameras.iter().zip(extents).enumerate().take(2) {
                 let depth = frame.views[eye];
                 let r = EyeReprojection {
@@ -1585,12 +1637,12 @@ mod runtime {
                     flip_v: self.opts.flip_v,
                     filter_edge_m: self.opts.filter_edge_m,
                 };
-                queue.write_buffer(&self.uniforms[eye], 0, bytemuck::cast_slice(&r.uniform()));
+                queue.write_buffer(
+                    &self.uniforms[target as usize][eye],
+                    0,
+                    bytemuck::cast_slice(&r.uniform()),
+                );
             }
-            Some(EnvDepthDraw {
-                pipeline: &self.pipeline,
-                bind_groups: &self.bind_groups[frame.index as usize],
-            })
         }
 
         /// The self-check, at most once a second: read a grid of both

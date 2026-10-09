@@ -11,6 +11,7 @@ use xr::sys::Handle as _;
 
 use crate::app::FrameStats;
 use crate::env_depth::{EnvDepthOptions, EnvDepthPasses, EnvDepthSlot};
+use crate::faces_layer::{FacesOptions, Layer};
 use crate::gfx::{EyeCamera, Gfx};
 use crate::input::{Hands, HandsFrame};
 use crate::math;
@@ -47,6 +48,9 @@ pub struct XrContext {
     /// `XR_EXT_hand_interaction` profile its input paths extend (board
     /// #3336).
     pub has_microgestures: bool,
+    /// `XR_FB_composition_layer_settings`: the faces layer's sharpening
+    /// (board #3793).
+    pub has_layer_settings: bool,
 }
 
 /// Which S7 features to bring up with the session.
@@ -75,6 +79,10 @@ pub struct MrOptions {
     /// Thumb microgestures through the app's action set
     /// (`debug.fosfora.micro`, board #3336); off, no action set exists.
     pub micro: bool,
+    /// The surfaces in their own composition layer
+    /// (`debug.fosfora.faceslayer`, `facescale`, `facesharpen`; board
+    /// #3793); created only over passthrough.
+    pub faces: FacesOptions,
 }
 
 /// Per-frame input the frame loop hands to `before_render`, by value.
@@ -169,6 +177,9 @@ impl XrContext {
             available.ext_hand_interaction && available.meta_hand_tracking_microgestures;
         enabled.ext_hand_interaction = has_microgestures;
         enabled.meta_hand_tracking_microgestures = has_microgestures;
+        // Board #3793: the faces layer's upsample sharpening, asked for
+        // per layer only by `debug.fosfora.facesharpen`.
+        enabled.fb_composition_layer_settings = available.fb_composition_layer_settings;
         info!(
             "hand aim (XR_FB_hand_tracking_aim): {}",
             enabled.fb_hand_tracking_aim
@@ -298,6 +309,7 @@ impl XrContext {
             has_scene,
             has_env_depth: enabled.meta_environment_depth,
             has_microgestures,
+            has_layer_settings: enabled.fb_composition_layer_settings,
         })
     }
 }
@@ -309,12 +321,79 @@ pub enum Flow {
     Exit,
 }
 
+/// One eye's swapchain, its images wrapped for wgpu: the eye's own, or
+/// its faces layer's (board #3793).
 struct Eye {
     /// wgpu wrappers first: they must go before the swapchain that owns the
     /// images (field drop order).
     images: Vec<(wgpu::Texture, wgpu::TextureView)>,
     swapchain: xr::Swapchain<xr::Vulkan>,
     extent: vk::Extent2D,
+}
+
+impl Eye {
+    /// A 2D color swapchain of `extent` in `format`, its images
+    /// enumerated and wrapped as wgpu textures.
+    fn create(
+        session: &xr::Session<xr::Vulkan>,
+        gfx: &Gfx,
+        format: vk::Format,
+        extent: vk::Extent2D,
+        what: &str,
+    ) -> Result<Self> {
+        let swapchain = session
+            .create_swapchain(&xr::SwapchainCreateInfo {
+                create_flags: xr::SwapchainCreateFlags::EMPTY,
+                usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT,
+                format: format.as_raw() as u32,
+                sample_count: 1,
+                width: extent.width,
+                height: extent.height,
+                face_count: 1,
+                array_size: 1,
+                mip_count: 1,
+            })
+            .with_context(|| format!("xrCreateSwapchain ({what})"))?;
+        let images = swapchain
+            .enumerate_images()
+            .with_context(|| format!("xrEnumerateSwapchainImages ({what})"))?
+            .into_iter()
+            .map(|raw| {
+                gfx.wrap_swapchain_image(vk::Image::from_raw(raw), extent.width, extent.height)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            images,
+            swapchain,
+            extent,
+        })
+    }
+
+    fn size(&self) -> [u32; 2] {
+        [self.extent.width, self.extent.height]
+    }
+
+    /// The projection view showing this swapchain whole for `view`.
+    fn projection_view(
+        &self,
+        view: &xr::View,
+    ) -> xr::CompositionLayerProjectionView<'_, xr::Vulkan> {
+        xr::CompositionLayerProjectionView::new()
+            .pose(view.pose)
+            .fov(view.fov)
+            .sub_image(
+                xr::SwapchainSubImage::new()
+                    .swapchain(&self.swapchain)
+                    .image_array_index(0)
+                    .image_rect(xr::Rect2Di {
+                        offset: xr::Offset2Di { x: 0, y: 0 },
+                        extent: xr::Extent2Di {
+                            width: self.extent.width as i32,
+                            height: self.extent.height as i32,
+                        },
+                    }),
+            )
+    }
 }
 
 /// Session-level state and the frame loop.
@@ -336,6 +415,12 @@ pub struct XrSession {
     /// `xrSyncActions` failures so far (logged at powers of two).
     micro_errors: u32,
     eyes: Vec<Eye>,
+    /// The faces layer's swapchains, one per eye (board #3793); empty
+    /// when it is off, and then the surfaces draw in the eye pass.
+    faces: Vec<Eye>,
+    /// Chain `NORMAL_SHARPENING` on the faces layer
+    /// (`debug.fosfora.facesharpen`, with the extension enabled).
+    faces_sharpen: bool,
     space: xr::Space,
     stream: xr::FrameStream<xr::Vulkan>,
     waiter: xr::FrameWaiter,
@@ -412,49 +497,22 @@ impl XrSession {
         // runs once per eye anyway.
         let mut eyes = Vec::with_capacity(EYE_COUNT);
         for (i, view) in ctx.views.iter().enumerate() {
-            let scale = |v: u32| {
-                (((v as f32) * eye_scale).round() as u32).clamp(
-                    64,
-                    view.max_image_rect_width.max(view.max_image_rect_height),
-                )
-            };
-            let extent = vk::Extent2D {
-                width: scale(view.recommended_image_rect_width),
-                height: scale(view.recommended_image_rect_height),
-            };
-            let swapchain = session
-                .create_swapchain(&xr::SwapchainCreateInfo {
-                    create_flags: xr::SwapchainCreateFlags::EMPTY,
-                    usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT,
-                    format: format.as_raw() as u32,
-                    sample_count: 1,
-                    width: extent.width,
-                    height: extent.height,
-                    face_count: 1,
-                    array_size: 1,
-                    mip_count: 1,
-                })
-                .with_context(|| format!("xrCreateSwapchain (eye {i})"))?;
-            let images = swapchain
-                .enumerate_images()
-                .context("xrEnumerateSwapchainImages")?
-                .into_iter()
-                .map(|raw| {
-                    gfx.wrap_swapchain_image(vk::Image::from_raw(raw), extent.width, extent.height)
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let recommended = [
+                view.recommended_image_rect_width,
+                view.recommended_image_rect_height,
+            ];
+            let max = view.max_image_rect_width.max(view.max_image_rect_height);
+            let [width, height] = crate::faces_layer::scaled_extent(recommended, eye_scale, max);
+            let extent = vk::Extent2D { width, height };
+            let eye = Eye::create(&session, gfx, format, extent, &format!("eye {i}"))?;
             info!(
                 "eye {i}: swapchain {}x{} {format:?} (scale {eye_scale}), {} images wrapped as wgpu textures",
                 extent.width,
                 extent.height,
-                images.len()
+                eye.images.len()
             );
             gfx.set_eye_extent(i, extent.width, extent.height);
-            eyes.push(Eye {
-                images,
-                swapchain,
-                extent,
-            });
+            eyes.push(eye);
         }
 
         // S7 bring-up. A missing extension is logged, not fatal: the gate
@@ -469,6 +527,50 @@ impl XrSession {
         } else {
             None
         };
+        // Board #3793: the surfaces' own layer, a second per-eye swapchain
+        // at a fraction of the recommended size, only over passthrough.
+        let faces_on = crate::faces_layer::faces_layer_on(passthrough.is_some(), mr.faces.layer);
+        let mut faces = Vec::new();
+        if faces_on {
+            for (i, view) in ctx.views.iter().enumerate() {
+                let recommended = [
+                    view.recommended_image_rect_width,
+                    view.recommended_image_rect_height,
+                ];
+                let max = view.max_image_rect_width.max(view.max_image_rect_height);
+                let [width, height] =
+                    crate::faces_layer::faces_extent(recommended, mr.faces.scale, max);
+                let extent = vk::Extent2D { width, height };
+                let eye = Eye::create(&session, gfx, format, extent, &format!("faces {i}"))?;
+                gfx.set_faces_extent(i, width, height);
+                faces.push(eye);
+            }
+        }
+        let faces_sharpen = faces_on && mr.faces.sharpen && ctx.has_layer_settings;
+        match faces.first() {
+            Some(f) => info!(
+                "faces layer: {}x{} per eye (scale {:.2}) · {} images · sharpen {}",
+                f.extent.width,
+                f.extent.height,
+                crate::faces_layer::face_scale(Some(mr.faces.scale)),
+                f.images.len(),
+                if faces_sharpen {
+                    "on"
+                } else if mr.faces.sharpen {
+                    "asked, XR_FB_composition_layer_settings missing"
+                } else {
+                    "off"
+                },
+            ),
+            None => info!(
+                "faces layer: off ({}), the surfaces draw in the eye pass",
+                if passthrough.is_none() {
+                    "no passthrough"
+                } else {
+                    "debug.fosfora.faceslayer 0"
+                }
+            ),
+        }
         let hands = if mr.hands {
             if ctx.has_hand_tracking {
                 Some(Hands::new(
@@ -562,6 +664,8 @@ impl XrSession {
             micro,
             micro_errors: 0,
             eyes,
+            faces,
+            faces_sharpen,
             space,
             stream,
             waiter,
@@ -784,9 +888,9 @@ impl XrSession {
     /// predicted display time, run `before_render` (the effect step) with
     /// them and `scene`, locate views, acquire the environment depth (when
     /// on), render both eyes through wgpu (a world-mode `scene` draws into
-    /// them too), submit the passthrough layer
-    /// (if any) under a projection layer. Must only be called while the
-    /// session is running.
+    /// them too), submit the passthrough layer (if any), the faces layer
+    /// (if any, board #3793) and the main projection layer, bottom first.
+    /// Must only be called while the session is running.
     pub fn frame(
         &mut self,
         gfx: &Gfx,
@@ -912,20 +1016,34 @@ impl XrSession {
         if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref()) {
             e.check(&gfx.device, &gfx.queue, f, &input.room_boxes);
         }
-        let extents: Vec<[u32; 2]> = self
-            .eyes
-            .iter()
-            .map(|e| [e.extent.width, e.extent.height])
-            .collect();
+        let extents: Vec<[u32; 2]> = self.eyes.iter().map(Eye::size).collect();
+        // The faces layer's occluder runs at its own size (board #3793).
+        let faces_extents: Vec<[u32; 2]> = self.faces.iter().map(Eye::size).collect();
+        let faces_on = !self.faces.is_empty();
         let env_passes = env
             .as_deref()
             .map_or_else(EnvDepthPasses::default, |e| EnvDepthPasses {
-                occluder: env_frame.and_then(|f| e.prepare(&gfx.queue, &f, &cameras, &extents)),
+                occluder: env_frame.and_then(|f| {
+                    e.prepare(
+                        &gfx.queue,
+                        &f,
+                        &cameras,
+                        &extents,
+                        faces_on.then_some(faces_extents.as_slice()),
+                    )
+                }),
                 atlas: e.atlas_pass(),
             });
 
+        // The eyes' images, then the faces layer's beside them.
         let mut image_indices = [0u32; EYE_COUNT];
-        for (eye, index) in self.eyes.iter_mut().zip(image_indices.iter_mut()) {
+        let mut faces_indices = [0u32; EYE_COUNT];
+        let acquires = self
+            .eyes
+            .iter_mut()
+            .zip(image_indices.iter_mut())
+            .chain(self.faces.iter_mut().zip(faces_indices.iter_mut()));
+        for (eye, index) in acquires {
             *index = eye
                 .swapchain
                 .acquire_image()
@@ -935,16 +1053,13 @@ impl XrSession {
                 .context("xrWaitSwapchainImage")?;
         }
 
-        let targets: Vec<&wgpu::TextureView> = self
-            .eyes
-            .iter()
-            .zip(image_indices.iter())
-            .map(|(eye, &index)| &eye.images[index as usize].1)
-            .collect();
+        let targets = acquired_views(&self.eyes, &image_indices);
+        let faces_targets = acquired_views(&self.faces, &faces_indices);
         // Only a world-mode scene draws into the eyes; a quad scene reaches
         // them through the quad texture.
         let atlas = gfx.render(
             &targets,
+            faces_on.then_some(faces_targets.as_slice()),
             &cameras,
             clear,
             particles,
@@ -955,7 +1070,7 @@ impl XrSession {
             e.note_atlas(atlas);
         }
 
-        for eye in &mut self.eyes {
+        for eye in self.eyes.iter_mut().chain(self.faces.iter_mut()) {
             eye.swapchain
                 .release_image()
                 .context("xrReleaseSwapchainImage")?;
@@ -965,23 +1080,7 @@ impl XrSession {
             .eyes
             .iter()
             .zip(views.iter())
-            .map(|(eye, view)| {
-                xr::CompositionLayerProjectionView::new()
-                    .pose(view.pose)
-                    .fov(view.fov)
-                    .sub_image(
-                        xr::SwapchainSubImage::new()
-                            .swapchain(&eye.swapchain)
-                            .image_array_index(0)
-                            .image_rect(xr::Rect2Di {
-                                offset: xr::Offset2Di { x: 0, y: 0 },
-                                extent: xr::Extent2Di {
-                                    width: eye.extent.width as i32,
-                                    height: eye.extent.height as i32,
-                                },
-                            }),
-                    )
-            })
+            .map(|(eye, view)| eye.projection_view(view))
             .collect();
         // Over passthrough the projection layer is blended by its alpha
         // (premultiplied, the wgpu default): where nothing was drawn the
@@ -996,10 +1095,48 @@ impl XrSession {
             .layer_flags(layer_flags)
             .space(&self.space)
             .views(&projection_views);
+        // Board #3793: the faces layer, the same poses and fovs over its
+        // own smaller images, premultiplied like the main layer (it exists
+        // only over passthrough); the runtime upsamples it at composition.
+        let faces_views: Vec<xr::CompositionLayerProjectionView<'_, xr::Vulkan>> = self
+            .faces
+            .iter()
+            .zip(views.iter())
+            .map(|(eye, view)| eye.projection_view(view))
+            .collect();
+        let sharpen = xr::sys::CompositionLayerSettingsFB {
+            ty: xr::sys::CompositionLayerSettingsFB::TYPE,
+            next: std::ptr::null(),
+            layer_flags: xr::sys::CompositionLayerSettingsFlagsFB::NORMAL_SHARPENING,
+        };
+        let faces_layer = faces_on.then(|| {
+            let faces = xr::CompositionLayerProjection::new()
+                .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+                .space(&self.space)
+                .views(&faces_views);
+            if !self.faces_sharpen {
+                return faces;
+            }
+            let mut raw = faces.into_raw();
+            raw.next = std::ptr::from_ref(&sharpen).cast();
+            // SAFETY: `raw` came from the builder just above, its space and
+            // views borrowed from `self.space` and `faces_views`; `next`
+            // points at `sharpen`, a fully initialized
+            // `XrCompositionLayerSettingsFB` (its extension enabled, as
+            // `faces_sharpen` requires) with a null `next`. All three
+            // outlive `xrEndFrame` below, the last use of this layer.
+            unsafe { xr::CompositionLayerProjection::from_raw(raw) }
+        });
         let passthrough_layer = self.passthrough_layer();
-        let mut layers: Vec<&xr::CompositionLayerBase<'_, xr::Vulkan>> = Vec::with_capacity(2);
-        layers.extend(passthrough_layer.iter().map(as_layer_base));
-        layers.push(&layer);
+        let order = crate::faces_layer::layer_order(passthrough_layer.is_some(), faces_on);
+        let layers: Vec<&xr::CompositionLayerBase<'_, xr::Vulkan>> = order
+            .iter()
+            .filter_map(|l| match l {
+                Layer::Passthrough => passthrough_layer.as_ref().map(as_layer_base),
+                Layer::Faces => faces_layer.as_deref(),
+                Layer::Main => Some(&*layer),
+            })
+            .collect();
         stats.record_cpu(cpu_start.elapsed());
         self.stream
             .end(frame_state.predicted_display_time, self.blend_mode, &layers)
@@ -1024,6 +1161,14 @@ impl XrSession {
                 layer_handle: p.layer.as_raw(),
             })
     }
+}
+
+/// The wgpu view of each swapchain's acquired image, in eye order.
+fn acquired_views<'a>(eyes: &'a [Eye], indices: &[u32]) -> Vec<&'a wgpu::TextureView> {
+    eyes.iter()
+        .zip(indices)
+        .map(|(eye, &index)| &eye.images[index as usize].1)
+        .collect()
 }
 
 /// View a raw passthrough layer as the polymorphic layer base `xrEndFrame`

@@ -312,6 +312,11 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   crate does not re-export the passthrough layer builder, so `xr.rs` fills the
   raw `XrCompositionLayerPassthroughFB` and casts it to the base header, as
   the crate's own builders do.
+  Since board #3793 a frame over passthrough submits three layers, bottom
+  first: passthrough, the faces layer (the lit room surfaces at a fraction
+  of the eye resolution, `BLEND_TEXTURE_SOURCE_ALPHA`, knob
+  `debug.fosfora.faceslayer`), then the main projection layer;
+  `SURFACES_DESIGN.md`, D2c. Without passthrough there is no faces layer.
 - **Hands.** `XR_EXT_hand_tracking`, one tracker per hand, joints located in
   the stage space at the predicted display time. Every joint with a valid
   position becomes an obstacle sphere with the runtime's joint radius (up to
