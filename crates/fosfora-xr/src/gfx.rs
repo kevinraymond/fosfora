@@ -1134,7 +1134,7 @@ impl Gfx {
                 .and_then(|s| s.prepare_world(&self.device, cam));
             let mut pass = begin_eye_pass(&mut encoder, "xr-eye", target, clear, depth);
             // The live depth map first, right after the clear: it writes
-            // the real room's depth (compare Always) and everything after
+            // the real room's depth (compare Always, or LessEqual as a mesh) and everything after
             // tests against it.
             if let Some(d) = &env_depth.occluder {
                 d.draw(&mut pass, OccluderTarget::Eye, i);

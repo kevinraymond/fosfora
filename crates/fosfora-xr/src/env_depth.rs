@@ -29,12 +29,40 @@
 //! texel grid, and object edges read "very chonky" worn (board #3402), so
 //! the default blends across them; 1 stays for the A/B.
 //!
+//! That pass is per pixel: four texel loads and four matrix transforms
+//! for each of 3 million pixels per eye. So by default the map is drawn
+//! as a mesh instead (`envdepthmesh`, [`EnvDepthOptions::mesh_step`]): a
+//! grid with one vertex per 2 texels (or per 1, 4 or 8), whose vertex
+//! stage places each vertex where the depth camera saw its texel's
+//! distance and projects it into the eye; the
+//! rasterizer interpolates the depth across each triangle, the linear
+//! blend across silhouettes `envdepthfilter 2` makes per pixel, with no
+//! `frag_depth` and an empty fragment stage. A texel with no data or under
+//! the discard distance puts its vertex on the far plane, where the
+//! cleared depth already is, so it hides nothing; the triangles between it
+//! and a neighbor with data lean back toward it. The mesh draws with
+//! compare `LessEqual`, so where it folds over itself the nearest surface
+//! stays. `envdepthfilter 0` and `1` exist on the full-screen pass only,
+//! which `envdepthmesh 0` keeps for the A/B. The faces pass, at half the
+//! eye's resolution, draws at twice the step (capped at
+//! [`MESH_STEP_MAX`]), the same texels per target pixel.
+//!
+//! On the Quest 3 (ovrgpuprofiler, board #3813, per eye, binning / render
+//! ms, faces render after): no depth at all 0.56 / 0.19, faces 0.04; the
+//! full-screen pass 0.54 / 0.86, faces 0.22; the mesh at step 1 0.97 /
+//! 0.64, faces 0.41 (slower overall: 102K vertices with a texel load each
+//! and 204K tiny triangles cost more to bin and rasterize than the
+//! per-pixel pass saved); step 2 0.70 / 0.34, faces 0.15; step 4 0.64 /
+//! 0.24, faces 0.08. Step 2 saves about 0.9 ms a frame against the
+//! full-screen pass, step 4 about 1.3.
+//!
 //! Plain numbers in, so the math and the shader build and test on the
 //! desktop; [`EyeReprojection::frag_depth`] is the CPU mirror of
-//! [`ENV_DEPTH_WGSL`]'s fragment stage. The OpenXR provider, its swapchain
+//! [`ENV_DEPTH_WGSL`]'s fragment stage and [`EyeReprojection::vertex_clip`]
+//! of its mesh vertex stage. The OpenXR provider, its swapchain
 //! and the pipelines are Android-only (`runtime` below).
 
-use glam::{Mat4, Quat, Vec2, Vec3};
+use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 use crate::math::Fov;
 
@@ -47,7 +75,7 @@ pub const NEAR_CUT_M: f32 = 0.2;
 pub const SHOW_FAR_M: f32 = 4.0;
 /// Rows of [`EyeReprojection::uniform`], `struct EnvEye` in
 /// [`ENV_DEPTH_WGSL`].
-pub const UNIFORM_ROWS: usize = 21;
+pub const UNIFORM_ROWS: usize = 22;
 /// The occluder's edge-aware filter (`debug.fosfora.envdepthfilter 1`):
 /// the 2x2 texels around a lookup are interpolated when their distances
 /// are within this of each other (m), else the nearest is taken.
@@ -56,6 +84,12 @@ pub const FILTER_EDGE_M: f32 = 0.25;
 /// reaches, so the four are always interpolated, across silhouettes too
 /// (softer object edges; board #3402).
 pub const FILTER_SOFT_M: f32 = 1.0e6;
+/// The occluder mesh's default step in the eye pass
+/// (`debug.fosfora.envdepthmesh`): one vertex per 2 texels. Step 1 measured
+/// slower than the full-screen pass (board #3813).
+pub const MESH_STEP: u32 = 2;
+/// The coarsest mesh step, for the knob and the faces pass's doubling.
+pub const MESH_STEP_MAX: u32 = 8;
 /// How far behind the surface the depth map shows a particle still
 /// collides with it (m, `debug.fosfora.depthcollidethick`): deeper, it is
 /// behind the surface and the occluder hides it.
@@ -88,6 +122,11 @@ pub struct EnvDepthOptions {
     /// under the ray (nearest), otherwise the edge threshold (m) of the
     /// edge-aware filter ([`filtered_distance`]).
     pub filter_edge_m: f32,
+    /// The occluder as a mesh with one vertex per this many texels in the
+    /// eye pass (1, 2, 4 or 8), or 0 for the full-screen pass
+    /// (`debug.fosfora.envdepthmesh`, board #3813). What is drawn, per
+    /// target, is [`Self::drawn_mesh_steps`].
+    pub mesh_step: u32,
     /// Build the depth atlas every frame for the world sim's collide
     /// (`debug.fosfora.depthcollide`, board #3352).
     pub collide: bool,
@@ -115,6 +154,7 @@ impl Default for EnvDepthOptions {
             flip_v: false,
             check: false,
             filter_edge_m: FILTER_SOFT_M,
+            mesh_step: MESH_STEP,
             collide: false,
             collide_res: COLLIDE_RES,
             collide_thickness_m: COLLIDE_THICKNESS_M,
@@ -122,6 +162,77 @@ impl Default for EnvDepthOptions {
             collide_upload: true,
         }
     }
+}
+
+impl EnvDepthOptions {
+    /// The mesh step the occluder draws with in the eye pass, 0 for the
+    /// full-screen pass: the asked [`Self::mesh_step`], unless the filter
+    /// asked for is one the mesh cannot make (`envdepthfilter 0` or `1`:
+    /// the mesh blends across every silhouette, like `2`), which only the
+    /// full-screen pass does.
+    pub fn drawn_mesh_step(&self) -> u32 {
+        if self.filter_edge_m >= FILTER_SOFT_M {
+            self.mesh_step
+        } else {
+            0
+        }
+    }
+
+    /// The mesh step per target, in `OccluderTarget` order (the eye pass,
+    /// then the faces pass): [`Self::drawn_mesh_step`] and its
+    /// [`faces_mesh_step`].
+    pub fn drawn_mesh_steps(&self) -> [u32; 2] {
+        let eye = self.drawn_mesh_step();
+        [eye, faces_mesh_step(eye)]
+    }
+}
+
+/// The faces pass's mesh step for the eye pass's `step`: its target is
+/// half the eye's resolution each way (840x880 against 1680x1760), so
+/// twice the step keeps the texels per target pixel, capped at
+/// [`MESH_STEP_MAX`]. 0 (the full-screen pass) stays 0.
+pub fn faces_mesh_step(step: u32) -> u32 {
+    (2 * step).min(MESH_STEP_MAX)
+}
+
+/// Vertices along a side of `len` texels of the occluder mesh at one
+/// vertex per `step` texels: texel 0, every `step`th after it, and the
+/// last texel ([`mesh_texel`]), so a 320 side takes 320, 161, 81 and 41
+/// at steps 1, 2, 4 and 8. 0 with no mesh (`step` 0).
+pub fn mesh_side(len: u32, step: u32) -> u32 {
+    if len == 0 || step == 0 {
+        return 0;
+    }
+    (len - 1).div_ceil(step) + 1
+}
+
+/// The texel vertex `k` along a side of `len` texels loads (step `step`).
+pub fn mesh_texel(k: u32, len: u32, step: u32) -> u32 {
+    (k * step).min(len.saturating_sub(1))
+}
+
+/// The length of [`mesh_indices`] for a `width` x `height` map at `step`:
+/// six per grid cell.
+pub fn mesh_indices_len(width: u32, height: u32, step: u32) -> u32 {
+    6 * mesh_side(width, step).saturating_sub(1) * mesh_side(height, step).saturating_sub(1)
+}
+
+/// The occluder mesh over a `size` map at one vertex per `step` texels: a
+/// triangle list, two per grid cell, vertex `y * side + x` the `x`th of
+/// row `y` ([`mesh_side`] of the width per row), as the vertex stage reads
+/// its `vertex_index`.
+pub fn mesh_indices(size: [u32; 2], step: u32) -> Vec<u32> {
+    let (nx, ny) = (mesh_side(size[0], step), mesh_side(size[1], step));
+    let cells = (nx.saturating_sub(1) * ny.saturating_sub(1)) as usize;
+    let mut out = Vec::with_capacity(6 * cells);
+    for y in 0..ny.saturating_sub(1) {
+        for x in 0..nx.saturating_sub(1) {
+            let a = y * nx + x;
+            let (b, c, d) = (a + 1, a + nx, a + nx + 1);
+            out.extend_from_slice(&[a, b, c, b, d, c]);
+        }
+    }
+    out
 }
 
 /// One layer of an acquired depth image: the pose it was rendered from (in
@@ -185,6 +296,9 @@ pub struct EyeReprojection {
     /// ([`Self::reproject`]) takes its sample through a closure; the
     /// filter's own mirror is [`filtered_distance`].
     pub filter_edge_m: f32,
+    /// The mesh's step for this target
+    /// ([`EnvDepthOptions::drawn_mesh_steps`]), 0 without it.
+    pub mesh_step: u32,
 }
 
 impl EyeReprojection {
@@ -224,6 +338,12 @@ impl EyeReprojection {
             if self.flip_v { 1.0 } else { 0.0 },
             SHOW_FAR_M,
             self.filter_edge_m.max(0.0),
+        ];
+        rows[21] = [
+            self.mesh_step as f32,
+            mesh_side(self.depth_size[0], self.mesh_step) as f32,
+            0.0,
+            0.0,
         ];
         rows
     }
@@ -285,6 +405,63 @@ impl EyeReprojection {
         let clip = self.view_proj * w.extend(1.0);
         (clip.w > 0.0).then(|| (clip.z / clip.w).clamp(0.0, 1.0))
     }
+
+    /// Where the mesh puts the vertex of `texel`, in depth map coordinates
+    /// (as [`Self::depth_uv`] gives them): the texel's center, except that
+    /// the outer ring sits on the map's edge, so the mesh covers the whole
+    /// map as the full-screen pass's clamped lookup does.
+    pub fn mesh_uv(&self, texel: [u32; 2]) -> Vec2 {
+        let at = |t: u32, len: u32| {
+            if t + 1 >= len {
+                1.0
+            } else if t == 0 {
+                0.0
+            } else {
+                (t as f32 + 0.5) / len as f32
+            }
+        };
+        Vec2::new(
+            at(texel[0], self.depth_size[0]),
+            at(texel[1], self.depth_size[1]),
+        )
+    }
+
+    /// The depth camera's ray through depth map coordinates `uv`, in its
+    /// own space, scaled to z = -1 (so a distance along -Z scales it): the
+    /// inverse of [`Self::depth_uv`].
+    pub fn depth_ray(&self, uv: Vec2) -> Vec3 {
+        let (l, r) = (self.depth_fov.left.tan(), self.depth_fov.right.tan());
+        let (up, down) = (self.depth_fov.up.tan(), self.depth_fov.down.tan());
+        let v_up = if self.flip_v { 1.0 - uv.y } else { uv.y };
+        Vec3::new(l + uv.x * (r - l), down + v_up * (up - down), -1.0)
+    }
+
+    /// The clip position the mesh's vertex stage (`vs_mesh` in
+    /// [`ENV_DEPTH_WGSL`]) outputs for the vertex of `texel`, which holds
+    /// the stored value `d`: the point along the texel's depth ray at the
+    /// decoded distance, in the eye's clip space. Without data (`d >= 1`)
+    /// or under the discard distance, the point at [`RAY_DISTANCE_M`] along
+    /// that ray, moved onto the far plane (z = w, depth 1).
+    pub fn vertex_clip(&self, texel: [u32; 2], d: f32) -> Vec4 {
+        let ray = self.depth_ray(self.mesh_uv(texel));
+        let dist = (d < 1.0)
+            .then(|| decode_distance(d, self.near, self.far))
+            .filter(|&dist| dist >= self.near_cut_m);
+        let q = ray * dist.unwrap_or(RAY_DISTANCE_M);
+        let w = self.depth_view.inverse().transform_point3(q);
+        let mut clip = self.view_proj * w.extend(1.0);
+        if dist.is_none() {
+            clip.z = clip.w;
+        }
+        clip
+    }
+
+    /// [`Self::vertex_clip`] after the divide: NDC x and y, and the depth
+    /// the rasterizer starts from at that vertex. `None` behind the eye.
+    pub fn vertex_depth(&self, texel: [u32; 2], d: f32) -> Option<Vec3> {
+        let clip = self.vertex_clip(texel, d);
+        (clip.w > 0.0).then(|| clip.truncate() / clip.w)
+    }
 }
 
 /// The distance the occluder writes at depth map coordinates `uv` (0..1
@@ -335,10 +512,13 @@ pub fn filtered_distance(
 }
 
 /// The occluder's shader. Group 0: binding 0 the eye's `EnvEye` rows
-/// ([`EyeReprojection::uniform`]), binding 1 the depth map. The vertex
-/// stage is one full-screen triangle; the fragment stage mirrors
-/// [`EyeReprojection::frag_depth`] and also returns the decoded distance as
-/// gray for the diagnostic pipeline (the occluder masks color off).
+/// ([`EyeReprojection::uniform`]), binding 1 the depth map. Two ways in.
+/// The full-screen pass (`envdepthmesh 0`): `vs_main` is one full-screen
+/// triangle; `fs_main` mirrors [`EyeReprojection::frag_depth`] and also
+/// returns the decoded distance as gray for the diagnostic pipeline (the
+/// occluder masks color off). The mesh: `vs_mesh` mirrors
+/// [`EyeReprojection::vertex_clip`]; `fs_mesh` writes nothing (color
+/// masked off), `fs_mesh_show` the diagnostic gray.
 pub const ENV_DEPTH_WGSL: &str = r"
 struct EnvEye {
     view_proj: mat4x4<f32>,
@@ -358,6 +538,8 @@ struct EnvEye {
     // z distance shown as white (m), w the filter's edge threshold (m; 0 =
     // the texel under the ray)
     misc: vec4<f32>,
+    // x the mesh's texels per vertex, y its vertices per row (0 without)
+    mesh: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> env: EnvEye;
 @group(0) @binding(1) var depth_map: texture_depth_2d_array;
@@ -476,6 +658,66 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> FragOut {
     let g = srgb_to_linear(clamp(dist / env.misc.z, 0.0, 1.0));
     out.color = vec4<f32>(g, g, g, 1.0);
     return out;
+}
+
+struct MeshOut {
+    @builtin(position) pos: vec4<f32>,
+    // For the diagnostic: x the distance (m), y 1 with data, 0 without.
+    @location(0) show: vec2<f32>,
+}
+
+// The occluder as a mesh (EyeReprojection::vertex_clip in env_depth.rs is
+// the CPU mirror): vertex i is the (i % mesh.y)th of row i / mesh.y, one
+// per mesh.x texels, placed where the depth camera saw its texel's
+// distance. Without data, or under the discard distance, on the far plane.
+@vertex
+fn vs_mesh(@builtin(vertex_index) i: u32) -> MeshOut {
+    let side = u32(env.mesh.y);
+    let last = vec2<u32>(env.sizes.xy) - vec2<u32>(1u);
+    let t = min(vec2<u32>(i % side, i / side) * u32(env.mesh.x), last);
+    // The texel's center; the outer ring on the map's edge, so the mesh
+    // covers the map as the full-screen pass's clamped lookup does.
+    var uv = (vec2<f32>(t) + 0.5) / env.sizes.xy;
+    uv = select(uv, vec2<f32>(0.0), t == vec2<u32>(0u));
+    uv = select(uv, vec2<f32>(1.0), t == last);
+    var v_up = uv.y;
+    if env.misc.y > 0.5 {
+        v_up = 1.0 - uv.y;
+    }
+    // The depth camera's ray through uv, at z = -1.
+    let ray = vec3<f32>(
+        mix(env.depth_tan.x, env.depth_tan.y, uv.x),
+        mix(env.depth_tan.w, env.depth_tan.z, v_up),
+        -1.0
+    );
+    let dist = texel_distance(vec2<i32>(t));
+    let valid = dist >= 0.0;
+    let w = env.inv_depth_view * vec4<f32>(ray * select(env.eye.w, dist, valid), 1.0);
+    var out: MeshOut;
+    out.pos = env.view_proj * vec4<f32>(w.xyz / w.w, 1.0);
+    if !valid {
+        // Depth 1, where the cleared depth already is: it hides nothing.
+        out.pos.z = out.pos.w;
+    }
+    out.show = vec2<f32>(select(env.misc.z, dist, valid), select(0.0, 1.0, valid));
+    return out;
+}
+
+// The occluder writes depth only; the pass's color target is masked off.
+@fragment
+fn fs_mesh() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0);
+}
+
+// The diagnostic gray of fs_main, off the interpolated distance; where a
+// triangle leans toward a vertex without data, nothing.
+@fragment
+fn fs_mesh_show(@location(0) show: vec2<f32>) -> @location(0) vec4<f32> {
+    if show.y < 0.5 {
+        discard;
+    }
+    let g = srgb_to_linear(clamp(show.x / env.misc.z, 0.0, 1.0));
+    return vec4<f32>(g, g, g, 1.0);
 }
 ";
 
@@ -961,7 +1203,7 @@ mod runtime {
     use super::{
         ATLAS_PARAM_ROWS, ATLAS_WGSL, CHECK_GRID, CHECK_WGSL, CheckStats, DepthCollide, DepthView,
         ENV_DEPTH_WGSL, EnvDepthOptions, EyeReprojection, Obb, Reading, UNIFORM_ROWS, atlas_params,
-        atlas_row_texels, check_layer,
+        atlas_row_texels, check_layer, mesh_indices, mesh_indices_len, mesh_side,
     };
     use crate::gfx::{EyeCamera, Gfx, SWAPCHAIN_FORMAT};
     use crate::math::Fov;
@@ -1115,20 +1357,37 @@ mod runtime {
         pipeline: &'a wgpu::RenderPipeline,
         /// Per target (`OccluderTarget`), per eye.
         bind_groups: &'a [[wgpu::BindGroup; 2]; 2],
+        /// Per target (`OccluderTarget`), the mesh's index buffer, `None`
+        /// for the full-screen pass.
+        meshes: [Option<&'a Mesh>; 2],
     }
 
     impl EnvDepthDraw<'_> {
-        /// One full-screen triangle for `eye` (0 left, 1 right) into
-        /// `target`'s pass; that target's uniforms must have been written
-        /// (`EnvDepth::prepare`).
+        /// The occluder for `eye` (0 left, 1 right) into `target`'s pass,
+        /// the mesh or one full-screen triangle; that target's uniforms
+        /// must have been written (`EnvDepth::prepare`).
         pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, target: OccluderTarget, eye: usize) {
             let Some(group) = self.bind_groups[target as usize].get(eye) else {
                 return;
             };
             pass.set_pipeline(self.pipeline);
             pass.set_bind_group(0, group, &[]);
-            pass.draw(0..3, 0..1);
+            match self.meshes[target as usize] {
+                Some(mesh) => {
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.count, 0, 0..1);
+                }
+                None => pass.draw(0..3, 0..1),
+            }
         }
+    }
+
+    /// The occluder mesh's static triangle list at one step
+    /// (`mesh_indices`): the vertices come from `vertex_index` alone.
+    struct Mesh {
+        step: u32,
+        indices: wgpu::Buffer,
+        count: u32,
     }
 
     /// The raw handles, destroyed on drop: the provider stopped, then the
@@ -1195,6 +1454,12 @@ mod runtime {
         /// Per target, per eye.
         uniforms: [[wgpu::Buffer; 2]; 2],
         pipeline: wgpu::RenderPipeline,
+        /// The occluder mesh at each distinct step in use, none for the
+        /// full-screen pass.
+        meshes: Vec<Mesh>,
+        /// The mesh's step per target (`OccluderTarget`), 0 for the
+        /// full-screen pass (`EnvDepthOptions::drawn_mesh_steps`).
+        mesh_steps: [u32; 2],
         provider: Provider,
         size: [u32; 2],
         opts: EnvDepthOptions,
@@ -1338,7 +1603,40 @@ mod runtime {
                 }
             };
 
-            let (pipeline, layout) = build_pipeline(&gfx.device, opts.show);
+            let mesh_steps = opts.drawn_mesh_steps();
+            if mesh_steps[0] == 0 && opts.mesh_step > 0 {
+                warn!(
+                    "environment depth: envdepthmesh {} asked with envdepthfilter {}, which only the full-screen pass makes: drawing the full-screen pass",
+                    opts.mesh_step,
+                    if opts.filter_edge_m <= 0.0 {
+                        "0 (nearest)"
+                    } else {
+                        "1 (edge-aware)"
+                    }
+                );
+            }
+            let (pipeline, layout) = build_pipeline(&gfx.device, opts.show, mesh_steps[0] > 0);
+            // One index buffer per distinct step: the eye's and the faces'
+            // (the same at step 8).
+            let mut meshes: Vec<Mesh> = Vec::new();
+            for step in mesh_steps {
+                if step == 0 || meshes.iter().any(|m| m.step == step) {
+                    continue;
+                }
+                use wgpu::util::DeviceExt as _;
+                let indices = mesh_indices([width, height], step);
+                meshes.push(Mesh {
+                    step,
+                    indices: gfx
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("xr-env-depth-mesh"),
+                            contents: bytemuck::cast_slice(&indices),
+                            usage: wgpu::BufferUsages::INDEX,
+                        }),
+                    count: u32::try_from(indices.len()).unwrap_or(u32::MAX),
+                });
+            }
             let check = opts.check.then(|| build_check(&gfx.device, &images));
             let atlas = opts
                 .collide
@@ -1384,7 +1682,7 @@ mod runtime {
                 })
                 .collect();
             info!(
-                "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · filter {} · discard under {} m · v flip {} · self-check {} · depth collide {}",
+                "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · {} · filter {} · discard under {} m · v flip {} · self-check {} · depth collide {}",
                 images.len(),
                 if hand_removal { "on" } else { "off" },
                 opts.hand_removal,
@@ -1394,6 +1692,23 @@ mod runtime {
                     "occluder"
                 } else {
                     "no draw"
+                },
+                if mesh_steps[0] > 0 {
+                    let mesh = |step: u32| {
+                        format!(
+                            "step {step} ({}x{} vertices, {} triangles)",
+                            mesh_side(width, step),
+                            mesh_side(height, step),
+                            mesh_indices_len(width, height, step) / 3
+                        )
+                    };
+                    format!(
+                        "mesh, eye pass {}, faces pass {}",
+                        mesh(mesh_steps[0]),
+                        mesh(mesh_steps[1])
+                    )
+                } else {
+                    "full-screen pass".to_owned()
                 },
                 if opts.filter_edge_m <= 0.0 {
                     "nearest texel".to_owned()
@@ -1429,6 +1744,8 @@ mod runtime {
                 _images: images,
                 uniforms,
                 pipeline,
+                meshes,
+                mesh_steps,
                 provider,
                 size: [width, height],
                 opts,
@@ -1609,6 +1926,9 @@ mod runtime {
             Some(EnvDepthDraw {
                 pipeline: &self.pipeline,
                 bind_groups: &self.bind_groups[frame.index as usize],
+                meshes: self
+                    .mesh_steps
+                    .map(|step| self.meshes.iter().find(|m| m.step == step)),
             })
         }
 
@@ -1636,6 +1956,7 @@ mod runtime {
                     near_cut_m: self.opts.near_cut_m,
                     flip_v: self.opts.flip_v,
                     filter_edge_m: self.opts.filter_edge_m,
+                    mesh_step: self.mesh_steps[target as usize],
                 };
                 queue.write_buffer(
                     &self.uniforms[target as usize][eye],
@@ -2262,11 +2583,13 @@ mod runtime {
     }
 
     /// The occluder (`show` false: color writes off) or the diagnostic
-    /// (`show` true: the gray written over the view), off the same shader;
-    /// either writes depth with compare `Always`.
+    /// (`show` true: the gray written over the view), off the same shader,
+    /// as the full-screen pass (`mesh` false: `frag_depth` with compare
+    /// `Always`) or the mesh (rasterized depth with compare `LessEqual`).
     fn build_pipeline(
         device: &wgpu::Device,
         show: bool,
+        mesh: bool,
     ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("xr-env-depth"),
@@ -2277,7 +2600,7 @@ mod runtime {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -2287,7 +2610,7 @@ mod runtime {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
                         view_dimension: wgpu::TextureViewDimension::D2Array,
@@ -2303,15 +2626,16 @@ mod runtime {
             push_constant_ranges: &[],
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(if show {
-                "xr-env-depth-show"
-            } else {
-                "xr-env-depth-occluder"
+            label: Some(match (show, mesh) {
+                (true, false) => "xr-env-depth-show",
+                (false, false) => "xr-env-depth-occluder",
+                (true, true) => "xr-env-depth-mesh-show",
+                (false, true) => "xr-env-depth-mesh",
             }),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: Some("vs_main"),
+                entry_point: Some(if mesh { "vs_mesh" } else { "vs_main" }),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[],
             },
@@ -2320,19 +2644,30 @@ mod runtime {
                 cull_mode: None,
                 ..wgpu::PrimitiveState::default()
             },
-            // First in the pass, over the cleared depth: Always, so every
-            // fragment the shader keeps lands.
+            // First in the pass, over the cleared depth. The full-screen
+            // pass: Always, so every fragment the shader keeps lands. The
+            // mesh: LessEqual, so where it folds over itself the nearest
+            // surface stays (and a vertex without data, at depth 1, still
+            // lands on the cleared 1).
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_compare: if mesh {
+                    wgpu::CompareFunction::LessEqual
+                } else {
+                    wgpu::CompareFunction::Always
+                },
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(match (show, mesh) {
+                    (_, false) => "fs_main",
+                    (false, true) => "fs_mesh",
+                    (true, true) => "fs_mesh_show",
+                }),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: SWAPCHAIN_FORMAT,
@@ -2430,6 +2765,7 @@ mod tests {
             near_cut_m: NEAR_CUT_M,
             flip_v: EnvDepthOptions::default().flip_v,
             filter_edge_m: 0.0,
+            mesh_step: 0,
         }
     }
 
@@ -2704,6 +3040,12 @@ mod tests {
         )
         .validate(&module)
         .expect("env depth WGSL validates");
+        for name in ["vs_main", "fs_main", "vs_mesh", "fs_mesh", "fs_mesh_show"] {
+            assert!(
+                module.entry_points.iter().any(|e| e.name == name),
+                "entry point {name}"
+            );
+        }
         let (_, ty) = module
             .types
             .iter()
@@ -2713,6 +3055,226 @@ mod tests {
             panic!("EnvEye is not a struct");
         };
         assert_eq!(span as usize, UNIFORM_ROWS * 16);
+    }
+
+    #[test]
+    fn the_mesh_has_a_vertex_per_step_and_two_triangles_per_cell() {
+        for (step, side) in [(1, 320), (2, 161), (4, 81), (8, 41)] {
+            assert_eq!(mesh_side(320, step), side);
+            // Every step-th texel, the last one last.
+            assert_eq!(mesh_texel(1, 320, step), step);
+            assert_eq!(mesh_texel(side - 2, 320, step), (side - 2) * step);
+            assert_eq!(mesh_texel(side - 1, 320, step), 319);
+            let indices = mesh_indices([320, 320], step);
+            let cells = (side - 1) * (side - 1);
+            assert_eq!(indices.len() as u32, 6 * cells);
+            assert_eq!(mesh_indices_len(320, 320, step), 6 * cells);
+            for tri in indices.chunks(3) {
+                let (x, y): (Vec<u32>, Vec<u32>) =
+                    tri.iter().map(|&i| (i % side, i / side)).unzip();
+                assert!(tri.iter().all(|&i| i < side * side));
+                // One cell's corners, never a vertex twice.
+                assert_eq!(x.iter().max().unwrap() - x.iter().min().unwrap(), 1);
+                assert_eq!(y.iter().max().unwrap() - y.iter().min().unwrap(), 1);
+                assert!(tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2]);
+            }
+        }
+        assert_eq!(mesh_side(320, 0), 0);
+        assert!(mesh_indices([320, 320], 0).is_empty());
+        // The mesh needs the blend everywhere: 0 and 1 fall back to the
+        // full-screen pass.
+        let mut o = EnvDepthOptions::default();
+        assert_eq!(o.drawn_mesh_step(), MESH_STEP);
+        o.filter_edge_m = FILTER_EDGE_M;
+        assert_eq!(o.drawn_mesh_step(), 0);
+        o.filter_edge_m = 0.0;
+        assert_eq!(o.drawn_mesh_step(), 0);
+        assert_eq!(o.drawn_mesh_steps(), [0, 0]);
+        o.filter_edge_m = FILTER_SOFT_M;
+        o.mesh_step = 4;
+        assert_eq!(o.drawn_mesh_step(), 4);
+    }
+
+    #[test]
+    fn the_faces_pass_draws_the_mesh_at_twice_the_step() {
+        // The faces target is half the eye's each way: twice the step,
+        // capped at 8, keeps the texels per target pixel.
+        let mut o = EnvDepthOptions::default();
+        assert_eq!(o.drawn_mesh_steps(), [2, 4]);
+        for (eye, faces) in [(1, 2), (2, 4), (4, 8), (8, 8), (0, 0)] {
+            o.mesh_step = eye;
+            assert_eq!(o.drawn_mesh_steps(), [eye, faces]);
+            assert_eq!(faces_mesh_step(eye), faces);
+        }
+        // The default's faces mesh, step 4, and step 8's on a 320 map.
+        assert_eq!(mesh_side(320, 4), 81);
+        assert_eq!(mesh_side(320, 8), 41);
+        assert_eq!(mesh_texel(40, 320, 8), 319);
+        assert_eq!(mesh_texel(39, 320, 8), 312);
+        // Each target's uniform carries its own step and side.
+        let pos = [0.0, 1.5, 0.0];
+        let mut r = reprojection(
+            pos,
+            DepthView {
+                orientation: [0.0, 0.0, 0.0, 1.0],
+                position: pos,
+                fov: FOV,
+            },
+        );
+        for (step, side) in [(4, 81.0), (8, 41.0)] {
+            r.mesh_step = step;
+            assert_close!(r.uniform()[21], [step as f32, side, 0.0, 0.0]);
+        }
+    }
+
+    /// The eye pass's view-space depth (m) at NDC `xy` and depth `depth`.
+    fn eye_depth(r: &EyeReprojection, xy: Vec2, depth: f32) -> f32 {
+        let p = r.view_proj.inverse().project_point3(xy.extend(depth));
+        // The eye looks down -Z (`reprojection` keeps it unturned).
+        r.eye_pos.z - p.z
+    }
+
+    /// For a plane through `c` with normal `n`, the depth camera of `r` a
+    /// little off the eye: every `step`th interior texel's vertex lands on
+    /// an eye pixel where the full-screen pass (bilinear, `envdepthfilter
+    /// 2`) writes the depth the vertex carries. Returns the worst
+    /// difference (m) and how many texels were compared.
+    fn mesh_against_full_screen(r: &EyeReprojection, c: Vec3, n: Vec3) -> (f32, u32) {
+        let depth_to_world = r.depth_view.inverse();
+        let origin = depth_to_world.transform_point3(Vec3::ZERO);
+        // The plane's distance down the depth camera's -Z through a
+        // texel's center, as the runtime stores it.
+        let texel_dist = |t: [u32; 2]| {
+            let uv = Vec2::new(
+                (t[0] as f32 + 0.5) / r.depth_size[0] as f32,
+                (t[1] as f32 + 0.5) / r.depth_size[1] as f32,
+            );
+            let dir = depth_to_world.transform_vector3(r.depth_ray(uv));
+            let q = r.depth_view.transform_point3(hit(origin, dir, c, n));
+            -q.z
+        };
+        let bilinear = |uv: Vec2| {
+            let d = filtered_distance(uv, r.depth_size, FILTER_SOFT_M, |t| Some(texel_dist(t)));
+            encode(d.unwrap(), r.near, r.far)
+        };
+        let (mut worst, mut compared) = (0.0f32, 0);
+        for ty in (24..300).step_by(23) {
+            for tx in (24..300).step_by(23) {
+                let t = [tx, ty];
+                let v = r
+                    .vertex_depth(t, encode(texel_dist(t), r.near, r.far))
+                    .expect("in front of the eye");
+                if v.x.abs() >= 1.0 || v.y.abs() >= 1.0 {
+                    continue;
+                }
+                let frag = Vec2::new(
+                    (v.x + 1.0) * 0.5 * r.target_size[0] as f32,
+                    (1.0 - v.y) * 0.5 * r.target_size[1] as f32,
+                );
+                let want = r.frag_depth(frag, bilinear).expect("the pass keeps it");
+                let xy = v.truncate();
+                let e = (eye_depth(r, xy, v.z) - eye_depth(r, xy, want)).abs();
+                worst = worst.max(e);
+                compared += 1;
+            }
+        }
+        (worst, compared)
+    }
+
+    #[test]
+    fn a_mesh_vertex_carries_the_depth_the_full_screen_pass_writes_under_it() {
+        let eye_pos = Vec3::new(0.0, 1.5, 0.0);
+        // The depth camera turned 2° and 1° from the eye; on it, then 1 cm
+        // right of it, as a depth camera sits near, not on, the eye.
+        let cam = |offset: Vec3| DepthView {
+            orientation: (Quat::from_rotation_y(2f32.to_radians())
+                * Quat::from_rotation_x(1f32.to_radians()))
+            .to_array(),
+            position: (eye_pos + offset).into(),
+            fov: FOV,
+        };
+        let on_eye = reprojection(eye_pos.into(), cam(Vec3::ZERO));
+        let beside = reprojection(eye_pos.into(), cam(Vec3::new(0.01, 0.0, 0.0)));
+        let turned = |deg: f32| Quat::from_rotation_y(deg.to_radians()) * Vec3::Z;
+        // Within 0.1 mm: the vertex sits on its texel's center, the pass's
+        // lookup lands within a texel of it, and the bilinear blend of a
+        // plane's texels stays on the plane. With the depth camera on the
+        // eye, for a wall facing the eye or turned 30°, at 1 to 3 m. Beside
+        // it, for a wall facing the eye; on a turned one away from 2 m the
+        // pass's own parallax comes on top (bounded by
+        // a_centimeter_of_parallax_costs_under_a_millimeter_at_two_meters),
+        // which the mesh, exact at its vertices, does not have.
+        let cases = [
+            (&on_eye, 1.0, 0.0),
+            (&on_eye, 2.0, 0.0),
+            (&on_eye, 3.0, 0.0),
+            (&on_eye, 1.0, 30.0),
+            (&on_eye, 2.0, 30.0),
+            (&on_eye, 3.0, 30.0),
+            (&beside, 1.0, 0.0),
+            (&beside, 2.0, 0.0),
+            (&beside, 3.0, 0.0),
+        ];
+        for (r, along, deg) in cases {
+            let c = eye_pos - Vec3::Z * along;
+            let (worst, compared) = mesh_against_full_screen(r, c, turned(deg));
+            assert!(compared > 100, "{along} m {deg}°: {compared} compared");
+            assert!(worst < 1e-4, "{along} m {deg}°: {worst} m");
+        }
+        // Same pose: the vertex's eye depth is the stored distance.
+        let same = reprojection(
+            eye_pos.into(),
+            DepthView {
+                orientation: [0.0, 0.0, 0.0, 1.0],
+                position: eye_pos.into(),
+                fov: FOV,
+            },
+        );
+        for z in [0.4, 1.0, 2.0, 3.5] {
+            for t in [[160, 160], [30, 290], [300, 20]] {
+                let v = same
+                    .vertex_depth(t, encode(z, same.near, same.far))
+                    .unwrap();
+                let got = eye_depth(&same, v.truncate(), v.z);
+                assert!((got - z).abs() < z * 1e-4, "{t:?} at {z} m: {got}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_mesh_vertex_without_data_or_under_the_cut_sits_on_the_far_plane() {
+        let pos = [0.02, 1.5, 0.0];
+        let r = reprojection(
+            pos,
+            DepthView {
+                orientation: [0.0, 0.0, 0.0, 1.0],
+                position: [0.0, 1.5, 0.0],
+                fov: FOV,
+            },
+        );
+        let t = [120, 200];
+        // Where a texel at RAY_DISTANCE_M would be, but at depth 1.
+        let at_ray = r
+            .vertex_depth(t, encode(RAY_DISTANCE_M, r.near, r.far))
+            .unwrap();
+        let no_data = r.vertex_depth(t, 1.0).unwrap();
+        // Exactly 1, the cleared depth (bits, not a tolerance).
+        assert_eq!(no_data.z.to_bits(), 1f32.to_bits());
+        assert!(no_data.truncate().abs_diff_eq(at_ray.truncate(), 1e-6));
+        let clip = r.vertex_clip(t, 1.0);
+        assert_eq!(clip.z.to_bits(), clip.w.to_bits());
+        // The near cut (0.2 m): 0.15 m goes to the far plane, 0.25 m stays.
+        let under = r.vertex_depth(t, encode(0.15, r.near, r.far)).unwrap();
+        assert_eq!(under.z.to_bits(), 1f32.to_bits());
+        assert!(under.truncate().abs_diff_eq(at_ray.truncate(), 1e-6));
+        let over = r.vertex_depth(t, encode(0.25, r.near, r.far)).unwrap();
+        assert!(over.z < 1.0, "{over}");
+        assert!((eye_depth(&r, over.truncate(), over.z) - 0.25).abs() < 1e-3);
+        // The outer ring sits on the map's edge, the rest on texel centers.
+        assert_eq!(r.mesh_uv([0, 319]), Vec2::new(0.0, 1.0));
+        assert_eq!(r.mesh_uv([1, 160]), Vec2::new(1.5 / 320.0, 160.5 / 320.0));
+        // And the texel under a vertex's coordinates is the one it loads.
+        assert_eq!(r.texel(r.mesh_uv([1, 160])), [1, 160]);
     }
 
     /// A 2x2 map (texels (0,0), (1,0), (0,1), (1,1) in `d`) looked up at
@@ -3038,13 +3600,16 @@ mod tests {
         assert_close!(rows[18], [0.1, 0.0, 1.0, NEAR_CUT_M]);
         assert_close!(rows[19], [320.0, 320.0, 1680.0, 1760.0]);
         assert_close!(rows[20], [0.0, 0.0, SHOW_FAR_M, 0.0]);
+        assert_close!(rows[21], [0.0; 4]);
         r.far = 20.0;
         r.layer = 1;
         r.filter_edge_m = FILTER_EDGE_M;
+        r.mesh_step = 2;
         let rows = r.uniform();
         assert_eq!(rows[18][..3], [0.1, 20.0, 0.0]);
         assert_close!(rows[20][0], 1.0);
         assert_close!(rows[20][3], FILTER_EDGE_M);
+        assert_close!(rows[21], [2.0, 161.0, 0.0, 0.0]);
         // The inverse view-projection really inverts.
         let inv = Mat4::from_cols_array_2d(&[rows[4], rows[5], rows[6], rows[7]]);
         assert!((inv * r.view_proj).abs_diff_eq(Mat4::IDENTITY, 1e-4));
