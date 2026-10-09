@@ -2880,3 +2880,66 @@ The sim dispatch now stands at about 3.05 ms from the morning's 3.9:
 the floor 1.56 (core's particle layout), the flow about 0.5, the box
 loop 0.15, the turbulence, the hands, the depth map and the rest at the
 noise floor.
+
+## The eye pass apportioned, and the depth occluder as a mesh (board #3813)
+
+**The cloud's draw is not the cost.** `gpu-stages.sh` on the Quest 3,
+the same setup as the sections above (Embers on the replayed room, the
+clip, `gov=0`, 300K slots, unworn, 640 MHz, 37 to 48 C), per eye,
+binning / render ms, with the faces layer's render:
+
+| Condition | Eye binning | Eye render | Faces render | App |
+|---|---|---|---|---|
+| base | 0.55 | 0.87 | 0.23 | 11.3-12.6 |
+| no sprites at all (`simcut atomics`, 628 alive) | 0.52 | 0.87 | 0.23 | 12.3 |
+| 100K slots | 0.21 | 0.87 | 0.23 | 8.3 |
+| sprites at half size | 0.55 | 0.87 | 0.23 | 11.1 |
+| room and hand occluders off | 0.54 | 0.77 | 0.22 | 11.6 |
+| environment depth off | 0.56 | 0.19 | 0.04 | 8.9 |
+
+The sprites' fill is below what the trace resolves (no sprites, or
+half-size sprites, leave the render unchanged). Their vertex pass costs
+0.18 ms per 100K **slots** per eye whatever is alive: the vertex shader
+runs for three vertices per slot and emits nothing past the alive count,
+and that emit-nothing path costs the same as a sprite in binning. An
+alive-count indirect draw (a core change) would save the dead 8 %, about
+0.08 ms per frame: not worth it. The worn A/B's "cloud 2.8 ms" (board
+#3785) was the sim's alive path, since cut, not the draw.
+
+The eye pass's cost was the environment depth occluder: a full-screen
+pass per eye (four texture loads, four matrix transforms and a
+`frag_depth` write for each of 3M pixels), 0.68 ms per eye in the eye
+pass and 0.19 per eye in the faces pass, about 1.7 ms per frame.
+
+**The occluder as a mesh** (`xr-depth-mesh` ac3b4e6,
+`debug.fosfora.envdepthmesh`): the depth map drawn as a grid of
+vertices, one per `step` texels, each doing the per-pixel math once,
+depth-only, the rasterizer interpolating in between (the same linear
+blend across silhouettes the default filter does per pixel); the faces
+pass, at half the eye's resolution, draws at twice the step. Two
+sweeps, hot (40 to 48 C):
+
+| Occluder | Eye binning | Eye render | Faces render | App |
+|---|---|---|---|---|
+| the full-screen pass (`envdepthmesh 0`, four runs) | 0.54-0.55 | 0.86 | 0.22 | 10.9-12.2 |
+| mesh, eye step 1 / faces 2 (320 per side, 204K triangles) | 0.98 | 0.64 | 0.15 | 12.1 |
+| **mesh, eye step 2 / faces 4 (161 per side, 51K triangles; the default)** | **0.70** | **0.32** | **0.08** | **9.8-10.6** |
+| mesh, eye step 4 / faces 8 (81 per side, 12.8K triangles) | 0.64 | 0.24 | 0.05 | 9.4 |
+| mesh, eye step 8 / faces 8 (41 per side, 3.2K triangles) | 0.61 | 0.22 | 0.05 | 9.5 |
+| no depth at all | 0.56 | 0.19 | 0.04 | 8.75 |
+
+At full resolution the mesh is slower than the pass: 102K vertices with
+a texture load each and 204K triangles a few pixels wide cost more to
+bin and rasterize than the per-pixel pass saved. At step 2 it saves
+about 1.0 ms per frame, at step 4 about 1.4, and step 4 sits within
+0.4 ms of no occluder at all. The trade is the silhouette: the blend
+between an object and what is behind it widens from one depth texel
+(about 5 eye pixels) to 2 or 4. The default is step 2; the worn check
+compares it with step 4 and with the pass (`envdepthmesh 0`) at the
+edges of a hand-held object and of the wearer's body. The CPU mirror
+puts a mesh vertex within 0.03 mm of what the pass wrote at the same
+pixel.
+
+Unworn, the frame now stands at about 9.8 ms App hot (640 MHz) against
+11.3 to 12.6 this morning on the same headset, with the sim at 3.0 ms
+and the eye pass at 1.0 per eye.
