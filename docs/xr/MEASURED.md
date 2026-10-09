@@ -2564,3 +2564,14 @@ model was long loaded. The debug panel with Edit room on (15 rows, the
 header allowance 300 points) dumped through `debug.fosfora.hudtest`:
 the control block clears the header's meters with room to spare, the
 Agent row full width under Recenter and Rescan.
+
+## The on-device provider as the default (board #3782)
+
+`xr-local-default` on the Quest 3, `voice.json` naming `anthropic` with a
+key, the model installed, `hand_menu.json` without a saved pick: the
+launch reads `voice agent: local · s1-17m-int8 loads after the speech
+model (3 threads, floor 0.35) (default)`, the model loads in 720 ms, and
+"Something like a campfire on the desk" through `say` comes back from
+the on-device provider as embers on the desk (the Agent control's
+network stop still reads `Agent: Anthropic`). With a saved `local` pick
+the line reads `(saved)`.

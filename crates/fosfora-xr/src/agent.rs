@@ -276,26 +276,26 @@ pub enum Choice {
     Network(Config),
 }
 
-/// The provider rule (V5). `file` is `voice.json`'s text (`None`: no
-/// file); `local` is `Ok` when the on-device model's files are installed,
-/// else why not. No file, or a file naming no `provider`: the on-device
-/// provider when it is installed; without it, no file leaves the agent off
-/// and a file is read as V3 read it (Anthropic by default). `provider`
-/// `local` asks for it by name (off, with the reason, when it is not
-/// installed). `anthropic` and `openai` keep V3's behavior exactly
-/// ([`parse_config`]). The error is the reason the agent is off.
+/// The provider rule, after the hand menu's saved pick (board #3776;
+/// Kevin, Oct 8: the on-device provider is the default since it is built
+/// in). `local` is `Ok` when the on-device model's files are installed,
+/// else why not; `file` is `voice.json`'s text (`None`: no file). The
+/// on-device provider whenever it is installed, whatever the file says
+/// (the file's `provider` then only names which API its key is for, the
+/// Agent control's network stop); without it, no file leaves the agent off,
+/// a file naming `local` is off with the reason, and any other file is
+/// read as V3 read it ([`parse_config`], Anthropic by default). The error
+/// is the reason the agent is off.
 pub fn choose(file: Option<&str>, local: Result<(), String>) -> Result<Choice, String> {
-    let Some(json) = file else {
-        return match local {
-            Ok(()) => Ok(Choice::Local),
-            Err(why) => Err(format!("no {CONFIG_FILE}, and {why}")),
-        };
+    let why = match local {
+        Ok(()) => return Ok(Choice::Local),
+        Err(why) => why,
     };
-    // A broken file is V3's error, whatever is installed.
-    let named = parse_config_raw(json)?.provider;
-    match (given(named).as_deref(), local) {
-        (Some(LOCAL) | None, Ok(())) => Ok(Choice::Local),
-        (Some(LOCAL), Err(why)) => Err(format!("provider {LOCAL} in {CONFIG_FILE}, but {why}")),
+    let Some(json) = file else {
+        return Err(format!("no {CONFIG_FILE}, and {why}"));
+    };
+    match given(parse_config_raw(json)?.provider).as_deref() {
+        Some(LOCAL) => Err(format!("provider {LOCAL} in {CONFIG_FILE}, but {why}")),
         _ => parse_config(json).map(Choice::Network),
     }
 }
@@ -368,7 +368,13 @@ impl Available {
             Ok(None) => Err(format!("no {CONFIG_FILE}")),
             Err(why) => Err(why.clone()),
         };
-        let rule = file.and_then(|file| choose(file.as_deref(), local.clone()));
+        // Installed, the on-device provider is the rule whatever the file
+        // (even one that could not be read).
+        let rule = if local.is_ok() {
+            Ok(Choice::Local)
+        } else {
+            file.and_then(|file| choose(file.as_deref(), local.clone()))
+        };
         Self {
             local,
             network,
@@ -2386,9 +2392,9 @@ mod tests {
         let cases: Vec<Case> = vec![
             (Ok(None), true, vec![L, Off], L),
             (Ok(None), false, vec![], Off),
-            (Err("unreadable".to_owned()), true, vec![L, Off], Off),
+            (Err("unreadable".to_owned()), true, vec![L, Off], L),
             (Err("unreadable".to_owned()), false, vec![], Off),
-            (file("{not json"), true, vec![L, Off], Off),
+            (file("{not json"), true, vec![L, Off], L),
             (file("{not json"), false, vec![], Off),
             // No provider and no key: no network config.
             (file("{}"), true, vec![L, Off], L),
@@ -2396,9 +2402,9 @@ mod tests {
             // No provider, a key: V3's Anthropic default.
             (file(&keyed), true, vec![L, A, Off], L),
             (file(&keyed), false, vec![A, Off], A),
-            (file(&anthropic), true, vec![L, A, Off], A),
+            (file(&anthropic), true, vec![L, A, Off], L),
             (file(&anthropic), false, vec![A, Off], A),
-            (file(openai), true, vec![L, O, Off], O),
+            (file(openai), true, vec![L, O, Off], L),
             (file(openai), false, vec![O, Off], O),
             // `local` by name is no network config.
             (file(r#"{"provider": "local"}"#), true, vec![L, Off], L),
@@ -2408,7 +2414,7 @@ mod tests {
                 file(r#"{"provider": "openai", "model": "m", "base_url": "http://example.com"}"#),
                 true,
                 vec![L, Off],
-                Off,
+                L,
             ),
         ];
         for (json, installed, cycle, rule) in cases {

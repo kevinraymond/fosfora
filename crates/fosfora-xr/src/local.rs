@@ -2308,7 +2308,9 @@ mod tests {
             choose(Some("{}"), none()),
             Err("no api_key in voice.json".to_owned())
         );
-        // Named: local by name, or a network provider as V3 has it.
+        // Named: local by name; a network provider is V3's only without
+        // the model (board #3776: installed, local is the default and the
+        // hand menu's Agent control picks the network one).
         assert_eq!(
             choose(Some(r#"{"provider": "local"}"#), Ok(())),
             Ok(Choice::Local)
@@ -2318,24 +2320,29 @@ mod tests {
             Err("provider local in voice.json, but no s1-17m-int8.onnx at /m".to_owned())
         );
         let openai = r#"{"provider": "openai", "model": "qwen3.5", "base_url": "http://192.168.1.20:11434/v1"}"#;
-        match choose(Some(openai), Ok(())) {
+        assert_eq!(choose(Some(openai), Ok(())), Ok(Choice::Local));
+        match choose(Some(openai), none()) {
             Ok(Choice::Network(c)) => assert_eq!(c.model, "qwen3.5"),
             other => panic!("{other:?}"),
         }
-        match choose(
-            Some(r#"{"provider": "anthropic", "api_key": "sk-test"}"#),
-            Ok(()),
-        ) {
+        let anthropic = r#"{"provider": "anthropic", "api_key": "sk-test"}"#;
+        assert_eq!(choose(Some(anthropic), Ok(())), Ok(Choice::Local));
+        match choose(Some(anthropic), none()) {
             Ok(Choice::Network(c)) => assert_eq!(c.provider, crate::agent::ProviderKind::Anthropic),
             other => panic!("{other:?}"),
         }
-        // A broken file is V3's error, installed or not.
+        // A broken file is V3's error without the model; with it, local.
         assert!(
-            choose(Some("{"), Ok(()))
+            choose(Some("{"), none())
                 .unwrap_err()
                 .starts_with("voice.json is not valid")
         );
-        assert!(choose(Some(r#"{"provider": "elsewhere"}"#), Ok(())).is_err());
+        assert_eq!(choose(Some("{"), Ok(())), Ok(Choice::Local));
+        assert!(choose(Some(r#"{"provider": "elsewhere"}"#), none()).is_err());
+        assert_eq!(
+            choose(Some(r#"{"provider": "elsewhere"}"#), Ok(())),
+            Ok(Choice::Local)
+        );
     }
 
     #[test]
