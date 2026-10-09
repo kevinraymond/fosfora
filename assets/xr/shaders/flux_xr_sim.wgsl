@@ -165,7 +165,8 @@
 // the boxes that can touch it, so the collide visits a particle's one or
 // two boxes instead of all of them.
 //   aux[213]           x = N, cells per axis (u32 bits; 0 = no grid: the
-//                      full loop), y = the grid's half extent (m), z, w 0
+//                      full loop), y = the grid's half extent (m), z =
+//                      the flow samples mode (u32 bits; below), w 0
 //   aux[214..1238]     the masks, four cells per row (vec4 of u32 bits):
 //                      cell c in row 214 + c / 4, lane c % 4, bit k = box
 //                      k; c = (ix * N + iy) * N + iz, i = floor((p + half)
@@ -178,6 +179,17 @@
 // skips is one the full loop would have found the particle outside of:
 // the same result, bit for bit. Outside the grid (a free burst particle)
 // the full loop runs.
+//
+// Flow samples (board #3810; the `debug.fosfora.flowsamples` knob, carried
+// in the cell list header's spare z lane, aux[213].z, as u32 bits): how
+// many flow-field samples xr_flow takes per particle per frame. 0 = two,
+// on two diagonals of the drift, averaged (what a 0 row, a desktop test,
+// runs); 1 = one, the first diagonal only, so the field translates as a
+// block (the cheap reference); 2 = one, alternating the diagonals from
+// frame to frame and particle to particle; 3 = one, alternating the
+// diagonals from frame to frame only, the whole cloud on the same one (the
+// XR app's default: neighbors sampling the same diagonal keep the wave's
+// texture reads local). Any other value runs two.
 //
 // Surface behavior lanes (board #3326; crates/fosfora-xr/src/lanes.rs and
 // surfaces.rs `lane_row`): what each box does, chosen per surface and
@@ -223,6 +235,12 @@ const XR_AUX_SURFACE_ROWS: u32 = 32u;  // XR_MAX_BOXES
 const XR_AUX_CELLS: u32 = 213u;
 const XR_CELLS_MAX: u32 = 16u;
 const XR_AUX_CELL_ROWS: u32 = 1024u;   // XR_CELLS_MAX^3 / 4
+// The flow samples modes in aux[XR_AUX_CELLS].z (board #3810; box_cells.rs
+// `FlowSamples`).
+const XR_FLOW_TWO: u32 = 0u;
+const XR_FLOW_ONE: u32 = 1u;
+const XR_FLOW_ALT: u32 = 2u;
+const XR_FLOW_ALT_FRAME: u32 = 3u;
 
 // The depth collide's tangential damping per colliding frame, and the
 // depth jump between neighboring texels (m) that reads as a silhouette.
@@ -520,9 +538,41 @@ fn xr_depth_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u
 // different diagonals at that rate and are averaged, so the swirl evolves in
 // place rather than translating as one block (the average of two curl fields
 // is still divergence-free). sqrt(2) restores the amplitude one sample has.
-fn xr_flow(pos: vec3f, half: f32) -> vec3f {
+//
+// The two samples cost 0.4 to 1.1 ms of a 3.2 ms dispatch on the Quest 3,
+// in sampling locality rather than arithmetic (board #3810), so the flow
+// samples mode (aux[XR_AUX_CELLS].z, above) can take one instead: the
+// first diagonal alone (XR_FLOW_ONE: the swirl translates as a block), or
+// one diagonal per frame, the first when (frame + idx) is even and the
+// second otherwise (XR_FLOW_ALT), so each particle averages the two over
+// consecutive frames, in time rather than in space, and neighboring
+// indices take different diagonals on the same frame, so the cloud never
+// flips as a whole. The pair moves a particle by (a + b) / sqrt(2) each
+// frame; one diagonal per frame moves it by (a + b) / 2 over two frames,
+// so the single sample is returned times sqrt(2) to give the same
+// displacement (measured: returned as is, the cloud settled sooner and
+// held 20K fewer alive). The frame is u.frame_index, which
+// ParticleSystem::flip advances once per frame. XR_FLOW_ALT_FRAME
+// alternates by the frame alone, so neighboring particles in a wave read
+// the same diagonal and their texture reads stay local; measured, the
+// per-particle mix cost most of what the single sample saved.
+fn xr_flow(pos: vec3f, half: f32, idx: u32) -> vec3f {
     // UV units per second (the 2D sim's time * flow_speed * 0.1), in meters.
     let drift = u.time * u.flow_speed * 0.1 * 2.0 * half / max(u.flow_scale, 1e-3);
+    let mode = bitcast<u32>(aux[XR_AUX_CELLS].home.z);
+    if mode == XR_FLOW_ONE {
+        return sample_flow_field_3d(pos + vec3f(0.57735, 0.57735, 0.57735) * drift, half);
+    }
+    if mode == XR_FLOW_ALT {
+        let second = ((u.frame_index + idx) & 1u) != 0u;
+        let dir = select(vec3f(0.57735, 0.57735, 0.57735), vec3f(-0.57735, 0.57735, -0.57735), second);
+        return sample_flow_field_3d(pos + dir * drift, half) * 1.41421356;
+    }
+    if mode == XR_FLOW_ALT_FRAME {
+        let second = (u.frame_index & 1u) != 0u;
+        let dir = select(vec3f(0.57735, 0.57735, 0.57735), vec3f(-0.57735, 0.57735, -0.57735), second);
+        return sample_flow_field_3d(pos + dir * drift, half) * 1.41421356;
+    }
     let a = sample_flow_field_3d(pos + vec3f(0.57735, 0.57735, 0.57735) * drift, half);
     let b = sample_flow_field_3d(pos + vec3f(-0.57735, 0.57735, -0.57735) * drift, half);
     return (a + b) * 0.70710678;
@@ -884,7 +934,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // --- Flow field: primary force ---
     var flow_vel = vec3f(0.0);
     if (cut & XR_CUT_FLOW) == 0u {
-        flow_vel = xr_flow(pos, half);
+        flow_vel = xr_flow(pos, half, idx);
         // Audio modulation: bass increases flow strength.
         // MFCC(1) modulates curl tightness: bright timbre = tighter spirals, dark = loose.
         let mfcc1_curl = clamp(mfcc(1u) * 0.02, -0.5, 0.5);

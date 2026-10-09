@@ -19,10 +19,21 @@
 //! tested and found the particle outside of: the same result, bit for bit.
 //!
 //! Aux layout (`XR_AUX_CELLS` in the sim): one header row, x = N as u32
-//! bits (0: no grid), y = the grid's half extent (m), z and w 0; then
-//! [`CELL_ROWS`] rows of masks, four cells per row (cell c in row c / 4,
-//! lane c % 4, as u32 bits), cell c = (ix * N + iy) * N + iz. The block is
-//! sized for [`CELLS_MAX`] whatever N is, so the layout never moves.
+//! bits (0: no grid), y = the grid's half extent (m), z the flow samples
+//! mode as u32 bits ([`FlowSamples`], [`FLOW_SAMPLES_LANE`]; 0 from
+//! [`header`]), w 0; then [`CELL_ROWS`] rows of masks, four cells per row
+//! (cell c in row c / 4, lane c % 4, as u32 bits), cell c = (ix * N + iy) *
+//! N + iz. The block is sized for [`CELLS_MAX`] whatever N is, so the
+//! layout never moves.
+//!
+//! The header's z lane is not the cell list's: it carries how many
+//! flow-field samples the sim's `xr_flow` takes per particle per frame
+//! (board #3810, the `debug.fosfora.flowsamples` knob), a spare lane in a
+//! row the XR app already writes each frame. The two samples cost 0.4 to
+//! 1.1 ms of a 3.2 ms dispatch on the Quest 3, in sampling locality rather
+//! than arithmetic (`docs/xr/MEASURED.md`). 0 (what [`header`] and a
+//! hand-built row write) keeps the two; the XR app writes its knob's mode
+//! over it (`scene.rs`).
 
 use glam::{Mat3, Vec3};
 
@@ -38,6 +49,74 @@ pub const DEFAULT_CELLS: u32 = 8;
 /// the CPU's bounds and the sim's inside test and cell index (both of
 /// order 1e-6 m in a room), so the masks stay a superset on the GPU.
 pub const PAD_M: f32 = 1e-3;
+
+/// The lane of the header row that carries the flow samples mode.
+pub const FLOW_SAMPLES_LANE: usize = 2;
+
+/// How many flow-field samples the world sim takes per particle per frame
+/// (`XR_FLOW_*` in the sim; board #3810).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FlowSamples {
+    /// Two, on two diagonals of the drift, averaged, so the swirl evolves
+    /// in place (lane 0: what an unwritten row runs).
+    Two,
+    /// One, the first diagonal only, at a single sample's amplitude: the
+    /// field translates as a block (lane 1; the cheap reference).
+    One,
+    /// One, the first diagonal when (frame + particle index) is even and
+    /// the second otherwise, times sqrt(2), so each particle averages the
+    /// two over consecutive frames and moves as far as under the pair
+    /// (lane 2).
+    Alternate,
+    /// One, the diagonal alternating with the frame alone, times sqrt(2),
+    /// so the whole cloud reads the same diagonal on a frame and a wave's
+    /// texture reads stay local (lane 3; the default).
+    #[default]
+    AlternateFrame,
+}
+
+impl FlowSamples {
+    /// The mode a `debug.fosfora.flowsamples` value asks for: "2", "1",
+    /// "alt" or "altframe". `None` for anything else (the caller warns and keeps the
+    /// default).
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "2" => Some(Self::Two),
+            "1" => Some(Self::One),
+            v if v.eq_ignore_ascii_case("alt") => Some(Self::Alternate),
+            v if v.eq_ignore_ascii_case("altframe") => Some(Self::AlternateFrame),
+            _ => None,
+        }
+    }
+
+    /// The knob's value for the log: "2", "1", "alt" or "altframe".
+    #[must_use]
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Two => "2",
+            Self::One => "1",
+            Self::Alternate => "alt",
+            Self::AlternateFrame => "altframe",
+        }
+    }
+
+    /// The mode as the sim reads it (`XR_FLOW_*`).
+    #[must_use]
+    pub fn id(self) -> u32 {
+        match self {
+            Self::Two => 0,
+            Self::One => 1,
+            Self::Alternate => 2,
+            Self::AlternateFrame => 3,
+        }
+    }
+
+    /// Write the mode into a header row's [`FLOW_SAMPLES_LANE`] as u32 bits.
+    pub fn write(self, header: &mut [f32; 4]) {
+        header[FLOW_SAMPLES_LANE] = f32::from_bits(self.id());
+    }
+}
 
 /// The cells per axis a `debug.fosfora.boxcells` value asks for: N in
 /// 2..=[`CELLS_MAX`], or 0 for "0" and "1" (off: the full loop). `None`
@@ -62,7 +141,8 @@ pub fn describe(cells: u32) -> String {
 }
 
 /// The header row for a grid of `cells` per axis over the cube of half
-/// extent `half`: x = N as u32 bits, y = `half`. A `cells` of 0, or beyond
+/// extent `half`: x = N as u32 bits, y = `half`, z 0 (two flow samples;
+/// [`FlowSamples::write`] sets it). A `cells` of 0, or beyond
 /// [`CELLS_MAX`], or a `half` that is not positive writes N = 0: no grid.
 #[must_use]
 pub fn header(cells: u32, half: f32) -> [f32; 4] {
@@ -245,6 +325,58 @@ mod tests {
         assert_eq!(header(8, 0.0)[0].to_bits(), 0);
         assert_eq!(rows(&[], 0.0, 8, 1.5).len(), ROWS);
         assert_eq!(CELL_ROWS, 1024);
+    }
+
+    #[test]
+    fn the_header_carries_the_flow_samples_mode_in_z() {
+        // Unwritten, z is 0: the two samples, today's flow.
+        let h = header(8, 1.5);
+        assert_eq!(h[FLOW_SAMPLES_LANE].to_bits(), FlowSamples::Two.id());
+        assert_eq!(FLOW_SAMPLES_LANE, 2);
+        for (mode, id) in [
+            (FlowSamples::Two, 0),
+            (FlowSamples::One, 1),
+            (FlowSamples::Alternate, 2),
+            (FlowSamples::AlternateFrame, 3),
+        ] {
+            let mut h = header(8, 1.5);
+            mode.write(&mut h);
+            assert_eq!(h[2].to_bits(), id);
+            // The cell list's lanes are untouched, and so is w.
+            assert_eq!(h[0].to_bits(), 8);
+            assert_close!(h[1], 1.5);
+            assert_eq!(h[3].to_bits(), 0);
+        }
+        // With no grid the lane still carries the mode.
+        let mut h = header(0, 1.5);
+        FlowSamples::One.write(&mut h);
+        assert_eq!(h[0].to_bits(), 0);
+        assert_eq!(h[2].to_bits(), 1);
+    }
+
+    #[test]
+    fn the_flow_samples_knob_takes_2_1_and_alt() {
+        assert_eq!(FlowSamples::default(), FlowSamples::AlternateFrame);
+        assert_eq!(FlowSamples::parse("2"), Some(FlowSamples::Two));
+        assert_eq!(FlowSamples::parse(" 1 "), Some(FlowSamples::One));
+        assert_eq!(FlowSamples::parse("alt"), Some(FlowSamples::Alternate));
+        assert_eq!(FlowSamples::parse("ALT"), Some(FlowSamples::Alternate));
+        assert_eq!(
+            FlowSamples::parse("altframe"),
+            Some(FlowSamples::AlternateFrame)
+        );
+        assert_eq!(FlowSamples::parse("0"), None);
+        assert_eq!(FlowSamples::parse("3"), None);
+        assert_eq!(FlowSamples::parse("two"), None);
+        assert_eq!(FlowSamples::parse(""), None);
+        for mode in [
+            FlowSamples::Two,
+            FlowSamples::One,
+            FlowSamples::Alternate,
+            FlowSamples::AlternateFrame,
+        ] {
+            assert_eq!(FlowSamples::parse(mode.describe()), Some(mode));
+        }
     }
 
     #[test]
