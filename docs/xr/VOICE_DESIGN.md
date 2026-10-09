@@ -387,7 +387,11 @@ color", "color" after a name allowed. `{band}` and `{strength}`: below.
 A target longer than three words is no name, so a long sentence that
 ends in a slot word misses as NoMatch instead of naming an unknown
 surface ("switch to the next effect and fade the colors to purple" is
-NoMatch). An ambiguity lists five names, then "or N more".
+NoMatch). So are several words none of which is a kind word, a number or
+a word of a surface's name ("shut that song up" is NoMatch, and reaches
+the agent); a single unknown word, or one next to such a word, is a name
+the room lacks ("the shelf in blue", "table 9 in blue", "lamp 2 up"). An ambiguity lists five
+names, then "or N more".
 
 **The wiring** (`app.rs`). Where V1's transcription arrives, the sentence
 goes through `parse` with the frame's vocabulary. The menu's intents
