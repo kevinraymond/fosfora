@@ -100,6 +100,9 @@ struct World {
     /// False freezes the sim after `warmup` dispatches, so a sweep can
     /// isolate the draw (`debug.fosfora.sim 0`).
     sim_enabled: bool,
+    /// The sim-cut mask (`crate::sim_cut`, `debug.fosfora.simcut`): the
+    /// parts of the alive path the sim skips; 0 runs them all.
+    sim_cut: u32,
     /// Dispatches before a frozen sim stops: long enough for the emitter to
     /// fill the particle count, and never shorter than the S5 test sim's.
     warmup: u32,
@@ -145,6 +148,8 @@ pub struct WorldOptions {
     pub size_scale: f32,
     /// See `World::sim_enabled`.
     pub sim_enabled: bool,
+    /// See `World::sim_cut`.
+    pub sim_cut: u32,
     /// Initial anchor in the reference space.
     pub anchor: [f32; 3],
 }
@@ -282,6 +287,7 @@ impl XrScene {
             world: Some(World {
                 anchor: options.anchor,
                 sim_enabled: options.sim_enabled,
+                sim_cut: options.sim_cut,
                 warmup,
                 dispatches: 0,
                 aux: Vec::new(),
@@ -382,6 +388,11 @@ impl XrScene {
         // The obstacle block's second header row has two unused lanes; the
         // sim reads the drift from the third (`flux_xr_sim.wgsl`, aux[2].z).
         world.aux[2].home[2] = drift_m_s;
+        // The first lane carries the occluder's sphere shrink, which no sim
+        // reads (the occluder takes it from `ObstacleSet`'s uniform): the
+        // sim-cut mask goes there (`flux_xr_sim.wgsl`, aux[2].x; Murmur
+        // ignores it).
+        world.aux[2].home[0] = f32::from_bits(world.sim_cut);
         // The fourth lane: how calm the hands leave Murmur's flock, 1 -
         // scare, so a writer that never sets it keeps the full scare. Flux
         // ignores it.

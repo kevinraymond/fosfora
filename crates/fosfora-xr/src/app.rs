@@ -206,6 +206,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.emit <particles per second>   (mode quad)
     //   adb shell setprop debug.fosfora.count <particles>        (mode particles)
     //   adb shell setprop debug.fosfora.sim 0                    (freeze the S5 sim: draw cost only)
+    //   adb shell setprop debug.fosfora.simcut flow,boxes        (board #3806: skip parts of the world sim's alive path to
+    //       apportion its dispatch cost: flow, turb, boxes, spheres, depth, lift, edge, atomics (no alive count: the draw
+    //       shows nothing), all (every one of those), path (the whole alive path: write-back and atomic only); a diagnostic,
+    //       the look may break; unknown names are logged and ignored; default none; read at launch)
     //   adb shell setprop debug.fosfora.size 0.5                 (sprite radius multiplier)
     //   adb shell setprop debug.fosfora.tri 0                    (6-vertex quads instead of 3-vertex sprites)
     //   adb shell setprop debug.fosfora.pull 0                   (instanced draw instead of vertex pulling)
@@ -804,6 +808,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .map(|c| c.max(1));
     let count = count_knob.unwrap_or(DEFAULT_COUNT);
     let sim_enabled = debug_prop("debug.fosfora.sim").as_deref() != Some("0");
+    let sim_cut = debug_prop("debug.fosfora.simcut").map_or(0, |v| {
+        let (mask, unknown) = crate::sim_cut::parse(&v);
+        for name in unknown {
+            log::warn!("debug.fosfora.simcut: no part '{name}' (ignored)");
+        }
+        mask
+    });
     let size_scale = debug_prop("debug.fosfora.size")
         .and_then(|v| v.parse::<f32>().ok())
         .filter(|s| (0.01..=10.0).contains(s))
@@ -817,8 +828,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .filter(|s| (0.1..=2.0).contains(s))
         .unwrap_or(1.0);
     info!(
-        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale} · mr {mr:?} · floor {floor} · gravity {gravity} · near cull {near_cull} · cube ({:.2}, {:.2}, {:.2}) half {cube_half}",
-        cube_center[0], cube_center[1], cube_center[2]
+        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · sim cut {} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale} · mr {mr:?} · floor {floor} · gravity {gravity} · near cull {near_cull} · cube ({:.2}, {:.2}, {:.2}) half {cube_half}",
+        crate::sim_cut::describe(sim_cut),
+        cube_center[0],
+        cube_center[1],
+        cube_center[2]
     );
 
     let mut session = XrSession::new(&xr, &mut gfx, eye_scale, mr, &dirs.config)?;
@@ -990,6 +1004,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             count: count_knob,
                             size_scale,
                             sim_enabled,
+                            sim_cut,
                             anchor: cube_center,
                         },
                     );

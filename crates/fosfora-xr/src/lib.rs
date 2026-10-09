@@ -65,6 +65,7 @@ pub mod room_edit;
 pub mod room_file;
 #[cfg(target_os = "android")]
 mod scene;
+pub mod sim_cut;
 pub mod space;
 pub mod surface_fx;
 pub mod surface_port;

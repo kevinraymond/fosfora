@@ -41,7 +41,7 @@
 //   aux[0]          head position xyz; w = near-fade radius (0 = off)
 //   aux[1]          sphere count (u32 bits), box count (u32 bits),
 //                   restitution, margin
-//   aux[2]          x = occluder shrink (unused here), y = hand kick (m/s),
+//   aux[2]          x = the sim-cut mask (u32 bits; below), y = hand kick (m/s),
 //                   z = settle drift (m/s, downward; 0 = none),
 //                   w = hand calm, 0..1: 1 - Murmur's hand scare, so an
 //                   unwritten 0 keeps the full scare (unused here)
@@ -60,6 +60,16 @@
 // near fade, no instruments, no depth collide, no pour and every box on
 // its kind's behavior; with no boxes, a surface-emit preset spawns in the
 // volume.
+//
+// Sim-cut mask (board #3806; crates/fosfora-xr/src/sim_cut.rs, the
+// `debug.fosfora.simcut` knob): aux[2].x as u32 bits, 0 in production. Each
+// XR_CUT_* bit skips one part of the alive path so a cost sweep can
+// apportion the dispatch among them; the look may break under it. The
+// obstacle block carries the occluder's sphere shrink in that lane, which
+// no sim reads; the XR app overwrites it with the mask. XR_CUT_PATH skips
+// the whole alive path (the particle written back unchanged and marked
+// alive: the floor), XR_CUT_ATOMICS swaps the alive path's final
+// mark_alive for a plain store (the draw then sees no particle alive).
 //
 // Instrument rows (board #3327; crates/fosfora-xr/src/instruments.rs, the
 // hands as instruments):
@@ -234,6 +244,17 @@ const XR_EDGE_FADE: f32 = 0.3;
 // Extra aging per second for a particle resting on a horizontal surface.
 const XR_REST_AGING: f32 = 2.0;
 
+// The sim-cut mask's bits (aux[2].x, above; sim_cut.rs `PARTS` in order).
+const XR_CUT_FLOW: u32 = 1u;
+const XR_CUT_TURB: u32 = 2u;
+const XR_CUT_BOXES: u32 = 4u;
+const XR_CUT_SPHERES: u32 = 8u;
+const XR_CUT_DEPTH: u32 = 16u;
+const XR_CUT_LIFT: u32 = 32u;
+const XR_CUT_EDGE: u32 = 64u;
+const XR_CUT_ATOMICS: u32 = 128u;
+const XR_CUT_PATH: u32 = 256u;
+
 // ---- random -------------------------------------------------------------------
 
 // Three uniform [0, 1) values per (particle, salt), from the integer hash. The
@@ -265,12 +286,13 @@ fn xr_side(x: f32) -> f32 {
 // part of its velocity. One pass per frame is enough at these speeds; a
 // particle deep inside a box (spawned there) exits through the nearest face.
 // Returns true when the particle was pushed out through an upward face: it
-// is resting on a table or the floor.
-fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u32) -> bool {
+// is resting on a table or the floor. `cut` is the sim-cut mask: its
+// spheres, boxes and depth bits skip those obstacles.
+fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u32, cut: u32) -> bool {
     var rested = false;
     let header = aux[XR_AUX_HEADER].home;
-    let sphere_count = min(bitcast<u32>(header.x), XR_MAX_SPHERES);
-    let box_count = min(bitcast<u32>(header.y), XR_MAX_BOXES);
+    let sphere_count = select(min(bitcast<u32>(header.x), XR_MAX_SPHERES), 0u, (cut & XR_CUT_SPHERES) != 0u);
+    let box_count = select(min(bitcast<u32>(header.y), XR_MAX_BOXES), 0u, (cut & XR_CUT_BOXES) != 0u);
     let restitution = header.z;
     let margin = header.w;
     let sphere_kick = aux[XR_AUX_HEADER + 1u].home.y;
@@ -321,7 +343,10 @@ fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u32) ->
             rested = rested || n.y > 0.7;
         }
     }
-    let on_depth = xr_depth_collide(pos, vel, idx);
+    var on_depth = false;
+    if (cut & XR_CUT_DEPTH) == 0u {
+        on_depth = xr_depth_collide(pos, vel, idx);
+    }
     return rested || on_depth;
 }
 
@@ -750,6 +775,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         return;
     }
     let half = max(u.emitter_radius, 0.05);
+    // The sim-cut mask (aux[2].x, above): 0 runs every part.
+    let cut = bitcast<u32>(aux[XR_AUX_HEADER + 1u].home.x);
 
     var p = read_particle(idx);
     let life = p.pos_life.w;
@@ -788,18 +815,28 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         return;
     }
 
+    // Sim cut: the floor, the read, the write-back and the atomic alone.
+    if (cut & XR_CUT_PATH) != 0u {
+        write_particle(idx, p);
+        mark_alive(idx);
+        return;
+    }
+
     let life_frac = new_age / max_life;
     let dt = u.delta_time;
     var vel = p.vel_size.xyz;
     var pos = p.pos_life.xyz;
 
     // --- Flow field: primary force ---
-    let flow_vel = xr_flow(pos, half);
-    // Audio modulation: bass increases flow strength.
-    // MFCC(1) modulates curl tightness: bright timbre = tighter spirals, dark = loose.
-    let mfcc1_curl = clamp(mfcc(1u) * 0.02, -0.5, 0.5);
-    let audio_flow_mult = (1.0 + mfcc1_curl) * (1.0 + u.bass * 0.8 + u.mid * 0.3);
-    vel += flow_vel * audio_flow_mult * dt;
+    var flow_vel = vec3f(0.0);
+    if (cut & XR_CUT_FLOW) == 0u {
+        flow_vel = xr_flow(pos, half);
+        // Audio modulation: bass increases flow strength.
+        // MFCC(1) modulates curl tightness: bright timbre = tighter spirals, dark = loose.
+        let mfcc1_curl = clamp(mfcc(1u) * 0.02, -0.5, 0.5);
+        let audio_flow_mult = (1.0 + mfcc1_curl) * (1.0 + u.bass * 0.8 + u.mid * 0.3);
+        vel += flow_vel * audio_flow_mult * dt;
+    }
 
     // Beat: brief speed boost in flow direction.
     if u.beat > 0.5 {
@@ -815,20 +852,22 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Gentle turbulence on top of flow. Spectral flux drives turbulence speed:
     // more timbral change = more spatial agitation. Two 2D noise planes give
     // a direction on the sphere (the 2D sim's one angle, plus an elevation).
-    let flux_turb = 1.0 + u.flux * 2.0;
-    let drift = vec2f(u.time * 0.3 * flux_turb, u.time * 0.25 * flux_turb);
-    let turb_angle = fosfora_noise2(pos.xz * 5.0 + drift) * 6.28318;
-    let turb_z = fosfora_noise2(pos.xy * 5.0 - drift) * 2.0 - 1.0;
-    let turb_ring = sqrt(max(1.0 - turb_z * turb_z, 0.0));
-    let turb_dir = vec3f(turb_ring * cos(turb_angle), turb_z, turb_ring * sin(turb_angle));
-    vel += turb_dir * 0.003 * flux_turb * dt;
+    if (cut & XR_CUT_TURB) == 0u {
+        let flux_turb = 1.0 + u.flux * 2.0;
+        let drift = vec2f(u.time * 0.3 * flux_turb, u.time * 0.25 * flux_turb);
+        let turb_angle = fosfora_noise2(pos.xz * 5.0 + drift) * 6.28318;
+        let turb_z = fosfora_noise2(pos.xy * 5.0 - drift) * 2.0 - 1.0;
+        let turb_ring = sqrt(max(1.0 - turb_z * turb_z, 0.0));
+        let turb_dir = vec3f(turb_ring * cos(turb_angle), turb_z, turb_ring * sin(turb_angle));
+        vel += turb_dir * 0.003 * flux_turb * dt;
+    }
 
     // Drag.
     vel *= 1.0 - (1.0 - u.drag) * dt * 60.0;
 
     // The lift: under the palm, within its radius, up toward it.
     var lifted = false;
-    if instruments.y > 0.0 {
+    if instruments.y > 0.0 && (cut & XR_CUT_LIFT) == 0u {
         let palm = aux[XR_AUX_INSTRUMENTS + 2u].home.xyz;
         let radius = max(instruments.z, 0.01);
         let to = palm - pos;
@@ -847,14 +886,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // the floor.
     let settle = aux[XR_AUX_HEADER + 1u].home.z;
     pos += (vel - vec3f(0.0, settle, 0.0)) * dt;
-    let rested = xr_collide(&pos, &vel, idx) && !lifted;
+    let rested = xr_collide(&pos, &vel, idx, cut) && !lifted;
 
     // Leaving the volume: respawn at a new point inside it (the 2D sim wraps).
     // Still alive, so the alive count and the density stay steady. In
     // surface mode the respawn is a surface spawn, and a closed gate lets
     // the particle die instead.
+    // The sim cut's edge bit skips both: the particle just continues.
     let edge = max(abs(pos.x), max(abs(pos.y), abs(pos.z))) / half;
-    if free {
+    if (cut & XR_CUT_EDGE) != 0u {
+        // Cut: no respawn, no reach check.
+    } else if free {
         // A burst particle: loose in the room until it dies, or when it
         // flies farther than a throw can reach.
         if length(pos) > XR_FREE_REACH_M {
@@ -914,5 +956,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     p.flags.x = new_age + select(0.0, dt * XR_REST_AGING, rested);
 
     write_particle(idx, p);
-    mark_alive(idx);
+    if (cut & XR_CUT_ATOMICS) != 0u {
+        // Sim cut: no atomic, a plain store (the alive count stays 0).
+        alive_indices_out[idx] = idx;
+    } else {
+        mark_alive(idx);
+    }
 }
