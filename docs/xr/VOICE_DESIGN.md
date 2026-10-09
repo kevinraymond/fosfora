@@ -978,16 +978,17 @@ and the lanes' own lines for a write.
 `debug.fosfora.localmin <p>` (0 to 1, default 0.35), read at launch;
 `debug.fosfora.agent 0|1` as before.
 
-**The fetch and the placeholder.** `assets/xr/models/MODELS.txt` lists
-every model with its URL and SHA-256 (the speech model's line moved
-there), and `scripts/xr/fetch-model.sh` reads it. The decision model's and
-its tokenizer files' URL is `placeholder` until the model is hosted: the
-script accepts a file already present whose SHA-256 matches (`present,
-sha256 ok`; a dev build copies them in from the training export), warns
-and goes on when one is absent (the APK builds, the provider is off with
-the log line above), and stops on a present file that does not match. The
-APK workflow caches them on the model's SHA-256 and fetches them with the
-same script, a no-op with a notice while the URL is a placeholder.
+**The fetch.** `assets/xr/models/MODELS.txt` lists every model with its
+URL and SHA-256 (the speech model's line moved there), and
+`scripts/xr/fetch-model.sh` reads it. The decision model and its tokenizer
+files are hosted at `huggingface.co/kjraym/fosfora-voice-s1-17m`
+(Apache-2.0; the card, the spec and the files); the script downloads what
+is absent, accepts a file already present whose SHA-256 matches (`present,
+sha256 ok`), and stops on a present file that does not match. A URL of
+`placeholder` (a model not hosted yet) makes the script warn and go on
+when the file is absent: the APK builds and the provider is off with the
+log line above. The APK workflow caches the files on their SHA-256 and
+fetches them with the same script.
 
 **The exit order.** The device bench aborted at its exit: `ort`
 2.0.0-rc.13 releases its environment from the executable's `.fini_array`,

@@ -25,9 +25,10 @@ The voice path's on-device provider (`crates/fosfora-xr/src/local.rs`): a
 `cross-encoder/ettin-reranker-17m-v1` (revision `9e4aa35`) with the MIT
 Bekko System One toolkit (commit `0fccbb8`) on synthetic cases generated
 from the voice path's own catalog and naming (run 3,
-`docs/xr/MEASURED.md`, "Our own System One 17M, trained"). Not hosted yet:
-`MODELS.txt` carries a placeholder URL, and a dev build copies the files
-in from the training export.
+`docs/xr/MEASURED.md`, "Our own System One 17M, trained"). Hosted at
+`https://huggingface.co/kjraym/fosfora-voice-s1-17m` (Apache-2.0, with its
+card and `provider-spec.json`); `MODELS.txt` carries the file URLs and
+SHA-256s.
 
 - `s1-17m-int8.onnx`: the model, ONNX with int8 embeddings (blocks and
   heads FP32). 29,023,607 bytes; SHA-256
