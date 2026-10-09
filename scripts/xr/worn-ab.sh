@@ -5,7 +5,9 @@
 # relaunches the installed APK once per condition with that condition's
 # debug.fosfora.* knobs, lets it warm up, then captures the runtime's
 # per-second frame line for --seconds and summarizes App GPU ms (median,
-# p90, max), fps, stale frames, GPU MHz and the runtime's temperature. The
+# p90, max), the compositor's TW ms (median, p90: a second composition
+# layer costs there, not in App, board #3793), fps, stale frames, GPU MHz
+# and the runtime's temperature. The
 # full build runs first and last, so drift inside the sitting shows.
 #
 #   scripts/xr/worn-ab.sh [--seconds 60] [--warmup 20] [--out DIR]
@@ -13,7 +15,9 @@
 #
 # --with sets extra knobs for every condition (music=1 plays the bundled
 # clip, which the room's emitters need: a quiet room emits nothing and the
-# cloud is empty, board #3783).
+# cloud is empty, board #3783; gov=0 holds the thermal governor, board
+# #3789, which otherwise thins the cloud during a run that is over budget
+# and makes every condition read the same).
 #
 # Every knob is cleared afterwards. The surface knob writes the room file
 # (rooms/<id>.json under the config dir), so the room files are backed up
@@ -54,10 +58,14 @@ conditions=(
     "hands0|hands=0;handmesh=0|no hand obstacles and no hand occluder"
     "bare|cloud=0;surface=$NONE;canvas=0;ripple=0;envdepth=0|the cloud, the surfaces and the depth off together"
     "ported0|surface=wall=none,floor=none,ceiling=none,frame=none|the ported face effects and streamlines off, the embers (and so the cloud) kept"
+    "layer0|faceslayer=0|the surfaces back in the eye pass"
+    "layer0b|faceslayer=0|the surfaces back in the eye pass, again (interleaved with full2 against drift)"
+    "scale25|facescale=0.25|the faces layer at a quarter of the recommended size"
+    "cheap|surface=wall=pulse,floor=rings|the same walls and floor on the built-in pulse and rings instead of the ported effects"
     "full2|-|everything on again (drift check)"
 )
 
-all_knobs="cloud surface canvas ripple envdepth handmesh hands"
+all_knobs="cloud surface canvas ripple envdepth handmesh hands faceslayer facescale"
 for kv in ${with//;/ }; do all_knobs="$all_knobs ${kv%%=*}"; done
 clear_knobs() {
     for k in $all_knobs; do adb shell setprop "debug.fosfora.$k" '""'; done
@@ -81,7 +89,8 @@ md5sum "$out"/rooms/* | sed 's/^/room was: /' >&2
 trap 'clear_knobs; restore_rooms' EXIT
 
 stats() {
-    # App GPU ms med/p90/max, fps med, stale/s med, GPU MHz mode, temp max
+    # App GPU ms med/p90/max, compositor TW ms med/p90, fps med, stale/s
+    # med, GPU MHz mode, temp max
     # (plain awk: no asort; the sorts are insertion sorts over ~60 rows).
     awk '
     function sortn(arr, n,   i, j, v) {
@@ -90,6 +99,7 @@ stats() {
     /FPS=/ {
         n++
         match($0, /App=[0-9.]+/); a[n] = substr($0, RSTART+4, RLENGTH-4) + 0
+        match($0, /TW=[0-9.]+/); w[n] = substr($0, RSTART+3, RLENGTH-3) + 0
         match($0, /FPS=[0-9]+/); f[n] = substr($0, RSTART+4, RLENGTH-4) + 0
         match($0, /Stale=[0-9]+/); s[n] = substr($0, RSTART+6, RLENGTH-6) + 0
         match($0, /\/[0-9]+MHz/); m = substr($0, RSTART+1, RLENGTH-4); mhz[m]++
@@ -97,14 +107,14 @@ stats() {
     }
     END {
         if (n == 0) { print "no frame lines"; exit }
-        sortn(a, n); sortn(f, n); sortn(s, n)
+        sortn(a, n); sortn(w, n); sortn(f, n); sortn(s, n)
         best = ""; bc = 0; for (k in mhz) if (mhz[k] > bc) { best = k; bc = mhz[k] }
         mid = int((n + 1) / 2); p90 = int(n * 0.9); if (p90 < 1) p90 = 1
-        printf "app_med=%.2f app_p90=%.2f app_max=%.2f fps_med=%d stale_med=%d gpu_mhz=%s temp_max=%.0f n=%d\n", a[mid], a[p90], a[n], f[mid], s[mid], best, tmax, n
+        printf "app_med=%.2f app_p90=%.2f app_max=%.2f tw_med=%.2f tw_p90=%.2f fps_med=%d stale_med=%d gpu_mhz=%s temp_max=%.0f n=%d\n", a[mid], a[p90], a[n], w[mid], w[p90], f[mid], s[mid], best, tmax, n
     }' "$1"
 }
 
-printf "%-7s %-10s %-9s %-8s %-8s %-10s %-8s %-9s\n" cond app_med app_p90 app_max fps_med stale_med gpu_mhz temp_max | tee "$out/summary.txt"
+printf "%-7s %-10s %-9s %-8s %-8s %-8s %-8s %-10s %-8s %-9s\n" cond app_med app_p90 app_max tw_med tw_p90 fps_med stale_med gpu_mhz temp_max | tee "$out/summary.txt"
 for entry in "${conditions[@]}"; do
     IFS='|' read -r name knobs what <<<"$entry"
     if [ -n "$only" ] && ! [[ ",$only," == *",$name,"* ]]; then continue; fi

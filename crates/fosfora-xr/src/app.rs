@@ -211,6 +211,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.pull 0                   (instanced draw instead of vertex pulling)
     //   adb shell setprop debug.fosfora.hz 90                    (request a display rate)
     //   adb shell setprop debug.fosfora.eyescale 0.75            (swapchain size vs recommended)
+    //   adb shell setprop debug.fosfora.faceslayer 0|1           (board #3793: the lit room surfaces in their own composition layer, a
+    //       smaller per-eye swapchain between passthrough and the cloud's layer; 0 draws them in the eye pass as before; default 1 in
+    //       world and mr, and only ever over passthrough; read at launch)
+    //   adb shell setprop debug.fosfora.facescale 0.5            (board #3793: the faces layer's swapchain vs the recommended eye size,
+    //       0.25..1.0; default 0.5; read at launch)
+    //   adb shell setprop debug.fosfora.facesharpen 0|1          (board #3793: XR_FB_composition_layer_settings normal sharpening on the
+    //       faces layer's upsample; default 0; read at launch)
     //   adb shell setprop debug.fosfora.mode mr                  (S7: passthrough + hands + room, no quad)
     //   adb shell setprop debug.fosfora.passthrough 0|1          (override the mode's default)
     //   adb shell setprop debug.fosfora.hands 0|1                (hand joints as obstacles + pinch)
@@ -689,6 +696,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         ),
         env_depth,
         micro: toggle("debug.fosfora.micro", true),
+        faces: crate::faces_layer::FacesOptions::from_knobs(
+            debug_prop("debug.fosfora.faceslayer").as_deref(),
+            debug_prop("debug.fosfora.facescale").as_deref(),
+            debug_prop("debug.fosfora.facesharpen").as_deref(),
+            mixed,
+        ),
     };
     let floor = toggle("debug.fosfora.floor", mixed);
     let gravity = debug_prop("debug.fosfora.gravity")

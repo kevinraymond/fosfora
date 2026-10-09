@@ -529,6 +529,87 @@ cost rows in `MEASURED.md` and the worn gate are the reviewer's. A
 tint from the lane's color index, and the effects' parameters from the
 panel (D3).
 
+## D2c: the surfaces in their own layer (Oct 9, board #3793)
+
+**Why.** The worn A/B (`MEASURED.md`, "Worn A/B of the frame cost", and
+board #3791) put the cost of a lit room surface in the face draw itself,
+per covered eye pixel, whatever shader runs on it: three aurora walls and
+a floor cost 3.0 ms worn at 640 MHz, and the built-in pulse and rings on
+the same faces 1.4 ms of a 2.2 ms unworn delta. A face covers a large
+share of the view and is smooth light, so fewer shaded face pixels is the
+lever, and the compositor's upsample is nearly free for it.
+
+**What moved.** Draws 4 and 5 of the eye pass, the surfaces pass's slots
+and the ported effects, leave the eye pass for a second per-eye
+`R8G8B8A8_SRGB` swapchain at `round(recommended x facescale)` (default
+0.5: 840x880 per eye on a Quest 3), created and wrapped as the eye
+swapchain is, with its own `Depth32Float` depth. Per eye, ahead of the
+eye pass, the "xr-faces" pass clears color to transparent black (stored)
+and depth to 1.0 (discarded), then draws the env-depth occluder, the
+particles' occluders (room boxes, then the hand mesh or joint spheres)
+and the two draw groups, with their pipelines and depth state unchanged.
+Nothing else moves: the highlight, the sprites, the cloud, the ghosts,
+the beams, the panel and the label stay in the eye pass, which keeps its
+own occluder draws so the sprites still hide behind real surfaces and
+hands. `Gfx::draw_faces` is the one draw code for the two groups; the
+knob only picks the pass it runs in. With nothing lit the faces pass is
+only its clear.
+
+**Submission.** `xrEndFrame` takes `[passthrough, faces, main]`, bottom
+first. The faces layer is a projection layer with the same pose and fov
+per view as the main layer, its sub-image rect 0,0 to the faces extent,
+array index 0, `BLEND_TEXTURE_SOURCE_ALPHA`. Its images are acquired and
+waited beside the eyes' and released after the render. The runtime
+composites it at full resolution over passthrough and under the cloud.
+
+**The knobs** (read at launch). `debug.fosfora.faceslayer 0|1`, default
+1 in world and mr: 0 keeps the two groups in the eye pass, for the worn
+A/B (`scripts/xr/worn-ab.sh`, condition `layer0`). `debug.fosfora.facescale`,
+0.25 to 1.0, default 0.5. `debug.fosfora.facesharpen 0|1`, default 0:
+`XR_FB_composition_layer_settings`' `NORMAL_SHARPENING` chained on the
+faces layer (the extension is enabled whenever the runtime offers it; the
+flag is chained only when asked). Without passthrough (the quad and
+particles test modes) no faces layer is created and the surfaces draw in
+the eye pass as before, whatever the knob. The launch log says which:
+`faces layer: 840x880 per eye (scale 0.50) · <n> images · sharpen off`, or
+`faces layer: off (...)`.
+
+**Depth.** The faces pass rebuilds the occlusion the surfaces were tested
+against in the eye pass: the env-depth occluder at the faces target's
+size, and the particles' occluders. The occluder's fragment-to-NDC step
+reads `EyeReprojection::target_size`, so `EnvDepth` keeps a second
+uniform set per eye (the WGSL is unchanged), written only while the
+faces layer exists, and its bind groups per depth image become per
+target and per eye (`OccluderTarget::Eye`, `OccluderTarget::Faces`). The
+camera uniforms do not depend on the target size and are shared. The
+surfaces' depth bias (`SURFACE_DEPTH_BIAS` -16, `SURFACE_DEPTH_SLOPE_BIAS`
+-2.0) was tuned at full resolution and is kept. The constant term is in
+the depth format's units, not pixels, so it means the same at any size;
+the slope term multiplies the depth slope per window pixel, which doubles
+at half size, so the same face is pulled toward the camera by up to
+twice the slope term's depth there. The occluders' edges are resolved at
+the faces layer's resolution, so a hand's or a desk's silhouette over a
+lit face is half as sharp as the cloud's.
+
+**Alpha.** The faces are premultiplied light blended over the pass's
+transparent clear, exactly as they were over the eye pass's clear (also
+transparent black over passthrough, except the two white flash frames),
+so the faces layer over passthrough is the same light as before. The main
+layer is then composited over it by its own alpha. Where the cloud's
+sprites or the panel cover a face, that differs from the single pass
+only for the additive sprites: they accumulate alpha, so a face under
+them is now scaled by one minus that alpha before the sprite's light is
+added, where before the light was added on top of the face. The
+alpha-blended sprites and the panel give the same result either way.
+
+**The cost to measure.** The faces pass's shading drops to the faces
+layer's pixel count (a quarter at 0.5); its clear, its occluder draws
+and the second layer's composition are new. The app GPU time (`App=`)
+should fall; the compositor's (`TW=` on the runtime's frame line, which
+`worn-ab.sh` now reports as `tw_med` and `tw_p90`) should rise by the
+second layer's composition. `full` against `layer0` in one sitting
+answers it, with `facescale` and `facesharpen` as follow-ups.
+
 ## D3 as built (Oct 8, board #3472)
 
 **The writer.** `RoomLanes::set_params` (`lanes.rs`) is the panel's
