@@ -2540,3 +2540,27 @@ surfaces lit), 72 Hz, App GPU med 10.82 / p90 11.99 / max 13.15 ms, no
 crash; whisper's model loaded in 670 ms; with `voice.json` naming
 `anthropic` the agent took that provider, the local one being the
 default only when none is named.
+
+## The provider toggle (board #3776)
+
+`xr-agent-toggle` on the Quest 3, `mode world`, the replayed room (17
+anchors, nothing pointed), `voice.json` naming `anthropic`, no saved pick,
+the `agentpick` knob standing in for the hand menu's Agent control, one
+miss sentence through `say` per step; `hand_menu.json` and the room file
+restored byte-identical after the run (the agent's answers had changed
+the room).
+
+| Step | Log | Answer |
+|---|---|---|
+| launch | `voice agent: on · anthropic · claude-opus-5-5 · api.anthropic.com (voice.json rule)` | the network provider, 2812 ms |
+| pick local (first time this process) | `voice agent: local (menu) · s1-17m-int8 loads after the speech model (3 threads, floor 0.35)`, then `on · local · s1-17m-int8 · 692 ms` | embers on the desk, 396 ms |
+| pick off | `voice agent: off (menu)` | the grammar's "Didn't catch that" label, no call |
+| pick anthropic | `voice agent: anthropic · claude-opus-5-5 · api.anthropic.com (menu)` | the network provider, 4149 ms, 8 actions |
+| pick local again | `voice agent: local (menu)` (the worker kept) | the on-device answer, 467 ms |
+| pick bogus | `voice agent: agentpick "bogus" not available` | nothing |
+
+The worker started mid-session loads at once (692 ms) since the speech
+model was long loaded. The debug panel with Edit room on (15 rows, the
+header allowance 300 points) dumped through `debug.fosfora.hudtest`:
+the control block clears the header's meters with room to spare, the
+Agent row full width under Recenter and Rescan.

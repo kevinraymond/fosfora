@@ -933,10 +933,12 @@ while it runs no window opens and the `voicefile` clip waits, so no
 transcription can start. The cascade takes about a fifth of a second; a
 fist held through it opens the window when it ends.
 
-**The default rule** (`agent::choose`):
+**The default rule** (`agent::choose`), after the saved pick (board
+#3776, "The provider toggle" below):
 
 | `voice.json` | Decision model installed | Agent |
 |---|---|---|
+| any | any, with a saved Agent pick that is available | the saved pick |
 | none | yes | local |
 | none | no | off, as before |
 | no `provider` | yes | local |
@@ -948,7 +950,7 @@ fist held through it opens the window when it ends.
 
 Installed means the model, the spec and both tokenizer files are in the
 app's `assets/xr/models/`. `debug.fosfora.agent 0` still turns any agent
-off.
+off at launch (a press of the Agent control turns it on from there).
 
 **What the wearer sees.** "Thinking…" for the fifth of a second the
 cascade takes, then the intent's own reply text, as the grammar shows it
@@ -1041,6 +1043,57 @@ run ships as a new model and spec with no code change); wider phrasing
 (the misses in `MEASURED.md` are unseen words, not unseen structure); a
 confidence-aware label (saying "I think you meant …" between the floor and
 a sure answer); the model hosted, so `MODELS.txt` gets its URL.
+
+### The provider toggle (board #3776)
+
+Kevin (Oct 8): moving `voice.json` aside is no way for most people to
+try the other provider. The hand menu has an Agent control now, a button
+across its own row under the effect's (the menu is six rows, nine with
+Edit room on; in the debug panel it sits over Pitcher and Debug), so no
+row the wearer already reaches for moved. It reads `Agent: local`,
+`Agent: Anthropic`, `Agent: OpenAI` or `Agent: off`; each press steps the
+cycle local → the network provider → off → local, skipping what the
+headset lacks: local when the decision model is installed, the network
+provider when `voice.json` parses as an `anthropic` or `openai` config
+(`agent::parse_config`; a file naming `local` is none). With neither, it
+reads `Agent: none`, a press does nothing, and the launch logs why once:
+`voice agent: none to pick in the hand menu (local: <why>; network:
+<why>)`. The rule is pure (`agent::Available`: `picks`, `next`,
+`at_launch`) and desktop-tested over every availability.
+
+**Saved.** `hand_menu.json` gains `"agent": "local" | "anthropic" |
+"openai" | "off"`, written on each press. A file without it (every
+headset updated from V5), or naming a pick the headset cannot make now,
+is no saved choice: the launch takes the default rule above, exactly as
+V5 did, until the wearer presses the control. The launch log names where
+the pick came from: `voice agent: on · anthropic · claude-opus-5-5 ·
+api.anthropic.com (saved)`, `voice agent: local · s1-17m-int8 loads
+after the speech model (3 threads, floor 0.35) (voice.json rule)`,
+`voice agent: off (saved)`.
+
+**The switch**, at once, no relaunch. To local: the worker starts on the
+first pick this process (the launch's code, `start_local`) and loads as
+at launch, after the speech model or 15 s; it stays when the pick moves
+away, so switching back is instant (and a relaunch takes the parked
+session as before). A failed load takes local out of the cycle; when
+it is the pick, the agent goes off, not saved. To the network provider:
+its config, read at launch (no I/O). To off: no agent; the grammar's
+misses keep V2's text. Any switch drops a call in flight or waiting and
+clears its "Thinking…", so no stale answer lands on the room. One line
+per change: `voice agent: local (menu)`, `voice agent: anthropic ·
+claude-opus-5-5 · api.anthropic.com (menu)` (never the key), `voice
+agent: off (menu)`, and `hand menu: … · agent <pick> (saved)`.
+
+**The knobs.** `debug.fosfora.agent 0` keeps the agent off at launch
+for sweeps and is not saved (unlike `debug.fosfora.voice`): the control
+then reads `Agent: off` and a press turns it on from there. Next to the
+`say` knob, `debug.fosfora.agentpick local|anthropic|openai|off` presses
+the control to that pick for the unworn gate: read at launch and polled
+once a second, fed once per value as `say` is (set `""` first to feed the
+same value again), through the same switch, and saved as a press is; a
+value the headset cannot pick logs `voice agent: agentpick "<v>" not
+available` and does nothing. There is no voice phrase for the control;
+the grammar is unchanged.
 
 ## Open questions for Kevin
 

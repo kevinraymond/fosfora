@@ -300,6 +300,158 @@ pub fn choose(file: Option<&str>, local: Result<(), String>) -> Result<Choice, S
     }
 }
 
+/// The hand menu's Agent control (board #3776): which provider answers,
+/// the wearer's pick among what the headset has. `Network` carries the
+/// API `voice.json` configures, so the word on the button and the saved
+/// name follow from the pick alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    Local,
+    Network(ProviderKind),
+    Off,
+}
+
+impl Pick {
+    /// The name `hand_menu.json` saves and the `agentpick` knob takes:
+    /// `local`, `anthropic`, `openai` or `off`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Local => LOCAL,
+            Self::Network(kind) => kind.name(),
+            Self::Off => "off",
+        }
+    }
+
+    /// The pick [`Pick::name`] names, `None` for anything else.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim() {
+            LOCAL => Some(Self::Local),
+            "anthropic" => Some(Self::Network(ProviderKind::Anthropic)),
+            "openai" => Some(Self::Network(ProviderKind::OpenAi)),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+
+    /// The control's words: the state is in them, not in a color.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Local => "Agent: local",
+            Self::Network(ProviderKind::Anthropic) => "Agent: Anthropic",
+            Self::Network(ProviderKind::OpenAi) => "Agent: OpenAI",
+            Self::Off => "Agent: off",
+        }
+    }
+}
+
+/// The control's words with no provider to pick.
+pub const NONE_LABEL: &str = "Agent: none";
+
+/// What the Agent control can pick on this headset, read once at launch:
+/// the on-device provider when its files are installed, the network
+/// provider `voice.json` configures when the file parses as one
+/// ([`parse_config`]), and the V5 rule's pick ([`choose`]) for a launch
+/// with no saved choice. Each `Err` is the reason, for the log.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Available {
+    pub local: Result<(), String>,
+    pub network: Result<Config, String>,
+    pub rule: Result<Choice, String>,
+}
+
+impl Available {
+    /// From `voice.json`'s text as [`read`] gives it (`Ok(None)`: no
+    /// file) and whether the on-device provider is installed.
+    pub fn new(file: Result<Option<String>, String>, local: Result<(), String>) -> Self {
+        let network = match &file {
+            Ok(Some(json)) => parse_config(json),
+            Ok(None) => Err(format!("no {CONFIG_FILE}")),
+            Err(why) => Err(why.clone()),
+        };
+        let rule = file.and_then(|file| choose(file.as_deref(), local.clone()));
+        Self {
+            local,
+            network,
+            rule,
+        }
+    }
+
+    /// The control's cycle: `local`, the network provider, `off`, each
+    /// only when available; empty (the control reads "Agent: none") with
+    /// neither provider.
+    pub fn picks(&self) -> Vec<Pick> {
+        let mut picks = Vec::with_capacity(3);
+        if self.local.is_ok() {
+            picks.push(Pick::Local);
+        }
+        if let Ok(config) = &self.network {
+            picks.push(Pick::Network(config.provider));
+        }
+        if !picks.is_empty() {
+            picks.push(Pick::Off);
+        }
+        picks
+    }
+
+    /// Whether `pick` is in the cycle.
+    pub fn has(&self, pick: Pick) -> bool {
+        self.picks().contains(&pick)
+    }
+
+    /// The pick after `current` in the cycle, wrapping; the first for a
+    /// pick not in it; `off` with nothing to pick.
+    pub fn next(&self, current: Pick) -> Pick {
+        let picks = self.picks();
+        match picks.iter().position(|&p| p == current) {
+            Some(i) => picks[(i + 1) % picks.len()],
+            None => picks.first().copied().unwrap_or(Pick::Off),
+        }
+    }
+
+    /// The launch's pick: the saved one when it is available, else the
+    /// V5 rule's (off when the rule leaves the agent off), so a headset
+    /// with no saved choice behaves exactly as V5 did.
+    pub fn at_launch(&self, saved: Option<Pick>) -> Pick {
+        match (saved.filter(|&p| self.has(p)), &self.rule) {
+            (Some(pick), _) => pick,
+            (None, Ok(Choice::Local)) => Pick::Local,
+            (None, Ok(Choice::Network(config))) => Pick::Network(config.provider),
+            (None, Err(_)) => Pick::Off,
+        }
+    }
+
+    /// Why there is nothing to pick: both providers' reasons (empty when
+    /// one is available).
+    pub fn none_reason(&self) -> Option<String> {
+        match (&self.local, &self.network) {
+            (Err(local), Err(network)) => Some(format!("local: {local}; network: {network}")),
+            _ => None,
+        }
+    }
+
+    /// The control's state for the hand menu: the pick showing and the
+    /// one a press asks for; `None` with nothing to pick.
+    pub fn control(&self, current: Pick) -> Option<Control> {
+        (!self.picks().is_empty()).then(|| Control {
+            now: current,
+            next: self.next(current),
+        })
+    }
+}
+
+/// The Agent control as the hand menu shows it: the pick in its words, and
+/// the pick a press asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Control {
+    pub now: Pick,
+    pub next: Pick,
+}
+
+/// The control's words: the pick's, or "Agent: none".
+pub fn control_label(control: Option<Control>) -> &'static str {
+    control.map_or(NONE_LABEL, |c| c.now.label())
+}
+
 /// `voice.json` as written, or V3's error for a file that is no JSON
 /// object of the expected fields.
 fn parse_config_raw(json: &str) -> Result<RawConfig, String> {
@@ -2214,5 +2366,129 @@ mod tests {
         assert_eq!((cut.chars().count(), s), (MAX_SAY_CHARS, LABEL_S));
         assert!(cut.ends_with('\u{2026}'));
         assert_eq!(dropped_line(&[Ok(Intent::Rescan)]), None);
+    }
+
+    /// Board #3776: every `voice.json` case against the on-device
+    /// provider installed or not: the cycle, the press after each pick,
+    /// and the launch with no saved choice (the V5 rule) and with each
+    /// saved one.
+    #[test]
+    fn the_agent_control_cycles_what_is_available_and_launches_saved_else_by_the_rule() {
+        const A: Pick = Pick::Network(ProviderKind::Anthropic);
+        const O: Pick = Pick::Network(ProviderKind::OpenAi);
+        use Pick::{Local as L, Off};
+        let keyed = format!(r#"{{"api_key": "{KEY}"}}"#);
+        let anthropic = format!(r#"{{"provider": "anthropic", "api_key": "{KEY}"}}"#);
+        let openai = r#"{"provider": "openai", "model": "qwen3.5", "base_url": "http://192.168.1.20:11434/v1"}"#;
+        let file = |s: &str| Ok(Some(s.to_owned()));
+        // (voice.json, installed, the cycle, the V5 rule's launch pick)
+        type Case = (Result<Option<String>, String>, bool, Vec<Pick>, Pick);
+        let cases: Vec<Case> = vec![
+            (Ok(None), true, vec![L, Off], L),
+            (Ok(None), false, vec![], Off),
+            (Err("unreadable".to_owned()), true, vec![L, Off], Off),
+            (Err("unreadable".to_owned()), false, vec![], Off),
+            (file("{not json"), true, vec![L, Off], Off),
+            (file("{not json"), false, vec![], Off),
+            // No provider and no key: no network config.
+            (file("{}"), true, vec![L, Off], L),
+            (file("{}"), false, vec![], Off),
+            // No provider, a key: V3's Anthropic default.
+            (file(&keyed), true, vec![L, A, Off], L),
+            (file(&keyed), false, vec![A, Off], A),
+            (file(&anthropic), true, vec![L, A, Off], A),
+            (file(&anthropic), false, vec![A, Off], A),
+            (file(openai), true, vec![L, O, Off], O),
+            (file(openai), false, vec![O, Off], O),
+            // `local` by name is no network config.
+            (file(r#"{"provider": "local"}"#), true, vec![L, Off], L),
+            (file(r#"{"provider": "local"}"#), false, vec![], Off),
+            // A network config that fails the private-address rule.
+            (
+                file(r#"{"provider": "openai", "model": "m", "base_url": "http://example.com"}"#),
+                true,
+                vec![L, Off],
+                Off,
+            ),
+        ];
+        for (json, installed, cycle, rule) in cases {
+            let local = if installed {
+                Ok(())
+            } else {
+                Err("no s1-17m-int8.onnx at /m".to_owned())
+            };
+            let what = format!("{json:?} installed {installed}");
+            let a = Available::new(json, local);
+            assert_eq!(a.picks(), cycle, "{what}");
+            // Each press steps to the next, wrapping.
+            for (i, &p) in cycle.iter().enumerate() {
+                assert_eq!(
+                    a.next(p),
+                    cycle[(i + 1) % cycle.len()],
+                    "{what}: after {p:?}"
+                );
+                assert!(a.has(p), "{what}");
+                assert_eq!(a.control(p).map(|c| c.next), Some(a.next(p)), "{what}");
+            }
+            // A pick not in the cycle steps to its first; nothing to pick
+            // stays off, reads "none" and says why.
+            for p in [L, A, O, Off] {
+                if !cycle.contains(&p) {
+                    assert!(!a.has(p), "{what}: {p:?}");
+                    assert_eq!(a.next(p), cycle.first().copied().unwrap_or(Off), "{what}");
+                }
+            }
+            if cycle.is_empty() {
+                assert_eq!(a.control(Off), None, "{what}");
+                assert_eq!(control_label(a.control(Off)), "Agent: none");
+                let why = a.none_reason().expect("both reasons");
+                assert!(why.starts_with("local: no s1-17m-int8.onnx"), "{why}");
+                assert!(why.contains("; network: "), "{why}");
+            } else {
+                assert_eq!(a.none_reason(), None, "{what}");
+            }
+            // The launch: no saved choice, or one not available, is the
+            // V5 rule's; an available saved one wins.
+            assert_eq!(a.at_launch(None), rule, "{what}");
+            for saved in [L, A, O, Off] {
+                let want = if cycle.contains(&saved) { saved } else { rule };
+                assert_eq!(a.at_launch(Some(saved)), want, "{what}: saved {saved:?}");
+            }
+            // The rule's pick is always in the cycle (or off).
+            assert!(rule == Off || cycle.contains(&rule), "{what}");
+        }
+    }
+
+    #[test]
+    fn the_agent_picks_have_names_and_words() {
+        for (pick, name, label) in [
+            (Pick::Local, "local", "Agent: local"),
+            (
+                Pick::Network(ProviderKind::Anthropic),
+                "anthropic",
+                "Agent: Anthropic",
+            ),
+            (
+                Pick::Network(ProviderKind::OpenAi),
+                "openai",
+                "Agent: OpenAI",
+            ),
+            (Pick::Off, "off", "Agent: off"),
+        ] {
+            assert_eq!(pick.name(), name);
+            assert_eq!(Pick::from_name(name), Some(pick));
+            assert_eq!(Pick::from_name(&format!(" {name} ")), Some(pick));
+            assert_eq!(pick.label(), label);
+            assert_eq!(
+                control_label(Some(Control {
+                    now: pick,
+                    next: Pick::Off
+                })),
+                label
+            );
+        }
+        for unknown in ["", "none", "Anthropic", "ollama", "on"] {
+            assert_eq!(Pick::from_name(unknown), None, "{unknown}");
+        }
     }
 }

@@ -331,13 +331,17 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   held is a push-to-talk window, and (V4) a thumb tap on either hand opens
   one that closes on silence; the transcription shows on the label. The
   hand menu's Voice toggle (the Music row's right cell) turns it on and
-  off, saved in `hand_menu.json`. Knobs, read at launch:
+  off, saved in `hand_menu.json`. The Agent row (board #3776, under the
+  effect's) picks the agent's provider among what the headset has (local,
+  the `voice.json` provider, off), saved there too and switched at once
+  (`VOICE_DESIGN.md`, "The provider toggle"). Knobs, read at launch:
   - `debug.fosfora.voice 0|1`: forces the hand menu's Voice toggle and saves it (on when the file lacks it); voice needs the speech model installed, else off with a log.
   - `debug.fosfora.voicequiet <level>` (V4): a tap window closes once speech was heard and the microphone's level (RMS of the last 50 ms, ±1 scale) has stayed under this for 0.8 s; default 0.01 (-40 dBFS), tuned against the room's noise.
   - `debug.fosfora.voicethreads <n>`: whisper's threads for a transcription, 1..6, default 3.
   - `debug.fosfora.voicefile <path>`: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a window had closed (the unworn gate).
   - `debug.fosfora.say "<sentence>"` (V2): a sentence fed to the grammar as if heard, polled once a second, fed once per value.
-  - `debug.fosfora.agent 0|1` (V3, `VOICE_DESIGN.md`, "V3 as built"): a sentence the grammar cannot match goes to the language model `voice.json` names; V5: with no `voice.json`, or one naming no `provider`, to the on-device model when its files are installed ("V5 as built"); default 1 whenever a provider is configured or installed, 0 keeps the agent off for sweeps.
+  - `debug.fosfora.agent 0|1` (V3, `VOICE_DESIGN.md`, "V3 as built"): a sentence the grammar cannot match goes to the language model `voice.json` names; V5: with no `voice.json`, or one naming no `provider`, to the on-device model when its files are installed ("V5 as built"); default 1 whenever a provider is configured or installed, 0 keeps the agent off for sweeps (not saved; the Agent control then reads "Agent: off" and a press turns it on).
+  - `debug.fosfora.agentpick local|anthropic|openai|off` (board #3776): the Agent control pressed to that pick for the unworn gate, polled once a second, fed once per value as `say` is, switched and saved as a press is; a pick the headset cannot make logs `voice agent: agentpick "<v>" not available`.
   - `debug.fosfora.localthreads <n>` (V5): the on-device provider's ONNX Runtime intra-op threads, 1..6, default 3 (as whisper's).
   - `debug.fosfora.localmin <p>` (V5): the on-device provider's confidence floor on the action kind and the value, 0..1, default 0.35; an answer under it is the grammar's "Didn't catch that" with its hint, and changes nothing.
 - **Hand occluders.** The runtime's skinned hand mesh
@@ -738,7 +742,10 @@ the effect cycle is the hand menu's top row, the debug panel's `<` `>` row
 with Edit room on (244 and 364 points tall, its bottom rows where they were),
 and outside world mode the row is a status, "One effect in this mode", so the
 height does not change with the mode; the debug panel keeps its 11 and 14
-rows. Step 5: the editor's hold is armed first. A first right hold on a
+rows. (Board #3776 added the Agent row under the effect's: the menu is six
+rows, nine with Edit room on, 284 and 404 points; the debug panel 12 and
+15, its header allowance 320 → 300 points, the dumps' header being about
+250.) Step 5: the editor's hold is armed first. A first right hold on a
 surface arms the class cycle (the highlight pulses twice, the label at the
 hit says what a second would do, "desk: hold again for all tables ->
 streamlines", the status cell appends " · armed"); a second hold on the same
