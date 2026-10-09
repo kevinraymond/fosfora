@@ -16,3 +16,8 @@ the `developers.meta.com` pages as found Oct 9, 2026.
 
 What the docs do not give: numbers for a specific scene. Those stay in
 `MEASURED.md`.
+
+`scripts/xr/gpu-stages.sh` wraps `ovrgpuprofiler` the way `worn-ab.sh`
+wraps the VrApi line: one trace per condition, parsed to the sim
+dispatch, the eye surface's binning and render, and the faces surface's
+render.
