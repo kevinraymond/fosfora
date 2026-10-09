@@ -239,7 +239,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.agent 0|1                (board #3751, V3: a sentence the grammar cannot match goes to the language model
     //       voice.json under the config dir names (the label reads "Thinking…", then the model's sentence; the actions go through V2's
     //       path); V5: with no voice.json, or one naming no provider, the on-device model (`local.rs`) when its files are installed;
-    //       default 1 whenever a provider is configured or installed, 0 keeps the agent off for sweeps; read at launch)
+    //       board #3776: the hand menu's Agent control cycles local / the voice.json provider / off, saved, and its saved pick comes first;
+    //       default 1 whenever a provider is configured or installed, 0 keeps the agent off for sweeps; read at launch; board #3776:
+    //       0 is not saved, the hand menu's Agent control then reads "Agent: off" and a press turns it on from there)
+    //   adb shell setprop debug.fosfora.agentpick local|anthropic|openai|off   (board #3776: the hand menu's Agent control pressed to that
+    //       provider, for the unworn gate: switched and saved as a press is (hand_menu.json "agent"); read at launch and polled once a
+    //       second, fed once per value as debug.fosfora.say is (set "" first to feed the same value again); a value the headset cannot
+    //       pick logs `voice agent: agentpick "<v>" not available` and does nothing)
     //   adb shell setprop debug.fosfora.localthreads 3           (board #3751, V5: the on-device provider's ONNX Runtime intra-op threads, 1..6;
     //       default 3, as whisper's; read at launch)
     //   adb shell setprop debug.fosfora.localmin 0.35            (board #3751, V5: the on-device provider's confidence floor on the action kind and
@@ -508,6 +514,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // menu's, and the `say` knob's last sentence fed.
     let mut voice_actions: Vec<Action> = Vec::new();
     let mut say_knob = crate::intent::SayKnob::default();
+    // Board #3776: the `agentpick` knob's last value fed (the same
+    // once-per-value rule as `say`).
+    let mut agent_knob = crate::intent::SayKnob::default();
     // V4: "what can I say" shows the next five examples on each ask.
     let mut help_page = 0usize;
     // V3, the agent (`agent.rs`): the provider `voice.json` names, read
@@ -515,75 +524,64 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // newer sentence's call replaces an older one, whose answer is then
     // dropped. V5: with no `voice.json`, or one naming no provider, the
     // on-device provider (`local.rs`) when its files are installed; its
-    // worker loads the model after the speech model (below).
+    // worker loads the model after the speech model (below). Board #3776:
+    // the hand menu's Agent control picks among what is available (the
+    // on-device provider, the network one `voice.json` configures, off),
+    // saved in `hand_menu.json`; a saved pick that is available comes
+    // first, else the V5 rule. `debug.fosfora.agent 0` keeps the agent off
+    // at launch without saving it, and a press turns it on from there.
     let local_files = crate::local::Files::in_dir(&dirs.assets.join(crate::local::MODELS_DIR));
-    let choice = crate::agent::read(&dirs.config.join(crate::agent::CONFIG_FILE))
-        .and_then(|file| crate::agent::choose(file.as_deref(), local_files.check()));
-    let mut local: Option<LocalAgent> = None;
-    let mut agent: Option<std::sync::Arc<dyn crate::agent::Provider + Send + Sync>> = match (
-        choice,
-        debug_prop("debug.fosfora.agent").as_deref(),
-    ) {
-        (Err(why), _) => {
-            info!("voice agent: off ({why})");
-            None
-        }
-        (Ok(_), Some("0")) => {
-            info!("voice agent: off (debug.fosfora.agent 0)");
-            None
-        }
-        (Ok(crate::agent::Choice::Network(config)), _) => {
-            info!("voice agent: on \u{b7} {}", config.summary());
-            let provider: std::sync::Arc<dyn crate::agent::Provider + Send + Sync> =
-                config.provider();
-            Some(provider)
-        }
-        (Ok(crate::agent::Choice::Local), _) => {
-            let threads = debug_prop("debug.fosfora.localthreads")
-                .and_then(|v| v.trim().parse::<usize>().ok())
-                .map_or(crate::local::THREADS, |n| n.clamp(1, 6));
-            let floor = debug_prop("debug.fosfora.localmin")
-                .and_then(|v| v.trim().parse::<f32>().ok())
-                .filter(|p| (0.0..=1.0).contains(p))
-                .unwrap_or(crate::local::FLOOR);
-            // The runtime by name (the app's native library directory
-            // is on the dynamic linker's search path, as for the
-            // OpenXR loader), then by the Activity's nativeLibraryDir.
-            let mut library = vec![std::path::PathBuf::from(crate::local::LIBRARY)];
-            if let Some(dir) = permissions.as_ref().and_then(|p| {
-                p.native_library_dir()
-                    .inspect_err(|e| log::warn!("voice local: {e:#}"))
-                    .ok()
-            }) {
-                library.push(std::path::Path::new(&dir).join(crate::local::LIBRARY));
-            }
-            let options = crate::local::Options {
-                threads,
-                floors: crate::local::Floors::both(floor),
-                library,
-            };
-            match crate::local::Local::start(local_files.clone(), options) {
-                Ok((handle, loaded)) => {
-                    info!(
-                        "voice agent: local \u{b7} {} loads after the speech model ({threads} threads, floor {floor:.2})",
-                        crate::local::MODEL_NAME
-                    );
-                    let handle = std::sync::Arc::new(handle);
-                    local = Some(LocalAgent {
-                        handle: handle.clone(),
-                        loaded,
-                        asked: false,
-                    });
-                    let provider: std::sync::Arc<dyn crate::agent::Provider + Send + Sync> = handle;
-                    Some(provider)
-                }
-                Err(e) => {
-                    error!("voice agent: off (local: no worker thread: {e})");
-                    None
-                }
-            }
-        }
+    let mut available = crate::agent::Available::new(
+        crate::agent::read(&dirs.config.join(crate::agent::CONFIG_FILE)),
+        local_files.check(),
+    );
+    if let Some(why) = available.none_reason() {
+        info!("voice agent: none to pick in the hand menu ({why})");
+    }
+    let saved_pick = menu_saved.agent.filter(|&p| available.has(p));
+    let source = if saved_pick.is_some() {
+        "saved"
+    } else {
+        "voice.json rule"
     };
+    let mut agent_pick = available.at_launch(menu_saved.agent);
+    let mut local: Option<LocalAgent> = None;
+    let mut agent: Option<std::sync::Arc<dyn crate::agent::Provider + Send + Sync>> = None;
+    if debug_prop("debug.fosfora.agent").as_deref() == Some("0") {
+        info!("voice agent: off (debug.fosfora.agent 0)");
+        agent_pick = crate::agent::Pick::Off;
+    } else {
+        match (agent_pick, &available.rule) {
+            (crate::agent::Pick::Off, Err(why)) if saved_pick.is_none() => {
+                info!("voice agent: off ({why}) ({source})");
+            }
+            (crate::agent::Pick::Off, _) => info!("voice agent: off ({source})"),
+            (crate::agent::Pick::Network(_), _) => {
+                if let Ok(config) = &available.network {
+                    info!("voice agent: on \u{b7} {} ({source})", config.summary());
+                }
+            }
+            (crate::agent::Pick::Local, _) => {}
+        }
+        match switch_agent(
+            agent_pick,
+            &mut available,
+            &mut local,
+            &local_files,
+            permissions.as_ref(),
+        ) {
+            Ok(provider) => agent = provider,
+            Err(why) => {
+                error!("voice agent: off ({why})");
+                agent_pick = crate::agent::Pick::Off;
+            }
+        }
+        if agent_pick == crate::agent::Pick::Local
+            && let Some(l) = &local
+        {
+            info!("voice agent: local \u{b7} {} ({source})", l.about);
+        }
+    }
     let mut agent_call: Option<AgentCall> = None;
     // V5: a sentence for the on-device provider that waits for the voice
     // window to close (a `say` sentence while a window is open or its
@@ -1087,6 +1085,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         cloud: crate::room_edit::cloud_knob(debug_prop("debug.fosfora.cloud").as_deref()),
         music: music.wanted(),
         voice: menu_saved.voice,
+        agent: available.control(agent_pick),
     };
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
@@ -1704,6 +1703,55 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 Err(e) => error!("permissions: {e:#}"),
                             }
                         }
+                    }
+                    // Board #3776: the Agent control (or the `agentpick`
+                    // knob), saved, through the one switch. A call in
+                    // flight or waiting is dropped, so no stale answer
+                    // lands on the room afterwards, and its "Thinking…"
+                    // goes with it.
+                    Action::SetAgent(pick) if available.has(pick) => {
+                        menu_saved.agent = Some(pick);
+                        save_hand_menu(&menu_file, menu_saved);
+                        let in_flight = agent_call.take().is_some();
+                        let waiting = pending_call.take().is_some();
+                        if (in_flight || waiting)
+                            && voice_label
+                                .now()
+                                .is_some_and(|l| l.text.contains(crate::agent::THINKING_LABEL))
+                        {
+                            voice_label.clear();
+                        }
+                        let fresh = local.is_none();
+                        match switch_agent(
+                            pick,
+                            &mut available,
+                            &mut local,
+                            &local_files,
+                            permissions.as_ref(),
+                        ) {
+                            Ok(provider) => {
+                                agent = provider;
+                                agent_pick = pick;
+                                match (pick, &available.network, &local) {
+                                    (crate::agent::Pick::Local, _, Some(l)) if fresh => {
+                                        info!("voice agent: local (menu) \u{b7} {}", l.about);
+                                    }
+                                    (crate::agent::Pick::Network(_), Ok(config), _) => {
+                                        info!("voice agent: {} (menu)", config.summary());
+                                    }
+                                    _ => info!("voice agent: {} (menu)", pick.name()),
+                                }
+                            }
+                            Err(why) => {
+                                error!("voice agent: off ({why})");
+                                agent = None;
+                                agent_pick = crate::agent::Pick::Off;
+                            }
+                        }
+                        controls.agent = available.control(agent_pick);
+                    }
+                    Action::SetAgent(pick) => {
+                        info!("voice agent: {} not available", pick.name());
                     }
                     Action::SetEditRoom(on) => info!(
                         "edit room {}",
@@ -2444,7 +2492,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // V5: while the on-device provider decides, no window
                 // opens (and so no transcription starts), so whisper's
                 // threads and the cascade's never run at once.
-                let local_busy = local.is_some() && agent_call.is_some();
+                let local_busy =
+                    agent_pick == crate::agent::Pick::Local && agent_call.is_some();
                 let listens = voice_mic && controls.voice && !local_busy;
                 let press = VoicePress {
                     fist: left_fist && listens,
@@ -2547,6 +2596,22 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     None => {}
                 }
             }
+            // Board #3776, `debug.fosfora.agentpick`: the Agent control's
+            // press for the unworn gate, fed once per value as the `say`
+            // knob is; it goes through the menu's one switch (next
+            // frame's action consumer) and saves as a press does.
+            if frame_index.is_multiple_of(72)
+                && let Some(value) =
+                    agent_knob.poll(system_prop("debug.fosfora.agentpick").as_deref(), false)
+            {
+                match crate::agent::Pick::from_name(&value).filter(|&p| available.has(p)) {
+                    Some(pick) => {
+                        info!("voice agent: debug.fosfora.agentpick \"{value}\"");
+                        voice_actions.push(Action::SetAgent(pick));
+                    }
+                    None => info!("voice agent: agentpick \"{value}\" not available"),
+                }
+            }
             // `debug.fosfora.say`: a sentence as if heard, for the unworn
             // gate (fed once per value; it waits for the room's anchors as
             // the `surface` knob does), its label ahead of the head.
@@ -2637,7 +2702,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // V5: the on-device provider waits while a window is
                     // open or transcribing; a newer sentence replaces a
                     // waiting one.
-                    if local.is_some() && push_to_talk.window() != VoiceWindow::Closed {
+                    if agent_pick == crate::agent::Pick::Local
+                        && push_to_talk.window() != VoiceWindow::Closed
+                    {
                         info!("voice local: waiting for the voice window to close");
                         pending_call = Some(call);
                     } else {
@@ -2679,10 +2746,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                         );
                     }
+                    // Board #3776: a failed load also takes the on-device
+                    // provider out of the Agent control's cycle; when it
+                    // is the pick, the agent goes off (not saved: the
+                    // wearer's pick stays theirs).
                     Ok(Err(e)) => {
                         error!("voice agent: off (local: {e})");
-                        agent = None;
+                        available.local = Err(format!("the load failed: {e}"));
                         local = None;
+                        if agent_pick == crate::agent::Pick::Local {
+                            agent = None;
+                            agent_pick = crate::agent::Pick::Off;
+                        }
+                        controls.agent = available.control(agent_pick);
                     }
                     Err(_) => {}
                 }
@@ -3859,11 +3935,93 @@ impl PendingCall {
 }
 
 /// Board #3751, V5: the on-device provider: its handle, the load's
-/// outcome (once), and whether the load was asked for.
+/// outcome (once), whether the load was asked for, and the launch log's
+/// tail (the model, when it loads, the knobs).
 struct LocalAgent {
     handle: std::sync::Arc<crate::local::Local>,
     loaded: std::sync::mpsc::Receiver<Result<crate::local::Loaded, String>>,
     asked: bool,
+    about: String,
+}
+
+/// Board #3751, V5: start the on-device provider's worker with the
+/// `localthreads` and `localmin` knobs; the frame loop asks it to load once
+/// the speech model has (or after `LOCAL_WAIT`). Err: why it is off.
+fn start_local(
+    files: &crate::local::Files,
+    permissions: Option<&Permissions>,
+) -> Result<LocalAgent, String> {
+    let threads = debug_prop("debug.fosfora.localthreads")
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .map_or(crate::local::THREADS, |n| n.clamp(1, 6));
+    let floor = debug_prop("debug.fosfora.localmin")
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|p| (0.0..=1.0).contains(p))
+        .unwrap_or(crate::local::FLOOR);
+    // The runtime by name (the app's native library directory is on the
+    // dynamic linker's search path, as for the OpenXR loader), then by the
+    // Activity's nativeLibraryDir.
+    let mut library = vec![std::path::PathBuf::from(crate::local::LIBRARY)];
+    if let Some(dir) = permissions.and_then(|p| {
+        p.native_library_dir()
+            .inspect_err(|e| log::warn!("voice local: {e:#}"))
+            .ok()
+    }) {
+        library.push(std::path::Path::new(&dir).join(crate::local::LIBRARY));
+    }
+    let options = crate::local::Options {
+        threads,
+        floors: crate::local::Floors::both(floor),
+        library,
+    };
+    let (handle, loaded) = crate::local::Local::start(files.clone(), options)
+        .map_err(|e| format!("local: no worker thread: {e}"))?;
+    Ok(LocalAgent {
+        handle: std::sync::Arc::new(handle),
+        loaded,
+        asked: false,
+        about: format!(
+            "{} loads after the speech model ({threads} threads, floor {floor:.2})",
+            crate::local::MODEL_NAME
+        ),
+    })
+}
+
+/// Board #3776: the provider `pick` names, the one place the agent is set
+/// (at launch, and on the hand menu's Agent control or the `agentpick`
+/// knob): the network one from its config (cheap, no I/O); the on-device
+/// one's handle, its worker started on the first pick and kept when the
+/// pick moves away, so switching back is instant; none for off. Err: why
+/// the pick cannot answer (a worker that would not start also leaves the
+/// cycle).
+fn switch_agent(
+    pick: crate::agent::Pick,
+    available: &mut crate::agent::Available,
+    local: &mut Option<LocalAgent>,
+    files: &crate::local::Files,
+    permissions: Option<&Permissions>,
+) -> Result<Option<std::sync::Arc<dyn crate::agent::Provider + Send + Sync>>, String> {
+    match pick {
+        crate::agent::Pick::Off => Ok(None),
+        crate::agent::Pick::Network(_) => {
+            let config = available.network.as_ref().map_err(Clone::clone)?;
+            let provider: std::sync::Arc<dyn crate::agent::Provider + Send + Sync> =
+                config.provider();
+            Ok(Some(provider))
+        }
+        crate::agent::Pick::Local => {
+            if local.is_none() {
+                let started = start_local(files, permissions)
+                    .inspect_err(|why| available.local = Err(why.clone()))?;
+                *local = Some(started);
+            }
+            Ok(local.as_ref().map(|l| {
+                let provider: std::sync::Arc<dyn crate::agent::Provider + Send + Sync> =
+                    l.handle.clone();
+                provider
+            }))
+        }
+    }
 }
 
 /// Board #3751: one intent applied, the grammar's (V2) and the agent's
@@ -4006,8 +4164,8 @@ fn system_prop(name: &str) -> Option<String> {
 const HAND_MENU_FILE: &str = "hand_menu.json";
 
 /// The saved hand menu's toggles (`palm_panel::MenuFile`): the debug
-/// panel off and voice on when there is no file, it does not parse, or a
-/// field is missing.
+/// panel off, voice on and no agent pick when there is no file, it does
+/// not parse, or a field is missing.
 fn load_hand_menu(path: &std::path::Path) -> crate::palm_panel::MenuFile {
     std::fs::read_to_string(path)
         .map(|s| crate::palm_panel::MenuFile::parse(&s))
@@ -4019,9 +4177,12 @@ fn save_hand_menu(path: &std::path::Path, menu: crate::palm_panel::MenuFile) {
     let on_off = |on: bool| if on { "on" } else { "off" };
     match std::fs::write(path, menu.to_json()) {
         Ok(()) => info!(
-            "hand menu: debug panel {} · voice {} (saved)",
+            "hand menu: debug panel {} · voice {}{} (saved)",
             on_off(menu.debug),
-            on_off(menu.voice)
+            on_off(menu.voice),
+            menu.agent
+                .map(|p| format!(" · agent {}", p.name()))
+                .unwrap_or_default()
         ),
         Err(e) => log::warn!("hand menu: saving {}: {e}", path.display()),
     }

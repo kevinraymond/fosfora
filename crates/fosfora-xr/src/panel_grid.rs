@@ -34,11 +34,12 @@ pub const COL_GAP: f32 = 6.0;
 pub const END_BOX_W: f32 = 40.0;
 /// The hand menu's rows with Edit room off: the world effect's `<` `>`
 /// row on top (board #3336: the effect cycle left the bare pinch-hold),
-/// then, in both layouts at the bottom of the block, the pitcher and debug
-/// toggles over the room editor's (board #3326), over the cloud's (step
-/// 2c), over the music's (board #3472). The debug panel shows the effect
-/// row at the top of its block, over the steppers.
-pub const MENU_ROWS: usize = 5;
+/// then, in both layouts at the bottom of the block, the agent's provider
+/// (board #3776) over the pitcher and debug toggles, over the room
+/// editor's (board #3326), over the cloud's (step 2c), over the music's
+/// (board #3472). The debug panel shows the effect row at the top of its
+/// block, over the steppers.
+pub const MENU_ROWS: usize = 6;
 /// The rows Edit room adds under its own (board #3472, D3): the pointed
 /// surface's color, band and strength.
 pub const SURFACE_ROWS: usize = 3;
@@ -72,16 +73,18 @@ pub const FONT_GRAPH: f32 = 12.0;
 pub const MIN_FONT: f32 = 12.0;
 /// The height the debug panel's header (the title, timing, the graph,
 /// hands, reach, gesture, anchor and audio) needs above the controls, with
-/// room to spare: about 250 points in the texture dumps.
-pub const HEADER_H: f32 = 320.0;
+/// room to spare: about 250 points in the texture dumps. 300 since the
+/// Agent row (board #3776), the most that leaves room for the fullest
+/// block (320 before).
+pub const HEADER_H: f32 = 300.0;
 /// The debug panel's -/+ steppers (`STEPPERS` in `hud.rs`, which checks
 /// the count), two to a row.
 pub const STEPPERS: usize = 10;
 /// The most rows the debug panel shows: the menu's effect row (Prev/Next)
 /// at the top, the steppers' pair rows, Recenter and Rescan, then the
-/// menu's other rows (Pitcher and Debug, Edit room and its status, with
-/// Edit room on the surface's Color, Band and Strength, Particles and All:
-/// none, Music).
+/// menu's other rows (Agent, Pitcher and Debug, Edit room and its status,
+/// with Edit room on the surface's Color, Band and Strength, Particles and
+/// All: none, Music and Voice).
 pub const fn debug_rows(editing: bool) -> usize {
     STEPPERS.div_ceil(2) + 1 + menu_rows(editing)
 }
@@ -345,19 +348,20 @@ mod tests {
         // (board #3472); with Edit room on, the surface's three rows under
         // its own (D3), which is the headroom the header leaves. The
         // menu's effect row (board #3336) is the panel's Prev/Next row, so
-        // the count is as it was.
-        assert_eq!(debug_rows(false), 11);
-        assert_eq!(debug_rows(true), 14);
+        // the count is as it was. The Agent row (board #3776) adds one.
+        assert_eq!(debug_rows(false), 12);
+        assert_eq!(debug_rows(true), 15);
         for editing in [false, true] {
             assert!(block_top(PANEL_H, debug_rows(editing)) >= MARGIN + HEADER_H);
         }
         assert!(block_top(PANEL_H, debug_rows(true) + 1) < MARGIN + HEADER_H);
-        // The hand menu: a title over five rows (the effect's on top since
-        // board #3336), or eight with Edit room on, 40 points taller for
-        // each past the first. No row or font shrinks for them.
-        assert_eq!((menu_rows(false), menu_rows(true)), (5, 8));
-        assert_close!(menu_h(menu_rows(false)), 244.0);
-        assert_close!(menu_h(menu_rows(true)), 364.0);
+        // The hand menu: a title over six rows (the effect's on top since
+        // board #3336, the Agent row under it since board #3776), or nine
+        // with Edit room on, 40 points taller for each past the first. No
+        // row or font shrinks for them.
+        assert_eq!((menu_rows(false), menu_rows(true)), (6, 9));
+        assert_close!(menu_h(menu_rows(false)), 284.0);
+        assert_close!(menu_h(menu_rows(true)), 404.0);
         for editing in [false, true] {
             let n = menu_rows(editing);
             assert!(block_top(menu_h(n), n) >= MARGIN + FONT_TITLE * 1.4);

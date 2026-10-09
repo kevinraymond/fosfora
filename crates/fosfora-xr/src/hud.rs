@@ -120,6 +120,11 @@ pub struct Controls {
     /// `hand_menu.json`; board #3751, V4): off, neither the left fist nor
     /// the thumb tap opens a window.
     pub voice: bool,
+    /// The agent's provider (the hand menu's Agent control, saved in
+    /// `hand_menu.json`; board #3776): the pick showing and the one a
+    /// press asks for, `None` with no provider to pick ("Agent: none").
+    /// The app sets it; a press only asks.
+    pub agent: Option<crate::agent::Control>,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -143,6 +148,9 @@ pub enum Action {
     SetMusic(bool),
     /// The hand menu's Voice toggle changed (saved; board #3751, V4).
     SetVoice(bool),
+    /// The hand menu's Agent control asked for this provider (saved;
+    /// board #3776).
+    SetAgent(crate::agent::Pick),
     /// The "All: none" button: every room surface and every kind default
     /// to none, saved (board #3326, Kevin's debug ask).
     AllNone,
@@ -181,6 +189,8 @@ enum Target {
     ToggleCloud,
     ToggleMusic,
     ToggleVoice,
+    /// The Agent control: the next provider in its cycle.
+    CycleAgent,
     AllNone,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
@@ -629,6 +639,14 @@ impl Hud {
             Some(Target::ToggleVoice) => {
                 controls.voice = !controls.voice;
                 actions.push(Action::SetVoice(controls.voice));
+            }
+            // The app switches and sets `controls.agent` (the cycle
+            // depends on what the headset has); with nothing to pick the
+            // press does nothing.
+            Some(Target::CycleAgent) => {
+                if let Some(agent) = controls.agent {
+                    actions.push(Action::SetAgent(agent.next));
+                }
             }
             Some(Target::AllNone) => actions.push(Action::AllNone),
             Some(Target::Color(up)) => {
@@ -1088,6 +1106,7 @@ fn panel_ui(
     } else {
         Control::Button(Target::Recenter, "Recenter the cloud")
     });
+    block.push(agent_row(controls.agent));
     block.push(menu_row(true, controls.pitcher));
     block.push(edit_row(controls.edit_room, view.edit_status));
     if controls.edit_room {
@@ -1107,6 +1126,7 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Ro
     let editing = controls.edit_room;
     let mut block = Vec::with_capacity(grid::menu_rows(editing));
     block.push(effect_row(view.effect));
+    block.push(agent_row(controls.agent));
     block.push(menu_row(false, controls.pitcher));
     block.push(edit_row(editing, view.edit_status));
     if editing {
@@ -1182,6 +1202,18 @@ fn music_row(playing: bool, voice: bool) -> Control<'static> {
             if voice { "Voice: on" } else { "Voice: off" },
         )),
     ])
+}
+
+/// The agent's provider (board #3776), one action across the row, over
+/// the pitcher's and the debug panel's toggles in both layouts: each press
+/// steps the cycle (local, the network provider `voice.json` configures,
+/// off; what the headset lacks is skipped). It is the menu's top row under
+/// the effect's, so adding it moved no row the wearer already reaches for
+/// (the quad keeps its bottom edge and grows upward). The state is in the
+/// words, not a color; "Agent: none" with nothing to pick, and a press then
+/// does nothing.
+fn agent_row(agent: Option<crate::agent::Control>) -> Control<'static> {
+    Control::Button(Target::CycleAgent, crate::agent::control_label(agent))
 }
 
 /// The cloud's row, over the music's in both layouts: its toggle, and

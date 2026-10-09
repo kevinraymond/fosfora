@@ -358,13 +358,17 @@ impl PalmPanel {
 }
 
 /// The hand menu's saved toggles, `hand_menu.json` under the config dir:
-/// the debug panel (off unless saved on) and the voice path (board #3751,
+/// the debug panel (off unless saved on), the voice path (board #3751,
 /// V4: on unless saved off, so a file from before the toggle keeps voice
-/// on). A missing or broken file is the defaults.
+/// on) and the agent's provider (board #3776: none saved until the Agent
+/// control is first pressed). A missing or broken file is the defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuFile {
     pub debug: bool,
     pub voice: bool,
+    /// The Agent control's pick (board #3776), `None` until the wearer
+    /// first presses it: the launch then takes the V5 rule's.
+    pub agent: Option<crate::agent::Pick>,
 }
 
 impl Default for MenuFile {
@@ -372,13 +376,15 @@ impl Default for MenuFile {
         Self {
             debug: false,
             voice: true,
+            agent: None,
         }
     }
 }
 
 impl MenuFile {
     /// The file's text read leniently: a field that is missing or not a
-    /// boolean keeps its default.
+    /// boolean keeps its default; an `agent` that is missing or names no
+    /// pick is no saved choice.
     pub fn parse(json: &str) -> Self {
         let value = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default();
         let field = |name: &str, default: bool| {
@@ -391,12 +397,21 @@ impl MenuFile {
         Self {
             debug: field("debug", d.debug),
             voice: field("voice", d.voice),
+            agent: value
+                .get("agent")
+                .and_then(serde_json::Value::as_str)
+                .and_then(crate::agent::Pick::from_name),
         }
     }
 
-    /// The file's text: `{"debug":false,"voice":true}`.
+    /// The file's text: `{"debug":false,"voice":true}`, with
+    /// `"agent":"local"` (`anthropic`, `openai`, `off`) once picked.
     pub fn to_json(self) -> String {
-        serde_json::json!({ "debug": self.debug, "voice": self.voice }).to_string()
+        let mut json = serde_json::json!({ "debug": self.debug, "voice": self.voice });
+        if let Some(pick) = self.agent {
+            json["agent"] = pick.name().into();
+        }
+        json.to_string()
     }
 }
 
@@ -410,10 +425,12 @@ mod tests {
             MenuFile {
                 debug: true,
                 voice: false,
+                agent: None,
             },
             MenuFile {
                 debug: false,
                 voice: true,
+                agent: None,
             },
         ] {
             assert_eq!(MenuFile::parse(&file.to_json()), file);
@@ -424,6 +441,7 @@ mod tests {
             MenuFile {
                 debug: true,
                 voice: true,
+                agent: None,
             }
         );
         assert!(!MenuFile::parse(r#"{"voice": false}"#).voice);
@@ -433,6 +451,54 @@ mod tests {
         assert_eq!(
             MenuFile::parse(r#"{"debug": "yes", "voice": 1}"#),
             MenuFile::default()
+        );
+    }
+
+    /// Board #3776: the Agent control's pick round-trips; a file without
+    /// it (V5's), or naming something unknown, is no saved choice.
+    #[test]
+    fn the_menu_file_saves_the_agent_pick_and_reads_none_when_absent_or_unknown() {
+        use crate::agent::{Pick, ProviderKind};
+        for pick in [
+            Pick::Local,
+            Pick::Network(ProviderKind::Anthropic),
+            Pick::Network(ProviderKind::OpenAi),
+            Pick::Off,
+        ] {
+            let file = MenuFile {
+                debug: true,
+                voice: false,
+                agent: Some(pick),
+            };
+            let json = file.to_json();
+            assert!(
+                json.contains(&format!(r#""agent":"{}""#, pick.name())),
+                "{json}"
+            );
+            assert_eq!(MenuFile::parse(&json), file);
+        }
+        assert_eq!(
+            MenuFile::default().to_json(),
+            r#"{"debug":false,"voice":true}"#
+        );
+        // V5's file: no saved choice, the rest as written.
+        let v5 = MenuFile::parse(r#"{"debug":false,"voice":false}"#);
+        assert_eq!((v5.voice, v5.agent), (false, None));
+        // Unknown or mistyped: no saved choice, the rest kept.
+        for json in [
+            r#"{"debug": true, "agent": "ollama"}"#,
+            r#"{"debug": true, "agent": ""}"#,
+            r#"{"debug": true, "agent": 1}"#,
+            r#"{"debug": true, "agent": null}"#,
+            r#"{"debug": true, "agent": "Anthropic"}"#,
+        ] {
+            let file = MenuFile::parse(json);
+            assert_eq!(file.agent, None, "{json}");
+            assert!(file.debug && file.voice, "{json}");
+        }
+        assert_eq!(
+            MenuFile::parse(r#"{"agent": "openai"}"#).agent,
+            Some(Pick::Network(ProviderKind::OpenAi))
         );
     }
 
