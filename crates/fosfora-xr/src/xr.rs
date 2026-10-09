@@ -711,8 +711,9 @@ impl XrSession {
     }
 
     /// Keep the runtime's performance counters only while something reads
-    /// them (the debug panel): turn them on, or off and stop polling. The
-    /// hand menu's toggle can flip this during the session.
+    /// them (the debug panel, the thermal governor): turn them on, or off
+    /// and stop polling. The hand menu's toggle can flip this during the
+    /// session.
     pub fn set_perf_metrics(&mut self, on: bool) {
         if on {
             if self.perf.is_none() {

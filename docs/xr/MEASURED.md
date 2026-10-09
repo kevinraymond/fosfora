@@ -2635,3 +2635,19 @@ evening's worn run happened to be inside an unworn launch left running
 with the replay on. The `surface` knob writes the room file and is
 capped at 92 bytes (an Android property), so a long recipe goes in two
 values.
+
+## The thermal governor, unworn check (board #3789)
+
+`xr-thermal-governor` on the Quest 3 (uptime 9.5 h, battery 44 C, so
+the absolute numbers run high), `mode world`, the replayed room with the
+evening's content, the clip playing, `debug.fosfora.govdown 0.6` (8.3 ms
+at 72 Hz, a threshold the content is always over) to force the path:
+`governor: on · down over 8.3 ms for 3 s · up under 6.9 ms for 20 s ·
+floor 0.30`, then one step every 3 s, `gpu 12.3 ms over 8.3 for 3 s ·
+density 1.00 → 0.90` down to 0.30 and `at the floor: starved` 24 s after
+launch. The GPU time fell only from 12.3 to 11.1 ms over those 24 s:
+the emit rate is what the density scales, and the particles alive thin at
+their lifetime's pace, so the governor's effect lags its steps by tens of
+seconds; the 20 s climb-back interval already assumes that. With the
+thresholds at their defaults the content sat "within" and nothing
+stepped. The worn gate (an hour, hot, at 72 fps) is pending.

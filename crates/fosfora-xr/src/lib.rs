@@ -31,6 +31,7 @@ pub mod env_depth;
 pub mod gesture;
 #[cfg(target_os = "android")]
 mod gfx;
+pub mod governor;
 pub mod highlight;
 #[cfg(target_os = "android")]
 mod hud;
