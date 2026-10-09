@@ -26,6 +26,7 @@ mod app;
 mod assets;
 #[cfg(target_os = "android")]
 mod audio;
+pub mod box_cells;
 pub mod canvas;
 pub mod env_depth;
 pub mod faces_layer;

@@ -210,6 +210,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       apportion its dispatch cost: flow, turb, boxes, spheres, depth, lift, edge, atomics (no alive count: the draw
     //       shows nothing), all (every one of those), path (the whole alive path: write-back and atomic only); a diagnostic,
     //       the look may break; unknown names are logged and ignored; default none; read at launch)
+    //   adb shell setprop debug.fosfora.boxcells 8               (board #3808: the world sim's box cell list, N x N x N cells over the
+    //       volume, each with the boxes that can touch it, so a particle tests only those; N in 2..16, 0 or 1 off (every particle
+    //       against every box, the same result); default 8; read at launch)
     //   adb shell setprop debug.fosfora.size 0.5                 (sprite radius multiplier)
     //   adb shell setprop debug.fosfora.tri 0                    (6-vertex quads instead of 3-vertex sprites)
     //   adb shell setprop debug.fosfora.pull 0                   (instanced draw instead of vertex pulling)
@@ -815,6 +818,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
         mask
     });
+    let box_cells =
+        debug_prop("debug.fosfora.boxcells").map_or(crate::box_cells::DEFAULT_CELLS, |v| {
+            crate::box_cells::parse(&v).unwrap_or_else(|| {
+                log::warn!(
+                    "debug.fosfora.boxcells: '{v}' is not a cell count in 0..={} (keeping {})",
+                    crate::box_cells::CELLS_MAX,
+                    crate::box_cells::DEFAULT_CELLS
+                );
+                crate::box_cells::DEFAULT_CELLS
+            })
+        });
     let size_scale = debug_prop("debug.fosfora.size")
         .and_then(|v| v.parse::<f32>().ok())
         .filter(|s| (0.01..=10.0).contains(s))
@@ -828,8 +842,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .filter(|s| (0.1..=2.0).contains(s))
         .unwrap_or(1.0);
     info!(
-        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · sim cut {} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale} · mr {mr:?} · floor {floor} · gravity {gravity} · near cull {near_cull} · cube ({:.2}, {:.2}, {:.2}) half {cube_half}",
+        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · sim cut {} · box cells {} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale} · mr {mr:?} · floor {floor} · gravity {gravity} · near cull {near_cull} · cube ({:.2}, {:.2}, {:.2}) half {cube_half}",
         crate::sim_cut::describe(sim_cut),
+        crate::box_cells::describe(box_cells),
         cube_center[0],
         cube_center[1],
         cube_center[2]
@@ -1005,6 +1020,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             size_scale,
                             sim_enabled,
                             sim_cut,
+                            box_cells,
                             anchor: cube_center,
                         },
                     );

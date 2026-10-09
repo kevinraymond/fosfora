@@ -4,7 +4,8 @@
 //! collide against a depth atlas, run headless behind the loader's compute
 //! preamble; the particle pitcher's pour (board #3402) through the same
 //! sim onto a floor box; and the surface behavior lanes (board #3326),
-//! which move the room's emission from box to box. The GPU tests are
+//! which move the room's emission from box to box; and the box cell list
+//! (board #3808) against the full box loop. The GPU tests are
 //! `#[ignore]`d like the core's probes (they need an adapter); run them
 //! with `cargo test -p fosfora-xr --test depth_collide_gpu -- --ignored`.
 #![cfg(not(target_os = "android"))]
@@ -12,6 +13,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use fosfora_xr::box_cells;
 use fosfora_xr::env_depth::{
     ATLAS_WGSL, COLLIDE_ROWS, DepthCollide, DepthView, NEAR_CUT_M, atlas_params, atlas_row_texels,
     encode_atlas,
@@ -340,9 +342,11 @@ const PREAMBLE: [&str; 7] = [
 ];
 const FLUX_SIM: &str = include_str!("../../../assets/xr/shaders/flux_xr_sim.wgsl");
 /// Rows the XR app uploads (`WORLD_AUX_ROWS` in `scene.rs`).
-const WORLD_AUX_ROWS: usize = 213;
+const WORLD_AUX_ROWS: usize = 1238;
 /// The first surface lane (`XR_AUX_SURFACE`).
 const AUX_SURFACE: usize = 181;
+/// The box cell list's header (`XR_AUX_CELLS`), its masks after it.
+const AUX_CELLS: usize = 213;
 const FPS: f32 = 60.0;
 
 fn sim_source() -> String {
@@ -369,8 +373,8 @@ fn sim_const(module: &naga::Module, name: &str) -> u32 {
 }
 
 /// The depth rows sit right after the instrument rows, the pour row after
-/// them, then the surface lanes, one per box, ending where the XR app's
-/// upload does; the sim validates with them, its pour cone is the
+/// them, then the surface lanes, one per box, then the box cell list,
+/// ending where the XR app's upload does; the sim validates with them, its pour cone is the
 /// pitcher's and its behavior ids are the catalogue's.
 #[test]
 fn the_sim_reads_the_depth_rows_after_the_instruments() {
@@ -397,9 +401,23 @@ fn the_sim_reads_the_depth_rows_after_the_instruments() {
     assert_eq!(get("XR_AUX_SURFACE_ROWS"), get("XR_MAX_BOXES"));
     assert_eq!(get("XR_AUX_SURFACE_ROWS") as usize, SURFACE_LANE_ROWS);
     assert_eq!(
-        (get("XR_AUX_SURFACE") + get("XR_AUX_SURFACE_ROWS")) as usize,
+        get("XR_AUX_CELLS"),
+        get("XR_AUX_SURFACE") + get("XR_AUX_SURFACE_ROWS")
+    );
+    assert_eq!(get("XR_AUX_CELLS") as usize, AUX_CELLS);
+    assert_eq!(get("XR_AUX_CELL_ROWS"), 1024);
+    assert_eq!(get("XR_AUX_CELL_ROWS") as usize, box_cells::CELL_ROWS);
+    assert_eq!(get("XR_CELLS_MAX"), box_cells::CELLS_MAX);
+    assert_eq!(
+        get("XR_CELLS_MAX").pow(3),
+        4 * get("XR_AUX_CELL_ROWS"),
+        "four cells per row"
+    );
+    assert_eq!(
+        (get("XR_AUX_CELLS") + 1 + get("XR_AUX_CELL_ROWS")) as usize,
         WORLD_AUX_ROWS
     );
+    assert_eq!(AUX_CELLS + box_cells::ROWS, WORLD_AUX_ROWS);
     for (name, b) in [
         ("XR_BEHAVIOR_NONE", SurfaceBehavior::None),
         ("XR_BEHAVIOR_EMBERS", SurfaceBehavior::Embers),
@@ -613,6 +631,29 @@ fn run_sim(setup: &SimSetup, capture: &[u32]) -> Captures {
 
 /// [`run_sim`] with `opts`, reading every particle's lanes back.
 fn run_sim_with(setup: &SimSetup, opts: &SimOptions, capture: &[u32]) -> Vec<Vec<Sample>> {
+    run_sim_raw(setup, opts, capture)
+        .iter()
+        .map(|[pos, vel, _, flags]| {
+            let pos: &[[f32; 4]] = bytemuck::cast_slice(pos);
+            let vel: &[[f32; 4]] = bytemuck::cast_slice(vel);
+            let flags: &[[f32; 4]] = bytemuck::cast_slice(flags);
+            pos.iter()
+                .zip(vel)
+                .zip(flags)
+                .map(|((p, v), f)| Sample {
+                    pos: Vec3::new(p[0], p[1], p[2]),
+                    vel: Vec3::new(v[0], v[1], v[2]),
+                    life: p[3],
+                    max_life: f[1],
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// [`run_sim_with`]'s frames as the bytes of the four particle lanes
+/// (position and life, velocity and size, color, flags).
+fn run_sim_raw(setup: &SimSetup, opts: &SimOptions, capture: &[u32]) -> Vec<[Vec<u8>; 4]> {
     let (device, queue, _guard) = gpu();
     device.push_error_scope(wgpu::ErrorFilter::Validation);
     let source = sim_source();
@@ -825,24 +866,7 @@ fn run_sim_with(setup: &SimSetup, opts: &SimOptions, capture: &[u32]) -> Vec<Vec
         }
         queue.submit([encoder.finish()]);
         if capture.contains(&(frame + 1)) {
-            let pos: Vec<[f32; 4]> =
-                bytemuck::cast_slice(&read_buffer(device, queue, &ins[0])).to_vec();
-            let vel: Vec<[f32; 4]> =
-                bytemuck::cast_slice(&read_buffer(device, queue, &ins[1])).to_vec();
-            let flags: Vec<[f32; 4]> =
-                bytemuck::cast_slice(&read_buffer(device, queue, &ins[3])).to_vec();
-            out.push(
-                pos.iter()
-                    .zip(&vel)
-                    .zip(&flags)
-                    .map(|((p, v), f)| Sample {
-                        pos: Vec3::new(p[0], p[1], p[2]),
-                        vel: Vec3::new(v[0], v[1], v[2]),
-                        life: p[3],
-                        max_life: f[1],
-                    })
-                    .collect(),
-            );
+            out.push([0, 1, 2, 3].map(|i| read_buffer(device, queue, &ins[i])));
         }
     }
     wait(device);
@@ -1657,4 +1681,222 @@ fn no_boxes_spawns_in_the_volume() {
     for n in [above, below] {
         assert!(n * 4 > born.len(), "above {above} below {below}");
     }
+}
+
+// ---- The box cell list (board #3808) -----------------------------------------
+
+/// The cell list test's room, as (center, rotation box -> world, half
+/// extents): a floor reaching past the grid, a turned table standing on
+/// it, a book on the table, a tilted lamp overlapping the table, two
+/// turned walls (one tilted as a scan never is), a wall 3 m out, past
+/// the grid, that only the full loop meets, and a shelf just past two
+/// cell borders. The book's cells start at
+/// y = -0.375 (8 cells over +-1.5 m): a particle inside the table's top
+/// below that, pushed up out of it, lands in the book, a box its first
+/// cell does not list.
+fn cell_room() -> Vec<([f32; 3], [f32; 4], [f32; 3])> {
+    let q = |axis: Vec3, deg: f32| {
+        glam::Quat::from_axis_angle(axis.normalize(), deg.to_radians()).to_array()
+    };
+    vec![
+        ([0.0, -1.05, 0.0], q(Vec3::Y, 0.0), [2.5, 0.05, 2.5]),
+        ([0.4, -0.65, -0.3], q(Vec3::Y, 20.0), [0.6, 0.35, 0.4]),
+        BOOK,
+        (
+            [0.7, -0.25, -0.2],
+            q(Vec3::new(1.0, 2.0, 0.5), 35.0),
+            [0.15, 0.12, 0.15],
+        ),
+        ([0.0, 0.2, -1.4], q(Vec3::Y, 10.0), [2.0, 1.3, 0.05]),
+        (
+            [-1.3, 0.2, 0.1],
+            (glam::Quat::from_rotation_y(80f32.to_radians())
+                * glam::Quat::from_rotation_x(5f32.to_radians()))
+            .to_array(),
+            [2.0, 1.3, 0.05],
+        ),
+        ([3.0, 0.0, 0.0], q(Vec3::Y, 0.0), [0.05, 2.0, 2.0]),
+        SHELF,
+    ]
+}
+
+/// The cell list's grid half extent in the test (the presets' 1.5 m).
+const CELL_HALF: f32 = 1.5;
+/// A shelf whose dilated extent ends 0.8 mm past the cell borders at
+/// x = 0.375 and z = 0.75 (8 and 16 cells over +-1.5 m): its corners there
+/// sit in the next cells, which only bounds that reach past the extent by
+/// the pad list it in.
+const SHELF: ([f32; 3], [f32; 4], [f32; 3]) = (
+    [0.375 + 0.0008 - 0.1, 0.5, 0.75 + 0.0008 - 0.1],
+    [0.0, 0.0, 0.0, 1.0],
+    [0.1 - MARGIN, 0.05, 0.1 - MARGIN],
+);
+/// The book on the table (its top at y = -0.3): turned with it, on it.
+const BOOK: ([f32; 3], [f32; 4], [f32; 3]) = (
+    [0.4, -0.2, -0.3],
+    // 20 degrees about +Y.
+    [0.0, 0.173_648_18, 0.0, 0.984_807_8],
+    [0.2, 0.1, 0.15],
+);
+
+/// The aux block for [`cell_room`] with the box cell list at `cells` per
+/// axis (0: no grid, the full loop), packed by the XR app's own builder;
+/// `boxes` false uploads no boxes at all (what the room changes).
+fn cell_aux(cells: u32, boxes: bool) -> Vec<[f32; 4]> {
+    let room = if boxes { cell_room() } else { Vec::new() };
+    let mut aux = vec![[0.0; 4]; WORLD_AUX_ROWS];
+    aux[1] = [
+        f32::from_bits(0),
+        f32::from_bits(room.len() as u32),
+        RESTITUTION,
+        MARGIN,
+    ];
+    aux[2] = [0.0, 0.0, SETTLE, 0.0];
+    for (k, &(c, q, h)) in room.iter().enumerate() {
+        aux[67 + k] = [c[0], c[1], c[2], 0.0];
+        aux[99 + k] = q;
+        aux[131 + k] = [h[0], h[1], h[2], 0.0];
+    }
+    aux[AUX_CELLS..WORLD_AUX_ROWS]
+        .copy_from_slice(&box_cells::rows(&room, MARGIN, cells, CELL_HALF));
+    aux
+}
+
+/// Particles through and beyond the grid: 4000 uniform over +-2.5 m; 500
+/// in and around each box (its dilated extent times 1.2, in its own
+/// frame), all at random speeds up to 1 m/s per axis; at rest, each box's
+/// corners and 20 points along each edge a hair inside its dilated
+/// extent (where its bounds are reached); and 300 inside the table's top
+/// under the book, between y = -0.45 and -0.38, at rest. Deterministic.
+fn cell_particles() -> Vec<(Vec3, Vec3)> {
+    let mut s = 0x2545_f491_u32;
+    let mut next = move || {
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        (s >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+    };
+    let mut out = Vec::new();
+    for _ in 0..4000 {
+        let p = Vec3::new(next(), next(), next()) * 2.5;
+        out.push((p, Vec3::new(next(), next(), next())));
+    }
+    for (c, q, h) in cell_room() {
+        let (c, q, h) = (Vec3::from(c), glam::Quat::from_array(q), Vec3::from(h));
+        for _ in 0..500 {
+            let l = Vec3::new(next(), next(), next()) * (h + Vec3::splat(MARGIN)) * 1.2;
+            out.push((c + q * l, Vec3::new(next(), next(), next())));
+        }
+        let e = (h + Vec3::splat(MARGIN)) * 0.999;
+        for corner in 0..8u32 {
+            let sign = |b: u32| if corner & b == 0 { 1.0 } else { -1.0 };
+            let l = Vec3::new(sign(1), sign(2), sign(4)) * e;
+            out.push((c + q * l, Vec3::ZERO));
+            // The three edges along the axes from this corner, each once
+            // (from the corners with that axis's bit clear).
+            for axis in 0..3 {
+                if corner & (1 << axis) != 0 {
+                    continue;
+                }
+                for t in 0..20 {
+                    let mut l = l;
+                    l[axis] = e[axis] * (1.0 - 2.0 * (t as f32 + 0.5) / 20.0);
+                    out.push((c + q * l, Vec3::ZERO));
+                }
+            }
+        }
+    }
+    let (c, q, h) = (
+        Vec3::from(BOOK.0),
+        glam::Quat::from_array(BOOK.1),
+        Vec3::from(BOOK.2),
+    );
+    for _ in 0..300 {
+        let l = Vec3::new(next() * h.x, 0.0, next() * h.z);
+        let mut p = c + q * l;
+        p.y = -0.415 + 0.035 * next();
+        out.push((p, Vec3::ZERO));
+    }
+    out
+}
+
+/// The box loop through the cell list is the full loop, bit for bit: the
+/// same particles over the same room, stepped three frames with no grid,
+/// with 8 cells per axis (the default), 16 (the most) and 2, give
+/// byte-identical particle buffers (all four lanes) after every frame.
+/// The room changes the result for over a thousand particles (against the
+/// same run with no boxes), some outside the grid, so the boxes, and the
+/// full loop past the grid, are exercised; and at 8 cells most cells skip
+/// most boxes, so the lists are not trivially full. The particles under
+/// the book need the mask re-read after a push, the ones at the boxes'
+/// corners and edges (the shelf's within a millimeter of a cell border)
+/// the bounds to reach them.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn the_cell_list_moves_every_particle_as_the_full_loop_does() {
+    let particles = cell_particles();
+    let opts = SimOptions {
+        drag: PRESET_DRAG,
+        ..SimOptions::default()
+    };
+    let run = |cells, boxes| {
+        let setup = SimSetup {
+            particles: particles.clone(),
+            aux: cell_aux(cells, boxes),
+            atlas: None,
+            every: 1,
+        };
+        run_sim_raw(&setup, &opts, &[1, 2, 3])
+    };
+    let full = run(0, true);
+    assert_eq!(full.len(), 3);
+    for cells in [8, 16, 2] {
+        let listed = run(cells, true);
+        for (frame, (a, b)) in full.iter().zip(&listed).enumerate() {
+            for lane in 0..4 {
+                let differ = a[lane]
+                    .chunks_exact(16)
+                    .zip(b[lane].chunks_exact(16))
+                    .filter(|(x, y)| x != y)
+                    .count();
+                assert_eq!(
+                    differ,
+                    0,
+                    "{cells} cells, frame {}, lane {lane}: {differ} particles differ from the full loop",
+                    frame + 1
+                );
+            }
+        }
+    }
+
+    // What the boxes did: particles whose frame-1 position or velocity
+    // differs from the same run in an empty room.
+    let empty = run(0, false);
+    let touched: Vec<usize> = (0..particles.len())
+        .filter(|&i| {
+            let at = |bytes: &[u8]| bytes[i * 16..i * 16 + 16].to_vec();
+            at(&full[0][0]) != at(&empty[0][0]) || at(&full[0][1]) != at(&empty[0][1])
+        })
+        .collect();
+    let outside = touched
+        .iter()
+        .filter(|&&i| particles[i].0.abs().max_element() > CELL_HALF)
+        .count();
+    assert!(touched.len() > 1000, "only {} touched", touched.len());
+    assert!(outside > 50, "only {outside} touched outside the grid");
+
+    // The lists are short: at 8 cells, the share of cells listing at most
+    // two of the eight boxes.
+    let rows = &cell_aux(8, true)[AUX_CELLS + 1..AUX_CELLS + 1 + 128];
+    let short = rows
+        .iter()
+        .flatten()
+        .filter(|m| m.to_bits().count_ones() <= 2)
+        .count();
+    assert!(short > 400, "{short} of 512 cells list two boxes or fewer");
+    eprintln!(
+        "cell list: {} particles, {} touched by the room ({outside} outside the grid), {short} of 512 cells list <= 2 boxes",
+        particles.len(),
+        touched.len()
+    );
 }
