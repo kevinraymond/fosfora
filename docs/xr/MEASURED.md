@@ -2841,3 +2841,42 @@ The morning's base of 3.9 ms is now about 3.2: the floor 1.56, the flow
 flow field's second sample. Worn, the cloud should rest and slide on
 the surfaces exactly as before (the result is identical by
 construction and by the GPU test); the worn batch covers the look.
+
+## The flow field at one sample per frame (board #3810)
+
+`xr-flow-samples` 394df4b: `debug.fosfora.flowsamples` picks how
+`xr_flow` samples the 64³ flow texture per particle per frame: `2` (the
+two diagonals averaged, as before), `1` (the first alone: the field
+translates as a block), `alt` (one, the diagonal alternating with the
+frame and the particle index) and `altframe` (one, alternating with the
+frame alone, the whole cloud on the same diagonal; the default now). A
+single sample is returned times √2 so two frames of it move a particle
+as far as the pair does each frame; without that scale (the first pass)
+the cloud settled sooner and held 20K fewer alive, which inflated the
+saving. `gpu-stages.sh`, the same setup as the sections above, three
+sweeps; sim med / p90 ms, alive:
+
+| Condition | Pass 2 (47 to 50 C) | Pass 3 (41 to 50 C) | Alive |
+|---|---|---|---|
+| two samples | 3.31, 3.31, 3.42 / 3.7-4.0 | 3.38, 3.22, 3.24 / 3.75-3.78 | 285-297K |
+| `altframe` | | 3.09, 3.02, 3.08 / 3.43-3.53 | 287-298K |
+| `alt` | 3.07, 3.20, 3.26 / 3.5-4.0 | 3.12 / 3.71 | 291-298K |
+| `1` | 2.94 / 3.44 | 2.94 / 3.29 | 277-295K |
+
+The second sample costs about 0.2 ms: every `altframe` run sits 0.15
+to 0.3 ms under every two-sample run of its sweep, p90 included. `alt`
+gave less in pass 2 because neighboring particles in a wave read
+different diagonals, the same locality cost the apportioning found; by
+the frame alone the wave's reads stay together. `1` reads lower still
+but at fewer alive in pass 3, so it is not a cleaner cut.
+
+The look under `altframe` is a per-frame alternation of the whole
+cloud's flow between the two fields at 72 Hz, which the time integral
+smooths; unworn screencaps cannot judge it, so the worn batch compares
+`altframe` against `2`. If it reads as shimmer, `flowsamples 2` puts the
+pair back, or the default in `box_cells.rs` does.
+
+The sim dispatch now stands at about 3.05 ms from the morning's 3.9:
+the floor 1.56 (core's particle layout), the flow about 0.5, the box
+loop 0.15, the turbulence, the hands, the depth map and the rest at the
+noise floor.
