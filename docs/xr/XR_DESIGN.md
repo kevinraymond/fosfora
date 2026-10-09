@@ -60,6 +60,34 @@ every native library under `arm64-v8a`, with no 32-bit-only dependencies.
 Render is single-threaded for the spike. Don't add a render thread until the
 measurements say the CPU side is the bottleneck.
 
+## Thermal governor (board #3789)
+
+After an hour worn the Quest 3 holds its GPU at 456 MHz instead of 640, and
+content that fits the 72 Hz budget cool runs at 24 to 30 fps (`MEASURED.md`,
+"Worn A/B of the frame cost"). The frame loop gives ground on its own
+(`governor.rs`, the decision logic, host-tested; `app.rs` feeds it once a
+frame in world mode). **It watches** the runtime's app GPU time
+(`XR_META_performance_metrics`, the mean over the last second); the
+governor keeps those counters on whether the debug panel is up or not.
+Without them it falls back to the frame loop's one-second window: over below
+95 % of the display rate or at 3 long frames, under at 98 % or above with no
+long frame. **The budget** is the display period times a margin: over above
+0.92 of it (12.8 ms at 72 Hz) for 3 s steps the cloud density down by 0.1,
+to 0.3 at the lowest; under 0.75 of it (10.4 ms) for 20 s steps it back up
+by 0.1, to the wearer's own setting at most. Between the two it holds, and
+each step restarts the clock, as does a gap of over 0.5 s with no frame (the
+session paused). Over for another 3 s at the floor raises a `Starved` level,
+the seam for the next stage (the faces' update rate, board #3788, not
+built); it is the first thing given back. **The stepper**: the debug panel's
+"cloud density" shows the governed value marked, "cloud density 0.60 (gov)",
+and a wearer's step starts from it and becomes the new ceiling, the
+governor's debt cleared. Each step logs a line (`governor: gpu 15.2 ms over
+12.8 for 3 s · density 1.00 → 0.90`), and the thresholds once the display
+rate is known. **Knobs** (read at launch): `debug.fosfora.gov 0|1` (default
+on in world and mr; mr has no cloud density, so it idles there),
+`debug.fosfora.govdown 0.92`, `debug.fosfora.govup 0.75` (held at or below
+`govdown`).
+
 ## OpenXR bring-up (Android)
 
 1. **Loader init.** Call `xrInitializeLoaderKHR` with

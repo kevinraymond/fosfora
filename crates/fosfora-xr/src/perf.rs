@@ -1,7 +1,8 @@
 //! The runtime's own frame timing (`XR_META_performance_metrics`, a public
 //! Khronos-registry extension): app GPU and CPU frame time, compositor
 //! drops and device utilization, the numbers `VrApi`'s logcat line shows,
-//! readable in-app for the debug panel. The `openxr` crate has no safe
+//! readable in-app for the debug panel and the thermal governor
+//! (`governor.rs`). The `openxr` crate has no safe
 //! wrapper, so the calls go through its raw function table.
 
 use anyhow::{Context, Result};
@@ -59,8 +60,8 @@ pub struct PerfMetrics {
 }
 
 impl PerfMetrics {
-    /// Turn the runtime's counters off again (nothing reads them when the
-    /// debug panel is off; the bookkeeping is not free).
+    /// Turn the runtime's counters off again (nothing reads them with the
+    /// debug panel and the thermal governor both off).
     pub fn disable(self) {
         let state = sys::PerformanceMetricsStateMETA {
             ty: sys::PerformanceMetricsStateMETA::TYPE,

@@ -341,6 +341,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.pitcherspeed 1.5         (the pitcher's stream speed, m/s)
     //   adb shell setprop debug.fosfora.density 1.0              (board #3402, world mode: the cloud density, the world effect's emission rate
     //       against its preset's (scaled with the count), 0.05..1; the debug panel's "cloud density"; the pitcher's pour is not scaled)
+    //   adb shell setprop debug.fosfora.gov 0|1                  (board #3789, world mode: the thermal governor steps the cloud density down by 0.1
+    //       while the app GPU time is over budget for 3 s, to 0.3 at the lowest, and back up to the wearer's setting while under for 20 s;
+    //       default on in world and mr (mr has no cloud density, so it idles there); read at launch)
+    //   adb shell setprop debug.fosfora.govdown 0.92             (the governor's over budget, a fraction of the display period: 12.8 ms at 72 Hz)
+    //   adb shell setprop debug.fosfora.govup 0.75               (the governor's under budget, a fraction of the display period: 10.4 ms at 72 Hz;
+    //       held at or below govdown)
     //   adb shell setprop debug.fosfora.space 1.5                (board #3325, world mode: the space size, the half extent in meters of the cube
     //       around the anchor the particles live in and respawn out of, 0.5..6, for every world effect; unset, each keeps its preset's;
     //       the debug panel's "space half m", live, without resetting the cloud)
@@ -1050,8 +1056,33 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     );
     let mut hud =
         (hud_test || mr.hands && session.has_hands()).then(|| Hud::new(&mut gfx, debug_on));
-    // The runtime's performance counters feed only the debug panel.
-    let mut perf_on = hud.as_ref().is_some_and(Hud::debug);
+    // Board #3789: the thermal governor (`governor.rs`) steps the cloud
+    // density, so it acts in world mode only; the knob's default follows
+    // the brief (on in world and mr), and mr has nothing to step.
+    let gov_knob = toggle("debug.fosfora.gov", mixed);
+    let gov_on = gov_knob && world;
+    let gov_margins = {
+        let d = crate::governor::Margins::default();
+        let down = knob("debug.fosfora.govdown", d.down).clamp(0.1, 2.0);
+        crate::governor::Margins {
+            down,
+            up: knob("debug.fosfora.govup", d.up).clamp(0.1, down),
+        }
+    };
+    if !gov_on {
+        info!(
+            "governor: off{}",
+            if gov_knob {
+                " (world mode only: no cloud density to step)"
+            } else {
+                ""
+            }
+        );
+    }
+    // The runtime's performance counters feed the debug panel and the
+    // governor (they cost nothing measurable, so the governor keeps them on
+    // whether the panel is up or not).
+    let mut perf_on = gov_on || hud.as_ref().is_some_and(Hud::debug);
     session.set_perf_metrics(perf_on);
     // The space size: the knob's for every world effect, else the showing
     // preset's until the stepper moves (outside world mode it drives
@@ -1080,6 +1111,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         pitcher: false,
         pitcher_rate: crate::instruments::PITCHER_RATE,
         density: knob("debug.fosfora.density", 1.0).clamp(0.05, 1.0),
+        density_gov: None,
         space_half: space.shown(),
         edit_room: false,
         cloud: crate::room_edit::cloud_knob(debug_prop("debug.fosfora.cloud").as_deref()),
@@ -1090,6 +1122,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
     let mut density_set = vec![1.0f32; world_effects.len()];
+    // Board #3789: the governor's density under the wearer's setting, the
+    // last second of app GPU time it watches and the display period its
+    // launch line was logged for.
+    let mut gov = crate::governor::Governor::new(gov_margins, controls.density);
+    let mut gpu_window = crate::governor::GpuWindow::default();
+    let mut gov_logged_period: Option<f32> = None;
     let mut reach = crate::reach::Reach::new(reach_threshold, reach_gain);
     // This frame's reach per hand, and the furthest (real, virtual) since
     // the last log line.
@@ -1426,7 +1464,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         // The hand menu's rescan, carried out of the frame closure (the
         // session is borrowed inside it).
         let mut rescan = false;
+        // Board #3789: this frame's app GPU time, for the governor.
+        let mut gpu_frame: Option<f32> = None;
         session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
+            // Board #3789: the governor's signal, taken after the frame.
+            gpu_frame = input.perf.app_gpu_ms;
             // Board #3326: the boxes in the obstacle block's order (the
             // room's, then the stage floor) and each one's behavior; the
             // knob waits while the room is on but has no anchors yet.
@@ -1766,6 +1808,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     Action::AllNone => all_none = true,
                     Action::SurfaceParam(param, up) => surface_step = Some((param, up)),
                     Action::SetMusic(on) => music.set(on),
+                    // Board #3789: the wearer's own density is the
+                    // governor's new ceiling, its debt cleared.
+                    Action::SetDensity => {
+                        if gov.governed().is_some() {
+                            info!(
+                                "governor: the wearer set the density {:.2} (was governed at {:.2} under {:.2})",
+                                controls.density,
+                                gov.density(),
+                                gov.ceiling()
+                            );
+                        }
+                        gov.set_ceiling(controls.density);
+                    }
                     Action::SetPitcher(on) => info!(
                         "pitcher {} ({}/s at {} m/s)",
                         if on { "on" } else { "off" },
@@ -3220,10 +3275,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         if rescan {
             session.rescan_room();
         }
-        if let Some(h) = &hud
-            && h.debug() != perf_on
-        {
-            perf_on = h.debug();
+        let perf_want = gov_on || hud.as_ref().is_some_and(Hud::debug);
+        if perf_want != perf_on {
+            perf_on = perf_want;
             session.set_perf_metrics(perf_on);
         }
         if hud_test
@@ -3254,24 +3308,100 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 world_effects.len()
             );
         }
+        // Board #3789: the thermal governor, once a frame in world mode:
+        // the last second's mean app GPU time against the display period,
+        // or without the counters the frame window's fps and long frames.
+        if gov_on {
+            if (controls.density - gov.ceiling()).abs() > 1e-4 {
+                gov.set_ceiling(controls.density);
+            }
+            if let Some(ms) = gpu_frame {
+                gpu_window.push(t, ms);
+            }
+            let frames = stats.last;
+            let period_ms = if frames.display_hz > 0.0 {
+                1000.0 / frames.display_hz
+            } else {
+                0.0
+            };
+            let (over_ms, under_ms) = gov.margins().limits_ms(period_ms);
+            if period_ms > 0.0 && gov_logged_period.is_none_or(|p| (p - period_ms).abs() > 0.05) {
+                gov_logged_period = Some(period_ms);
+                info!(
+                    "governor: on \u{b7} down over {over_ms:.1} ms for {:.0} s \u{b7} up under {under_ms:.1} ms for {:.0} s \u{b7} floor {:.2} (display {:.1} Hz)",
+                    crate::governor::GOV_DOWN_S,
+                    crate::governor::GOV_UP_S,
+                    crate::governor::GOV_FLOOR,
+                    frames.display_hz
+                );
+            }
+            let gpu = gpu_window.mean(t);
+            let signal = gpu.map(crate::governor::Signal::Gpu).or_else(|| {
+                (period_ms > 0.0).then_some(crate::governor::Signal::Frames {
+                    fps: frames.fps,
+                    long: frames.long_frames,
+                })
+            });
+            match signal {
+                Some(signal) => {
+                    if let Some(c) = gov.step(t, signal, period_ms) {
+                        let load = match (signal, c.down) {
+                            (crate::governor::Signal::Gpu(ms), true) => {
+                                format!("gpu {ms:.1} ms over {over_ms:.1}")
+                            }
+                            (crate::governor::Signal::Gpu(ms), false) => {
+                                format!("gpu {ms:.1} ms under {under_ms:.1}")
+                            }
+                            (crate::governor::Signal::Frames { fps, long }, _) => {
+                                format!("frames {fps:.1}/s with {long} long (no gpu time)")
+                            }
+                        };
+                        let what = if c.level == crate::governor::Level::Starved {
+                            format!(
+                                "density {:.2} at the floor: starved (the next stage, board #3788, is not built)",
+                                c.to
+                            )
+                        } else if (c.from - c.to).abs() < 1e-4 {
+                            format!("no longer starved \u{b7} density {:.2}", c.to)
+                        } else {
+                            format!("density {:.2} \u{2192} {:.2}", c.from, c.to)
+                        };
+                        info!("governor: {load} for {:.0} s \u{b7} {what}", c.held_s);
+                    }
+                }
+                None => gov.idle(),
+            }
+            controls.density_gov = gov.governed();
+        }
         // The cloud density: the showing world effect's emission against
         // the rate `new_world` set, applied when it changes and when an
         // effect switch swaps in one set for another. The cloud toggle
         // leaves it alone: off hides the effect (step 2e; 2c took the
-        // emission to 0 here).
+        // emission to 0 here). The governor's density, at most the
+        // wearer's (`controls.density`; the same with it off).
+        let density = if gov_on {
+            gov.density()
+        } else {
+            controls.density
+        };
         if world
             && let Some(s) = scene.as_mut()
             && let Some(base) = s.base_emit_rate()
             && let Some(set) = density_set.get_mut(world_index)
-            && (*set - controls.density).abs() > 1e-4
+            && (*set - density).abs() > 1e-4
         {
-            *set = controls.density;
-            s.set_emit_rate(base * controls.density);
+            *set = density;
+            s.set_emit_rate(base * density);
             info!(
-                "cloud density {:.2}: '{}' emits {:.0}/s (preset {:.0}/s)",
-                controls.density,
+                "cloud density {:.2}{}: '{}' emits {:.0}/s (preset {:.0}/s)",
+                density,
+                if gov.governed().is_some() {
+                    " (gov)"
+                } else {
+                    ""
+                },
                 world_effects[world_index],
-                base * controls.density,
+                base * density,
                 base
             );
         }

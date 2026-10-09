@@ -82,6 +82,8 @@ const STEPPERS: [(&str, f32, f32, f32); 10] = [
 ];
 
 const _: () = assert!(STEPPERS.len() == grid::STEPPERS);
+/// The "cloud density" row of `STEPPERS`.
+const DENSITY: usize = 8;
 
 /// Values the panel's -/+ rows change; the app applies them every frame.
 #[derive(Debug, Clone, Copy)]
@@ -99,8 +101,13 @@ pub struct Controls {
     /// The pitcher's particles per second.
     pub pitcher_rate: f32,
     /// The world effect's emission against its preset's, 0.05..1: thins
-    /// the cloud (not the pitcher's pour).
+    /// the cloud (not the pitcher's pour). The wearer's setting, the most
+    /// the thermal governor gives back.
     pub density: f32,
+    /// The thermal governor's density while it holds the cloud below
+    /// `density` (board #3789; the app sets it each frame): the stepper
+    /// shows it, marked "(gov)", and steps from it.
+    pub density_gov: Option<f32>,
     /// The world effect's space size: the half extent of the cube its
     /// particles live in (meters; board #3325).
     pub space_half: f32,
@@ -140,6 +147,9 @@ pub enum Action {
     SetDebug(bool),
     /// The hand menu's pitcher toggle changed (not saved).
     SetPitcher(bool),
+    /// The cloud density stepper moved: `Controls::density` is the
+    /// wearer's new setting, which clears the thermal governor's debt.
+    SetDensity,
     /// The hand menu's Edit room toggle changed (not saved).
     SetEditRoom(bool),
     /// The hand menu's Cloud toggle changed (not saved).
@@ -170,7 +180,7 @@ impl Controls {
             5 => &mut self.reach_gain,
             6 => &mut self.hand_scare,
             7 => &mut self.pitcher_rate,
-            8 => &mut self.density,
+            DENSITY => &mut self.density,
             _ => &mut self.space_half,
         }
     }
@@ -660,10 +670,20 @@ impl Hud {
             }
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
+                // A governed density steps from the value it shows.
+                let governed = if i == DENSITY {
+                    controls.density_gov.take()
+                } else {
+                    None
+                };
                 let v = controls.field(i);
-                let next = ((*v / step).round() + if up { 1.0 } else { -1.0 }) * step;
+                let from = governed.unwrap_or(*v);
+                let next = ((from / step).round() + if up { 1.0 } else { -1.0 }) * step;
                 *v = next.clamp(lo, hi);
                 log::info!("debug panel: {name} {:.3}", *v);
+                if i == DENSITY {
+                    actions.push(Action::SetDensity);
+                }
             }
             None => {}
         }
@@ -1087,10 +1107,14 @@ fn panel_ui(
         .map(|(i, &(label, _, _, step))| {
             // Whole steps without decimals.
             let places = if step >= 1.0 { 0 } else { 2 };
+            let value = match controls.density_gov {
+                Some(gov) if i == DENSITY => format!("{gov:.2} (gov)"),
+                _ => format!("{:.places$}", *controls.field(i)),
+            };
             Cell::Stepper {
                 index: i,
                 label,
-                value: format!("{:.places$}", *controls.field(i)),
+                value,
             }
         })
         .collect();
