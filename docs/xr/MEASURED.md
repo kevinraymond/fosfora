@@ -2510,3 +2510,33 @@ exact. The hosted provider remains the better answerer on open phrasings
 (it got "starry night" and "ocean" right); the local one is the default
 because it needs nothing. The known soft spots: the request gate on
 unfamiliar sentences, and the grammar's own misparse above.
+
+## The grammar's misparse, "Shut that song up" (board #3771)
+
+`xr-grammar-miss` on the Quest 3, `mode world`, the replayed room (17
+anchors, nothing pointed), the agent off (`debug.fosfora.agent 0`) so the
+grammar's own log line is the evidence, six sentences through
+`debug.fosfora.say`, the room file and `voice.json` byte-identical after
+the run.
+
+| Sentence | Before | After |
+|---|---|---|
+| "Shut that song up" | miss UnknownSurface("shut that song") | miss NoMatch (the agent reads it) |
+| "Turn my music down" | miss UnknownSurface("my music") | miss NoMatch |
+| "The shelf in blue" | miss UnknownSurface("shelf") | unchanged |
+| "table 9 in blue" | miss UnknownSurface("table 9") | unchanged |
+| "Lamp 2 up" | miss UnknownSurface("lamp 2") | unchanged |
+| "the desk up" | Ambiguous (five tables) | unchanged |
+
+The rule: an unknown target of several words, none of them a kind word,
+a number or a word of a room surface's name, is no name and the sentence
+misses as NoMatch; one unknown word, or words beside such a word, stay
+the room's own "No surface called …". 361 tests, fmt, clippy (desktop
+and Android) green.
+
+The merged tip c7c2979 (V5 in) at the same launch, unworn, 40 s: 17
+anchors replayed, `rooms/a03160e5a4a3b311.json` loaded (18 assigned, 6
+surfaces lit), 72 Hz, App GPU med 10.82 / p90 11.99 / max 13.15 ms, no
+crash; whisper's model loaded in 670 ms; with `voice.json` naming
+`anthropic` the agent took that provider, the local one being the
+default only when none is named.

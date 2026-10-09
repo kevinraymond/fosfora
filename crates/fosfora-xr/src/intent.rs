@@ -379,7 +379,13 @@ const MAX_NAME_WORDS: usize = 3;
 /// ("table"), or the surfaces of a kind word ("desk" in a room without
 /// one). A shared name resolves to the pointed surface when it is one of
 /// them, to every floor when they are all floors (the scene floor and the
-/// stage floor are one floor to the eye), else to [`Aim::Several`].
+/// stage floor are one floor to the eye), else to [`Aim::Several`]. Words
+/// the room has no surface for are a name it lacks when one of them is a
+/// kind word, a number or a word of a surface's name ("table 9", "lamp
+/// 2", "shelf" alone);
+/// several words with none ("shut that song" before "up") are no name,
+/// and the sentence misses as [`Reason::NoMatch`] so the agent reads it
+/// (board #3771).
 fn aim(ts: &[&str], vocab: &Vocabulary<'_>) -> Aim {
     if ts.is_empty() || any(ts, &POINTED) {
         return match vocab.pointed {
@@ -435,6 +441,9 @@ fn aim(ts: &[&str], vocab: &Vocabulary<'_>) -> Aim {
             .collect();
     }
     match several.as_slice() {
+        [] if ts.len() > 1 && !ts.iter().any(|w| surface_word(w, vocab)) => {
+            Aim::Miss(Reason::NoMatch)
+        }
         [] => Aim::Miss(Reason::UnknownSurface(ts.join(" "))),
         [k] => Aim::Hit(Target::Surface(*k)),
         many => {
@@ -448,6 +457,17 @@ fn aim(ts: &[&str], vocab: &Vocabulary<'_>) -> Aim {
             }
         }
     }
+}
+
+/// Whether `w` could be part of a surface's name: a kind word, a number
+/// (names end in one: "table 2"), or a word of a name the room has.
+fn surface_word(w: &str, vocab: &Vocabulary<'_>) -> bool {
+    w.bytes().all(|b| b.is_ascii_digit())
+        || kind_word(w).is_some()
+        || vocab
+            .surfaces
+            .iter()
+            .any(|s| normalize(&s.name).iter().any(|n| n == w))
 }
 
 /// The behavior slot: one word, a behavior's name in the vocabulary (a
@@ -1965,6 +1985,12 @@ mod tests {
                     "table 9 in blue",
                     Reason::UnknownSurface("table 9".to_owned()),
                 ),
+                ("Lamp 2 up.", Reason::UnknownSurface("lamp 2".to_owned())),
+                // Several words with no surface word before a slot word
+                // are no name: the sentence is something else, for the
+                // agent (board #3771).
+                ("Shut that song up.", Reason::NoMatch),
+                ("Turn my music down.", Reason::NoMatch),
                 (
                     "Fire on the desk.",
                     Reason::UnknownBehavior("fire".to_owned()),
