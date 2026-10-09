@@ -2737,3 +2737,70 @@ kept (branch `xr-sim-budget`, dropped); the preset change is what ships.
 The 300K ceiling leaves the cloud as it was: the emitters hold about 277K
 alive at the clip's level against the old 285K, with the binning down
 0.16 ms per eye and App down 0.6 ms.
+
+## The world sim's alive path, apportioned (board #3806)
+
+`debug.fosfora.simcut` (`xr-sim-knobs`, 5459c64) skips one named part
+of `flux_xr_sim.wgsl`'s alive path at a time; `scripts/xr/gpu-stages.sh`
+read the sim dispatch under each (ovrgpuprofiler, one second per
+condition, Embers on the replayed room, the clip playing, `gov=0`, 300K
+slots, unworn, 640 MHz). Pass 1 ran from 32 to 47 C, pass 2 at 45 to
+48 C and about 0.2 ms higher; the base is repeated inside each pass.
+Sim med / p90 ms, particles alive:
+
+| Condition | Pass 1 | Pass 2 | Alive |
+|---|---|---|---|
+| base (three in pass 1, two in pass 2) | 3.70-3.87 / 4.2-4.4 | 3.96-4.04 / 4.4-4.5 | 274-278K |
+| `path`: the floor (read, write-back, alive atomic; nothing dies) | 1.56 / 1.98 | | 300K |
+| `all`: every part cut | 1.68 / 2.05 | | (draw empty) |
+| `boxes`: no room-box loop | 2.90 / 3.48 | 2.97 / 3.50 | 298-299K |
+| `flow`: no flow field | 2.76 / 3.11 | 2.81 / 3.30 | 181K |
+| `flow,boxes` | | 1.90 / 2.23 | 296K |
+| `turb,boxes` | | 2.99 / 3.38 | 298K |
+| `turb` | 3.71 / 4.29 | | 270K |
+| `spheres` | 3.84 / 4.33 | | 265K |
+| `depth` | 3.70 / 4.29 | | 272K |
+| `lift` | 3.83 / 4.16 | | 276K |
+| `edge` | 3.83 / 4.42 | | 276K |
+| `atomics` (a plain store, the draw empty) | 3.66 / 4.15 | | |
+| `boxes,spheres,depth` | 2.91 / 3.22 | | 298K |
+| `density 0.66` (no cut) | | 3.17 / 3.69 | 186K |
+
+**The read.** Of the base's 3.9 ms, 1.56 ms is the floor: reading and
+writing 300K particles and appending them to the alive list, with
+nothing computed between. The alive path's work is about 2.3 ms, and two
+parts hold almost all of it:
+
+- **the room-box loop, about 1.0 to 1.2 ms**: 18 boxes per particle per
+  frame, three storage rows and a quaternion rotation each. Cutting it
+  raises the alive count (nothing rests, so nothing ages faster), so the
+  saving is measured at 20K more particles than the base.
+- **the flow field, 0.4 to 1.1 ms**: two 3D texture samples per particle.
+  Cutting it alone drops the alive count to 181K (the cloud settles and
+  dies faster), which confounds the single-cut row; at a matched count
+  the flow costs 1.07 ms with the boxes also cut (the cloud spread
+  through the volume) and 0.36 ms against the `density 0.66` control at
+  181K alive (the cloud resting on the surfaces, where neighboring
+  particles sample neighboring texels). The cost is in the sampling's
+  locality, not the arithmetic.
+- the turbulence noise, the hand spheres, the depth-map collision, the
+  palm lift, the edge respawn and the alive-list atomic: each within
+  0.15 ms of the base, at the noise floor. The atomics result agrees with
+  the dead-path finding above: the single-counter `atomicAdd` is not a
+  cost on this GPU.
+- all parts cut together sit 0.12 ms over the floor: the drag, size,
+  opacity and color math is nothing.
+
+Alive particles still cost about 0.9 ms per 100K with no cut (`density
+0.66`: 90K fewer alive, 0.8 ms less), which the box loop and the flow
+account for.
+
+**What this points at.** The floor is core's particle layout and is not
+an XR change. The box loop is: a particle needs the one or two boxes
+near it, not all 18, so a per-frame cell list over the volume (the
+boxes overlapping each cell, built on the CPU, looked up by the
+particle's cell) or a cheap bounding-sphere reject before the rotation
+would cut most of the 1.1 ms; moving the box rows from the storage
+buffer to a uniform block is the smaller first try. The flow's two
+samples could become one (the second exists to evolve the swirl in
+place), or run every other frame, for up to half of its 0.4 to 1.1 ms.
