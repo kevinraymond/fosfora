@@ -2804,3 +2804,40 @@ would cut most of the 1.1 ms; moving the box rows from the storage
 buffer to a uniform block is the smaller first try. The flow's two
 samples could become one (the second exists to evolve the swirl in
 place), or run every other frame, for up to half of its 0.4 to 1.1 ms.
+
+## The box cell list (board #3808)
+
+`xr-box-cells` 123b395: the sim volume cut into N×N×N cells, each with a
+32-bit mask of the boxes that can touch it, built on the CPU each frame
+(1025 aux rows, 16 KB) and looked up by the particle; the full loop
+outside the grid. The desktop GPU test steps 10K particles through
+eight boxes with the grid off and at N = 8, 16 and 2 and gets
+byte-identical particle buffers after every frame. `gpu-stages.sh` on
+the Quest 3, the same setup as the section above, one sweep from 35 to
+48 C in the order listed (App rises 2 ms with the heat; the sim at
+640 MHz drifts far less, so read it against its neighbors):
+
+| Condition | Sim med / p90 | App | Alive |
+|---|---|---|---|
+| cells 8 (the default) | 3.19 / 3.66 | 10.7 | 278K |
+| cells 8, again | 3.25 / 3.79 | 11.1 | 281K |
+| off (`boxcells 0`, the full loop) | 3.95 / 4.48 | 12.9 | 283K |
+| cells 4 | 3.44 / 3.94 | 11.9 | 275K |
+| cells 12 | 3.23 / 3.70 | 11.6 | 272K |
+| cells 16 | 3.17 / 3.68 | 11.9 | 281K |
+| off, again (hot) | 4.40 / 4.83 | 13.7 | 264K |
+| cells 8, a third time (hot) | 3.27 / 3.70 | 13.0 | 291K |
+| no box loop at all (`simcut boxes`) | 3.08 / 3.73 | 13.0 | 299K |
+
+The cell list takes 0.7 to 1.1 ms off the sim dispatch: 3.95 to 4.40
+with the full loop against 3.19 to 3.27 with 8 cells per axis, in the
+same sitting. With the list the loop costs about 0.15 ms over having no
+loop (3.25 against 3.08 at 20K more alive). 4 cells per axis leaves
+0.2 ms on the table, 12 and 16 gain 0.05 at most: 8 stays the default.
+The upload is the same 16 KB at any N.
+
+The morning's base of 3.9 ms is now about 3.2: the floor 1.56, the flow
+0.4 to 1.1, the box loop 0.15, the rest. The next XR-side cut is the
+flow field's second sample. Worn, the cloud should rest and slide on
+the surfaces exactly as before (the result is identical by
+construction and by the GPU test); the worn batch covers the look.
