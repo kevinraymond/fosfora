@@ -528,7 +528,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // the hand menu's Agent control picks among what is available (the
     // on-device provider, the network one `voice.json` configures, off),
     // saved in `hand_menu.json`; a saved pick that is available comes
-    // first, else the V5 rule. `debug.fosfora.agent 0` keeps the agent off
+    // first, else the default rule (local when installed). `debug.fosfora.agent 0` keeps the agent off
     // at launch without saving it, and a press turns it on from there.
     let local_files = crate::local::Files::in_dir(&dirs.assets.join(crate::local::MODELS_DIR));
     let mut available = crate::agent::Available::new(
@@ -542,7 +542,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let source = if saved_pick.is_some() {
         "saved"
     } else {
-        "voice.json rule"
+        "default"
     };
     let mut agent_pick = available.at_launch(menu_saved.agent);
     let mut local: Option<LocalAgent> = None;

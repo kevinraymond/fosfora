@@ -464,10 +464,12 @@ optional:
 | `api_key` | the key | **required** for Anthropic; none for a local server (no `Authorization` header is sent) |
 | `extra` | an object merged into the top level of an `openai` request body (the Anthropic request ignores it) | empty |
 
-V5 changed the default: a file naming no `provider`, or no file at all,
-picks the on-device provider whenever its files are installed ("V5 as
-built"); Anthropic stays the default for a file naming none when they
-are not.
+V5 changed the default: the on-device provider answers whenever its
+files are installed, whatever the file says ("V5 as built"; Kevin, Oct 8:
+it is built in), the hand menu's Agent control picking a network one
+instead ("The provider toggle"); `provider` here names which API the key
+is for. Without the model, Anthropic stays the default for a file naming
+none.
 
 Anthropic, with a key (the key is a placeholder here; the real one never
 enters the repo):
@@ -939,14 +941,12 @@ fist held through it opens the window when it ends.
 | `voice.json` | Decision model installed | Agent |
 |---|---|---|
 | any | any, with a saved Agent pick that is available | the saved pick |
-| none | yes | local |
+| any | yes | local (Kevin, Oct 8: built in, so the default; the file's `provider` only names which API its key is for, the Agent control's network stop) |
 | none | no | off, as before |
-| no `provider` | yes | local |
 | no `provider` | no | V3's: Anthropic, or off without a key |
-| `"provider": "local"` | yes | local |
 | `"provider": "local"` | no | off, with the reason |
-| `anthropic` or `openai` | either | V3's, unchanged |
-| broken | either | off, V3's reason |
+| `anthropic` or `openai` | no | V3's, unchanged |
+| broken | no | off, V3's reason |
 
 Installed means the model, the spec and both tokenizer files are in the
 app's `assets/xr/models/`. `debug.fosfora.agent 0` still turns any agent
@@ -1068,7 +1068,7 @@ is no saved choice: the launch takes the default rule above, exactly as
 V5 did, until the wearer presses the control. The launch log names where
 the pick came from: `voice agent: on · anthropic · claude-opus-5-5 ·
 api.anthropic.com (saved)`, `voice agent: local · s1-17m-int8 loads
-after the speech model (3 threads, floor 0.35) (voice.json rule)`,
+after the speech model (3 threads, floor 0.35) (default)`,
 `voice agent: off (saved)`.
 
 **The switch**, at once, no relaunch. To local: the worker starts on the
