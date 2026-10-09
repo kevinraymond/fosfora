@@ -15,7 +15,9 @@
 #
 # --with sets extra knobs for every condition (music=1 plays the bundled
 # clip, which the room's emitters need: a quiet room emits nothing and the
-# cloud is empty, board #3783).
+# cloud is empty, board #3783; gov=0 holds the thermal governor, board
+# #3789, which otherwise thins the cloud during a run that is over budget
+# and makes every condition read the same).
 #
 # Every knob is cleared afterwards. The surface knob writes the room file
 # (rooms/<id>.json under the config dir), so the room files are backed up
@@ -57,10 +59,13 @@ conditions=(
     "bare|cloud=0;surface=$NONE;canvas=0;ripple=0;envdepth=0|the cloud, the surfaces and the depth off together"
     "ported0|surface=wall=none,floor=none,ceiling=none,frame=none|the ported face effects and streamlines off, the embers (and so the cloud) kept"
     "layer0|faceslayer=0|the surfaces back in the eye pass"
+    "layer0b|faceslayer=0|the surfaces back in the eye pass, again (interleaved with full2 against drift)"
+    "scale25|facescale=0.25|the faces layer at a quarter of the recommended size"
+    "cheap|surface=wall=pulse,floor=rings|the same walls and floor on the built-in pulse and rings instead of the ported effects"
     "full2|-|everything on again (drift check)"
 )
 
-all_knobs="cloud surface canvas ripple envdepth handmesh hands faceslayer"
+all_knobs="cloud surface canvas ripple envdepth handmesh hands faceslayer facescale"
 for kv in ${with//;/ }; do all_knobs="$all_knobs ${kv%%=*}"; done
 clear_knobs() {
     for k in $all_knobs; do adb shell setprop "debug.fosfora.$k" '""'; done

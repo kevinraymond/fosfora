@@ -2651,3 +2651,49 @@ their lifetime's pace, so the governor's effect lags its steps by tens of
 seconds; the 20 s climb-back interval already assumes that. With the
 thresholds at their defaults the content sat "within" and nothing
 stepped. The worn gate (an hour, hot, at 72 fps) is pending.
+
+## The surfaces in their own layer, and the first render-stage traces (board #3793, #3795)
+
+`xr-faces-layer` 068f516 on the Quest 3, `mode world`, the replayed room
+(three aurora walls, an astrolabe floor, two streamlines, embers on four
+boxes), the clip playing, the governor held (`gov=0`), unworn.
+
+**App GPU, worn-ab driver, hot headset** (10.7 h of uptime, 45 to 50 C,
+about 2 ms above the cool figures; App med / TW med ms, in run order):
+full (layer at 0.5) 15.17 / 1.66, nothing lit 13.58 / 1.67, faces in the
+eye pass 15.54 / 1.40 and again 16.05 / 1.40, layer at 0.25 14.38 / 1.67,
+the same faces on pulse and rings 15.23 / 1.67, full again 16.10 / 1.67.
+The layer saves 0.4 to 0.9 ms of App and costs 0.27 ms of compositor
+time: a wash unworn, where the faces cover little of the view. With the
+governor on, every condition read 12.5 ms: it thinned the cloud under
+each of them, so a measurement needs `gov=0`.
+
+**Cool, right after a reboot** (43 C, GPU at 599 MHz): the full content
+with the layer on runs at 72 fps, App 8.5 to 9.2 ms, TW 1.75.
+
+**Render stages** (`ovrgpuprofiler -e dev.fosfora.xr`, then `-t1.0 -v`,
+see `QUEST_DOCS.md`; one second each, per execution, Preempt excluded):
+
+| Trace | Sim dispatch (med / p90) | Eye surface: binning / render | Faces surface: binning / render |
+|---|---|---|---|
+| hot, layer on | 4.34 / 4.84 | 0.74 / 0.87 | 0.05 / 0.30 |
+| hot, faces in the eye pass | 4.58 / 4.89 | 0.72 / 2.07 | — |
+| cool, layer on | 4.33 / 4.94 | 0.75 / 1.65 | 0.05 / 0.45 |
+| cool, faces in the eye pass | 4.98 / 5.52 | 0.84 / 0.98 | — |
+
+Each frame runs three compute dispatches (the depth atlas copy, 0.04 ms;
+the world sim with its collision, the middle one; a third, 0.01 ms) and
+then, per eye, the faces surface and the eye surface. So per frame: the
+sim about 4.3 to 5.0 ms, the two eyes' binning 1.5 ms, their render 2
+to 4 ms (the sprites' fill, which swings with the music inside a one
+second trace), the faces layer about 1 ms. **The sim dispatch is the
+largest single item of the frame, not the faces.** The hot pair also
+shows the layer taking 1.2 ms per eye out of the eye surface's render
+for 0.35 ms per eye of its own.
+
+The VrApi `App=` figure includes the compositor's preemption of the
+app's frame (Meta's measurement guide); the Preempt stages in these
+traces ran 0.3 to 1.6 ms per surface. The guide's broadcast to skip the
+compositor (`COMPOSITOR_SKIP_RENDERING`) did not engage on v207 here
+(TW stayed at 1.75 ms), so `App=` stays the comparable figure, read
+within one sitting.
