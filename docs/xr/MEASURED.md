@@ -2697,3 +2697,43 @@ traces ran 0.3 to 1.6 ms per surface. The guide's broadcast to skip the
 compositor (`COMPOSITOR_SKIP_RENDERING`) did not engage on v207 here
 (TW stayed at 1.75 ms), so `App=` stays the comparable figure, read
 within one sitting.
+
+## The world sim's dispatch: what it scales with (board #3798, #3800)
+
+`scripts/xr/gpu-stages.sh` (ovrgpuprofiler, one second per condition,
+the Embers preset on the replayed room, the clip playing, `gov=0`, unworn,
+cool at 640 MHz; the sim dispatch is each frame's largest compute, med /
+p90 ms; App med ms; alive particles):
+
+| Condition | Sim | Eye binning | App | Alive |
+|---|---|---|---|---|
+| 400K slots (the preset until now) | 4.25-4.48 / 4.7-4.8 | 0.71 | 9.6-10.3 | 285K |
+| 200K slots (`count`) | 2.84 / 3.44 | | 8.4 | 135K |
+| 100K slots | 1.53 / 1.80 | | 7.2 | 67K |
+| sim frozen (`sim 0`) | 0.04 | | 6.9 | |
+| depth collision off | 4.53 | | 9.3 | |
+| collision every 8 frames | 4.22 | | 10.0 | |
+| environment depth off | 4.63 | | 8.5 | |
+| space ×2 | 4.54 | | 9.5 | |
+| density 0.5 | 3.67 / 4.00 | | 8.9 | 131K |
+| **300K slots (the preset now)** | **3.88 / 4.3** | **0.55** | **9.3** | 277K |
+
+Collision, the depth map and the space size cost nothing measurable.
+The dispatch follows the slot count and, inside it, the alive count:
+about 1.2 ms per 100K alive and 0.4 per 100K dead. The alive path (the
+curl-noise flow field, the obstacle loop over the room's boxes and the
+hand spheres, the alive-list atomics) is where the 3.3 ms of 277K alive
+particles go; a cut there needs a knob per part, the next step.
+
+**A negative result.** Two changes to the dead path were built and
+measured on the same sweep: a spawn gate (only four times the frame's
+emit budget of dead slots attempt the atomic claim, the rest return at
+once) and a death stamp (a slot dead in both ping-pong buffers skips its
+write-back). With both on 4.32 / 4.87, the gate off 4.25, the stamp off
+4.50, both off 4.30: inside the run-to-run noise, so neither the claim's
+atomics nor the dead write-back is a cost on this GPU. The code was not
+kept (branch `xr-sim-budget`, dropped); the preset change is what ships.
+
+The 300K ceiling leaves the cloud as it was: the emitters hold about 277K
+alive at the clip's level against the old 285K, with the binning down
+0.16 ms per eye and App down 0.6 ms.
