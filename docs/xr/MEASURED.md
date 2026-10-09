@@ -2575,3 +2575,63 @@ model (3 threads, floor 0.35) (default)`, the model loads in 720 ms, and
 the on-device provider as embers on the desk (the Agent control's
 network stop still reads `Agent: Anthropic`). With a saved `local` pick
 the line reads `(saved)`.
+
+## Worn A/B of the frame cost (board #3783, #3785)
+
+Kevin's evening run on the tip (Oct 8, 22:58 to 23:05, Embers, the
+replayed room's file with embers on two tables and two storage boxes,
+aurora on three walls, astrolabe on the floor, streamlines on the ceiling
+and a frame, the clip playing, hands in view, voice tests) fell to 24 to
+30 fps at 24 to 34 ms App GPU, the GPU 93 to 98 percent busy at 456 MHz,
+the battery 47 to 50 C after 17.9 h of uptime. `scripts/xr/worn-ab.sh`
+reproduces the content on the live room and relaunches once per
+condition, the wearer standing at the desk with both hands in view; 60 s
+per condition after a 20 s warm-up, the room files put back after each
+surface condition. Oct 9, 00:10 to 00:45, right after a reboot, USB
+powered.
+
+**Pass 1, no music** (the emitters at weight 0, the cloud empty): every
+condition 5.1 to 8.5 ms at 72 fps and 456 MHz. The GPU's clock follows
+its load: an easy frame runs at 456 MHz, a full one at 640.
+
+**Pass 2, the clip playing, the content as above** (App GPU med / p90 /
+max ms, fps med, stale/s med, GPU MHz, battery C; ~285K particles alive
+where the cloud is on):
+
+| Condition | Removes | med | p90 | max | fps | stale | MHz | C |
+|---|---|---|---|---|---|---|---|---|
+| full | nothing | 14.60 | 15.99 | 17.33 | 57 | 17 | 640 | 48 |
+| cloud0 | the cloud hidden (its sim steps) | 11.79 | 12.79 | 13.26 | 67 | 11 | 640 | 50 |
+| surf0 | every surface none (so no emitters: the cloud empties too) | 9.21 | 9.94 | 10.01 | 72 | 8 | 456 | 50 |
+| depth0 | environment depth (occluder and collision) | 13.88 | 15.35 | 17.00 | 59 | 16 | 640 | 51 |
+| mesh0 | the hand mesh (joint spheres instead) | 15.18 | 16.94 | 18.16 | 55 | 21 | 640 | 52 |
+| hands0 | hand obstacles and occluder | 13.77 | 15.07 | 16.54 | 59 | 15 | 640 | 52 |
+| bare | cloud, surfaces and depth | 6.70 | 7.10 | 7.16 | 73 | 2 | 456 | 52 |
+| full2 | nothing (drift check) | 15.63 | 16.88 | 17.84 | 53 | 24 | 640 | 52 |
+| full (pass 3) | nothing | 16.02 | 17.33 | 19.63 | 51 | 26 | 640 | 52 |
+| ported0 | aurora, astrolabe and the streamlines (the embers, so the cloud, kept) | 13.06 | 14.40 | 15.50 | 62 | 15 | 640 | 53 |
+
+**What it says.** The content costs about 14.6 ms at 640 MHz on a cool
+headset, 0.7 ms over the 72 Hz budget, and drifts to 16 ms within half an
+hour as the battery passes 50 C. The two big pieces are the cloud's draw
+(2.8 ms, full vs cloud0) and the ported face effects (3.0 ms, full vs
+ported0 in the same minutes: three aurora walls and an astrolabe floor
+are a fragment program over most of the view). Environment depth is 0.7
+ms, the hands 0.8, the hand mesh inside noise. The base (passthrough,
+the room's boxes, the 400K sim step, the two streamlines) is about 6.7 ms
+at 456 MHz. The evening's 24 to 34 ms was this content with the GPU held
+at 456 MHz by heat (the cool headset runs it at 640): 14.6 ms of 640 MHz
+work is 20 ms at 456, and the wearer's view of the aurora walls adds the
+rest. So two things, both needed: the content must drop 2 to 3 ms (the
+ported faces or the cloud's draw), and the headset throttles after an
+hour worn regardless, which the budget has to allow for.
+
+**Method.** A quiet room emits nothing: a worn measurement of the cloud
+needs the clip playing (`--with music=1`). The replayed room
+(`a03160e5…`, 17 anchors) and the live one (`91dff75f…`, 27 anchors
+after an October Space Setup) are different rooms with different files,
+so a replayed sweep's content does not carry to a worn launch; the
+evening's worn run happened to be inside an unworn launch left running
+with the replay on. The `surface` knob writes the room file and is
+capped at 92 bytes (an Android property), so a long recipe goes in two
+values.
