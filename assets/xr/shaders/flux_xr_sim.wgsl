@@ -56,6 +56,8 @@
 //   aux[180]        the pour row (below; Murmur ignores it)
 //   aux[181..213]   the surface behavior lanes, one per box (below;
 //                   Murmur ignores them)
+//   aux[213..1238]  the box cell list: a header, then the cells' box masks
+//                   (below; Murmur ignores them)
 // All zero (nothing written yet, or a desktop test) means no obstacles, no
 // near fade, no instruments, no depth collide, no pour and every box on
 // its kind's behavior; with no boxes, a surface-emit preset spawns in the
@@ -157,6 +159,26 @@
 // with no boxes at all, or param(6) = 0 (every other preset: they have six
 // inputs), the volume path runs unchanged.
 //
+// Box cell list (board #3808; crates/fosfora-xr/src/box_cells.rs, the
+// `debug.fosfora.boxcells` knob): the volume, the cube of half extent
+// `half` around the anchor, cut into N x N x N cells, each with a mask of
+// the boxes that can touch it, so the collide visits a particle's one or
+// two boxes instead of all of them.
+//   aux[213]           x = N, cells per axis (u32 bits; 0 = no grid: the
+//                      full loop), y = the grid's half extent (m), z, w 0
+//   aux[214..1238]     the masks, four cells per row (vec4 of u32 bits):
+//                      cell c in row 214 + c / 4, lane c % 4, bit k = box
+//                      k; c = (ix * N + iy) * N + iz, i = floor((p + half)
+//                      / (2 half) N) per axis. Sized for N = XR_CELLS_MAX
+//                      whatever N is; rows past N^3 / 4 are 0
+// A mask is a superset of the boxes any point in its cell can be inside
+// (each box's axis-aligned bounds dilated by the margin and a millimeter),
+// and the loop keeps the ascending order, re-reading the mask after each
+// push (the particle may have moved to another cell), so every box it
+// skips is one the full loop would have found the particle outside of:
+// the same result, bit for bit. Outside the grid (a free burst particle)
+// the full loop runs.
+//
 // Surface behavior lanes (board #3326; crates/fosfora-xr/src/lanes.rs and
 // surfaces.rs `lane_row`): what each box does, chosen per surface and
 // saved per room, instead of the fixed rule per kind.
@@ -193,10 +215,14 @@ const XR_AUX_DEPTH: u32 = 173u;
 const XR_AUX_DEPTH_ROWS: u32 = 7u;
 // After the depth rows (board #3402).
 const XR_AUX_POUR: u32 = 180u;
-// After the pour row, one per box (board #3326); the XR app uploads 213
-// rows.
+// After the pour row, one per box (board #3326).
 const XR_AUX_SURFACE: u32 = 181u;
 const XR_AUX_SURFACE_ROWS: u32 = 32u;  // XR_MAX_BOXES
+// After the surface lanes, the box cell list's header and its masks
+// (board #3808); the XR app uploads 1238 rows.
+const XR_AUX_CELLS: u32 = 213u;
+const XR_CELLS_MAX: u32 = 16u;
+const XR_AUX_CELL_ROWS: u32 = 1024u;   // XR_CELLS_MAX^3 / 4
 
 // The depth collide's tangential damping per colliding frame, and the
 // depth jump between neighboring texels (m) that reads as a silhouette.
@@ -282,12 +308,30 @@ fn xr_side(x: f32) -> f32 {
     return select(-1.0, 1.0, x >= 0.0);
 }
 
+// The mask of the boxes that can touch a particle at p (the box cell list
+// above): bit k for box k. Every bit with no grid or outside it.
+fn xr_box_mask(p: vec3f) -> u32 {
+    let head = aux[XR_AUX_CELLS].home;
+    let n = bitcast<u32>(head.x);
+    let half = head.y;
+    if n == 0u || n > XR_CELLS_MAX || !(half > 0.0) || !all(abs(p) <= vec3f(half)) {
+        return 0xffffffffu;
+    }
+    let t = max(floor((p + half) / (2.0 * half) * f32(n)), vec3f(0.0));
+    let i = min(vec3u(t), vec3u(n - 1u));
+    let c = (i.x * n + i.y) * n + i.z;
+    let row = bitcast<vec4u>(aux[XR_AUX_CELLS + 1u + c / 4u].home);
+    let lane = c % 4u;
+    return select(select(row.x, row.y, lane == 1u), select(row.z, row.w, lane == 3u), lane >= 2u);
+}
+
 // Push the particle out of every obstacle it is inside and reflect the inward
 // part of its velocity. One pass per frame is enough at these speeds; a
 // particle deep inside a box (spawned there) exits through the nearest face.
 // Returns true when the particle was pushed out through an upward face: it
 // is resting on a table or the floor. `cut` is the sim-cut mask: its
-// spheres, boxes and depth bits skip those obstacles.
+// spheres, boxes and depth bits skip those obstacles. The box loop visits
+// the boxes in the particle's cell mask (xr_box_mask).
 fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u32, cut: u32) -> bool {
     var rested = false;
     let header = aux[XR_AUX_HEADER].home;
@@ -315,7 +359,16 @@ fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u32, cu
             *vel += n * max(sphere_kick - outward, 0.0);
         }
     }
+    // The boxes that can touch the particle where it is now (after the
+    // spheres), re-read after each push.
+    var mask = 0u;
+    if box_count > 0u {
+        mask = xr_box_mask(*pos);
+    }
     for (var k = 0u; k < box_count; k++) {
+        if ((mask >> k) & 1u) == 0u {
+            continue;
+        }
         let c = aux[XR_AUX_BOX_CENTER + k].home.xyz;
         let q = aux[XR_AUX_BOX_ROT + k].home;
         let h = aux[XR_AUX_BOX_HALF + k].home.xyz + vec3f(margin);
@@ -341,6 +394,7 @@ fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u32, cu
                 *vel -= (1.0 + restitution) * vn * n;
             }
             rested = rested || n.y > 0.7;
+            mask = xr_box_mask(*pos);
         }
     }
     var on_depth = false;

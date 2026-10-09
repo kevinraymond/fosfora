@@ -63,8 +63,10 @@ pub struct XrScene {
 /// the Flux sim), the depth rows at 180 (`XR_AUX_DEPTH` +
 /// `XR_AUX_DEPTH_ROWS`, board #3352), the pour row at 181 (`XR_AUX_POUR`,
 /// board #3402), the surface lanes after it, one per box, ending at 213
-/// (`XR_AUX_SURFACE` + `XR_AUX_SURFACE_ROWS`, board #3326); core tests pin
-/// the sims' side up to 173, `tests/depth_collide_gpu.rs` the rows after.
+/// (`XR_AUX_SURFACE` + `XR_AUX_SURFACE_ROWS`, board #3326), then the box
+/// cell list's header and masks, ending at 1238 (`XR_AUX_CELLS` + 1 +
+/// `XR_AUX_CELL_ROWS`, board #3808); core tests pin the sims' side up to
+/// 173, `tests/depth_collide_gpu.rs` the rows after.
 const OBSTACLE_END: usize = 1 + std::mem::size_of::<ObstacleSet>() / 16;
 const _: () = assert!(OBSTACLE_END == 163, "flux_xr_sim.wgsl reads 163 aux rows");
 const HAND_LANES_END: usize = OBSTACLE_END + crate::pose::HAND_LANE_ROWS;
@@ -89,7 +91,12 @@ const _: () = assert!(
     SURFACE_END == 213,
     "flux_xr_sim.wgsl reads the surface lanes 181..213"
 );
-const WORLD_AUX_ROWS: usize = SURFACE_END;
+const CELLS_END: usize = SURFACE_END + crate::box_cells::ROWS;
+const _: () = assert!(
+    CELLS_END == 1238,
+    "flux_xr_sim.wgsl reads the box cell list 213..1238"
+);
+const WORLD_AUX_ROWS: usize = CELLS_END;
 /// See [`crate::env_depth::ATLAS_MAX_AGE_MS`].
 const ATLAS_MAX_AGE: Duration = Duration::from_millis(crate::env_depth::ATLAS_MAX_AGE_MS);
 
@@ -103,6 +110,9 @@ struct World {
     /// The sim-cut mask (`crate::sim_cut`, `debug.fosfora.simcut`): the
     /// parts of the alive path the sim skips; 0 runs them all.
     sim_cut: u32,
+    /// Cells per axis of the box cell list (`crate::box_cells`,
+    /// `debug.fosfora.boxcells`); 0 runs the full box loop.
+    box_cells: u32,
     /// Dispatches before a frozen sim stops: long enough for the emitter to
     /// fill the particle count, and never shorter than the S5 test sim's.
     warmup: u32,
@@ -150,6 +160,8 @@ pub struct WorldOptions {
     pub sim_enabled: bool,
     /// See `World::sim_cut`.
     pub sim_cut: u32,
+    /// See `World::box_cells`.
+    pub box_cells: u32,
     /// Initial anchor in the reference space.
     pub anchor: [f32; 3],
 }
@@ -288,6 +300,7 @@ impl XrScene {
                 anchor: options.anchor,
                 sim_enabled: options.sim_enabled,
                 sim_cut: options.sim_cut,
+                box_cells: options.box_cells,
                 warmup,
                 dispatches: 0,
                 aux: Vec::new(),
@@ -421,6 +434,14 @@ impl XrScene {
         world
             .aux
             .extend(surface_lanes.iter().map(|&home| ParticleAux { home }));
+        // The box cell list over the volume the sim runs in, from the same
+        // anchor-relative boxes.
+        world.aux.extend(
+            relative
+                .cell_rows(world.box_cells, world.emitter_half)
+                .into_iter()
+                .map(|home| ParticleAux { home }),
+        );
         world.depth_frame = world.depth_frame.wrapping_add(1);
         debug_assert_eq!(world.aux.len(), WORLD_AUX_ROWS);
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
