@@ -10,6 +10,8 @@
 //! Each file is streamed out of the APK in chunks, never held whole in
 //! memory: the voice path's speech model (`xr/models/ggml-base.en.bin`,
 //! board #3751) is 148 MB, which a read into a `Vec` would double at launch.
+//! V5's decision model (`xr/models/s1-17m-int8.onnx`, 29 MB), its tokenizer
+//! files and its spec come the same way, and change the stamp once.
 
 use std::ffi::CString;
 use std::path::{Path, PathBuf};

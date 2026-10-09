@@ -201,6 +201,9 @@ gesture is.
 4. **V4, access.** A settings toggle that makes voice the primary input
    (the menu reads its rows aloud is out of scope; the label is the
    feedback), and the thumb tap as the second opener.
+5. **V5, the on-device provider.** Our own 17M decision model answers
+   what the grammar misses on the headset, no network and no key; the
+   agent by default when it is installed.
 
 ## V1 as built
 
@@ -456,6 +459,11 @@ optional:
 | `model` | the model asked | `claude-opus-5-5` for Anthropic; **required** for `openai` |
 | `api_key` | the key | **required** for Anthropic; none for a local server (no `Authorization` header is sent) |
 | `extra` | an object merged into the top level of an `openai` request body (the Anthropic request ignores it) | empty |
+
+V5 changed the default: a file naming no `provider`, or no file at all,
+picks the on-device provider whenever its files are installed ("V5 as
+built"); Anthropic stays the default for a file naming none when they
+are not.
 
 Anthropic, with a key (the key is a placeholder here; the real one never
 enters the repo):
@@ -806,6 +814,229 @@ the agent when it is on (V3 sent such a sentence as a NoMatch).
 **Not yet.** Spoken replies; a voice-only menu (the menu read aloud);
 anything but English; a slot shared across clauses ("the desk and the
 table in amber").
+
+## V5 as built
+
+The fifth step, built: a third provider, `local`, that answers what the
+grammar misses on the headset with our own 17M decision model (run 3,
+`MEASURED.md`, "Our own System One 17M, trained"): no network, no key,
+0.15 to 0.26 s per sentence on the bench. The reviewer runs both
+40-sentence test sets through the `say` knob on the replayed room,
+measures the cascade inside the running app, and takes the worn gate.
+
+**The module.** `crates/fosfora-xr/src/local.rs`. The spec, the
+rendering, the cascade's control flow, the reply and the log lines are
+pure and desktop-tested; the tokenizer, the ONNX Runtime session and the
+worker build on Android and in the desktop tests. `agent.rs`'s `Provider`
+trait is now what every provider shares (`name`, `model`, and `answer`:
+the sentence and the room in, a channel the frame loop polls out); the two
+network providers' request and parse moved to a sub-trait, `Http`,
+unchanged. `Local` implements `Provider`: a `Reply` with one action and no
+`say` (the model writes none), or a `miss`, a field `Reply` gained.
+
+**The spec as data.** `assets/xr/models/s1-17m-spec.json` is the training
+pipeline's `provider-spec.json` for run 3, copied verbatim and committed
+(9.8 KB, ours); the app reads it at launch next to the model. From it
+come the token budgets (prefix 512, candidate 64) and the special ids,
+the layout (`instruction_state`), the request step's instruction, its yes
+and no texts, the candidates' order and its threshold (`p(true) >= 0.5`,
+read from the rule), the fifteen kinds and their texts, the target step's
+instruction, the kinds that take a target, each kind's word and group
+text and the pointed text (read out of the prose the spec carries them
+in), every value question, each kind's behaviors and their texts, the
+color, band, strength and toggle lists, and the effects' text. A
+retrained model with new wording ships with a new spec and no code
+change. The code fixes what the training toolkit fixes: how a prompt is
+assembled, the state's JSON, the model's inputs and its three output
+columns. A spec it cannot render for (other columns, another truncation
+or layout, a step missing, a behavior the app lacks) leaves the provider
+off with the reason in the log.
+
+**The rendering**, exactly the toolkit's:
+
+- *The state*, the room as V3 builds it (`agent::room_state`) reduced to
+  what the training saw: `{"sentence", "pointed" (a name or "nothing"),
+  "effect", "effects", "surfaces": {name: behavior, or "behavior, color"
+  when its color is not its own}}`, with Python's default separators.
+  Band, strength and size stay out (no decision needs them, and every
+  token is paid on the headset).
+- *The prefix*: `[CLS]`, `enc("Instruction: ")`, the instruction,
+  `enc("\n")`, `enc("State: ")`, the state, `[SEP]`; each part tokenized
+  on its own with no special tokens; the instruction and the state cut to
+  share what the markers leave of 512 (half each, the odd token to the
+  instruction, what one leaves unused to the other).
+- *The request step* reads the state in the noul envelope,
+  `{"noul":{"yes":…,"no":…},"state":{…}}`, compact.
+- *A candidate*: `enc("Candidate: <id>: <text>")` cut to 63 tokens, then
+  `[SEP]`.
+
+The tests assert the exact token ids of the toolkit's seven fixtures
+(both layouts, a system text, truncation at 512 and at 64, Japanese, an
+emoji, an empty candidate) and of 28 decisions the training's cascade
+evaluation ran on the replayed room, nine sentences through all their
+steps (`crates/fosfora-xr/tests/data/s1-17m-parity.json`, derived from
+the run 3 export). Those need the real tokenizer and run wherever it is
+installed (`assets/xr/models/`); the desktop CI has none, and checks the
+assembly with a one-id-per-character stand-in.
+
+**The runtime and the library.** ONNX Runtime 1.28.0 from the official
+onnxruntime-android AAR; the Gradle build puts only its
+`libonnxruntime.so` into the APK (`XR_DESIGN.md`, "ONNX Runtime"). The
+`ort` crate 2.0.0-rc.11 with `load-dynamic` dlopens it by name, which the
+app's linker namespace resolves in its native library directory (as the
+OpenXR loader is found); should that fail, the Activity's
+`nativeLibraryDir` is tried. The tokenizer is the `tokenizers` crate with
+the pure-Rust `fancy-regex` backend (the byte-level pre-tokenizer's
+pattern needs look-ahead). One session (graph fully optimized, one
+inter-op thread, `debug.fosfora.localthreads` intra-op threads, default
+3, intra-op spinning off so the threads sleep between sentences) lives on
+the `fosfora-local` worker. It loads once the speech model has (at once
+with voice off; at most 15 s after launch whatever whisper does), so the
+two loads never share the CPU. A sentence asked before the load has
+finished waits for it.
+
+**The cascade** (`local::cascade`), one run of the model per step with one
+prefix and all its candidates; the choice column softmaxed over a
+decision's candidates, the noul column for the request step:
+
+1. *Request*: under the spec's threshold, a miss.
+2. *Kind* over the fifteen: under the floor, a miss.
+3. *Target*, for `band`, `behavior`, `color`, `describe` and `strength`:
+   every surface by its friendly name (reading as its kind: "table",
+   "window or door", "object", …), then `all <kind>s` for each kind with
+   two or more surfaces, then `pointed` when something is pointed at.
+4. *Value*, for every kind but the six that take none: a behavior from
+   the target's kind's list, an effect of the room's, or the kind's fixed
+   list (colors, bands, strengths, on/off).
+
+**The floor.** `debug.fosfora.localmin`, default 0.35, on the kind and the
+value: a weaker pick is a miss, so a weak answer never changes the room.
+The target has none (up to twenty surfaces share its probability, and its
+answer is checked against the room by the grammar's resolution anyway).
+
+**The mapping.** The winning ids become one `AgentAction` and go through
+`Intent::from_json`, the grammar's own resolution, as a network provider's
+actions do; the spec's ids need nothing else: a surface's name, `all
+tables` (a kind), `pointed`, `own color` (color 0), `level` (`rms`),
+`brighter`/`dimmer` (a strength step), `off` (strength 0). `intent.rs`
+gained one alias: `previous_effect`, the model's id for `prev_effect`.
+
+**Threads.** Whisper's three threads and the cascade never run at once. A
+sentence is transcribed, then decided: the cascade starts only with no
+voice window open or closing (a `say` sentence that arrives while one is
+waits, logged `voice local: waiting for the voice window to close`), and
+while it runs no window opens and the `voicefile` clip waits, so no
+transcription can start. The cascade takes about a fifth of a second; a
+fist held through it opens the window when it ends.
+
+**The default rule** (`agent::choose`):
+
+| `voice.json` | Decision model installed | Agent |
+|---|---|---|
+| none | yes | local |
+| none | no | off, as before |
+| no `provider` | yes | local |
+| no `provider` | no | V3's: Anthropic, or off without a key |
+| `"provider": "local"` | yes | local |
+| `"provider": "local"` | no | off, with the reason |
+| `anthropic` or `openai` | either | V3's, unchanged |
+| broken | either | off, V3's reason |
+
+Installed means the model, the spec and both tokenizer files are in the
+app's `assets/xr/models/`. `debug.fosfora.agent 0` still turns any agent
+off.
+
+**What the wearer sees.** "Thinking…" for the fifth of a second the
+cascade takes, then the intent's own reply text, as the grammar shows it
+("table 14: amber", "all walls: dimmer", "next effect"). A miss (not a
+request, or under the floor) is the grammar's own: `Didn't catch that:
+"<sentence>"` and the nearest example as a hint, for 2.5 s, and nothing
+in the room changes. An action the grammar's resolution refuses shows its
+own miss text, as V3's do.
+
+**The log**, at launch:
+
+- installed: `voice agent: local · s1-17m-int8 loads after the speech
+  model (3 threads, floor 0.35)`, then once loaded `voice agent: on ·
+  local · s1-17m-int8 · <N> ms` and `voice local: ONNX Runtime from
+  libonnxruntime.so`;
+- not installed, no `voice.json`: `voice agent: off (no voice.json, and
+  no s1-17m-int8.onnx, s1-17m-tokenizer.json, s1-17m-tokenizer_config.json
+  at <dir>)` (the spec ships with the APK);
+- a failed load: `voice agent: off (local: <reason>)`.
+
+Per sentence, after V2's `voice: heard "…" → miss NoMatch · label
+"Thinking…"`: `voice local: <N> ms (request <p> · kind <id> <p> · target
+<id> <p> · value <id> <p>) → <intent>` (the steps that ran; a miss reads
+`→ miss NoMatch (not a request, under 0.5)` or `(kind under 0.35)`), then
+`voice local: steps request <ms> · kind <ms> · target <ms> · value <ms>
+ms · prefix <n> tokens`, then the frame's `voice agent: heard "…" →
+[<intent>] · say ""` (or `→ miss NoMatch · label "Didn't catch that: …"`)
+and the lanes' own lines for a write.
+
+**The knobs.** `debug.fosfora.localthreads <n>` (1 to 6, default 3) and
+`debug.fosfora.localmin <p>` (0 to 1, default 0.35), read at launch;
+`debug.fosfora.agent 0|1` as before.
+
+**The fetch.** `assets/xr/models/MODELS.txt` lists every model with its
+URL and SHA-256 (the speech model's line moved there), and
+`scripts/xr/fetch-model.sh` reads it. The decision model and its tokenizer
+files are hosted at `huggingface.co/kjraym/fosfora-voice-s1-17m`
+(Apache-2.0; the card, the spec and the files); the script downloads what
+is absent, accepts a file already present whose SHA-256 matches (`present,
+sha256 ok`), and stops on a present file that does not match. A URL of
+`placeholder` (a model not hosted yet) makes the script warn and go on
+when the file is absent: the APK builds and the provider is off with the
+log line above. The APK workflow caches the files on their SHA-256 and
+fetches them with the same script.
+
+**The exit order.** The device bench aborted at its exit: `ort`
+2.0.0-rc.13 releases its environment from the executable's `.fini_array`,
+which on Android runs after the dlopened runtime's static destructors.
+The app needs no patch for it. It runs rc.11 (the core pins
+`=2.0.0-rc.11` for its depth feature, and one lock holds one `ort`),
+which keeps no exit-time release at all, and the app never reaches libc
+`exit` anyway: `android_main` returning makes `android-activity`'s glue
+call `ANativeActivity_finish` and end the thread, the process stays
+cached until the system kills it with SIGKILL (force-stop, the
+low-memory killer), and nothing dlcloses `libfosfora_xr.so` (whose
+`.fini_array` Android would run only on a dlclose). What rc.11 does
+carry is that ONNX Runtime cannot create a second environment in one
+process, which a relaunch in the cached process would ask for once the
+first session was dropped; so the session is never dropped: the worker
+parks it in a process-wide slot when the app goes away, and the next
+launch takes it back (logged `· the session parked by the last launch`).
+
+**The cost.** The APK grows by ONNX Runtime (`libonnxruntime.so`, 28.6 MB,
+stored), the model (29.0 MB, stored), the tokenizer (3.6 MB, 0.8 MB
+deflated) and the tokenizer and ONNX Runtime bindings in
+`libfosfora_xr.so`: the debug APK with every model in is 236.3 MB
+(`libfosfora_xr.so` 25.3 MB). The bench measured 0.15 to
+0.26 s per sentence at 6 to 2 threads and 125 to 134 MB peak; the time
+inside the running app with the renderer live, at 3 threads, and the
+session's idle cost are the reviewer's to measure.
+
+**Where it differs from the brief.** `ort` is 2.0.0-rc.11, not rc.13: the
+core pins rc.11 and Cargo cannot hold both (prerelease versions of one
+major unify, and `ort-sys` declares `links`); rc.11 asks for the 1.23 API,
+which 1.28 serves; the host test passes on 1.30, and the free cascade on
+the host gives set 1's 36 of 40 (24 of 25, 7 of 10, 5 of 5), as the
+training report has it for run 3. `ort` and
+`tokenizers` are Android dependencies and desktop dev-dependencies (for
+the parity tests), so the desktop library builds neither. The Gradle
+build takes only `libonnxruntime.so` out of the AAR instead of depending
+on the whole AAR, so no Java code or JNI binding enters an app without
+code. The `Provider` trait was split rather than given a stub request for
+the local provider, and `Reply` gained `miss`. The floor is on the kind
+and the value only. The provider counts as installed only with its
+tokenizer files too. The per-sentence line is followed by one with each
+step's time, for the in-app measurement.
+
+**Not yet.** A retrain cadence (the generator regenerates the data; a new
+run ships as a new model and spec with no code change); wider phrasing
+(the misses in `MEASURED.md` are unseen words, not unseen structure); a
+confidence-aware label (saying "I think you meant …" between the floor and
+a sure answer); the model hosted, so `MODELS.txt` gets its URL.
 
 ## Open questions for Kevin
 

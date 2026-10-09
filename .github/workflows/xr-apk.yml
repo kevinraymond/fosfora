@@ -14,7 +14,11 @@ name: XR APK
 # it. The model is fetched with its checksum (scripts/xr/fetch-model.sh) and
 # cached below; the whisper.cpp cross build's toolchain variables come from
 # scripts/xr/run.sh, for lint and build alike (the runner has cmake and
-# libclang).
+# libclang). V5's on-device decision model and its tokenizer files are
+# fetched and cached the same way once MODELS.txt has their URL; until then
+# (a placeholder) the fetch notes it and the APK builds without them, the
+# provider off at runtime. ONNX Runtime comes from its Maven AAR through
+# Gradle, like the OpenXR loader.
 
 on:
   push:
@@ -131,7 +135,19 @@ jobs:
         with:
           path: assets/xr/models/ggml-base.en.bin
           key: whisper-ggml-base.en-a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002
-      - name: Fetch speech model
+      # V5's decision model and its tokenizer files, keyed on the model's
+      # SHA-256 (assets/xr/models/MODELS.txt). With the URL still a
+      # placeholder there is nothing to fetch or cache: the fetch step
+      # below is a no-op for them with a notice.
+      - name: Cache decision model
+        uses: actions/cache@v4
+        with:
+          path: |
+            assets/xr/models/s1-17m-int8.onnx
+            assets/xr/models/s1-17m-tokenizer.json
+            assets/xr/models/s1-17m-tokenizer_config.json
+          key: s1-17m-int8-cd7f55ced9e661a86ef05004c4afbb57770059f320fccc3028029a87a99310d1
+      - name: Fetch models
         run: scripts/xr/fetch-model.sh
 
       # run.sh's lint is `cargo ndk ... clippy -p fosfora-xr --all-targets -- -D warnings`,

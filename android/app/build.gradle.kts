@@ -47,9 +47,10 @@ android {
 
     // The speech model (board #3751) is stored, not deflated: it barely
     // compresses, and a stored asset streams out of the APK without
-    // inflating 148 MB at its first launch.
+    // inflating 148 MB at its first launch. The decision model (V5, .onnx)
+    // likewise.
     androidResources {
-        noCompress += "bin"
+        noCompress += listOf("bin", "onnx")
     }
 
     packaging {
@@ -70,7 +71,7 @@ android {
 // (docs/xr/XR_DESIGN.md, "Assets on Android"). The NDK asset API cannot list
 // subdirectories, hence the manifest. Kept to what the effects need: shaders,
 // effect definitions, the XR scenes, the S6 test track and the voice path's
-// speech model; no images or fonts.
+// models; no images or fonts.
 val xrAssetsDir = layout.buildDirectory.dir("generated/xrassets")
 
 val stageXrAssets by tasks.registering(Sync::class) {
@@ -93,12 +94,15 @@ val stageXrAssets by tasks.registering(Sync::class) {
         include("*.ogg")
         into("audio")
     }
-    // The voice path's speech model (board #3751; MIT, fetched with its
-    // checksum by scripts/xr/fetch-model.sh, never committed:
-    // assets/xr/models/LICENSE.md). Installed to <internal data>/assets/
-    // xr/models/ with the rest.
+    // The voice path's speech model (board #3751; MIT) and, V5, the
+    // on-device provider's decision model, its tokenizer files (fetched
+    // with their checksums by scripts/xr/fetch-model.sh from
+    // assets/xr/models/MODELS.txt, never committed) and its spec
+    // (committed); sources in assets/xr/models/LICENSE.md. Installed to
+    // <internal data>/assets/xr/models/ with the rest. A file not fetched
+    // is simply absent, and the app says so in its log.
     from(rootProject.file("../assets/xr/models")) {
-        include("*.bin")
+        include("*.bin", "*.onnx", "s1-17m-*.json")
         into("xr/models")
     }
     into(xrAssetsDir.map { it.dir("assets") })
@@ -128,10 +132,33 @@ val stageXrAssets by tasks.registering(Sync::class) {
 android.sourceSets.getByName("main").assets.srcDir(xrAssetsDir)
 tasks.named("preBuild") { dependsOn(stageXrAssets) }
 
+// ONNX Runtime for the voice path's on-device provider (board #3751, V5):
+// the official AAR from Maven Central (MIT),
+// https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.28.0/
+// Only its jni/arm64-v8a/libonnxruntime.so reaches the APK's
+// lib/arm64-v8a/, which the `ort` crate dlopens by name: the AAR's Java API
+// (classes.jar) and its JNI binding (libonnxruntime4j_jni.so) serve Java
+// callers, and this app has no code (hasCode="false").
+val onnxRuntime: Configuration by configurations.creating
+val onnxRuntimeLibs = layout.buildDirectory.dir("generated/onnxruntime")
+
+val extractOnnxRuntime by tasks.registering(Sync::class) {
+    from(provider { zipTree(onnxRuntime.singleFile) }) {
+        include("jni/arm64-v8a/libonnxruntime.so")
+        eachFile { path = path.removePrefix("jni/") }
+        includeEmptyDirs = false
+    }
+    into(onnxRuntimeLibs)
+}
+
+android.sourceSets.getByName("main").jniLibs.srcDir(onnxRuntimeLibs)
+tasks.named("preBuild") { dependsOn(extractOnnxRuntime) }
+
 dependencies {
     // Khronos OpenXR loader (Apache-2.0). The AAR carries
     // jni/arm64-v8a/libopenxr_loader.so, which Gradle packages into the APK;
     // the openxr crate dlopens it at startup. Source: Maven Central,
     // https://repo1.maven.org/maven2/org/khronos/openxr/openxr_loader_for_android/1.1.63/
     implementation("org.khronos.openxr:openxr_loader_for_android:1.1.63")
+    onnxRuntime("com.microsoft.onnxruntime:onnxruntime-android:1.28.0@aar")
 }

@@ -7,14 +7,18 @@
 //! one a hand already performs, applied through V2's path.
 //!
 //! **The wearer picks the provider** in `<config dir>/voice.json`
-//! ([`parse_config`]): the Anthropic Messages API ([`Anthropic`]) by
-//! default, or any OpenAI-compatible chat completions endpoint
-//! ([`OpenAi`]): a hosted one, or a server on the LAN (llama.cpp's server,
-//! Ollama, LM Studio) that needs no key and keeps the sentence in the
-//! room. Both providers wrap the same task: one fixed instruction
-//! ([`INSTRUCTION`]), one output schema ([`schema`]), and one user message
-//! with the room as JSON ([`RoomState`]) and the sentence
-//! ([`user_content`]).
+//! ([`parse_config`]): the Anthropic Messages API ([`Anthropic`]), or any
+//! OpenAI-compatible chat completions endpoint ([`OpenAi`]): a hosted one,
+//! or a server on the LAN (llama.cpp's server, Ollama, LM Studio) that
+//! needs no key and keeps the sentence in the room. Both network providers
+//! ([`Http`]) wrap the same task: one fixed instruction ([`INSTRUCTION`]),
+//! one output schema ([`schema`]), and one user message with the room as
+//! JSON ([`RoomState`]) and the sentence ([`user_content`]).
+//!
+//! **V5, the on-device provider** (`local.rs`): our own decision model on
+//! the headset, no network and no key, behind the same [`Provider`] trait
+//! and the same [`Reply`]. It is the agent whenever its files are
+//! installed and `voice.json` names no other provider ([`choose`]).
 //!
 //! **Pure and desktop-tested:** the config, the private-address rule
 //! ([`check_url`]), both request builders and both reply parsers, the
@@ -40,6 +44,8 @@ use crate::surfaces::{COLOR_NAMES, SurfaceBehavior, kind_name};
 
 /// The config file's name, under the app's config dir.
 pub const CONFIG_FILE: &str = "voice.json";
+/// The `provider` value that names the on-device provider (`local.rs`).
+pub const LOCAL: &str = "local";
 /// The longest a call may take, the retry included (s).
 pub const TIMEOUT: Duration = Duration::from_secs(12);
 /// What the label reads while a call runs, and how long it may stay (s):
@@ -158,8 +164,9 @@ impl Config {
         )
     }
 
-    /// The provider this config names.
-    pub fn provider(&self) -> Arc<dyn Provider + Send + Sync> {
+    /// The provider this config names (an [`Http`] one; it upcasts to
+    /// `Arc<dyn Provider + Send + Sync>`).
+    pub fn provider(&self) -> Arc<dyn Http + Send + Sync> {
         match self.provider {
             ProviderKind::Anthropic => Arc::new(Anthropic {
                 base_url: self.base_url.clone(),
@@ -200,15 +207,7 @@ fn given(v: Option<String>) -> Option<String> {
 /// [`check_url`]. The error is the reason the agent is off, for the log;
 /// it never quotes the key (a JSON error gives only its line and column).
 pub fn parse_config(json: &str) -> Result<Config, String> {
-    let raw: RawConfig = serde_json::from_str(json).map_err(|e| {
-        format!(
-            "voice.json is not valid ({:?} at line {} column {})",
-            e.classify(),
-            e.line(),
-            e.column()
-        )
-        .to_lowercase()
-    })?;
+    let raw = parse_config_raw(json)?;
     let provider = match given(raw.provider).as_deref() {
         None | Some("anthropic") => ProviderKind::Anthropic,
         Some("openai") => ProviderKind::OpenAi,
@@ -258,6 +257,61 @@ pub fn load(path: &std::path::Path) -> Result<Config, String> {
         }
         Err(e) => Err(format!("{} unreadable: {e}", path.display())),
     }
+}
+
+/// `voice.json`'s text at `path`, `None` when there is no file.
+pub fn read(path: &std::path::Path) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(json) => Ok(Some(json)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{} unreadable: {e}", path.display())),
+    }
+}
+
+/// Which provider answers (V5): the on-device one, or a network one with
+/// its config.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Choice {
+    Local,
+    Network(Config),
+}
+
+/// The provider rule (V5). `file` is `voice.json`'s text (`None`: no
+/// file); `local` is `Ok` when the on-device model's files are installed,
+/// else why not. No file, or a file naming no `provider`: the on-device
+/// provider when it is installed; without it, no file leaves the agent off
+/// and a file is read as V3 read it (Anthropic by default). `provider`
+/// `local` asks for it by name (off, with the reason, when it is not
+/// installed). `anthropic` and `openai` keep V3's behavior exactly
+/// ([`parse_config`]). The error is the reason the agent is off.
+pub fn choose(file: Option<&str>, local: Result<(), String>) -> Result<Choice, String> {
+    let Some(json) = file else {
+        return match local {
+            Ok(()) => Ok(Choice::Local),
+            Err(why) => Err(format!("no {CONFIG_FILE}, and {why}")),
+        };
+    };
+    // A broken file is V3's error, whatever is installed.
+    let named = parse_config_raw(json)?.provider;
+    match (given(named).as_deref(), local) {
+        (Some(LOCAL) | None, Ok(())) => Ok(Choice::Local),
+        (Some(LOCAL), Err(why)) => Err(format!("provider {LOCAL} in {CONFIG_FILE}, but {why}")),
+        _ => parse_config(json).map(Choice::Network),
+    }
+}
+
+/// `voice.json` as written, or V3's error for a file that is no JSON
+/// object of the expected fields.
+fn parse_config_raw(json: &str) -> Result<RawConfig, String> {
+    serde_json::from_str(json).map_err(|e| {
+        format!(
+            "voice.json is not valid ({:?} at line {} column {})",
+            e.classify(),
+            e.line(),
+            e.column()
+        )
+        .to_lowercase()
+    })
 }
 
 /// The host of `url`: after the scheme, before the path, the port and any
@@ -483,12 +537,16 @@ pub struct Usage {
 }
 
 /// The model's answer: the actions in order, the label's sentence, and
-/// what the call cost.
+/// what the call cost; or (V5, the on-device provider) a miss: the
+/// sentence is not a request, or no answer cleared its confidence floor,
+/// which the label shows as the grammar's own "Didn't catch that" with
+/// its hint, and nothing in the room changes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Reply {
     pub actions: Vec<AgentAction>,
     pub say: String,
     pub usage: Usage,
+    pub miss: Option<Miss>,
 }
 
 /// Why a call gave no reply.
@@ -582,6 +640,7 @@ fn parse_text(text: &str, usage: Usage) -> Result<Reply, AgentError> {
         actions: r.actions,
         say: r.say.trim().to_owned(),
         usage,
+        miss: None,
     })
 }
 
@@ -590,12 +649,22 @@ fn count(v: &Value, key: &str) -> Option<u64> {
     v.get(key).and_then(Value::as_u64)
 }
 
-/// One provider: the request for a sentence, and its answer read.
+/// One provider: who answers a sentence the grammar missed, off the frame
+/// thread.
 pub trait Provider {
-    /// The provider's name for the log (`anthropic`, `openai`).
+    /// The provider's name for the log (`anthropic`, `openai`, `local`).
     fn name(&self) -> &'static str;
     /// The model it asks.
     fn model(&self) -> &str;
+    /// Ask about `sentence` in `room` without blocking: the receiver gets
+    /// the one outcome (the frame loop polls it). A network provider posts
+    /// its request on a thread of its own ([`spawn`]); the on-device one
+    /// queues the sentence for its worker (`local.rs`).
+    fn answer(&self, sentence: &str, room: &RoomState) -> Receiver<Result<Reply, AgentError>>;
+}
+
+/// A network provider: the request for a sentence, and its answer read.
+pub trait Http: Provider {
     /// The request for `sentence` in `room`: url, headers (the key among
     /// them), body.
     fn request(&self, sentence: &str, room: &RoomState) -> HttpRequest;
@@ -626,6 +695,16 @@ impl Provider for Anthropic {
         &self.model
     }
 
+    fn answer(&self, sentence: &str, room: &RoomState) -> Receiver<Result<Reply, AgentError>> {
+        spawn(
+            Arc::new(self.clone()),
+            self.request(sentence, room),
+            TIMEOUT,
+        )
+    }
+}
+
+impl Http for Anthropic {
     /// Effort low, the schema as the output format, the server-side
     /// fallback on a refusal, the instruction as a cached system block.
     /// No `thinking` (the model thinks by default; an explicit setting is
@@ -731,6 +810,16 @@ impl Provider for OpenAi {
         &self.model
     }
 
+    fn answer(&self, sentence: &str, room: &RoomState) -> Receiver<Result<Reply, AgentError>> {
+        spawn(
+            Arc::new(self.clone()),
+            self.request(sentence, room),
+            TIMEOUT,
+        )
+    }
+}
+
+impl Http for OpenAi {
     /// The schema as a strict `response_format`, the instruction as the
     /// system message; no `temperature`, no tools; `extra`'s members
     /// merged into the top level last.
@@ -875,15 +964,11 @@ fn post(req: &HttpRequest, timeout: Duration) -> Result<(u16, String), AgentErro
 }
 
 /// The call: `req` posted within `timeout`; on a refused output format
-/// ([`Provider::without_format`]) once more without it, in the time left;
+/// ([`Http::without_format`]) once more without it, in the time left;
 /// the answer read by the provider. Blocking: run it off the frame thread
 /// ([`spawn`]). Logs one line per call ([`call_line`]), and a non-200
 /// body in full (never a header).
-pub fn ask(
-    provider: &dyn Provider,
-    req: HttpRequest,
-    timeout: Duration,
-) -> Result<Reply, AgentError> {
+pub fn ask(provider: &dyn Http, req: HttpRequest, timeout: Duration) -> Result<Reply, AgentError> {
     let started = Instant::now();
     let mut req = req;
     let mut path = "schema";
@@ -921,7 +1006,7 @@ pub fn ask(
 
 /// [`ask`] on its own thread: the receiver gets the one outcome.
 pub fn spawn(
-    provider: Arc<dyn Provider + Send + Sync>,
+    provider: Arc<dyn Http + Send + Sync>,
     req: HttpRequest,
     timeout: Duration,
 ) -> Receiver<Result<Reply, AgentError>> {

@@ -1266,7 +1266,9 @@ impl Intent {
         };
         match action.kind.trim() {
             "next_effect" => Ok(Self::NextEffect),
-            "prev_effect" => Ok(Self::PrevEffect),
+            // `previous_effect` is the on-device model's id for it (V5,
+            // `local.rs`), the agent schema's `prev_effect` spelled out.
+            "prev_effect" | "previous_effect" => Ok(Self::PrevEffect),
             "effect" => effect(&vs, vocab)
                 .map(Self::Effect)
                 .ok_or_else(|| miss(Reason::NoMatch)),

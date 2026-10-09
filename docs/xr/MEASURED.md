@@ -2454,3 +2454,59 @@ and the held-out phrasings. On those run 3 is equal or better (7 of 10 on
 set 1, 0.90 on unseen value wordings), so **run 3 is the model for the
 provider**, with the gate's fragility on exact spellings noted as the
 known weakness and the provider's confidence floor as its guard.
+
+## The voice path, V5: the on-device provider (board #3751)
+
+`xr-voice-v5` on the Quest 3, `mode world`, the replayed room (17 anchors,
+nothing pointed), no `voice.json` so the agent defaults to `local` (our
+17M, run 3, int8, 3 threads, floor 0.35), both 40-sentence test sets fed
+through `debug.fosfora.say` with a streamed log (the default logcat buffer
+drops the first half of 80 sentences), the room file backed up and
+restored byte-identical. Launch: the assets unpack 182 MB in 394 ms, the
+model loads in 756 to 767 ms after whisper's, `ONNX Runtime from
+libonnxruntime.so`. The APK is 236 MB (the runtime 28.6 MB, the model
+29 MB, the tokenizer 3.6 MB).
+
+**The pipeline on the real room.** The grammar answers first; the model
+sees only its NoMatch and UnknownBehavior misses. Of the 80 sentences 51
+were the grammar's and 29 reached the model. The test sets were written
+against a fixture room, so twelve grammar sentences name surfaces this
+room lacks ("table 12", "shelf 4", "wall 15") and one needs a pointed
+surface; the grammar answers them with its own "No surface called …" and
+"Point at a surface", which is right for this room and not counted
+against anything.
+
+| set | the grammar's (right / room mismatch) | the model's: misses right | non-requests gated |
+|---|---|---|---|
+| 1 | 25 (19 / 6) | 7 of 10 | 5 of 5 |
+| 2 | 26 (18 / 7, one a grammar misparse) | 5 of 10 | 4 of 5 |
+
+Set 1, the model: campfire → embers on the desk; calmer → walls none; too
+cold → walls amber; kill the music → music off; pump with the kick → floor
+on the bass; brightness way up → ceiling up; what's showing on the window
+→ describe. Wrong: "bored, show me something different" gated out; "dots
+floating around" and "blank room" → storage none. Set 2, the model: log
+fire → embers; overwhelming → walls off; freezer → floor warm white;
+pattern on the window → describe; plain again → all none. Wrong: "seen
+enough of this world" gated out; "sparkly dust" → storage none; "shake
+with the boom" → floor rms instead of bass; "a lot more vivid" → ceiling
+violet instead of brighter; "That bassline is unreal" taken as a request
+(storage on the bass). One grammar misparse found: "Shut that song up"
+matched a strength template and was refused as an unknown surface, so it
+never reached the model.
+
+**Cost inside the app** (3 threads, the renderer live at 72 fps, 29
+sentences): median 306 ms per sentence, 60 to 392 ms; the steps median
+64 / 117 / 123 / 75 ms (request / kind / target / value). The spike's
+idle-headset figure at 4 threads was 171 ms; the app's three threads
+beside the renderer cost about 1.8x that. The gate alone, a non-request,
+is about 60 ms. The session's threads sleep between sentences (spinning
+off), so the idle cost is the parked session's memory.
+
+**Verdict.** The on-device provider works end to end with no network and
+no key, in about a third of a second, at the accuracy the training
+measured, and the grammar in front of it keeps every spoken command
+exact. The hosted provider remains the better answerer on open phrasings
+(it got "starry night" and "ocean" right); the local one is the default
+because it needs nothing. The known soft spots: the request gate on
+unfamiliar sentences, and the grammar's own misparse above.
