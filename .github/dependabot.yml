@@ -45,3 +45,6 @@ updates:
       - dependency-name: nokhwa
       # The wgpu stack pins 0.8; 0.9 would add a second copy, not replace one (#170).
       - dependency-name: libloading
+      # Tracks egui's version even in patch releases (0.2.27 pulls egui 0.34), so it
+      # moves with the egui family by hand.
+      - dependency-name: egui_code_editor
