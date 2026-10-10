@@ -91,7 +91,7 @@ gltf = "1"
 # Code editor widget (shader editor)
 egui_code_editor = { version = "0.2", optional = true }
 # Dynamic library loading (NDI runtime, PulseAudio runtime on Linux)
-libloading = "0.8"
+libloading = "0.9"
 # Webcam capture
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 # ONNX Runtime for depth estimation (MiDaS) — load-dynamic: runtime dylib loading, no build-time linking
