@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  # Workflow actions are pinned by commit SHA with the version in a trailing comment;
+  # Dependabot bumps both together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Cargo.toml and Cargo.lock only. The Rust toolchain (rust-toolchain.toml and the
+  # matching `toolchain:` inputs in the workflows) is bumped by hand, together with
+  # any new lints it brings, so no `rust-toolchain` ecosystem entry here.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Pinned to an exact release candidate on purpose: the ONNX Runtime library the
+      # depth feature downloads at runtime must match it (GitHub #174).
+      - dependency-name: ort
+      - dependency-name: ort-sys

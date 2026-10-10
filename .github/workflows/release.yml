@@ -7,7 +7,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-# Read-only by default; only the publish job below creates the GitHub release.
+# Read-only by default; only the publish job below creates the GitHub release and
+# attests its assets, so only it gets write and OIDC token permissions.
 permissions:
   contents: read
 
@@ -32,15 +33,15 @@ jobs:
             os: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # libclang-dev deliberately absent (#2359). It is a bindgen dep and this job
       # does need a libclang — it builds webcam/depth/v4l2 — but not a downloaded
       # one: this leg is ubuntu-22.04, the same image CI's Linux build leg runs on,
       # which ships llvm-13/14/15 with /usr/lib/llvm-15/lib/libclang.so.1. Pointing
       # clang-sys at it avoids a 28.8 MB fetch that has repeatedly stalled at the
-      # mirror's ~130 kB/s. That matters more here than in CI, because this step has
-      # no timeout, so a degraded mirror hangs a release rather than failing it.
+      # mirror's ~130 kB/s. A degraded mirror would otherwise hang a release rather
+      # than fail it; the 15-minute cap and retries match CI's apt steps.
       #
       # Resolved at runtime rather than pinned (the images disagree — CI's
       # ubuntu-24 jobs land on 18, this one on 15) and guarded, because
@@ -48,8 +49,10 @@ jobs:
       # copy once it is set, so an empty value is worse than an unset one.
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
+        timeout-minutes: 15
         run: |
-          sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev
           llvm_lib=$(ls -d /usr/lib/llvm-*/lib 2>/dev/null | sort -V | tail -1)
           if [ -z "$llvm_lib" ]; then
             echo "::error::no /usr/lib/llvm-*/lib on this image — reinstate libclang-dev (#2359)"
@@ -57,10 +60,11 @@ jobs:
           fi
           echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
         with:
+          toolchain: 1.97.0
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.os }}-${{ matrix.target }}-v3
 
@@ -102,14 +106,14 @@ jobs:
 
       - name: Upload artifact (macOS binary for universal job)
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fosfora-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/fosfora
 
       - name: Upload artifact
         if: runner.os != 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fosfora-${{ matrix.target }}
           path: ${{ env.ASSET }}
@@ -119,16 +123,16 @@ jobs:
     needs: build
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Download arm64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: fosfora-aarch64-apple-darwin
           path: artifacts/arm64
 
       - name: Download x86_64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: fosfora-x86_64-apple-darwin
           path: artifacts/x86_64
@@ -246,7 +250,7 @@ jobs:
           echo "ASSET=${DMG}" >> "$GITHUB_ENV"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fosfora-universal-apple-darwin
           path: ${{ env.ASSET }}
@@ -256,30 +260,55 @@ jobs:
     needs: [build, universal-macos]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # create the release and upload its assets
+      id-token: write # OIDC token that signs the provenance attestation
+      attestations: write # store the attestation on the repository
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Download macOS universal artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: fosfora-universal-apple-darwin
           path: artifacts/macos
 
       - name: Download Linux artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: fosfora-x86_64-unknown-linux-gnu
           path: artifacts/linux
 
       - name: Download Windows artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: fosfora-x86_64-pc-windows-msvc
           path: artifacts/windows
 
       - name: List artifacts
         run: find artifacts -type f
+
+      # One line per release asset, by bare file name, so a downloader can run
+      # `sha256sum -c SHA256SUMS` in the folder they saved the assets to.
+      - name: Generate SHA256SUMS
+        run: |
+          dupes=$(find artifacts -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::two release assets share a file name: $dupes"
+            exit 1
+          fi
+          : > SHA256SUMS
+          find artifacts -type f -print0 | sort -z | while IFS= read -r -d '' f; do
+            (cd "$(dirname "$f")" && sha256sum "$(basename "$f")") >> SHA256SUMS
+          done
+          cat SHA256SUMS
+
+      # Signed SLSA build provenance for every asset listed in SHA256SUMS, verifiable
+      # with `gh attestation verify <asset> --repo <owner>/<repo>`. Runs before the
+      # release is created, so a release never goes out without it.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-checksums: SHA256SUMS
 
       - name: Build release notes
         run: |
@@ -301,7 +330,9 @@ jobs:
           cat .github/release-notes-footer.md >> release_notes.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           body_path: release_notes.md
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*
+            SHA256SUMS
