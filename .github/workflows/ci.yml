@@ -243,7 +243,7 @@ jobs:
         with:
           toolchain: 1.97.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       # Debug build on purpose: the dev profile runs deps at opt-level 2, so the
       # DSP chain is near release speed without populating a separate lto=fat
       # release cache. Same profile the test job already exercises.
