@@ -1,8 +1,22 @@
 import java.security.MessageDigest
+import java.util.Properties
 
 plugins {
     id("com.android.application")
 }
+
+// The version policy lives in android/version.properties (the rule is
+// documented there); XR_VERSION_CODE / XR_VERSION_NAME override it, so CI can
+// stamp a build without a commit. Debug and release share the numbers.
+val versionProps = Properties().apply {
+    rootProject.file("version.properties").inputStream().use { load(it) }
+}
+val xrVersionCode: Int = (System.getenv("XR_VERSION_CODE") ?: versionProps.getProperty("versionCode"))
+    ?.toIntOrNull()
+    ?: error("versionCode must be an integer (android/version.properties or XR_VERSION_CODE)")
+val xrVersionName: String = System.getenv("XR_VERSION_NAME")
+    ?: versionProps.getProperty("versionName")
+    ?: error("versionName missing from android/version.properties")
 
 android {
     // Placeholder package id (board #3205): confirm with Kevin before the first
@@ -15,8 +29,8 @@ android {
         // Meta's documented values for Quest apps: minSdk 29, targetSdk 32.
         minSdk = 29
         targetSdk = 32
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = xrVersionCode
+        versionName = xrVersionName
         ndk {
             // Quest 3 and the glasses are arm64 only; a second ABI would only
             // double the APK.
@@ -39,10 +53,49 @@ android {
         }
     }
 
+    // The release key, from the environment like the debug key above
+    // (scripts/xr/release-keystore.sh creates it; docs/xr/RELEASE.md). Meta
+    // ties the app to this certificate at its first upload, so the keystore
+    // lives outside the repo and never changes. Without XR_RELEASE_KEYSTORE
+    // the release build stops at checkReleaseSigning (below) instead of
+    // producing an unsigned APK.
+    val releaseKeystore = System.getenv("XR_RELEASE_KEYSTORE")?.ifBlank { null }
+    if (releaseKeystore != null) {
+        val pass = System.getenv("XR_RELEASE_KEYSTORE_PASS")?.ifBlank { null }
+            ?: error("XR_RELEASE_KEYSTORE is set but XR_RELEASE_KEYSTORE_PASS is not")
+        signingConfigs.create("release") {
+            storeFile = file(releaseKeystore)
+            storePassword = pass
+            // Blank counts as unset: CI passes an absent optional secret as "".
+            keyAlias = System.getenv("XR_RELEASE_KEY_ALIAS")?.ifBlank { null } ?: "fosfora-xr"
+            keyPassword = System.getenv("XR_RELEASE_KEY_PASS")?.ifBlank { null } ?: pass
+            // minSdk 29 alone would drop the v1 (JAR) signature; Meta's
+            // signing docs have asked for v1 and v2 both, and v1 costs
+            // only the META-INF entries.
+            enableV1Signing = true
+            enableV2Signing = true
+        }
+    }
+
     buildTypes {
         release {
+            // No Java or Kotlin code to shrink (hasCode="false").
             isMinifyEnabled = false
+            isShrinkResources = false
+            // Meta's store rejects a debuggable APK; the manifest never sets
+            // android:debuggable, so this is the only switch.
+            isDebuggable = false
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
+    }
+
+    // lintVitalRelease applies Google Play's target-API floor (33 and up) as a
+    // fatal error. The app ships on Meta's store, whose public docs specify
+    // targetSdk 32 for Quest apps; every other release lint check stays on.
+    lint {
+        disable += "ExpiredTargetSdkVersion"
     }
 
     // The speech model (board #3751) is stored, not deflated: it barely
@@ -131,6 +184,24 @@ val stageXrAssets by tasks.registering(Sync::class) {
 
 android.sourceSets.getByName("main").assets.srcDir(xrAssetsDir)
 tasks.named("preBuild") { dependsOn(stageXrAssets) }
+
+// The release build fails first thing, naming the variables, when the release
+// key is not configured: an unsigned release APK is never what was wanted.
+val checkReleaseSigning by tasks.registering {
+    val configured = !System.getenv("XR_RELEASE_KEYSTORE").isNullOrBlank()
+    doLast {
+        if (!configured) {
+            throw GradleException(
+                "The release build needs the release key: set XR_RELEASE_KEYSTORE " +
+                    "(path to the PKCS12 keystore) and XR_RELEASE_KEYSTORE_PASS, and " +
+                    "optionally XR_RELEASE_KEY_ALIAS (default fosfora-xr) and " +
+                    "XR_RELEASE_KEY_PASS (default: the store password). " +
+                    "See scripts/xr/release-keystore.sh and docs/xr/RELEASE.md.",
+            )
+        }
+    }
+}
+tasks.matching { it.name == "preReleaseBuild" }.configureEach { dependsOn(checkReleaseSigning) }
 
 // ONNX Runtime for the voice path's on-device provider (board #3751, V5):
 // the official AAR from Maven Central (MIT),
