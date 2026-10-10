@@ -6,6 +6,7 @@
 ## Unreleased
 
 ### Added
+- **Release downloads come with checksums and signed build provenance.** Each release now includes a `SHA256SUMS` file, and every asset carries a provenance attestation, so you can check that a download is the one CI built from the tagged source (`sha256sum -c SHA256SUMS`, or `gh attestation verify <file> --repo kevinraymond/fosfora`).
 - **Eight new trama nodes.** Strobe flashes on the tempo grid, the kick or any hit, in any color, as a blackout or as an invert, and stays within the flash limit set in Settings. Invert, Posterize, Threshold, Sharpen, Tile, Dither and CRT cover the other staple looks.
 - **`tempo_confidence` and `beat_locked`**, so effects, bindings and OSC clients can tell whether the beat grid is trustworthy, for example to keep a strobe off until the tempo locks. Signal also sends them as `/fosfora/v1/bpm/confidence` and `/fosfora/v1/bpm/locked`. `AudioFeatures` grows from 83 to 85 slots (332 → 340 bytes); the shader uniform block stays 448 bytes because the two values take its former padding, so existing shaders need no changes.
 - **Input trim and a level meter in Setup › Audio.** Lift a quiet line or mic input off the silence gate, or tame a hot one, by up to 24 dB; the trim changes only what the analysis hears, so recordings keep the source level. The meter reads the input before the trim and lights CLIP when the source itself is clipping.
