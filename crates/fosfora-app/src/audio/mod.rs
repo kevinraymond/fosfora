@@ -35,6 +35,16 @@ pub mod wasapi_capture;
 pub use features::AudioFeatures;
 pub use input_level::InputLevel;
 
+/// Why an [`AudioSystem`] could not be built. A capture device that will not open is
+/// not one of these: that yields an inactive system with `last_error` set, so the app
+/// runs on without audio.
+#[derive(Debug, thiserror::Error)]
+pub enum AudioError {
+    /// The OS refused the analysis thread (a thread or memory limit was reached).
+    #[error("failed to spawn audio thread: {0}")]
+    ThreadSpawn(#[source] std::io::Error),
+}
+
 /// A single analyzed audio frame handed from the audio thread to the render thread.
 /// Carries the scalar [`AudioFeatures`] plus the two array streams the A17 audio textures
 /// need (#1468): a log-frequency magnitude spectrum and one mel-spectrogram column.
@@ -409,7 +419,7 @@ pub struct AudioSystem {
 
 impl AudioSystem {
     #[allow(dead_code)]
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, AudioError> {
         Self::new_with_device(
             None,
             BandScale::default(),
@@ -422,8 +432,8 @@ impl AudioSystem {
     /// with no audio.
     #[cfg(test)]
     pub(crate) fn offline() -> Self {
-        let mut sys = Self::from_opened(
-            Err("offline".to_string()),
+        let mut sys = Self::unavailable(
+            "offline".to_string(),
             None,
             BandScale::default(),
             Arc::new(Mutex::new(StructureConfig::default())),
@@ -437,12 +447,16 @@ impl AudioSystem {
         sys
     }
 
+    /// Open `device_name` (the default input when `None`) and start the analysis thread.
+    ///
+    /// Fails only when that thread cannot be spawned. A device that will not open is not
+    /// an error: the system comes back inactive with `last_error` set.
     pub fn new_with_device(
         device_name: Option<&str>,
         band_scale: BandScale,
         tuning: Arc<Mutex<StructureConfig>>,
         tempo: Arc<Mutex<TempoControl>>,
-    ) -> Self {
+    ) -> Result<Self, AudioError> {
         Self::from_opened(
             open_backend(device_name),
             device_name,
@@ -470,7 +484,7 @@ impl AudioSystem {
         band_scale: BandScale,
         tuning: Arc<Mutex<StructureConfig>>,
         tempo: Arc<Mutex<TempoControl>>,
-    ) -> Self {
+    ) -> Result<Self, AudioError> {
         let opened = OpenedBackend {
             ring,
             sample_rate: sample_rate as f32,
@@ -490,9 +504,9 @@ impl AudioSystem {
             Arc::new(InputLevel::default()),
             Arc::new(RingBuffer::new()),
             None,
-        );
+        )?;
         system.set_auto_reconnect(false);
-        system
+        Ok(system)
     }
 
     /// Build the analysis pipeline and all render-facing state around an already-opened
@@ -515,7 +529,7 @@ impl AudioSystem {
         input: Arc<InputLevel>,
         recording_ring: Arc<RingBuffer>,
         recording_rate: Option<u32>,
-    ) -> Self {
+    ) -> Result<Self, AudioError> {
         // A full queue evicts its oldest frame (#59): when the render side stalls, the
         // newest analysis is what it should see on catching up, not frames from before the
         // stall.
@@ -559,9 +573,9 @@ impl AudioSystem {
                             input_thread,
                         );
                     })
-                    .expect("Failed to spawn audio thread");
+                    .map_err(AudioError::ThreadSpawn)?;
 
-                Self {
+                Ok(Self {
                     receiver: rx,
                     latest: None,
                     interp: FeatureInterpolator::new(decimate::analysis_rate(sample_rate as u32)),
@@ -618,71 +632,96 @@ impl AudioSystem {
                     last_sink_poll: Instant::now()
                         .checked_sub(Duration::from_mins(1))
                         .expect("60s subtraction from now cannot underflow"),
-                }
+                })
             }
-            Err(e) => {
-                log::warn!("Audio capture unavailable: {e}");
-                Self {
-                    receiver: rx,
-                    latest: None,
-                    // No device: no frames will arrive, so this only ever serves the
-                    // fallback path. Matches the `sample_rate` default below.
-                    interp: FeatureInterpolator::new(44100),
-                    latest_spectrum: vec![0.0; analyzer::SPECTRUM_BINS],
-                    pending_mel: Vec::new(),
-                    latest_mel: Vec::new(),
-                    latest_dmfcc: [0.0; 13],
-                    device_name: requested.unwrap_or("Default").to_string(),
-                    active: false,
-                    last_error: Some(e),
-                    shutdown,
-                    thread_handle: None,
-                    callback_count: Arc::new(AtomicU64::new(0)),
-                    started_at: Instant::now(),
-                    capture_failed: Arc::new(AtomicBool::new(false)),
-                    // Nothing is open, so nothing can freeze; `poll_health` gates the whole
-                    // watchdog on `active` anyway.
-                    silence_delivers_data: false,
-                    _capture: None,
-                    using_native_backend: false,
-                    cached_devices: Arc::new(Mutex::new(Vec::new())),
-                    scan_in_flight: Arc::new(AtomicBool::new(false)),
-                    last_scan: Instant::now()
-                        .checked_sub(Duration::from_mins(1))
-                        .expect("60s subtraction from now cannot underflow"),
-                    recording_ring,
-                    recording_rate: recording_rate.unwrap_or(44100),
-                    sample_rate: 44100,
-                    band_scale,
-                    tuning,
-                    tempo,
-                    input,
-                    meter: MeterState::default(),
-                    tap_times: Vec::new(),
-                    beat_counter,
-                    beats_seen: 0,
-                    downbeat_counter,
-                    downbeats_seen: 0,
-                    drop_counter,
-                    drops_seen: 0,
-                    last_frame_at: Instant::now(),
-                    last_poll_at: Instant::now(),
-                    last_cb_count: 0,
-                    cb_changed_at: Instant::now(),
-                    stall_reported: false,
-                    reconnect: reconnect::ReconnectState::new(true),
-                    pending_open: None,
-                    reopen_target: None,
-                    #[cfg(target_os = "linux")]
-                    default_sink: Arc::new(Mutex::new(None)),
-                    #[cfg(target_os = "linux")]
-                    sink_poll_in_flight: Arc::new(AtomicBool::new(false)),
-                    #[cfg(target_os = "linux")]
-                    last_sink_poll: Instant::now()
-                        .checked_sub(Duration::from_mins(1))
-                        .expect("60s subtraction from now cannot underflow"),
-                }
-            }
+            Err(e) => Ok(Self::unavailable(
+                e,
+                requested,
+                band_scale,
+                tuning,
+                tempo,
+                input,
+                recording_ring,
+                recording_rate,
+            )),
+        }
+    }
+
+    /// The inactive system a failed open leaves behind: no device and no analysis thread,
+    /// with `error` as the reason. Shared by `from_opened`'s error path and by `adopt` when
+    /// the new analysis thread cannot be spawned.
+    fn unavailable(
+        error: String,
+        requested: Option<&str>,
+        band_scale: BandScale,
+        tuning: Arc<Mutex<StructureConfig>>,
+        tempo: Arc<Mutex<TempoControl>>,
+        input: Arc<InputLevel>,
+        recording_ring: Arc<RingBuffer>,
+        recording_rate: Option<u32>,
+    ) -> Self {
+        log::warn!("Audio capture unavailable: {error}");
+        // No thread will ever send, so the sender is dropped unused.
+        let (_, rx) = crate::inbound::bounded::<AudioFrame>(4);
+        Self {
+            receiver: rx,
+            latest: None,
+            // No device: no frames will arrive, so this only ever serves the
+            // fallback path. Matches the `sample_rate` default below.
+            interp: FeatureInterpolator::new(44100),
+            latest_spectrum: vec![0.0; analyzer::SPECTRUM_BINS],
+            pending_mel: Vec::new(),
+            latest_mel: Vec::new(),
+            latest_dmfcc: [0.0; 13],
+            device_name: requested.unwrap_or("Default").to_string(),
+            active: false,
+            last_error: Some(error),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            thread_handle: None,
+            callback_count: Arc::new(AtomicU64::new(0)),
+            started_at: Instant::now(),
+            capture_failed: Arc::new(AtomicBool::new(false)),
+            // Nothing is open, so nothing can freeze; `poll_health` gates the whole
+            // watchdog on `active` anyway.
+            silence_delivers_data: false,
+            _capture: None,
+            using_native_backend: false,
+            cached_devices: Arc::new(Mutex::new(Vec::new())),
+            scan_in_flight: Arc::new(AtomicBool::new(false)),
+            last_scan: Instant::now()
+                .checked_sub(Duration::from_mins(1))
+                .expect("60s subtraction from now cannot underflow"),
+            recording_ring,
+            recording_rate: recording_rate.unwrap_or(44100),
+            sample_rate: 44100,
+            band_scale,
+            tuning,
+            tempo,
+            input,
+            meter: MeterState::default(),
+            tap_times: Vec::new(),
+            beat_counter: Arc::new(AtomicU32::new(0)),
+            beats_seen: 0,
+            downbeat_counter: Arc::new(AtomicU32::new(0)),
+            downbeats_seen: 0,
+            drop_counter: Arc::new(AtomicU32::new(0)),
+            drops_seen: 0,
+            last_frame_at: Instant::now(),
+            last_poll_at: Instant::now(),
+            last_cb_count: 0,
+            cb_changed_at: Instant::now(),
+            stall_reported: false,
+            reconnect: reconnect::ReconnectState::new(true),
+            pending_open: None,
+            reopen_target: None,
+            #[cfg(target_os = "linux")]
+            default_sink: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "linux")]
+            sink_poll_in_flight: Arc::new(AtomicBool::new(false)),
+            #[cfg(target_os = "linux")]
+            last_sink_poll: Instant::now()
+                .checked_sub(Duration::from_mins(1))
+                .expect("60s subtraction from now cannot underflow"),
         }
     }
 
@@ -737,7 +776,7 @@ impl AudioSystem {
         // into it. With no other holder, the ring follows the new device (#79).
         let recording_rate =
             (Arc::strong_count(&self.recording_ring) > 1).then_some(self.recording_rate);
-        let mut new = Self::from_opened(
+        let mut new = match Self::from_opened(
             opened,
             requested,
             self.band_scale,
@@ -746,7 +785,21 @@ impl AudioSystem {
             self.input.clone(),
             self.recording_ring.clone(),
             recording_rate,
-        );
+        ) {
+            Ok(new) => new,
+            // The old pipeline is already gone, so there is nothing to fall back to: park in
+            // the same "no device" state a failed open leaves, with the reason shown.
+            Err(e) => Self::unavailable(
+                e.to_string(),
+                requested,
+                self.band_scale,
+                self.tuning.clone(),
+                self.tempo.clone(),
+                self.input.clone(),
+                self.recording_ring.clone(),
+                recording_rate,
+            ),
+        };
         self.receiver = std::mem::replace(&mut new.receiver, crossbeam_channel::bounded(1).1);
         self.latest = None;
         // A8 (#1459): the fresh audio thread restarts `samples_consumed` at 0, so the next

@@ -34,9 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
         with:
+          toolchain: 1.97.0
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -45,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Every way a demo preset can be wrong is silent at runtime — an unknown param is
       # dropped without a log line, a missing obstacle image logs nothing at all — so a
       # rename here surfaces as a capture run that quietly films the wrong thing.
@@ -56,10 +57,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Deny check
-        uses: EmbarkStudios/cargo-deny-action@v2
-      - uses: dtolnay/rust-toolchain@1.97.0
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+        with:
+          toolchain: 1.97.0
       # deny.toml allows rusty_link's GPL licence only because opt-in `--features link`
       # builds are the sole ones that link it. Prove the shipped feature set really leaves
       # it out, on every target. The positive control first: if the crate were renamed or
@@ -80,7 +83,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install system deps
         timeout-minutes: 15
         run: |
@@ -103,10 +106,11 @@ jobs:
             exit 1
           fi
           echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
         with:
+          toolchain: 1.97.0
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Clippy (video feature)
@@ -135,12 +139,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
         with:
+          toolchain: 1.97.0
           targets: aarch64-linux-android
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # The lib without `desktop` is what the XR frontend links, and `decode`
       # is the only feature it adds. No other job builds either, so a desktop
       # type leaking into a shared module would first break on the XR branch.
@@ -155,7 +160,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # ffmpeg for the loop-export encode tests, which probe the real binary
       # (decision #2066); the renders themselves need a GPU and stay dev-run.
       # ffmpeg is NOT on the ubuntu-24.04 runner image, so this apt call is load-bearing.
@@ -181,8 +186,10 @@ jobs:
             exit 1
           fi
           echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@1.97.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+        with:
+          toolchain: 1.97.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Two feature sets, not one per feature: cargo rebuilds the whole crate for each
       # distinct set (2-5 min apiece), and the features are additive. Defaults cover the
       # cfg(not(feature)) paths; the union runs every feature-gated test. Each feature on
@@ -201,17 +208,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install system deps
         timeout-minutes: 15
         run: |
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
         with:
           toolchain: nightly-2026-10-07
           components: miri, rust-src
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Miri
         run: cargo +nightly-2026-10-07 miri test -p fosfora-app --lib audio::capture
 
@@ -220,7 +227,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # No libclang-dev here on purpose (#2359). It is a bindgen dep, and bindgen
       # only enters the graph via rusty_link (feature `link`) or v4l2-sys-mit
       # (features `webcam`/`depth`/`v4l2`). This job builds `--features analyze`
@@ -232,9 +239,11 @@ jobs:
         run: |
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev
-      - uses: dtolnay/rust-toolchain@1.97.0
-      - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+        with:
+          toolchain: 1.97.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       # Debug build on purpose: the dev profile runs deps at opt-level 2, so the
       # DSP chain is near release speed without populating a separate lto=fat
       # release cache. Same profile the test job already exercises.
@@ -268,7 +277,7 @@ jobs:
             os: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 15
@@ -284,11 +293,12 @@ jobs:
             exit 1
           fi
           echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
         with:
+          toolchain: 1.97.0
           targets: ${{ matrix.target }}
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.os }}-${{ matrix.target }}-v3
       # Clippy per native target so cfg-gated Windows/macOS code is actually linted
@@ -299,6 +309,14 @@ jobs:
         run: cargo clippy --target ${{ matrix.target }} --features "video,webcam,ndi,v4l2,spout,syphon" -- -D warnings
       - name: Build
         run: cargo build --target ${{ matrix.target }}
+      # The Test job covers Linux; this is the only place the unit tests run on macOS
+      # and Windows, where cfg-gated paths and the platform's float math differ. Lib
+      # only and default features: the bin and the feature sets stay with the Linux
+      # job. The x86_64-apple-darwin leg runs its tests under Rosetta on the arm64
+      # runner. Right after the default build so the dependency cache is warm.
+      - name: Test (lib)
+        if: runner.os != 'Linux'
+        run: cargo test -p fosfora-app --lib --target ${{ matrix.target }}
       - name: Build (video feature)
         run: cargo build --target ${{ matrix.target }} --features video
       - name: Build (webcam feature)
@@ -327,7 +345,7 @@ jobs:
           copy target\${{ matrix.target }}\debug\fosfora.exe staging\
           xcopy assets staging\assets\ /E /I /Q
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fosfora-ci-${{ matrix.target }}
           path: staging/

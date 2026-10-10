@@ -51,7 +51,7 @@ struct FosforaApp {
     obstacle_dialog_rx: Option<Receiver<PathBuf>>,
     /// Debounced param save: (effect_index, last_change_time)
     param_save_pending: Option<(usize, std::time::Instant)>,
-    /// `App::new` failed: the event loop is told to exit, and `main` turns
+    /// Window creation or `App::new` failed: the event loop is told to exit, and `main` turns
     /// this into a non-zero exit status so a wrapper script can tell.
     init_failed: bool,
     /// The GPU device was lost mid-run (driver reset, GPU removed). Same
@@ -128,11 +128,15 @@ impl ApplicationHandler for FosforaApp {
             attrs = attrs.with_window_icon(Some(icon));
         }
 
-        let window = Arc::new(
-            event_loop
-                .create_window(attrs)
-                .expect("Failed to create window"),
-        );
+        let window = match event_loop.create_window(attrs) {
+            Ok(window) => Arc::new(window),
+            Err(e) => {
+                log::error!("Failed to create window: {e}");
+                self.init_failed = true;
+                event_loop.exit();
+                return;
+            }
+        };
 
         self.window = Some(window.clone());
 
@@ -3395,7 +3399,11 @@ impl ApplicationHandler for FosforaApp {
                     if let Some(name) = select_builtin {
                         if !app.particle_source_loader.loading {
                             let path = crate::gpu::particle::builtin_raster_path(&name);
-                            app.particle_source_loader.load_image(path, base_request);
+                            if let Err(e) =
+                                app.particle_source_loader.load_image(path, base_request)
+                            {
+                                log::error!("Failed to spawn particle source loader thread: {e}");
+                            }
                             app.preset_store.mark_dirty();
                         }
                     }
@@ -3404,7 +3412,9 @@ impl ApplicationHandler for FosforaApp {
                     let load_image: Option<bool> =
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_load_image")));
                     if load_image.is_some() && !app.particle_source_loader.loading {
-                        app.particle_source_loader.open_image_dialog(base_request);
+                        if let Err(e) = app.particle_source_loader.open_image_dialog(base_request) {
+                            log::error!("Failed to spawn particle source dialog thread: {e}");
+                        }
                         app.preset_store.mark_dirty();
                     }
 
@@ -3414,7 +3424,11 @@ impl ApplicationHandler for FosforaApp {
                         let load_video: Option<bool> =
                             ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_load_video")));
                         if load_video.is_some() && !app.particle_source_loader.loading {
-                            app.particle_source_loader.open_video_dialog(base_request);
+                            if let Err(e) =
+                                app.particle_source_loader.open_video_dialog(base_request)
+                            {
+                                log::error!("Failed to spawn particle source dialog thread: {e}");
+                            }
                             app.preset_store.mark_dirty();
                         }
                     }
@@ -3424,7 +3438,9 @@ impl ApplicationHandler for FosforaApp {
                     let load_model: Option<bool> =
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_load_model")));
                     if load_model.is_some() && !app.particle_source_loader.loading {
-                        app.particle_source_loader.open_model_dialog(base_request);
+                        if let Err(e) = app.particle_source_loader.open_model_dialog(base_request) {
+                            log::error!("Failed to spawn particle source dialog thread: {e}");
+                        }
                         app.preset_store.mark_dirty();
                     }
 
@@ -3873,19 +3889,37 @@ impl ApplicationHandler for FosforaApp {
                                         };
                                         if morph_load_img.is_some() {
                                             clear_slot();
-                                            app.particle_source_loader
-                                                .open_image_dialog(morph_request);
+                                            if let Err(e) = app
+                                                .particle_source_loader
+                                                .open_image_dialog(morph_request)
+                                            {
+                                                log::error!(
+                                                    "Failed to spawn particle source dialog thread: {e}"
+                                                );
+                                            }
                                         }
                                         #[cfg(feature = "video")]
                                         if morph_load_video.is_some() {
                                             clear_slot();
-                                            app.particle_source_loader
-                                                .open_video_dialog(morph_request);
+                                            if let Err(e) = app
+                                                .particle_source_loader
+                                                .open_video_dialog(morph_request)
+                                            {
+                                                log::error!(
+                                                    "Failed to spawn particle source dialog thread: {e}"
+                                                );
+                                            }
                                         }
                                         if morph_load_model.is_some() {
                                             clear_slot();
-                                            app.particle_source_loader
-                                                .open_model_dialog(morph_request);
+                                            if let Err(e) = app
+                                                .particle_source_loader
+                                                .open_model_dialog(morph_request)
+                                            {
+                                                log::error!(
+                                                    "Failed to spawn particle source dialog thread: {e}"
+                                                );
+                                            }
                                         }
                                     }
                                 }
