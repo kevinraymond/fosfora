@@ -32,7 +32,7 @@ naga = { version = "27", features = ["wgsl-in"] }
 winit = { version = "0.30", optional = true }
 # UI. egui + egui-wgpu stay unconditional: the XR build renders an egui panel to a
 # texture. The winit/editor-widget side is desktop-only.
-egui = "0.33"
+egui = "0.34"
 egui-wgpu = "0.33"
 egui-winit = { version = "0.33", optional = true }
 # trama node-graph canvas — 0.9.x is the egui-0.33 line (0.10+ track egui 0.34/0.35)
