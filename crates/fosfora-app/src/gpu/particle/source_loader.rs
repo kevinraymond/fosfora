@@ -33,7 +33,13 @@ pub fn current_image_path(path: &str) -> String {
         return path.to_string();
     };
     match RENAMED_IMAGES.iter().find(|(old, _)| *old == name) {
-        Some((_, new)) => p.with_file_name(new).to_string_lossy().into_owned(),
+        // Swap the name as a string suffix rather than through `Path::with_file_name`,
+        // which would rejoin with the host separator and hand a Windows user a
+        // `/a/images\raster_fosfora.png` for a preset saved with forward slashes.
+        Some((_, new)) => match path.strip_suffix(name) {
+            Some(dir) => format!("{dir}{new}"),
+            None => p.with_file_name(new).to_string_lossy().into_owned(),
+        },
         None => path.to_string(),
     }
 }
