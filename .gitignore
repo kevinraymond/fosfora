@@ -40,6 +40,14 @@ __pycache__/
 /android/build/
 /android/app/build/
 /android/local.properties
+# Signing keys (docs/xr/RELEASE.md): the release keystore lives outside the
+# repo; these patterns stop a stray copy at the root or under android/.
+/*.p12
+/*.jks
+/*.keystore
+/android/**/*.p12
+/android/**/*.jks
+/android/**/*.keystore
 # The voice path's agent config (board #3751): it holds an API key and lives
 # on the headset (files/config/voice.json); a local copy is never committed.
 voice.json

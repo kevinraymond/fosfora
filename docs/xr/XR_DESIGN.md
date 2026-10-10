@@ -838,6 +838,7 @@ moved to `android/app/build.gradle.kts` (`namespace` / `applicationId`).
 
 - The package id is a placeholder. Ask Kevin before the first dashboard upload;
   it is hard to change later.
+- Release signing, the version policy and the upload: [RELEASE.md](RELEASE.md).
 - The `supportedDevices` value for Meta VR Glasses isn't known yet. Add it when
   Meta publishes it.
 - `INTERNET` (the voice path's agent, board #3751) is a normal permission:
