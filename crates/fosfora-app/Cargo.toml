@@ -36,7 +36,7 @@ egui = "0.33"
 egui-wgpu = "0.33"
 egui-winit = { version = "0.33", optional = true }
 # trama node-graph canvas — 0.9.x is the egui-0.33 line (0.10+ track egui 0.34/0.35)
-egui-snarl = { version = "0.9", optional = true }
+egui-snarl = { version = "0.10", optional = true }
 # Audio
 cpal = "0.17.3"
 # FFT
