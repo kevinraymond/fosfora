@@ -306,7 +306,7 @@ jobs:
       # with `gh attestation verify <asset> --repo <owner>/<repo>`. Runs before the
       # release is created, so a release never goes out without it.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: SHA256SUMS
 
