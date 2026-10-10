@@ -2943,3 +2943,29 @@ pixel.
 Unworn, the frame now stands at about 9.8 ms App hot (640 MHz) against
 11.3 to 12.6 this morning on the same headset, with the sim at 3.0 ms
 and the eye pass at 1.0 per eye.
+
+## An hour unworn at the tip, after a reboot (board #3819, #3833)
+
+The tip after PRs #263 to #266 (000e194), launched right after a reboot
+in world mode on the replayed room (27 anchors) with the clip playing,
+the governor at its defaults, unworn on the desk, USB powered, sampled
+every 30 s for 60 minutes (119 samples; the runtime's frame line, the
+thermal service's status and the battery temperature):
+
+| | Value |
+|---|---|
+| Frame rate | 72 fps in every sample, 0 stale frames in every sample |
+| Long frames | 4 in the hour, all at launch |
+| App GPU, median | 8.18 ms (7.82 to 9.07), by quarter 8.86 / 8.15 / 8.11 / 8.16 |
+| GPU clock | 456 MHz throughout (the runtime's low step: the frame no longer needs 640) |
+| Thermal status | 0 throughout |
+| Battery | 30 C at launch, 45 C after 17 minutes, flat at 44 to 45 C after |
+| Governor | never stepped (density 1.00 throughout) |
+| Crashes | none |
+
+Before the reboot the same build, after 5.7 hours of uptime, ran 57 fps
+with 22 to 26 stale frames per second at 11 ms App and 640 MHz; the
+reboot alone restored 72 fps at 8.5 ms (the uptime drift noted at
+#3419). Yesterday's evening worn run at this temperature was 24 to
+34 ms per frame at 456 MHz. Worn adds the hands, the lit walls in view
+and the wearer's heat, which the worn batch measures.
