@@ -1,28 +1,47 @@
 version: 2
 
+# Low-noise policy: one grouped PR per ecosystem, once a month, minor and patch
+# only. Majors are bumped by hand (the egui family has to move together, glam
+# touches the camera code) and the pinned crates below have a reason each.
 updates:
   # Workflow actions are pinned by commit SHA with the version in a trailing comment;
-  # Dependabot bumps both together.
+  # Dependabot bumps both together. One PR for every action, majors included, since
+  # upload-artifact and download-artifact need to move as a pair.
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 1
+    labels: [dependencies, github_actions]
+    groups:
+      actions:
+        patterns: ["*"]
 
   # Cargo.toml and Cargo.lock only. The Rust toolchain (rust-toolchain.toml and the
   # matching `toolchain:` inputs in the workflows) is bumped by hand, together with
   # any new lints it brings, so no `rust-toolchain` ecosystem entry here.
+  # `no-changelog`: a dependency bump is not a user-visible change, and without the
+  # label the repo-checks job fails every PR that touches a crate manifest.
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 1
+    labels: [dependencies, rust, no-changelog]
     groups:
       cargo-minor-patch:
-        update-types:
-          - minor
-          - patch
+        patterns: ["*"]
+        update-types: [minor, patch]
     ignore:
+      # Majors are a hand bump: see the policy note above.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
       # Pinned to an exact release candidate on purpose: the ONNX Runtime library the
       # depth feature downloads at runtime must match it (GitHub #174).
       - dependency-name: ort
       - dependency-name: ort-sys
+      # 0.10.11 does not compile on macOS or Windows (nokhwa-core 0.1.8 mismatch);
+      # lift this once a later patch builds on both.
+      - dependency-name: nokhwa
+      # The wgpu stack pins 0.8; 0.9 would add a second copy, not replace one (#170).
+      - dependency-name: libloading
