@@ -3,7 +3,7 @@ targets = []
 all-features = true
 
 [advisories]
-unmaintained = "workspace"
+unmaintained = "all"
 yanked = "warn"
 ignore = [
     # quick-xml < 0.41 DoS advisories (quadratic duplicate-attribute check,
@@ -13,6 +13,11 @@ ignore = [
     # runtime. Remove once wayland-scanner allows quick-xml >= 0.41.
     { id = "RUSTSEC-2026-0194", reason = "build-time only; parses trusted bundled protocol XML" },
     { id = "RUSTSEC-2026-0195", reason = "build-time only; parses trusted bundled protocol XML" },
+    # Unmaintained transitive crates. `unmaintained = "all"` surfaces these;
+    # each is pinned by an upstream we can't replace yet. Drop the entry when
+    # its path goes away.
+    { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro, build-time): via metal 0.32 under wgpu-hal 27 and via nokhwa 0.10; no maintained alternative upstream, goes when both move off it" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser 0.21 via fontdue 0.9 (our text rendering) and 0.25 via ab_glyph under egui/epaint and sctk-adwaita; parses only bundled and system fonts, never user input; replace when fontdue and egui move to skrifa" },
 ]
 
 [licenses]

@@ -546,7 +546,7 @@ impl App {
             Arc::new(std::sync::Mutex::new(crate::audio::TempoControl::new(
                 settings.tempo,
             ))),
-        );
+        )?;
         // A9 (#1460): a setter rather than a 5th `new_with_device` param — the audio thread
         // never sees this value, so threading it through construction would touch every
         // caller for nothing.

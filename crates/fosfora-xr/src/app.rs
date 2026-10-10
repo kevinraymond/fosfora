@@ -942,7 +942,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
             let p = Playback::start(std::sync::Arc::new(clip), tap.clone(), playback_options)
                 .context("starting playback")?;
-            let analysis = LiveAudio::from_ring(tap, p.output_rate(), p.callback_count());
+            let analysis = LiveAudio::from_ring(tap, p.output_rate(), p.callback_count())
+                .context("analysis over the playback tap")?;
             music.adopt(p, Some(analysis), name);
         }
         _ => {}
@@ -3960,8 +3961,19 @@ impl Music {
                     "music: from {:.1} s into the clip",
                     self.resume as f32 / p.clip().sample_rate.max(1) as f32
                 );
-                self.analysis = crate::music::tap_analyzed(&self.source)
-                    .then(|| LiveAudio::from_ring(tap, p.output_rate(), p.callback_count()));
+                let analysis = crate::music::tap_analyzed(&self.source)
+                    .then(|| LiveAudio::from_ring(tap, p.output_rate(), p.callback_count()))
+                    .transpose();
+                self.analysis = match analysis {
+                    Ok(a) => a,
+                    Err(e) => {
+                        // Playback without its analysis would play to effects that
+                        // never hear it; treat it like a failed start.
+                        error!("music: analysis over the tap: {e:#}");
+                        self.want = false;
+                        return;
+                    }
+                };
                 self.playback = Some(p);
                 info!("{}", crate::music::log_line(true, &self.source, &self.name));
             }

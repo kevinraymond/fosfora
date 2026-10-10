@@ -64,7 +64,7 @@ impl LiveAudio {
     /// Open the microphones the way `source` says.
     pub fn open(source: MicSource) -> Result<Self> {
         match source {
-            MicSource::Core => Ok(Self::mic()),
+            MicSource::Core => Self::mic(),
             MicSource::Cpal {
                 format,
                 sample_rate,
@@ -79,14 +79,14 @@ impl LiveAudio {
 
     /// Open the default input device (the headset microphones through
     /// AAudio; needs `RECORD_AUDIO` granted) and start analysis.
-    pub fn mic() -> Self {
-        let system = AudioSystem::new();
+    pub fn mic() -> Result<Self> {
+        let system = AudioSystem::new().context("audio analysis thread")?;
         info!(
             "audio: capture at {} Hz, {:?}",
             system.sample_rate,
             system.indicator()
         );
-        Self::wrap(system, None)
+        Ok(Self::wrap(system, None))
     }
 
     /// Analysis over samples the caller produces (the file playback tap):
@@ -96,7 +96,7 @@ impl LiveAudio {
         ring: Arc<RingBuffer>,
         sample_rate: u32,
         callback_count: Arc<AtomicU64>,
-    ) -> Self {
+    ) -> Result<Self> {
         let system = AudioSystem::from_ring(
             ring,
             sample_rate,
@@ -104,9 +104,10 @@ impl LiveAudio {
             BandScale::default(),
             Arc::new(Mutex::new(StructureConfig::default())),
             Arc::new(Mutex::new(TempoControl::default())),
-        );
+        )
+        .context("audio analysis thread")?;
         info!("audio: analysis over an external ring at {sample_rate} Hz");
-        Self::wrap(system, None)
+        Ok(Self::wrap(system, None))
     }
 
     /// The microphones through an XR-owned cpal input stream with an
@@ -158,7 +159,8 @@ impl LiveAudio {
             BandScale::default(),
             Arc::new(Mutex::new(StructureConfig::default())),
             Arc::new(Mutex::new(TempoControl::default())),
-        );
+        )
+        .context("audio analysis thread")?;
         Ok(Self::wrap(system, Some(stream)))
     }
 
@@ -187,7 +189,8 @@ impl LiveAudio {
             BandScale::default(),
             Arc::new(Mutex::new(StructureConfig::default())),
             Arc::new(Mutex::new(TempoControl::default())),
-        );
+        )
+        .context("audio analysis thread")?;
         let mut live = Self::wrap(system, None);
         live._aaudio = Some(stream);
         Ok(live)

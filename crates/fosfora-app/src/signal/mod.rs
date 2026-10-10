@@ -87,7 +87,8 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
     let device = args.device.clone().or(settings.audio_device);
     let tuning = Arc::new(Mutex::new(settings.structure_tuning));
     let tempo = Arc::new(Mutex::new(TempoControl::new(settings.tempo)));
-    let audio = AudioSystem::new_with_device(device.as_deref(), settings.band_scale, tuning, tempo);
+    let audio =
+        AudioSystem::new_with_device(device.as_deref(), settings.band_scale, tuning, tempo)?;
     audio.set_input_trim_db(settings.input_trim_db);
     if !audio.active {
         return Err(anyhow!(

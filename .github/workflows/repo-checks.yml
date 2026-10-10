@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # check_changelog.py reads each release tag's own CHANGELOG to confirm shipped
           # headers are intact; a shallow clone has no tags and would skip that check.

@@ -59,8 +59,6 @@ crossbeam-channel = "0.5"
 bytemuck = { version = "1", features = ["derive"] }
 # Block on async (wgpu init)
 pollster = "0.4"
-# System theme detection
-dark-light = { version = "2", optional = true }
 # MIDI input
 midir = { version = "0.11", optional = true }
 # OSC input/output
@@ -83,7 +81,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # WebP animation decoding (image crate only decodes first frame)
 image-webp = "0.2"
 # GIF decoding (animated GIF frame extraction)
-gif = "0.13"
+gif = "0.14"
 # Native file dialogs
 rfd = { version = "0.15", optional = true }
 # Linear algebra (camera, projection)
@@ -109,7 +107,7 @@ sha2 = { version = "0.10", optional = true }
 # Archive extraction for ONNX Runtime download (tgz on Linux/macOS, zip on Windows)
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
-zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
 rustc-hash = "2.1.1"
 fontdue = "0.9"
 wgpu-profiler = { version = "0.25", optional = true }
@@ -199,7 +197,6 @@ desktop = [
     "dep:egui_code_editor",
     "dep:notify",
     "dep:notify-debouncer-mini",
-    "dep:dark-light",
     "dep:midir",
     "dep:ctrlc",
     "dep:tungstenite",

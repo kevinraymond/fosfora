@@ -33,7 +33,13 @@ pub fn current_image_path(path: &str) -> String {
         return path.to_string();
     };
     match RENAMED_IMAGES.iter().find(|(old, _)| *old == name) {
-        Some((_, new)) => p.with_file_name(new).to_string_lossy().into_owned(),
+        // Swap the name as a string suffix rather than through `Path::with_file_name`,
+        // which would rejoin with the host separator and hand a Windows user a
+        // `/a/images\raster_fosfora.png` for a preset saved with forward slashes.
+        Some((_, new)) => match path.strip_suffix(name) {
+            Some(dir) => format!("{dir}{new}"),
+            None => p.with_file_name(new).to_string_lossy().into_owned(),
+        },
         None => path.to_string(),
     }
 }
@@ -138,7 +144,7 @@ impl ParticleSourceLoader {
     }
 
     /// Start loading an image file in the background.
-    pub fn load_image(&mut self, path: PathBuf, request: SourceRequest) {
+    pub fn load_image(&mut self, path: PathBuf, request: SourceRequest) -> std::io::Result<()> {
         self.generation += 1;
         let load_gen = self.generation;
         self.request = request;
@@ -151,19 +157,16 @@ impl ParticleSourceLoader {
         let (tx, rx) = bounded(1);
         self.result_rx = rx;
 
-        thread::Builder::new()
-            .name("particle-source-loader".into())
-            .spawn(move || {
-                let result = load_image_sync(&path);
-                let _ = tx.send((load_gen, result));
-            })
-            .expect("failed to spawn particle source loader thread");
+        self.spawn("particle-source-loader", move || {
+            let result = load_image_sync(&path);
+            let _ = tx.send((load_gen, result));
+        })
     }
 
     /// Start loading a video file in the background.
     #[cfg(feature = "video")]
     #[allow(dead_code)]
-    pub fn load_video(&mut self, path: PathBuf, request: SourceRequest) {
+    pub fn load_video(&mut self, path: PathBuf, request: SourceRequest) -> std::io::Result<()> {
         self.generation += 1;
         let load_gen = self.generation;
         self.request = request;
@@ -176,19 +179,16 @@ impl ParticleSourceLoader {
         let (tx, rx) = bounded(1);
         self.result_rx = rx;
 
-        thread::Builder::new()
-            .name("particle-source-loader".into())
-            .spawn(move || {
-                let result = load_video_sync(&path);
-                let _ = tx.send((load_gen, result));
-            })
-            .expect("failed to spawn particle source loader thread");
+        self.spawn("particle-source-loader", move || {
+            let result = load_video_sync(&path);
+            let _ = tx.send((load_gen, result));
+        })
     }
 
     /// Open a file dialog for images on a background thread, then decode.
     /// The dialog + decode both run off the main thread to avoid freezing.
     #[cfg(feature = "desktop")]
-    pub fn open_image_dialog(&mut self, request: SourceRequest) {
+    pub fn open_image_dialog(&mut self, request: SourceRequest) -> std::io::Result<()> {
         self.generation += 1;
         let load_gen = self.generation;
         self.request = request;
@@ -198,24 +198,21 @@ impl ParticleSourceLoader {
         let (tx, rx) = bounded(1);
         self.result_rx = rx;
 
-        thread::Builder::new()
-            .name("particle-source-dialog".into())
-            .spawn(move || {
-                let dialog = rfd::FileDialog::new()
-                    .set_title("Load Image for Particle Source")
-                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"]);
-                if let Some(path) = dialog.pick_file() {
-                    let result = load_image_sync(&path);
-                    let _ = tx.send((load_gen, result));
-                }
-                // If dialog cancelled, tx drops → Disconnected on rx → loading resets
-            })
-            .expect("failed to spawn particle source dialog thread");
+        self.spawn("particle-source-dialog", move || {
+            let dialog = rfd::FileDialog::new()
+                .set_title("Load Image for Particle Source")
+                .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"]);
+            if let Some(path) = dialog.pick_file() {
+                let result = load_image_sync(&path);
+                let _ = tx.send((load_gen, result));
+            }
+            // If dialog cancelled, tx drops → Disconnected on rx → loading resets
+        })
     }
 
     /// Open a file dialog for video on a background thread, then decode.
     #[cfg(feature = "video")]
-    pub fn open_video_dialog(&mut self, request: SourceRequest) {
+    pub fn open_video_dialog(&mut self, request: SourceRequest) -> std::io::Result<()> {
         self.generation += 1;
         let load_gen = self.generation;
         self.request = request;
@@ -225,20 +222,16 @@ impl ParticleSourceLoader {
         let (tx, rx) = bounded(1);
         self.result_rx = rx;
 
-        thread::Builder::new()
-            .name("particle-source-dialog".into())
-            .spawn(move || {
-                let mut dialog = rfd::FileDialog::new().set_title("Load Video for Particle Source");
-                if crate::media::video::ffmpeg_available() {
-                    dialog =
-                        dialog.add_filter("Video", &["mp4", "mov", "avi", "mkv", "webm", "m4v"]);
-                }
-                if let Some(path) = dialog.pick_file() {
-                    let result = load_video_sync(&path);
-                    let _ = tx.send((load_gen, result));
-                }
-            })
-            .expect("failed to spawn particle source dialog thread");
+        self.spawn("particle-source-dialog", move || {
+            let mut dialog = rfd::FileDialog::new().set_title("Load Video for Particle Source");
+            if crate::media::video::ffmpeg_available() {
+                dialog = dialog.add_filter("Video", &["mp4", "mov", "avi", "mkv", "webm", "m4v"]);
+            }
+            if let Some(path) = dialog.pick_file() {
+                let result = load_video_sync(&path);
+                let _ = tx.send((load_gen, result));
+            }
+        })
     }
 
     /// Open a file dialog for a 3D model on a background thread (#1993).
@@ -246,7 +239,7 @@ impl ParticleSourceLoader {
     /// Sends back the chosen path only — see [`ParticleSourceResult::Model`] for
     /// why the raster cannot happen here.
     #[cfg(feature = "desktop")]
-    pub fn open_model_dialog(&mut self, request: SourceRequest) {
+    pub fn open_model_dialog(&mut self, request: SourceRequest) -> std::io::Result<()> {
         self.generation += 1;
         let load_gen = self.generation;
         self.request = request;
@@ -256,23 +249,34 @@ impl ParticleSourceLoader {
         let (tx, rx) = bounded(1);
         self.result_rx = rx;
 
-        thread::Builder::new()
-            .name("particle-source-dialog".into())
-            .spawn(move || {
-                let dialog = rfd::FileDialog::new()
-                    .set_title("Load 3D Model for Particle Source")
-                    .add_filter("3D model", super::model_source::MODEL_EXTENSIONS);
-                if let Some(path) = dialog.pick_file() {
-                    let _ = tx.send((
-                        load_gen,
-                        ParticleSourceResult::Model {
-                            path: path.to_string_lossy().to_string(),
-                        },
-                    ));
-                }
-                // If dialog cancelled, tx drops → Disconnected on rx → loading resets
-            })
-            .expect("failed to spawn particle source dialog thread");
+        self.spawn("particle-source-dialog", move || {
+            let dialog = rfd::FileDialog::new()
+                .set_title("Load 3D Model for Particle Source")
+                .add_filter("3D model", super::model_source::MODEL_EXTENSIONS);
+            if let Some(path) = dialog.pick_file() {
+                let _ = tx.send((
+                    load_gen,
+                    ParticleSourceResult::Model {
+                        path: path.to_string_lossy().to_string(),
+                    },
+                ));
+            }
+            // If dialog cancelled, tx drops → Disconnected on rx → loading resets
+        })
+    }
+
+    /// Run `job` on a background thread named `name`. If the thread cannot be
+    /// spawned, the request this call just started is abandoned, so `loading`
+    /// is cleared here and the caller only has to report the error.
+    fn spawn(&mut self, name: &str, job: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+        match thread::Builder::new().name(name.into()).spawn(job) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                self.loading = false;
+                self.loading_name.clear();
+                Err(e)
+            }
+        }
     }
 
     /// Check for completed results, with the context the load was requested in.
