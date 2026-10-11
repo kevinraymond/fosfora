@@ -620,7 +620,16 @@ mod tests {
             .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
             .collect();
         std::thread::sleep(Duration::from_millis(300));
-        let resp = http_get(port, "/health");
+        // The refusal is written and the socket closed before any request is
+        // read, so the client reads it without sending one: a request written
+        // after the close is a broken pipe on macOS.
+        let mut refused = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        refused
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut buf = [0u8; 256];
+        let n = refused.read(&mut buf).unwrap_or(0);
+        let resp = String::from_utf8_lossy(&buf[..n]);
         assert!(resp.starts_with("HTTP/1.1 503"), "{resp}");
 
         // Closing them frees the slots.
