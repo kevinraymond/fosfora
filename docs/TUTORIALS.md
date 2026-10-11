@@ -603,7 +603,7 @@ Media layers support:
   - Play/pause, loop toggle
   - Speed control (0.1x–4.0x)
   - Direction: forward, reverse, ping-pong
-- Video playback with seek slider and time display (max 60s pre-decoded)
+- Video playback with seek slider and time display (clips up to 60 s are pre-decoded for instant scrubbing; longer ones decode as they play)
 
 **Tip:** Loading an effect onto a media layer converts it back to an effect layer.
 

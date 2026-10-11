@@ -5,6 +5,9 @@
 
 ## Unreleased
 
+### Added
+- **Videos longer than a minute play as layers.** They used to be refused with "Video too long for pre-decode". A long clip now decodes as it plays on its own thread, with seek and loop, and shows its first frame as soon as it opens; clips up to a minute still pre-decode for instant scrubbing. Particle video sources keep the one-minute limit.
+
 ### Fixed
 - **Loading a preset with a particle video source, or picking an obstacle video, froze the app until the whole clip was decoded.** Those decodes now run on their own thread like media layers do, the particle panel shows how far each one has got with a Cancel button, several layers can decode at once, and a video a preset restores keeps its saved speed and loop settings.
 - **A preset with parameter bindings showed as edited the moment it loaded.** Every binding write counted as a user edit, so the `*` and the Reset/Update bar never went away. Worse, for a user effect the same path armed the `.pfx` autosave, so once a bound source went quiet the modulated values were written into the effect file as its new defaults. Binding modulation no longer counts as an edit; your own slider changes still do.

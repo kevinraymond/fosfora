@@ -31,6 +31,9 @@ pub enum MediaSource {
     /// Live webcam feed — frames arrive from capture thread, not stored here.
     #[cfg(feature = "webcam")]
     Live { width: u32, height: u32 },
+    /// A video too long to pre-decode, decoded as it plays (#3094).
+    #[cfg(feature = "video")]
+    Streaming(super::video_stream::VideoStream),
 }
 
 impl MediaSource {
@@ -40,17 +43,25 @@ impl MediaSource {
             MediaSource::Animated { frames, .. } => frames.len(),
             #[cfg(feature = "webcam")]
             MediaSource::Live { .. } => 1,
+            #[cfg(feature = "video")]
+            MediaSource::Streaming(stream) => stream.frame_count(),
         }
     }
 
     pub fn is_animated(&self) -> bool {
+        #[cfg(feature = "video")]
+        if let MediaSource::Streaming(_) = self {
+            return true;
+        }
         matches!(self, MediaSource::Animated { .. })
     }
 
     pub fn is_video(&self) -> bool {
         #[cfg(feature = "video")]
-        if let MediaSource::Animated { from_video, .. } = self {
-            return *from_video;
+        match self {
+            MediaSource::Animated { from_video, .. } => return *from_video,
+            MediaSource::Streaming(_) => return true,
+            _ => {}
         }
         false
     }
@@ -72,6 +83,8 @@ impl MediaSource {
             }
             #[cfg(feature = "webcam")]
             MediaSource::Live { width, height } => (*width, *height),
+            #[cfg(feature = "video")]
+            MediaSource::Streaming(stream) => (stream.meta.width, stream.meta.height),
         }
     }
 }
@@ -107,10 +120,41 @@ pub fn load_media_with(path: &Path, progress: &MediaProgress) -> Result<MediaSou
     }
 }
 
-/// Load a video file by pre-decoding all frames via ffmpeg.
+/// Load a video file: a clip up to [`MAX_PREDECODE_SECS`] is pre-decoded
+/// for instant scrubbing, a longer one streams as it plays (#3094).
 #[cfg(feature = "video")]
 fn load_video(path: &Path, progress: &MediaProgress) -> Result<MediaSource, String> {
-    let (frames, delays_ms) = super::video::decode_video(path, progress)?;
+    load_video_with_cap(path, progress, super::video::MAX_PREDECODE_SECS)
+}
+
+/// [`load_video`] with the pre-decode limit as a parameter.
+#[cfg(feature = "video")]
+fn load_video_with_cap(
+    path: &Path,
+    progress: &MediaProgress,
+    max_predecode_secs: f64,
+) -> Result<MediaSource, String> {
+    use super::video::{decode_all_frames, ffmpeg_available, probe_video};
+
+    if !ffmpeg_available() {
+        return Err("ffmpeg/ffprobe not found on PATH".to_string());
+    }
+    let meta = probe_video(path)?;
+    log::info!(
+        "Video probe: {}x{}, {:.2} fps, {:.1}s",
+        meta.width,
+        meta.height,
+        meta.fps,
+        meta.duration_secs,
+    );
+    if meta.duration_secs > max_predecode_secs {
+        log::info!(
+            "Streaming the video rather than pre-decoding {:.0} s of frames",
+            meta.duration_secs
+        );
+        return super::video_stream::VideoStream::open(path, meta).map(MediaSource::Streaming);
+    }
+    let (frames, delays_ms) = decode_all_frames(path, &meta, progress)?;
     Ok(MediaSource::Animated {
         frames,
         delays_ms,
@@ -370,6 +414,27 @@ mod tests {
         assert_eq!(done as usize, source.frame_count());
         assert!((19..=21).contains(&total), "probe expected {total} frames");
         assert!(done >= total - 1, "{done} of {total}");
+    }
+
+    // Past the pre-decode limit the layer streams instead of being refused.
+    #[test]
+    fn a_long_video_streams_instead_of_being_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(path) = clip(dir.path()) else {
+            eprintln!("ffmpeg not found; skipped");
+            return;
+        };
+        let progress = MediaProgress::default();
+        let source = load_video_with_cap(&path, &progress, 0.5).expect("streams");
+        assert!(matches!(source, MediaSource::Streaming(_)));
+        assert!(source.is_video() && source.is_animated());
+        assert_eq!(source.frame_count(), 20);
+        assert_eq!(source.dimensions(), (64, 36));
+        assert_eq!(
+            progress.done.load(Ordering::Relaxed),
+            0,
+            "nothing pre-decoded"
+        );
     }
 
     // Cancel stops the decode rather than finishing it and throwing it away.

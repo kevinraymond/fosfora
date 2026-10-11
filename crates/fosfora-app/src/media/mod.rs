@@ -4,6 +4,8 @@ pub mod stream;
 pub mod types;
 #[cfg(feature = "video")]
 pub mod video;
+#[cfg(feature = "video")]
+pub mod video_stream;
 #[cfg(feature = "webcam")]
 pub mod webcam;
 #[cfg(feature = "webcam")]
@@ -140,6 +142,9 @@ pub struct MediaLayer {
     pub media_width: u32,
     pub media_height: u32,
     needs_upload: bool,
+    /// The streamed frame waiting for [`Self::upload_frame`] (#3094).
+    #[cfg(feature = "video")]
+    stream_frame: Option<crate::media::types::DecodedFrame>,
     // PingPong direction for GIF
     pingpong_forward: bool,
     // Live webcam frame data (set externally by capture thread)
@@ -197,6 +202,8 @@ impl MediaLayer {
             MediaSource::Animated { delays_ms, .. } => {
                 delays_ms.iter().map(|&d| d as f64).sum::<f64>()
             }
+            #[cfg(feature = "video")]
+            MediaSource::Streaming(stream) => stream.meta.duration_secs * 1000.0,
             MediaSource::Static(_) => 0.0,
             #[cfg(feature = "webcam")]
             MediaSource::Live { .. } => 0.0,
@@ -218,12 +225,22 @@ impl MediaLayer {
             ..Default::default()
         });
 
-        // Upload first frame (black for live sources)
-        #[cfg(feature = "webcam")]
+        // Upload first frame (black for live sources, and for a stream whose
+        // first frame has not arrived)
+        #[cfg(any(feature = "webcam", feature = "video"))]
         let black_placeholder: Vec<u8>;
         let first_frame_data: &[u8] = match &source {
             MediaSource::Static(f) => &f.data,
             MediaSource::Animated { frames, .. } => &frames[0].data,
+            #[cfg(feature = "video")]
+            MediaSource::Streaming(stream) => match stream.peek() {
+                Some(f) => &f.data,
+                None => {
+                    black_placeholder =
+                        vec![0u8; (media_width as usize) * (media_height as usize) * 4];
+                    &black_placeholder
+                }
+            },
             #[cfg(feature = "webcam")]
             MediaSource::Live { width, height } => {
                 black_placeholder = vec![0u8; (*width as usize) * (*height as usize) * 4];
@@ -382,6 +399,8 @@ impl MediaLayer {
             media_width,
             media_height,
             needs_upload: false,
+            #[cfg(feature = "video")]
+            stream_frame: None,
             pingpong_forward: true,
             #[cfg(feature = "webcam")]
             live_frame_data: None,
@@ -415,6 +434,30 @@ impl MediaLayer {
 
     /// Advance media playback by dt seconds. Sets needs_upload if frame changed.
     pub fn advance(&mut self, dt_secs: f32) {
+        #[cfg(feature = "video")]
+        if let MediaSource::Streaming(stream) = &mut self.source {
+            // The clock lives here: frames since the last seek, at the clip's
+            // rate. The thread decodes ahead and this pops what is due; when
+            // it has fallen behind the last frame stays up (#3094).
+            stream.set_looping(self.transport.looping);
+            if self.transport.playing {
+                self.frame_elapsed_ms += dt_secs as f64 * 1000.0 * self.transport.speed as f64;
+            }
+            let clock_seq = (self.frame_elapsed_ms / 1000.0 * stream.meta.fps).floor() as u64;
+            if let Some(f) = stream.frame_due(clock_seq) {
+                self.current_frame = f.index as usize;
+                self.stream_frame = Some(f.frame);
+                self.needs_upload = true;
+            }
+            if self.transport.playing
+                && !self.transport.looping
+                && self.current_frame + 1 >= stream.frame_count()
+            {
+                self.transport.playing = false;
+            }
+            return;
+        }
+
         if !self.transport.playing {
             return;
         }
@@ -422,6 +465,8 @@ impl MediaLayer {
         let delays_ms = match &self.source {
             MediaSource::Animated { delays_ms, .. } => delays_ms,
             MediaSource::Static(_) => return,
+            #[cfg(feature = "video")]
+            MediaSource::Streaming(_) => return, // handled above
             #[cfg(feature = "webcam")]
             MediaSource::Live { .. } => return, // live frames set externally
         };
@@ -496,10 +541,20 @@ impl MediaLayer {
         // For live sources, use the externally-set frame data
         #[cfg(feature = "webcam")]
         let live_data;
+        #[cfg(feature = "video")]
+        let streamed;
         let frame_data: &[u8] = match &self.source {
             MediaSource::Static(f) => &f.data,
             MediaSource::Animated { frames, .. } => {
                 &frames[self.current_frame.min(frames.len() - 1)].data
+            }
+            #[cfg(feature = "video")]
+            MediaSource::Streaming(_) => {
+                streamed = self.stream_frame.take();
+                match &streamed {
+                    Some(f) => &f.data,
+                    None => return,
+                }
             }
             #[cfg(feature = "webcam")]
             MediaSource::Live { .. } => {
@@ -653,6 +708,12 @@ impl MediaLayer {
 
     /// Seek to a specific frame index. Instant random access (pre-decoded).
     pub fn seek_to_frame(&mut self, frame: usize) {
+        #[cfg(feature = "video")]
+        if let MediaSource::Streaming(stream) = &self.source {
+            let secs = frame as f64 / stream.meta.fps;
+            self.seek_to_secs(secs);
+            return;
+        }
         let num_frames = self.source.frame_count();
         if num_frames == 0 {
             return;
@@ -667,6 +728,15 @@ impl MediaLayer {
 
     /// Seek to a time position in seconds. Converts to frame index.
     pub fn seek_to_secs(&mut self, secs: f64) {
+        #[cfg(feature = "video")]
+        if let MediaSource::Streaming(stream) = &mut self.source {
+            let secs = secs.clamp(0.0, stream.meta.duration_secs.max(0.0));
+            stream.seek(secs);
+            self.frame_elapsed_ms = 0.0;
+            self.current_frame = (secs * stream.meta.fps).floor() as usize;
+            self.stream_frame = None;
+            return;
+        }
         if let MediaSource::Animated { delays_ms, .. } = &self.source {
             // Walk delays to find frame at this time offset
             let target_ms = secs * 1000.0;
@@ -685,6 +755,10 @@ impl MediaLayer {
 
     /// Current playback position in seconds (computed from current_frame).
     pub fn position_secs(&self) -> f64 {
+        #[cfg(feature = "video")]
+        if let MediaSource::Streaming(stream) = &self.source {
+            return self.current_frame as f64 / stream.meta.fps;
+        }
         if let MediaSource::Animated { delays_ms, .. } = &self.source {
             let ms: f64 = delays_ms
                 .iter()
