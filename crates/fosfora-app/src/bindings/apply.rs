@@ -262,24 +262,24 @@ pub(crate) fn apply_param_binding(
     let Some(layer) = layer_stack.layers.get_mut(layer_idx) else {
         return;
     };
-    let Some(def) = layer
-        .param_store
-        .defs
-        .iter()
-        .find(|d| d.name() == param_name)
-        .cloned()
-    else {
+    modulate_param(&mut layer.param_store, param_name, value);
+}
+
+/// Write a binding's normalized output into a param store. Modulation is not a
+/// user edit: it leaves `ParamStore::changed` alone, so a bound preset does not
+/// read as dirty every frame and a user effect's `.pfx` defaults are never
+/// rewritten with modulated values (#3174). Same rule as cue playback.
+pub(crate) fn modulate_param(store: &mut crate::params::ParamStore, param_name: &str, value: f32) {
+    let Some(def) = store.defs.iter().find(|d| d.name() == param_name).cloned() else {
         return;
     };
     match def {
         crate::params::ParamDef::Float { min, max, .. } => {
             let val = min + (max - min) * value.clamp(0.0, 1.0);
-            layer.param_store.set(param_name, ParamValue::Float(val));
+            store.set_modulated(param_name, ParamValue::Float(val));
         }
         crate::params::ParamDef::Bool { .. } => {
-            layer
-                .param_store
-                .set(param_name, ParamValue::Bool(value > 0.5));
+            store.set_modulated(param_name, ParamValue::Bool(value > 0.5));
         }
         _ => {}
     }
@@ -309,5 +309,57 @@ pub(crate) fn upgrade_legacy_targets(
                 };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::params::{ParamDef, ParamStore};
+
+    fn store() -> ParamStore {
+        let mut s = ParamStore::new();
+        s.load_from_defs(&[
+            ParamDef::Float {
+                name: "speed".into(),
+                default: 0.5,
+                min: 0.0,
+                max: 2.0,
+            },
+            ParamDef::Bool {
+                name: "active".into(),
+                default: false,
+            },
+        ]);
+        s.changed = false;
+        s
+    }
+
+    #[test]
+    fn modulation_writes_the_value_but_is_not_a_user_edit() {
+        let mut s = store();
+        modulate_param(&mut s, "speed", 0.25);
+        modulate_param(&mut s, "active", 1.0);
+        assert!(matches!(s.get("speed"), Some(ParamValue::Float(v)) if (*v - 0.5).abs() < 1e-6));
+        assert!(matches!(s.get("active"), Some(ParamValue::Bool(true))));
+        // A binding runs every frame; if this were a user edit the preset
+        // would read dirty forever and the .pfx autosave would fire (#3174).
+        assert!(!s.changed, "binding modulation must not set `changed`");
+    }
+
+    #[test]
+    fn modulation_keeps_a_pending_user_edit_pending() {
+        let mut s = store();
+        s.set("speed", ParamValue::Float(1.0));
+        modulate_param(&mut s, "speed", 0.0);
+        assert!(s.changed, "a real edit earlier in the frame still counts");
+    }
+
+    #[test]
+    fn modulation_ignores_unknown_and_unsupported_params() {
+        let mut s = store();
+        modulate_param(&mut s, "nope", 0.5);
+        assert!(s.get("nope").is_none());
+        assert!(!s.changed);
     }
 }

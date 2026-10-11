@@ -3,6 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- **A preset with parameter bindings showed as edited the moment it loaded.** Every binding write counted as a user edit, so the `*` and the Reset/Update bar never went away. Worse, for a user effect the same path armed the `.pfx` autosave, so once a bound source went quiet the modulated values were written into the effect file as its new defaults. Binding modulation no longer counts as an edit; your own slider changes still do.
+
 ## v2.4.0 — 2026-10-11
 
 Audio analysis no longer depends on the input sample rate, the beat grid reports whether it can be trusted, input trim and a level meter join Setup, eight new trama nodes, and release downloads ship with checksums and provenance.

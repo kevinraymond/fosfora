@@ -73,6 +73,18 @@ impl ParamStore {
         self.changed = true;
     }
 
+    /// Store a value written by modulation (a binding, cue playback), which is
+    /// not a user edit: `changed` is left alone, so the preset does not read as
+    /// dirty and the user-effect `.pfx` autosave does not arm (#3174). Same
+    /// non-finite guard as `set`.
+    pub fn set_modulated(&mut self, name: &str, value: ParamValue) {
+        if !value.is_finite() {
+            log::warn!("Ignoring non-finite modulated value for param '{name}': {value:?}");
+            return;
+        }
+        self.values.insert(name.to_string(), value);
+    }
+
     pub fn get(&self, name: &str) -> Option<&ParamValue> {
         self.values.get(name)
     }
