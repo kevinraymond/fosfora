@@ -188,39 +188,19 @@ pub(crate) fn build_particle_system(
             }
         }
 
-        // If a video source is specified, set up video playback
+        // A video source is decoded later, off the main thread: the app picks
+        // `pending_video` up right after this build and the frames arrive
+        // through the particle source drain (#3159).
         #[cfg(feature = "video")]
         if !particles.emitter.video.is_empty() && particles.emitter.video != "webcam" {
             let video_path = assets_dir().join("videos").join(&particles.emitter.video);
             if video_path.exists() {
-                if crate::media::video::ffmpeg_available() {
-                    match crate::media::video::probe_video(&video_path) {
-                        Ok(meta) => {
-                            match crate::media::video::decode_all_frames(
-                                &video_path,
-                                &meta,
-                                &Default::default(),
-                            ) {
-                                Ok((frames, delays_ms)) => {
-                                    let path_str = video_path.to_string_lossy().to_string();
-                                    ps.set_video_source(queue, frames, delays_ms, path_str);
-                                    log::info!(
-                                        "Particle video source: '{}'",
-                                        particles.emitter.video
-                                    );
-                                }
-                                Err(e) => log::warn!(
-                                    "Failed to decode particle video '{}': {e}",
-                                    particles.emitter.video
-                                ),
-                            }
-                        }
-                        Err(e) => log::warn!(
-                            "Failed to probe particle video '{}': {e}",
-                            particles.emitter.video
-                        ),
-                    }
-                }
+                ps.pending_video = Some(video_path.to_string_lossy().into_owned());
+            } else {
+                log::warn!(
+                    "Particle video '{}' not found under assets/videos",
+                    particles.emitter.video
+                );
             }
         }
     }

@@ -2019,7 +2019,7 @@ impl App {
         // Build the particle system first (grid-dims prep + quality scaling in
         // one shared helper), because the splat kick below wants to inspect it
         // before it moves into the executor.
-        let particle_system = {
+        let mut particle_system = {
             // Built inline rather than via layer_build_ctx(): that borrows all
             // of self, and prepare_particles needs effect_loader mutably.
             let ctx = crate::gpu::layer_builder::LayerBuildCtx {
@@ -2038,6 +2038,25 @@ impl App {
             };
             crate::gpu::layer_builder::prepare_particles(&ctx, &mut self.effect_loader, &effect)
         };
+
+        // A video the effect names for its emitter decodes off the main thread
+        // (#3159); the frames land on this layer through the particle source
+        // drain in main.rs.
+        if let Some(path) = particle_system
+            .as_mut()
+            .and_then(|ps| ps.pending_video.take())
+        {
+            let request = crate::gpu::particle::SourceRequest {
+                layer_idx,
+                ..Default::default()
+            };
+            if let Err(e) = self
+                .particle_source_loader
+                .load_video(std::path::PathBuf::from(&path), request)
+            {
+                log::warn!("Could not start decoding particle video '{path}': {e}");
+            }
+        }
 
         // Splat scene load (#1800): kick off the background decode now that
         // the final (quality-scaled) particle budget is known. The effect
@@ -2303,6 +2322,7 @@ impl App {
         for load in self.media_loads.drain(..) {
             load.progress.cancel.store(true, Ordering::Relaxed);
         }
+        self.particle_source_loader.cancel_all();
     }
 
     fn add_media_layer_from_source(
@@ -3615,66 +3635,23 @@ impl App {
                 });
             match source_fields.resolve().or(declared) {
                 Some(crate::gpu::particle::SourceSpec::Video(video_path)) => {
-                    #[cfg(feature = "video")]
-                    {
-                        let path = std::path::PathBuf::from(&video_path);
-                        if path.exists() && crate::media::video::ffmpeg_available() {
-                            match crate::media::video::probe_video(&path) {
-                                Ok(meta) => {
-                                    match crate::media::video::decode_all_frames(
-                                        &path,
-                                        &meta,
-                                        &Default::default(),
-                                    ) {
-                                        Ok((frames, delays_ms)) => {
-                                            if let Some(ps) = self
-                                                .layer_stack
-                                                .layers
-                                                .get_mut(i)
-                                                .and_then(|l| l.as_effect_mut())
-                                                .and_then(|e| {
-                                                    e.pass_executor.particle_system.as_mut()
-                                                })
-                                            {
-                                                ps.set_video_source(
-                                                    &self.gpu.queue,
-                                                    frames,
-                                                    delays_ms,
-                                                    video_path.clone(),
-                                                );
-                                                // Restore transport settings
-                                                if let Some(playback) = ps.source.playback_mut() {
-                                                    if let Some(spd) = lp.particle_video_speed {
-                                                        playback.speed = spd;
-                                                    }
-                                                    if let Some(lp_loop) = lp.particle_video_looping
-                                                    {
-                                                        playback.looping = lp_loop;
-                                                    }
-                                                }
-                                                log::info!(
-                                                    "Restored particle video source for layer {i}"
-                                                );
-                                            }
-                                        }
-                                        Err(e) => log::warn!(
-                                            "Failed to decode particle video for layer {i}: {e}"
-                                        ),
-                                    }
-                                }
-                                Err(e) => {
-                                    log::warn!("Failed to probe particle video for layer {i}: {e}");
-                                }
-                            }
+                    let path = std::path::PathBuf::from(&video_path);
+                    if path.exists() {
+                        // Decoded off the main thread; the drain in main.rs puts
+                        // it on layer `i` with these transport settings (#3159).
+                        let request = crate::gpu::particle::SourceRequest {
+                            layer_idx: i,
+                            video_speed: lp.particle_video_speed,
+                            video_looping: lp.particle_video_looping,
+                            ..Default::default()
+                        };
+                        if let Err(e) = self.particle_source_loader.load_video(path, request) {
+                            log::warn!(
+                                "Could not start decoding particle video for layer {i}: {e}"
+                            );
                         }
-                    }
-                    #[cfg(not(feature = "video"))]
-                    {
-                        let _ = video_path;
-                        log::warn!(
-                            "Preset for layer {i} names a particle video source, \
-                             but this build has no video support"
-                        );
+                    } else {
+                        log::warn!("Particle video '{video_path}' not found for layer {i}");
                     }
                 }
                 Some(crate::gpu::particle::SourceSpec::Webcam) => {

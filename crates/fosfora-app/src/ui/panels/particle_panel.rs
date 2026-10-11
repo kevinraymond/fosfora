@@ -47,7 +47,8 @@ pub struct ParticleInfo {
     #[allow(dead_code)]
     pub is_transitioning: bool,
     pub source_loading: bool,
-    pub source_loading_name: String,
+    /// Every source or obstacle decode in flight, for the progress rows.
+    pub source_loads: Vec<crate::gpu::particle::SourceLoading>,
     /// Built-in image names (e.g. "skull", "phoenix") available for quick select.
     pub builtin_images: Vec<String>,
     /// Pose + shading the live model source was sampled at (#1993). Only shown
@@ -432,16 +433,40 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
             });
         }
 
-        // Source loading indicator
-        if info.source_loading {
+        // One row per source or obstacle still decoding: what, how far, and a
+        // way to stop it (#3159). A video decodes every frame before it plays.
+        for l in &info.source_loads {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label(
-                    RichText::new(format!("Loading {}...", info.source_loading_name))
+                    RichText::new(format!("Loading {}", l.name))
                         .size(SMALL_SIZE)
                         .color(tc.text_secondary),
                 );
+                let (fraction, words) = if l.total > 0 {
+                    (
+                        l.done as f32 / l.total as f32,
+                        format!("{} of {} frames", l.done.min(l.total), l.total),
+                    )
+                } else {
+                    (0.0, "reading the file".to_string())
+                };
+                ui.add(
+                    egui::ProgressBar::new(fraction.clamp(0.0, 1.0))
+                        .desired_width(120.0)
+                        .text(RichText::new(words).size(SMALL_SIZE)),
+                );
+                ui.label(
+                    RichText::new(format!("{:.0} s", l.secs))
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
+                if ui.small_button("Cancel").clicked() {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(egui::Id::new("cancel_source_load"), l.index));
+                }
             });
+            ui.ctx().request_repaint();
         }
 
         // Model pose and lighting (#1993, #1996). A model source is a STILL:

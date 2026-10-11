@@ -110,30 +110,7 @@ pub fn load_media_with(path: &Path, progress: &MediaProgress) -> Result<MediaSou
 /// Load a video file by pre-decoding all frames via ffmpeg.
 #[cfg(feature = "video")]
 fn load_video(path: &Path, progress: &MediaProgress) -> Result<MediaSource, String> {
-    use super::video::{MAX_PREDECODE_SECS, decode_all_frames, ffmpeg_available, probe_video};
-
-    if !ffmpeg_available() {
-        return Err("ffmpeg/ffprobe not found on PATH".to_string());
-    }
-
-    let meta = probe_video(path)?;
-    log::info!(
-        "Video probe: {}x{}, {:.2} fps, {:.1}s",
-        meta.width,
-        meta.height,
-        meta.fps,
-        meta.duration_secs,
-    );
-
-    if meta.duration_secs > MAX_PREDECODE_SECS {
-        return Err(format!(
-            "Video too long for pre-decode ({:.0}s > {:.0}s max). \
-             Use a shorter clip or trim with ffmpeg.",
-            meta.duration_secs, MAX_PREDECODE_SECS,
-        ));
-    }
-
-    let (frames, delays_ms) = decode_all_frames(path, &meta, progress)?;
+    let (frames, delays_ms) = super::video::decode_video(path, progress)?;
     Ok(MediaSource::Animated {
         frames,
         delays_ms,

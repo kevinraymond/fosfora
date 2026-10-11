@@ -270,11 +270,19 @@ impl SceneRenderer {
                                 &self.compositor.backdrop.sampler,
                             )),
                         };
-                        crate::gpu::layer_builder::prepare_particles(
+                        let ps = crate::gpu::layer_builder::prepare_particles(
                             &ctx,
                             &mut self.effect_loader,
                             &effect,
-                        )
+                        );
+                        // Headless renders want every frame before the first
+                        // draw, so the emitter video decodes right here (#3159).
+                        #[cfg(feature = "video")]
+                        let ps = ps.map(|mut ps| {
+                            ps.decode_pending_video(&self.queue);
+                            ps
+                        });
+                        ps
                     };
                     if effect
                         .particles

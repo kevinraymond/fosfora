@@ -184,3 +184,33 @@ pub fn decode_all_frames(
 
 /// Maximum video duration (seconds) we'll pre-decode. Beyond this, reject.
 pub const MAX_PREDECODE_SECS: f64 = 60.0;
+
+/// Everything a video source needs, in one call: the ffmpeg check, the probe,
+/// the pre-decode length cap and the decode itself, reporting through
+/// `progress` and stopping early once its `cancel` flag is set. Every video
+/// source (media layer, particle source, obstacle) comes through here so the
+/// cap and the error words are the same everywhere (#3159).
+pub fn decode_video(
+    path: &Path,
+    progress: &super::decoder::MediaProgress,
+) -> Result<(Vec<DecodedFrame>, Vec<u32>), String> {
+    if !ffmpeg_available() {
+        return Err("ffmpeg/ffprobe not found on PATH".to_string());
+    }
+    let meta = probe_video(path)?;
+    log::info!(
+        "Video probe: {}x{}, {:.2} fps, {:.1}s",
+        meta.width,
+        meta.height,
+        meta.fps,
+        meta.duration_secs,
+    );
+    if meta.duration_secs > MAX_PREDECODE_SECS {
+        return Err(format!(
+            "Video too long for pre-decode ({:.0}s > {:.0}s max). \
+             Use a shorter clip or trim with ffmpeg.",
+            meta.duration_secs, MAX_PREDECODE_SECS,
+        ));
+    }
+    decode_all_frames(path, &meta, progress)
+}

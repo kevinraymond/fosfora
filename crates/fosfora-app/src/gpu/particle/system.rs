@@ -394,6 +394,11 @@ pub struct ParticleSystem {
     /// left both set and the panel named the model while showing the picture.
     /// Change it only through [`ParticleSystem::set_source`].
     pub source: ParticleSource,
+    /// A video the effect's `.pfx` names for its emitter, not decoded yet: the
+    /// builder records the path and the app decodes it off the main thread
+    /// into [`ParticleSystem::set_video_source`] (#3159). Headless renders
+    /// take it synchronously through [`ParticleSystem::decode_pending_video`].
+    pub pending_video: Option<String>,
     /// The camera a webcam source is fed by, as the camera list names it;
     /// `None` for the default camera. Read only while the source is a webcam.
     pub webcam_device: Option<String>,
@@ -1582,6 +1587,7 @@ impl ParticleSystem {
             def: def.clone(),
             current_compute_source: compute_source.to_string(),
             source: ParticleSource::None,
+            pending_video: None,
             webcam_device: None,
             source_transition: None,
             sample_def: def.image_sample.clone().unwrap_or(ImageSampleDef {
@@ -2884,6 +2890,19 @@ impl ParticleSystem {
             return true;
         }
         false
+    }
+
+    /// Decode [`Self::pending_video`] on this thread, for headless renders
+    /// that need every frame ready before the first one is drawn.
+    #[cfg(feature = "video")]
+    pub fn decode_pending_video(&mut self, queue: &Queue) {
+        let Some(path) = self.pending_video.take() else {
+            return;
+        };
+        match crate::media::video::decode_video(std::path::Path::new(&path), &Default::default()) {
+            Ok((frames, delays_ms)) => self.set_video_source(queue, frames, delays_ms, path),
+            Err(e) => log::warn!("Failed to decode particle video '{path}': {e}"),
+        }
     }
 
     /// Set a video file as the particle source. Initiates a transition from current aux.
