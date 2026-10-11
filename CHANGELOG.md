@@ -3,7 +3,9 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v2.4.0 — 2026-10-11
+
+Audio analysis no longer depends on the input sample rate, the beat grid reports whether it can be trusted, input trim and a level meter join Setup, eight new trama nodes, and release downloads ship with checksums and provenance.
 
 ### Added
 - **Release downloads come with checksums and signed build provenance.** Each release now includes a `SHA256SUMS` file, and every asset carries a provenance attestation, so you can check that a download is the one CI built from the tagged source (`sha256sum -c SHA256SUMS`, or `gh attestation verify <file> --repo kevinraymond/fosfora`).
