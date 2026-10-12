@@ -783,9 +783,15 @@ pub fn draw_layer_panel(
                                         // (#4055).
                                         let slider = match layer.live_opacity {
                                             Some(live) => {
-                                                crate::ui::widgets::rows::live_marker(
+                                                use crate::ui::widgets::rows;
+                                                // The response spans the value
+                                                // box too; mark the rail only.
+                                                rows::live_marker(
                                                     ui,
-                                                    &slider.rect,
+                                                    &rows::rail_of_valued_slider(
+                                                        ui,
+                                                        &slider.rect,
+                                                    ),
                                                     live,
                                                 );
                                                 slider.on_hover_text(format!(

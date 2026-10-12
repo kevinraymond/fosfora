@@ -239,6 +239,22 @@ pub fn live_t(lo: f64, hi: f64, live: f64, logarithmic: bool) -> f32 {
     t.clamp(0.0, 1.0) as f32
 }
 
+/// The rail of a slider that also shows its value box: egui's response then
+/// covers both, so the marker needs the rail alone. egui allocates the rail
+/// `slider_width` wide and the body text height (at least `interact_size.y`)
+/// tall, at the left, centered on the row.
+pub fn rail_of_valued_slider(ui: &Ui, response_rect: &egui::Rect) -> egui::Rect {
+    let w = ui.spacing().slider_width.min(response_rect.width());
+    let h = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.spacing().interact_size.y)
+        .min(response_rect.height());
+    egui::Rect::from_min_size(
+        egui::pos2(response_rect.left(), response_rect.center().y - h / 2.0),
+        egui::vec2(w, h),
+    )
+}
+
 /// Where a binding has a control this frame: a small triangle under the
 /// slider's rail at `t` in 0..1, so the thumb can stay on the saved value
 /// (#4053, #4055). Shape and the text color, never a hue alone.

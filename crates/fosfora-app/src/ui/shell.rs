@@ -965,7 +965,9 @@ fn blend_controls(ui: &mut egui::Ui, layer: &crate::gpu::layer::LayerInfo, i: us
             );
             let r = match layer.live_opacity {
                 Some(live) => {
-                    crate::ui::widgets::rows::live_marker(ui, &r.rect, live);
+                    use crate::ui::widgets::rows;
+                    // The response spans the value box too; mark the rail only.
+                    rows::live_marker(ui, &rows::rail_of_valued_slider(ui, &r.rect), live);
                     r.on_hover_text(format!(
                         "Binding output {:.0}%. The slider holds your own value, which presets save.",
                         live * 100.0
