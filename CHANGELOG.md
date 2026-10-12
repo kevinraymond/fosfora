@@ -3,7 +3,9 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v2.5.0 — 2026-10-12
+
+Bindings play over the values you set instead of overwriting them, so bound presets stay clean and save what you meant; videos longer than a minute play as layers; particle and obstacle videos load without freezing the app.
 
 ### Added
 - **Videos longer than a minute play as layers.** They used to be refused with "Video too long for pre-decode". A long clip now decodes as it plays on its own thread, with seek and loop, and shows its first frame as soon as it opens; clips up to a minute still pre-decode for instant scrubbing. Particle video sources keep the one-minute limit.
