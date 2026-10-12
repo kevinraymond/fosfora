@@ -56,11 +56,16 @@ pub struct ParamInfo {
     pub name: String,
     #[serde(rename = "type")]
     pub param_type: &'static str,
+    /// The base value the user set, normalized 0..1 for floats.
     pub value: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
+    /// A binding's output this frame, same scale as `value`, when one drives
+    /// the param (#4053). The remote marks it under the slider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -313,39 +318,48 @@ fn build_params(store: &ParamStore) -> Vec<ParamInfo> {
         .defs
         .iter()
         .map(|def| {
-            let value = store.values.get(def.name());
+            // The remote's slider holds the base value; a binding's output is
+            // sent beside it as `live` (#4053).
+            let value = store.get(def.name());
+            let modulated = store.modulated(def.name());
             match def {
                 ParamDef::Float { name, min, max, .. } => {
-                    let v = match value {
-                        Some(ParamValue::Float(f)) => *f as f64,
-                        _ => *min as f64,
-                    };
                     // Normalize to 0-1
                     let range = *max - *min;
-                    let normalized = if range > 0.0 {
-                        (v as f32 - *min) / range
-                    } else {
-                        0.0
+                    let normalized = |v: Option<&ParamValue>| -> f64 {
+                        let v = match v {
+                            Some(ParamValue::Float(f)) => *f,
+                            _ => *min,
+                        };
+                        if range > 0.0 {
+                            f64::from((v - *min) / range)
+                        } else {
+                            0.0
+                        }
                     };
                     ParamInfo {
                         name: name.clone(),
                         param_type: "float",
-                        value: normalized as f64,
+                        value: normalized(value),
                         min: Some(*min as f64),
                         max: Some(*max as f64),
+                        live: modulated.map(|m| normalized(Some(m))),
                     }
                 }
                 ParamDef::Bool { name, .. } => {
-                    let v = match value {
-                        Some(ParamValue::Bool(b)) if *b => 1.0,
-                        _ => 0.0,
+                    let on = |v: Option<&ParamValue>| -> f64 {
+                        match v {
+                            Some(ParamValue::Bool(b)) if *b => 1.0,
+                            _ => 0.0,
+                        }
                     };
                     ParamInfo {
                         name: name.clone(),
                         param_type: "bool",
-                        value: v,
+                        value: on(value),
                         min: None,
                         max: None,
+                        live: modulated.map(|m| on(Some(m))),
                     }
                 }
                 ParamDef::Color { name, .. } => ParamInfo {
@@ -354,6 +368,7 @@ fn build_params(store: &ParamStore) -> Vec<ParamInfo> {
                     value: 0.0,
                     min: None,
                     max: None,
+                    live: None,
                 },
                 ParamDef::Point2D { name, .. } => ParamInfo {
                     name: name.clone(),
@@ -361,6 +376,7 @@ fn build_params(store: &ParamStore) -> Vec<ParamInfo> {
                     value: 0.0,
                     min: None,
                     max: None,
+                    live: None,
                 },
             }
         })

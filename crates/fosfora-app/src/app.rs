@@ -1277,6 +1277,11 @@ impl App {
             &self.midi,
             &self.osc,
         );
+        // Bindings lay this frame's values over the base ones; start from a
+        // clean slate so a binding that is gone or quiet releases its param.
+        for layer in &mut self.layer_stack.layers {
+            layer.param_store.clear_modulation();
+        }
         for out in bind_results {
             self.apply_binding_target(&out.target, out.value, out.rising);
         }

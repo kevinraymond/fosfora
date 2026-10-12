@@ -139,6 +139,7 @@ fn float_row(
     name: &str,
     val: &mut f32,
     range: std::ops::RangeInclusive<f32>,
+    live: Option<f32>,
     badges: impl FnOnce(&mut Ui),
 ) {
     let tc = theme_colors(ui.ctx());
@@ -159,13 +160,45 @@ fn float_row(
                     .color(tc.text_secondary),
             );
             ui.spacing_mut().slider_width = ui.available_width();
-            ui.add(
-                egui::Slider::new(val, range)
+            let slider = ui.add(
+                egui::Slider::new(val, range.clone())
                     .clamping(egui::SliderClamping::Always)
                     .show_value(false),
             );
+            if let Some(live) = live {
+                draw_live_marker(ui, &slider.rect, &range, live);
+                slider.on_hover_text(format!(
+                    "Binding output {}. The slider holds your own value, which presets save.",
+                    fmt_val(live)
+                ));
+            }
         });
     });
+}
+
+/// Where a binding has the control this frame: a small triangle under the
+/// slider's rail at the live value, so the thumb can stay on the base value
+/// the preset saves (#4053). Shape and the text color, never a hue alone.
+fn draw_live_marker(ui: &Ui, rect: &egui::Rect, range: &std::ops::RangeInclusive<f32>, live: f32) {
+    let (lo, hi) = (*range.start(), *range.end());
+    let span = hi - lo;
+    if span <= 0.0 || !span.is_finite() {
+        return;
+    }
+    let t = ((live - lo) / span).clamp(0.0, 1.0);
+    // egui's rail spans the slider's rect shrunk by the handle radius.
+    let r = rect.height() / 2.5;
+    let x = egui::lerp((rect.left() + r)..=(rect.right() - r), t);
+    let base = rect.bottom();
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(x, base - 4.0),
+            egui::pos2(x - 3.5, base),
+            egui::pos2(x + 3.5, base),
+        ],
+        theme_colors(ui.ctx()).text_primary,
+        egui::Stroke::NONE,
+    ));
 }
 
 /// A row following the bass, drawn by the rows' own code: the Bindings
@@ -173,7 +206,7 @@ fn float_row(
 /// anything.
 pub fn draw_example_row(ui: &mut Ui) {
     let mut val = 0.62;
-    float_row(ui, "speed", &mut val, 0.0..=1.0, |ui| {
+    float_row(ui, "speed", &mut val, 0.0..=1.0, Some(0.31), |ui| {
         let _ = ui.add(learn_badge("O"));
         let _ = ui.add(learn_badge("M"));
         let _ = ui.add(bind_button(ui.ctx(), &["audio.band.1"]));
@@ -237,13 +270,19 @@ pub fn draw_param_panel(
         let row_top = ui.cursor().top();
         match def {
             ParamDef::Float { name, min, max, .. } => {
+                // The slider edits the base value; a binding's output this
+                // frame is shown beside it, never written back (#4053).
                 let current = match store.get(name) {
                     Some(ParamValue::Float(v)) => *v,
                     _ => *min,
                 };
+                let live = match store.modulated(name) {
+                    Some(ParamValue::Float(v)) => Some(*v),
+                    _ => None,
+                };
                 let mut val = current;
 
-                float_row(ui, name, &mut val, *min..=*max, |ui| {
+                float_row(ui, name, &mut val, *min..=*max, live, |ui| {
                     osc_panel::draw_osc_badge(ui, osc, name);
                     draw_midi_badge(ui, midi, name);
                     draw_bind_control(ui, binds, name);
@@ -285,6 +324,10 @@ pub fn draw_param_panel(
                     Some(ParamValue::Bool(b)) => *b,
                     _ => false,
                 };
+                let live = match store.modulated(name) {
+                    Some(ParamValue::Bool(b)) => Some(*b),
+                    _ => None,
+                };
                 let mut val = current;
 
                 ui.horizontal(|ui| {
@@ -293,6 +336,18 @@ pub fn draw_param_panel(
                         osc_panel::draw_osc_badge(ui, osc, name);
                         draw_midi_badge(ui, midi, name);
                         draw_bind_control(ui, binds, name);
+                        if let Some(live) = live {
+                            // The binding's state this frame; the box keeps
+                            // the user's own value (#4053).
+                            ui.label(
+                                RichText::new(if live { "live: on" } else { "live: off" })
+                                    .size(SMALL_SIZE)
+                                    .color(tc.text_secondary),
+                            )
+                            .on_hover_text(
+                                "What the binding has this control at. The box holds your own value, which presets save.",
+                            );
+                        }
                     });
                 });
 

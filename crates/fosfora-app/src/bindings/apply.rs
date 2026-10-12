@@ -265,10 +265,11 @@ pub(crate) fn apply_param_binding(
     modulate_param(&mut layer.param_store, param_name, value);
 }
 
-/// Write a binding's normalized output into a param store. Modulation is not a
-/// user edit: it leaves `ParamStore::changed` alone, so a bound preset does not
-/// read as dirty every frame and a user effect's `.pfx` defaults are never
-/// rewritten with modulated values (#3174). Same rule as cue playback.
+/// Lay a binding's normalized output over a param store's base value for this
+/// frame. Modulation is not a user edit: the base value and `ParamStore::changed`
+/// are left alone, so a bound preset does not read as dirty every frame, a user
+/// effect's `.pfx` defaults are never rewritten with modulated values (#3174),
+/// and a preset save or a slider still shows the user's own value (#4053).
 pub(crate) fn modulate_param(store: &mut crate::params::ParamStore, param_name: &str, value: f32) {
     let Some(def) = store.defs.iter().find(|d| d.name() == param_name).cloned() else {
         return;
@@ -336,12 +337,22 @@ mod tests {
     }
 
     #[test]
-    fn modulation_writes_the_value_but_is_not_a_user_edit() {
+    fn modulation_renders_the_scaled_value_but_is_not_a_user_edit() {
         let mut s = store();
-        modulate_param(&mut s, "speed", 0.25);
+        modulate_param(&mut s, "speed", 0.75);
         modulate_param(&mut s, "active", 1.0);
+        // Scaled into the declared range, and what the shader gets.
+        assert!(
+            matches!(s.effective("speed"), Some(ParamValue::Float(v)) if (*v - 1.5).abs() < 1e-6)
+        );
+        assert!((s.pack_to_buffer()[0] - 1.5).abs() < 1e-6);
+        assert!(matches!(
+            s.effective("active"),
+            Some(ParamValue::Bool(true))
+        ));
+        // The base value the preset saves is untouched (#4053).
         assert!(matches!(s.get("speed"), Some(ParamValue::Float(v)) if (*v - 0.5).abs() < 1e-6));
-        assert!(matches!(s.get("active"), Some(ParamValue::Bool(true))));
+        assert!(matches!(s.get("active"), Some(ParamValue::Bool(false))));
         // A binding runs every frame; if this were a user edit the preset
         // would read dirty forever and the .pfx autosave would fire (#3174).
         assert!(!s.changed, "binding modulation must not set `changed`");
@@ -353,6 +364,7 @@ mod tests {
         s.set("speed", ParamValue::Float(1.0));
         modulate_param(&mut s, "speed", 0.0);
         assert!(s.changed, "a real edit earlier in the frame still counts");
+        assert!(matches!(s.get("speed"), Some(ParamValue::Float(v)) if (*v - 1.0).abs() < 1e-6));
     }
 
     #[test]
@@ -360,6 +372,7 @@ mod tests {
         let mut s = store();
         modulate_param(&mut s, "nope", 0.5);
         assert!(s.get("nope").is_none());
+        assert!(s.effective("nope").is_none());
         assert!(!s.changed);
     }
 }

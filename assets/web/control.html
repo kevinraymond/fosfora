@@ -79,6 +79,10 @@ body { display: flex; flex-direction: column; }
 .param-slider::-moz-range-thumb { width: 32px; height: 44px; background: var(--accent); border-radius: 6px; cursor: pointer; border: none; }
 .param-slider::-webkit-slider-runnable-track { height: var(--slider-h); border-radius: 8px; }
 .param-slider::-moz-range-track { height: var(--slider-h); border-radius: 8px; background: var(--surface2); }
+/* Where a binding has the control this frame: a marker under the slider, so the thumb can stay on your own value (shape, not a hue). */
+.param-track { position: relative; }
+.param-live { position: absolute; left: 0; bottom: -2px; width: 0; height: 0; margin-left: -6px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 7px solid var(--text); display: none; pointer-events: none; }
+.param-live.shown { display: block; }
 
 /* Bool toggles — 52px min */
 .param-toggle { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; min-height: var(--btn-min); margin-bottom: 10px; font-size: 14px; }
@@ -473,13 +477,27 @@ body { display: flex; flex-direction: column; }
           show(v);
           throttledSend('param_' + p.name, { type: 'set_param', name: p.name, value: v });
         });
-        row.appendChild(slider);
+        const track = document.createElement('div');
+        track.className = 'param-track';
+        track.appendChild(slider);
+        const liveEl = document.createElement('div');
+        liveEl.className = 'param-live';
+        liveEl.title = 'Where a binding has this control. The slider holds your own value, which presets save.';
+        track.appendChild(liveEl);
+        row.appendChild(track);
         paramsContainer.appendChild(row);
         paramSyncs.push(current => {
           const v = shown(holdKey, current[pi].value);
           const pos = String(Math.round(v * 1000));
           if (slider.value !== pos) slider.value = pos;
           show(v);
+          const live = current[pi].live;
+          const bound = typeof live === 'number';
+          liveEl.classList.toggle('shown', bound);
+          if (bound) {
+            // The thumb is 32px wide, so its center runs from 16px to width-16px.
+            liveEl.style.left = 'calc(16px + (100% - 32px) * ' + Math.max(0, Math.min(1, live)) + ')';
+          }
         });
       } else if (p.type === 'bool') {
         const toggle = document.createElement('div');

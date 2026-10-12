@@ -72,7 +72,7 @@ What the selected layer, or Master, controls.
 
 **Blend** (every layer): blend mode, visibility and opacity.
 
-**Parameters** (effect layers): sliders with **M** (MIDI) and **O** (OSC) learn badges. Color pickers, Point2D controls. Click a badge to enter learn mode (blinking orange), then move the target control to bind. Under them, how many bindings drive the layer and the way into the binding matrix.
+**Parameters** (effect layers): sliders with **M** (MIDI) and **O** (OSC) learn badges. Color pickers, Point2D controls. Click a badge to enter learn mode (blinking orange), then move the target control to bind. A bound slider keeps the value you set; the small triangle under it marks where the binding has it. Under them, how many bindings drive the layer and the way into the binding matrix.
 
 **Media** (media layers): file info, video playback controls (play/pause/seek).
 

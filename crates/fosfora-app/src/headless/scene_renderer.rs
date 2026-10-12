@@ -714,6 +714,9 @@ impl SceneRenderer {
         let outs =
             self.binding_bus
                 .evaluate_offline(Some(&features), &out.frame.mel, &out.frame.dmfcc);
+        for layer in &mut self.layer_stack.layers {
+            layer.param_store.clear_modulation();
+        }
         {
             let mut ctx = crate::bindings::apply::BindingTargetCtx {
                 layer_stack: &mut self.layer_stack,
