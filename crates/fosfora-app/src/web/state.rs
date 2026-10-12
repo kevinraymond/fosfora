@@ -512,6 +512,8 @@ mod tests {
         let info = LayerInfo {
             name: "Layer 1".into(),
             custom_name: None,
+            live_opacity: None,
+            live_enabled: None,
             effect_index: Some(0),
             effect_name: Some("Aurora".into()),
             blend_mode: BlendMode::Add,

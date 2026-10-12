@@ -705,6 +705,8 @@ mod tests {
         LayerInfo {
             name: name.into(),
             custom_name: None,
+            live_opacity: None,
+            live_enabled: None,
             effect_index: Some(0),
             effect_name: Some(name.into()),
             blend_mode: BlendMode::default(),

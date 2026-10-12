@@ -11,6 +11,7 @@
 ### Fixed
 - **Loading a preset with a particle video source, or picking an obstacle video, froze the app until the whole clip was decoded.** Those decodes now run on their own thread like media layers do, the particle panel shows how far each one has got with a Cancel button, several layers can decode at once, and a video a preset restores keeps its saved speed and loop settings.
 - **A preset with parameter bindings showed as edited the moment it loaded, and saving it kept whatever the bindings had written that frame.** Every binding write counted as a user edit, so the `*` never went away, and for a user effect the same path armed the `.pfx` autosave, so once a bound source went quiet the modulated values became the effect's new defaults. A binding now plays over your value instead of replacing it: sliders hold what you set, a marker under the slider (and in the web remote) shows where the binding has it, and presets and `.pfx` files save your value.
+- **Bound layer opacity, blend, visibility, Master post-processing and particle settings saved whatever the binding last wrote.** A binding on any of them now plays over your setting the way parameter bindings do: the slider keeps your value with a marker at the binding's, presets save yours, and removing the binding puts the control back.
 
 ## v2.4.0 — 2026-10-11
 

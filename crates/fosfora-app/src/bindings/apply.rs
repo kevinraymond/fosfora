@@ -9,7 +9,7 @@
 //! arms, that test fails loudly with "marker not found"; retarget it in the
 //! same change.
 
-use crate::effect::format::{PfxEffect, PostProcessDef};
+use crate::effect::format::{PfxEffect, PostProcessModulation};
 use crate::gpu::layer::LayerStack;
 use crate::gpu::uniforms::ShaderUniforms;
 use crate::params::ParamValue;
@@ -21,8 +21,9 @@ pub(crate) struct BindingTargetCtx<'a> {
     /// Loaded effects, for the legacy indexless target's name check.
     pub effects: &'a [PfxEffect],
     pub uniforms: &'a mut ShaderUniforms,
-    /// Master post-processing: preset scope, never a layer's (#3147).
-    pub postprocess: &'a mut PostProcessDef,
+    /// Master post-processing: preset scope, never a layer's (#3147). The
+    /// bus writes this frame's overlay, not the saved def (#4055).
+    pub postprocess: &'a mut PostProcessModulation,
     /// `scene.transport.*` actions land here; the event loop drains them.
     pub pending_triggers: &'a mut Vec<String>,
 }
@@ -60,10 +61,14 @@ pub(crate) fn apply_binding_target(
             }
         }
 
+        // Layer fields are laid over the saved ones for this frame, the way
+        // params are: the slider, the preset and a morph keep the user's
+        // value (#4055).
         BindingTarget::Layer { layer, field } => {
             if let Some(l) = ctx.layer_stack.layers.get_mut(*layer) {
+                let m = &mut l.modulation;
                 match field {
-                    LayerField::Opacity => l.opacity = value.clamp(0.0, 1.0),
+                    LayerField::Opacity => m.opacity = Some(value.clamp(0.0, 1.0)),
                     LayerField::Blend => {
                         use crate::gpu::layer::BlendMode;
                         // Bus outputs are normalized 0..1 (#1792): spread across
@@ -71,10 +76,10 @@ pub(crate) fn apply_binding_target(
                         // (Normal|Add). The displacement modes are deliberately
                         // outside the sweep — see BlendMode::from_normalized.
                         // The raw-integer OSC/WS paths use from_u32 directly.
-                        l.blend_mode = BlendMode::from_normalized(value);
+                        m.blend_mode = Some(BlendMode::from_normalized(value));
                     }
-                    LayerField::Displace => l.displace_amount = value.clamp(0.0, 1.0),
-                    LayerField::Enabled => l.enabled = value > 0.5,
+                    LayerField::Displace => m.displace_amount = Some(value.clamp(0.0, 1.0)),
+                    LayerField::Enabled => m.enabled = Some(value > 0.5),
                 }
             }
         }
@@ -82,7 +87,7 @@ pub(crate) fn apply_binding_target(
         BindingTarget::GlobalMasterOpacity => {
             let clamped = value.clamp(0.0, 1.0);
             for layer in &mut ctx.layer_stack.layers {
-                layer.opacity = clamped;
+                layer.modulation.opacity = Some(clamped);
             }
         }
 
@@ -99,75 +104,61 @@ pub(crate) fn apply_binding_target(
             let pp = &mut *ctx.postprocess;
             match rest.as_str() {
                 "bloom_threshold" => {
-                    pp.bloom_threshold = value * 1.5;
+                    pp.bloom_threshold = Some(value * 1.5);
                 }
                 "bloom_intensity" => {
-                    pp.bloom_intensity = value.clamp(0.0, 1.0);
+                    pp.bloom_intensity = Some(value.clamp(0.0, 1.0));
                 }
                 "vignette" => {
-                    pp.vignette = value.clamp(0.0, 1.0);
+                    pp.vignette = Some(value.clamp(0.0, 1.0));
                 }
                 "ca_intensity" => {
-                    pp.ca_intensity = value.clamp(0.0, 1.0);
+                    pp.ca_intensity = Some(value.clamp(0.0, 1.0));
                 }
                 "grain_intensity" => {
-                    pp.grain_intensity = value.clamp(0.0, 1.0);
+                    pp.grain_intensity = Some(value.clamp(0.0, 1.0));
                 }
                 "grain_rate" => {
                     // Hz, not 0..1 like its neighbors — the bus
                     // delivers normalized, the field is a rate.
-                    pp.grain_rate = value.clamp(0.0, 1.0) * 60.0;
+                    pp.grain_rate = Some(value.clamp(0.0, 1.0) * 60.0);
                 }
                 _ => {}
             }
         }
 
-        // Applies to every layer's particle system.
+        // Applies to every layer's particle system, as this frame's overlay
+        // over the saved def and obstacle settings (#4055).
         BindingTarget::Particle(rest) => {
             let v = value.clamp(0.0, 1.0);
             let rest = rest.as_str();
             for layer in &mut ctx.layer_stack.layers {
                 if let Some(effect) = layer.as_effect_mut() {
                     if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
+                        let m = &mut ps.modulation;
                         match rest {
-                            "emit_rate" => {
-                                let r = v * 10000.0;
-                                ps.emit_rate = r;
-                                ps.def.emit_rate = r;
-                            }
+                            "emit_rate" => m.emit_rate = Some(v * 10000.0),
                             "burst_on_beat" => {
-                                let r = (v * 2000.0).round() as u32;
-                                ps.burst_on_beat = r;
-                                ps.def.burst_on_beat = r;
+                                m.burst_on_beat = Some((v * 2000.0).round() as u32);
                             }
-                            "lifetime" => ps.def.lifetime = 0.5 + v * 29.5,
-                            "speed" => ps.def.initial_speed = v * 2.0,
-                            "size" => {
-                                ps.def.initial_size = 0.001 + v * 0.099;
-                            }
-                            "drag" => ps.def.drag = 0.8 + v * 0.2,
-                            "turbulence" => ps.def.turbulence = v * 2.0,
-                            "gravity_x" => {
-                                ps.def.gravity[0] = -2.0 + v * 4.0;
-                            }
-                            "gravity_y" => {
-                                ps.def.gravity[1] = -2.0 + v * 4.0;
-                            }
-                            "vortex_strength" => {
-                                ps.def.vortex_strength = -5.0 + v * 10.0;
-                            }
-                            // Obstacle state lives on the system itself, not the
-                            // def (system.rs), so these write ps.* only (#1793).
-                            "obstacle_enabled" => ps.obstacle_enabled = v > 0.5,
+                            "lifetime" => m.lifetime = Some(0.5 + v * 29.5),
+                            "speed" => m.initial_speed = Some(v * 2.0),
+                            "size" => m.initial_size = Some(0.001 + v * 0.099),
+                            "drag" => m.drag = Some(0.8 + v * 0.2),
+                            "turbulence" => m.turbulence = Some(v * 2.0),
+                            "gravity_x" => m.gravity_x = Some(-2.0 + v * 4.0),
+                            "gravity_y" => m.gravity_y = Some(-2.0 + v * 4.0),
+                            "vortex_strength" => m.vortex_strength = Some(-5.0 + v * 10.0),
+                            "obstacle_enabled" => m.obstacle_enabled = Some(v > 0.5),
                             "obstacle_mode" => {
                                 // Bus outputs are normalized 0..1 (#1792): spread
                                 // across all 4 modes. The raw-integer OSC path
                                 // uses from_u32 directly.
-                                ps.obstacle_mode =
-                                    crate::gpu::particle::ObstacleMode::from_normalized(v);
+                                m.obstacle_mode =
+                                    Some(crate::gpu::particle::ObstacleMode::from_normalized(v));
                             }
-                            "obstacle_threshold" => ps.obstacle_threshold = v,
-                            "obstacle_elasticity" => ps.obstacle_elasticity = v,
+                            "obstacle_threshold" => m.obstacle_threshold = Some(v),
+                            "obstacle_elasticity" => m.obstacle_elasticity = Some(v),
                             _ => {}
                         }
                     }
@@ -374,5 +365,47 @@ mod tests {
         assert!(s.get("nope").is_none());
         assert!(s.effective("nope").is_none());
         assert!(!s.changed);
+    }
+
+    /// A Master post-processing binding writes this frame's overlay, so the
+    /// inspector's slider and the preset keep the saved def (#4055).
+    #[test]
+    fn a_postfx_binding_writes_the_overlay_not_the_saved_def() {
+        use crate::bindings::types::BindingTarget;
+        let saved = crate::effect::format::PostProcessDef::default();
+        let mut stack = crate::gpu::layer::LayerStack::new();
+        let mut uniforms: ShaderUniforms = bytemuck::Zeroable::zeroed();
+        let mut modulation = PostProcessModulation::default();
+        let mut triggers = Vec::new();
+        let mut ctx = BindingTargetCtx {
+            layer_stack: &mut stack,
+            effects: &[],
+            uniforms: &mut uniforms,
+            postprocess: &mut modulation,
+            pending_triggers: &mut triggers,
+        };
+        apply_binding_target(
+            &mut ctx,
+            &BindingTarget::PostFx("bloom_intensity".into()),
+            0.9,
+            false,
+        );
+        apply_binding_target(
+            &mut ctx,
+            &BindingTarget::PostFx("grain_rate".into()),
+            0.5,
+            false,
+        );
+        assert_eq!(modulation.bloom_intensity, Some(0.9));
+        assert_eq!(modulation.grain_rate, Some(30.0));
+        assert_eq!(
+            modulation.vignette, None,
+            "an unbound setting stays unbound"
+        );
+        let live = saved.with_modulation(&modulation);
+        assert!((live.bloom_intensity - 0.9).abs() < 1e-6);
+        assert!((live.vignette - saved.vignette).abs() < 1e-6);
+        // The def a preset would save never saw the binding.
+        assert_eq!(saved, crate::effect::format::PostProcessDef::default());
     }
 }

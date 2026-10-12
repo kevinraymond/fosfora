@@ -978,7 +978,7 @@ Press **B** for a full-screen patch bay: drag a line from any source to any targ
 3. Pick a target on the right: any parameter of any layer
 4. Play something. The cable animates when signal is flowing.
 
-A bound control keeps the value you set. Its slider stays where you left it, a small triangle under it (in the inspector and in the web remote) shows where the binding has it right now, and the preset saves your value, not the binding's. Remove the binding and the control goes back to your value.
+A bound control keeps the value you set. Its slider stays where you left it, a small triangle under it (in the inspector and in the web remote) shows where the binding has it right now, and the preset saves your value, not the binding's. Remove the binding and the control goes back to your value. This holds for every target with a control: effect parameters, layer opacity and visibility, Master post-processing, and particle and obstacle settings.
 
 The **Templates** dropdown wires up a whole set at once against the layer you have selected. **Audio Reactive** maps kick, level, brightness and beat phase onto whichever of the current effect's parameters best match; **Spectral Bands** puts the seven frequency bands on the first seven parameters.
 

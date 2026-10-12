@@ -46,7 +46,7 @@ pub(crate) fn resolve_output_alpha(
         AlphaOutputMode::Luma => AlphaMode::Luma,
         AlphaOutputMode::Passthrough => AlphaMode::Passthrough,
         AlphaOutputMode::Auto => {
-            let enabled: Vec<_> = layer_stack.layers.iter().filter(|l| l.enabled).collect();
+            let enabled: Vec<_> = layer_stack.layers.iter().filter(|l| l.is_shown()).collect();
             let all_overlay = !enabled.is_empty()
                 && enabled.iter().all(|l| {
                     l.as_effect()
@@ -140,13 +140,13 @@ pub(crate) fn execute_and_composite<'a>(
         .layers
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.enabled)
+        .filter(|(_, l)| l.is_shown())
         .map(|(i, _)| i)
         .collect();
 
     if let Some(th) = thumbs {
         for (i, layer) in layer_stack.layers.iter().enumerate() {
-            if !layer.enabled {
+            if !layer.is_shown() {
                 th.tap(
                     device,
                     encoder,
@@ -163,7 +163,7 @@ pub(crate) fn execute_and_composite<'a>(
         // it), so this target is stable.
         let target = compositor.accumulator.write_target() as &RenderTarget;
         (target, MasterInput::stable(target))
-    } else if enabled.len() == 1 && layer_stack.layers[enabled[0]].opacity >= 1.0 {
+    } else if enabled.len() == 1 && layer_stack.layers[enabled[0]].effective_opacity() >= 1.0 {
         // Single-layer fast path: skip compositing entirely (only when fully opaque)
         let layer = &layer_stack.layers[enabled[0]];
         if layer.wants_backdrop() {
@@ -237,11 +237,13 @@ pub(crate) fn execute_and_composite<'a>(
             if let Some(th) = thumbs {
                 th.tap(device, encoder, &target.view, ThumbKind::Alone, idx);
             }
+            // Bound fields composite at the binding's value; the layer's own
+            // stay what the user set and the preset saves (#4055).
             layer_outputs.push(LayerComposite {
                 target,
-                blend_mode: layer.blend_mode,
-                opacity: layer.opacity,
-                displace_amount: layer.displace_amount,
+                blend_mode: layer.effective_blend_mode(),
+                opacity: layer.effective_opacity(),
+                displace_amount: layer.effective_displace_amount(),
             });
         }
 

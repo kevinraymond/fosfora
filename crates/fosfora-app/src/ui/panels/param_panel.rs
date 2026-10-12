@@ -9,6 +9,7 @@ use crate::params::{ParamDef, ParamStore, ParamValue};
 use crate::ui::panels::osc_panel;
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
+use crate::ui::widgets::rows;
 
 const MIDI_BLUE: Color32 = Color32::from_rgb(0x60, 0xA0, 0xE0);
 
@@ -166,7 +167,13 @@ fn float_row(
                     .show_value(false),
             );
             if let Some(live) = live {
-                draw_live_marker(ui, &slider.rect, &range, live);
+                let t = rows::live_t(
+                    f64::from(*range.start()),
+                    f64::from(*range.end()),
+                    f64::from(live),
+                    false,
+                );
+                rows::live_marker(ui, &slider.rect, t);
                 slider.on_hover_text(format!(
                     "Binding output {}. The slider holds your own value, which presets save.",
                     fmt_val(live)
@@ -174,31 +181,6 @@ fn float_row(
             }
         });
     });
-}
-
-/// Where a binding has the control this frame: a small triangle under the
-/// slider's rail at the live value, so the thumb can stay on the base value
-/// the preset saves (#4053). Shape and the text color, never a hue alone.
-fn draw_live_marker(ui: &Ui, rect: &egui::Rect, range: &std::ops::RangeInclusive<f32>, live: f32) {
-    let (lo, hi) = (*range.start(), *range.end());
-    let span = hi - lo;
-    if span <= 0.0 || !span.is_finite() {
-        return;
-    }
-    let t = ((live - lo) / span).clamp(0.0, 1.0);
-    // egui's rail spans the slider's rect shrunk by the handle radius.
-    let r = rect.height() / 2.5;
-    let x = egui::lerp((rect.left() + r)..=(rect.right() - r), t);
-    let base = rect.bottom();
-    ui.painter().add(egui::Shape::convex_polygon(
-        vec![
-            egui::pos2(x, base - 4.0),
-            egui::pos2(x - 3.5, base),
-            egui::pos2(x + 3.5, base),
-        ],
-        theme_colors(ui.ctx()).text_primary,
-        egui::Stroke::NONE,
-    ));
 }
 
 /// A row following the bass, drawn by the rows' own code: the Bindings

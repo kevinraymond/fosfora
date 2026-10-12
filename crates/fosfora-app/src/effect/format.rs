@@ -158,6 +158,36 @@ fn default_grain_rate() -> f32 {
     24.0
 }
 
+/// This frame's binding output for Master's post-processing, laid over the
+/// saved [`PostProcessDef`] only where a binding fired (#4055). The render
+/// reads [`PostProcessDef::with_modulation`]; the inspector, presets and the
+/// reset-to-previous path read the def itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PostProcessModulation {
+    pub bloom_threshold: Option<f32>,
+    pub bloom_intensity: Option<f32>,
+    pub vignette: Option<f32>,
+    pub ca_intensity: Option<f32>,
+    pub grain_intensity: Option<f32>,
+    pub grain_rate: Option<f32>,
+}
+
+impl PostProcessDef {
+    /// The settings that render this frame: `m`'s values where it has them,
+    /// this def's everywhere else.
+    pub fn with_modulation(&self, m: &PostProcessModulation) -> PostProcessDef {
+        PostProcessDef {
+            bloom_threshold: m.bloom_threshold.unwrap_or(self.bloom_threshold),
+            bloom_intensity: m.bloom_intensity.unwrap_or(self.bloom_intensity),
+            vignette: m.vignette.unwrap_or(self.vignette),
+            ca_intensity: m.ca_intensity.unwrap_or(self.ca_intensity),
+            grain_intensity: m.grain_intensity.unwrap_or(self.grain_intensity),
+            grain_rate: m.grain_rate.unwrap_or(self.grain_rate),
+            ..self.clone()
+        }
+    }
+}
+
 impl Default for PostProcessDef {
     fn default() -> Self {
         Self {
@@ -331,6 +361,40 @@ mod tests {
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() < eps
+    }
+
+    // ---- base vs modulated post-processing (#4055) ----
+
+    #[test]
+    fn with_modulation_overlays_only_the_bound_settings() {
+        let saved = PostProcessDef {
+            bloom_intensity: 0.2,
+            vignette: 0.6,
+            grain_rate: 24.0,
+            tonemap: "linear".into(),
+            ..PostProcessDef::default()
+        };
+        let empty = PostProcessModulation::default();
+        assert_eq!(
+            saved.with_modulation(&empty),
+            saved,
+            "nothing bound: unchanged"
+        );
+
+        let m = PostProcessModulation {
+            bloom_intensity: Some(0.95),
+            grain_rate: Some(60.0),
+            ..PostProcessModulation::default()
+        };
+        let live = saved.with_modulation(&m);
+        assert!(approx_eq(live.bloom_intensity, 0.95, 1e-6));
+        assert!(approx_eq(live.grain_rate, 60.0, 1e-6));
+        // Unbound settings and the non-bindable ones come from the saved def.
+        assert!(approx_eq(live.vignette, 0.6, 1e-6));
+        assert_eq!(live.tonemap, "linear");
+        assert_eq!(live.bloom_enabled, saved.bloom_enabled);
+        // And the saved def itself is what a preset would still write.
+        assert!(approx_eq(saved.bloom_intensity, 0.2, 1e-6));
     }
 
     #[test]

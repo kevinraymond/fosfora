@@ -14,6 +14,9 @@ pub struct ParticleInfo {
     pub emit_rate: f32,
     pub burst_on_beat: u32,
     pub lifetime: f32,
+    /// This frame's binding output over the fields above (#4055): the rows
+    /// mark it under their sliders.
+    pub live: crate::gpu::particle::system::ParticleModulation,
     pub initial_speed: f32,
     pub initial_size: f32,
     #[allow(dead_code)]
@@ -1056,9 +1059,11 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     let drag_min = drag.min(0.8);
 
     // Shared aligned rows; each edit is posted via temp data for main.rs to apply.
+    let live = &info.live;
     if rows::ParamRow::new("Emit rate")
         .logarithmic(true)
         .formatter(|v| format!("{v:.0}/s"))
+        .live(live.emit_rate.map(f64::from))
         .show_slider(ui, &mut emit_rate, 10.0..=emit_max)
         .changed
     {
@@ -1066,6 +1071,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
             .data_mut(|d| d.insert_temp(egui::Id::new("particle_emit_rate"), emit_rate));
     }
     if rows::ParamRow::new("Burst")
+        .live(live.burst_on_beat.map(f64::from))
         .show_slider(ui, &mut burst, 0..=burst_max)
         .changed
     {
@@ -1074,6 +1080,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     }
     if rows::ParamRow::new("Lifetime")
         .formatter(|v| format!("{v:.1}s"))
+        .live(live.lifetime.map(f64::from))
         .show_slider(ui, &mut lifetime, 0.5..=life_max)
         .changed
     {
@@ -1083,6 +1090,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     if rows::ParamRow::new("Speed")
         .logarithmic(speed_log)
         .formatter(|v| format!("{v:.3}"))
+        .live(live.initial_speed.map(f64::from))
         .show_slider(ui, &mut speed, speed_min..=speed_max)
         .changed
     {
@@ -1092,6 +1100,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     if rows::ParamRow::new("Size")
         .logarithmic(true)
         .formatter(|v| format!("{v:.4}"))
+        .live(live.initial_size.map(f64::from))
         .show_slider(ui, &mut size, size_min..=size_max)
         .changed
     {
@@ -1100,6 +1109,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     }
     if rows::ParamRow::new("Drag")
         .formatter(|v| format!("{v:.3}"))
+        .live(live.drag.map(f64::from))
         .show_slider(ui, &mut drag, drag_min..=1.0)
         .changed
     {

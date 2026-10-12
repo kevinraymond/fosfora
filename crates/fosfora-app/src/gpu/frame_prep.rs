@@ -56,11 +56,12 @@ pub(crate) fn prepare_effect_layers(
                 if ps.obstacle_source == "video" {
                     ps.advance_obstacle_video(device, queue, dt as f64);
                 }
-                // Pack obstacle collision uniforms
-                ps.uniforms.obstacle_enabled = if ps.obstacle_enabled { 1.0 } else { 0.0 };
-                ps.uniforms.obstacle_threshold = ps.obstacle_threshold;
-                ps.uniforms.obstacle_mode = ps.obstacle_mode as u32;
-                ps.uniforms.obstacle_elasticity = ps.obstacle_elasticity;
+                // Pack obstacle collision uniforms, a binding's values over
+                // the saved ones (#4055).
+                ps.uniforms.obstacle_enabled = if ps.obstacle_enabled_now() { 1.0 } else { 0.0 };
+                ps.uniforms.obstacle_threshold = ps.obstacle_threshold_now();
+                ps.uniforms.obstacle_mode = ps.obstacle_mode_now() as u32;
+                ps.uniforms.obstacle_elasticity = ps.obstacle_elasticity_now();
                 ps.uniforms.obstacle_fit = ps.obstacle_fit as u32;
                 let audio = *audio;
                 ps.update_audio(&audio);

@@ -4,10 +4,17 @@
 
 use egui::Ui;
 
-use crate::effect::format::PostProcessDef;
+use crate::effect::format::{PostProcessDef, PostProcessModulation};
 use crate::ui::widgets::rows;
 
-pub fn draw_postfx_panel(ui: &mut Ui, postprocess: &mut PostProcessDef) {
+/// `live` is this frame's binding output over `postprocess`: each bound row
+/// marks it under its slider while the slider keeps the saved value (#4055).
+pub fn draw_postfx_panel(
+    ui: &mut Ui,
+    postprocess: &mut PostProcessDef,
+    live: &PostProcessModulation,
+) {
+    let f = |v: Option<f32>| v.map(f64::from);
     ui.checkbox(&mut postprocess.enabled, "Enable");
     let global_on = postprocess.enabled;
 
@@ -19,16 +26,12 @@ pub fn draw_postfx_panel(ui: &mut Ui, postprocess: &mut PostProcessDef) {
     });
     ui.add_enabled_ui(global_on && postprocess.bloom_enabled, |ui| {
         ui.indent("bloom_params", |ui| {
-            rows::ParamRow::new("Threshold").show_slider(
-                ui,
-                &mut postprocess.bloom_threshold,
-                0.0..=1.5,
-            );
-            rows::ParamRow::new("Intensity").show_slider(
-                ui,
-                &mut postprocess.bloom_intensity,
-                0.0..=1.0,
-            );
+            rows::ParamRow::new("Threshold")
+                .live(f(live.bloom_threshold))
+                .show_slider(ui, &mut postprocess.bloom_threshold, 0.0..=1.5);
+            rows::ParamRow::new("Intensity")
+                .live(f(live.bloom_intensity))
+                .show_slider(ui, &mut postprocess.bloom_intensity, 0.0..=1.0);
         });
     });
 
@@ -40,11 +43,9 @@ pub fn draw_postfx_panel(ui: &mut Ui, postprocess: &mut PostProcessDef) {
     });
     ui.add_enabled_ui(global_on && postprocess.ca_enabled, |ui| {
         ui.indent("ca_params", |ui| {
-            rows::ParamRow::new("Intensity").show_slider(
-                ui,
-                &mut postprocess.ca_intensity,
-                0.0..=1.0,
-            );
+            rows::ParamRow::new("Intensity")
+                .live(f(live.ca_intensity))
+                .show_slider(ui, &mut postprocess.ca_intensity, 0.0..=1.0);
         });
     });
 
@@ -56,7 +57,9 @@ pub fn draw_postfx_panel(ui: &mut Ui, postprocess: &mut PostProcessDef) {
     });
     ui.add_enabled_ui(global_on && postprocess.vignette_enabled, |ui| {
         ui.indent("vignette_params", |ui| {
-            rows::ParamRow::new("Strength").show_slider(ui, &mut postprocess.vignette, 0.0..=1.0);
+            rows::ParamRow::new("Strength")
+                .live(f(live.vignette))
+                .show_slider(ui, &mut postprocess.vignette, 0.0..=1.0);
         });
     });
 
@@ -68,12 +71,11 @@ pub fn draw_postfx_panel(ui: &mut Ui, postprocess: &mut PostProcessDef) {
     });
     ui.add_enabled_ui(global_on && postprocess.grain_enabled, |ui| {
         ui.indent("grain_params", |ui| {
-            rows::ParamRow::new("Intensity").show_slider(
-                ui,
-                &mut postprocess.grain_intensity,
-                0.0..=1.0,
-            );
+            rows::ParamRow::new("Intensity")
+                .live(f(live.grain_intensity))
+                .show_slider(ui, &mut postprocess.grain_intensity, 0.0..=1.0);
             rows::ParamRow::new("Rate (Hz)")
+                .live(f(live.grain_rate))
                 .tooltip(
                     "How many times a second the grain re-randomises. Lower is more \
                      filmic and keeps a dropped frame from freezing the noise into a \

@@ -13,6 +13,10 @@ pub struct ObstacleInfo {
     pub fit: ObstacleFit,
     pub threshold: f32,
     pub elasticity: f32,
+    /// This frame's binding output over the three settings above (#4055).
+    pub live_enabled: Option<bool>,
+    pub live_threshold: Option<f32>,
+    pub live_elasticity: Option<f32>,
     /// "image", "webcam", "depth", or "" (none)
     pub source: String,
     pub image_path: Option<String>,
@@ -454,14 +458,15 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
                     .color(tc.text_secondary),
             );
             ui.spacing_mut().slider_width = ui.available_width();
-            if ui
-                .add(
-                    egui::Slider::new(&mut threshold, 0.0..=1.0)
-                        .step_by(0.01)
-                        .show_value(false),
-                )
-                .changed()
-            {
+            let slider = ui.add(
+                egui::Slider::new(&mut threshold, 0.0..=1.0)
+                    .step_by(0.01)
+                    .show_value(false),
+            );
+            if let Some(live) = info.live_threshold {
+                crate::ui::widgets::rows::live_marker(ui, &slider.rect, live);
+            }
+            if slider.changed() {
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(
                         egui::Id::new("obstacle_cmd"),
@@ -490,14 +495,15 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
                     .color(tc.text_secondary),
             );
             ui.spacing_mut().slider_width = ui.available_width();
-            if ui
-                .add(
-                    egui::Slider::new(&mut elasticity, 0.0..=1.0)
-                        .step_by(0.01)
-                        .show_value(false),
-                )
-                .changed()
-            {
+            let slider = ui.add(
+                egui::Slider::new(&mut elasticity, 0.0..=1.0)
+                    .step_by(0.01)
+                    .show_value(false),
+            );
+            if let Some(live) = info.live_elasticity {
+                crate::ui::widgets::rows::live_marker(ui, &slider.rect, live);
+            }
+            if slider.changed() {
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(
                         egui::Id::new("obstacle_cmd"),

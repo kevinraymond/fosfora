@@ -145,6 +145,9 @@ pub struct App {
     /// What Master's post-processing was before it was last replaced by a
     /// reset, for the inspector's way back. Cleared when a preset loads.
     pub master_postprocess_previous: Option<PostProcessDef>,
+    /// This frame's binding output over `master_postprocess` (#4055); the
+    /// render reads the two together, the inspector and presets the def alone.
+    pub master_postprocess_modulation: crate::effect::format::PostProcessModulation,
     /// The finished frame, off-screen (#3122). Post-processing renders here
     /// instead of straight onto the swapchain, and the window gets a blit of
     /// it. That indirection is what lets the v2 interface show the output as a
@@ -673,6 +676,7 @@ impl App {
             post_process,
             master_postprocess: PostProcessDef::default(),
             master_postprocess_previous: None,
+            master_postprocess_modulation: Default::default(),
             display,
             layer_thumbs,
             catalog_thumbs: crate::ui::catalog_thumbs::CatalogThumbs::shipped(),
@@ -1277,11 +1281,10 @@ impl App {
             &self.midi,
             &self.osc,
         );
-        // Bindings lay this frame's values over the base ones; start from a
-        // clean slate so a binding that is gone or quiet releases its param.
-        for layer in &mut self.layer_stack.layers {
-            layer.param_store.clear_modulation();
-        }
+        // Bindings lay this frame's values over the saved ones; start from a
+        // clean slate so a binding that is gone or quiet releases its target.
+        self.layer_stack.clear_modulation();
+        self.master_postprocess_modulation = Default::default();
         for out in bind_results {
             self.apply_binding_target(&out.target, out.value, out.rising);
         }
@@ -2897,7 +2900,7 @@ impl App {
             layer_stack: &mut self.layer_stack,
             effects: &self.effect_loader.effects,
             uniforms: &mut self.uniforms,
-            postprocess: &mut self.master_postprocess,
+            postprocess: &mut self.master_postprocess_modulation,
             pending_triggers: &mut self.binding_bus.pending_triggers,
         };
         crate::bindings::apply::apply_binding_target(&mut ctx, target, value, rising);
@@ -4440,7 +4443,9 @@ impl App {
 
         // Compute the HDR source from layer execution + compositing — shared
         // with the headless renderer.
-        let postprocess = self.master_postprocess.clone();
+        let postprocess = self
+            .master_postprocess
+            .with_modulation(&self.master_postprocess_modulation);
         let source = crate::gpu::frame_graph::execute_and_composite(
             &self.layer_stack,
             &mut self.compositor,
