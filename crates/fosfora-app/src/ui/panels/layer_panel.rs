@@ -778,6 +778,29 @@ pub fn draw_layer_panel(
                                                 .text(""),
                                         );
                                         ui.visuals_mut().widgets.inactive.bg_fill = saved_bg;
+                                        // A bound opacity: the thumb keeps the
+                                        // saved value, the marker the live one
+                                        // (#4055).
+                                        let slider = match layer.live_opacity {
+                                            Some(live) => {
+                                                use crate::ui::widgets::rows;
+                                                // The response spans the value
+                                                // box too; mark the rail only.
+                                                rows::live_marker(
+                                                    ui,
+                                                    &rows::rail_of_valued_slider(
+                                                        ui,
+                                                        &slider.rect,
+                                                    ),
+                                                    live,
+                                                );
+                                                slider.on_hover_text(format!(
+                                                    "Binding output {:.0}%. The slider holds your own value, which presets save.",
+                                                    live * 100.0
+                                                ))
+                                            }
+                                            None => slider,
+                                        };
                                         if slider.changed() {
                                             ui.ctx().data_mut(|d| {
                                                 d.insert_temp(

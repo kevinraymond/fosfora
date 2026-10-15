@@ -292,7 +292,14 @@ impl LoopSession {
                     &sr.compositor.backdrop.sampler,
                 )),
             };
-            crate::gpu::layer_builder::prepare_particles(&ctx, &mut sr.effect_loader, &effect)
+            let ps =
+                crate::gpu::layer_builder::prepare_particles(&ctx, &mut sr.effect_loader, &effect);
+            #[cfg(feature = "video")]
+            let ps = ps.map(|mut ps| {
+                ps.decode_pending_video(&sr.queue);
+                ps
+            });
+            ps
         };
         {
             let ctx = LayerBuildCtx {

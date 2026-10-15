@@ -4,8 +4,18 @@ use super::types::{ParamDef, ParamValue};
 
 pub struct ParamStore {
     pub defs: Vec<ParamDef>,
+    /// The base values: what the user set, what a preset or a user effect's
+    /// `.pfx` saves and restores, what `changed` tracks. A binding never
+    /// writes here.
     pub values: HashMap<String, ParamValue>,
     pub changed: bool,
+    /// This frame's modulation, laid over `values` for whatever renders
+    /// ([`Self::effective`], [`Self::pack_to_buffer`]) and nothing else. The
+    /// binding bus writes it through [`Self::set_modulated`] after
+    /// [`Self::clear_modulation`] empties it, so a binding that is removed or
+    /// goes quiet hands the param back to its base value the same frame
+    /// (#4053).
+    modulated: HashMap<String, ParamValue>,
 }
 
 impl ParamStore {
@@ -14,12 +24,14 @@ impl ParamStore {
             defs: Vec::new(),
             values: HashMap::new(),
             changed: false,
+            modulated: HashMap::new(),
         }
     }
 
     pub fn load_from_defs(&mut self, defs: &[ParamDef]) {
         self.defs = defs.to_vec();
         self.values.clear();
+        self.modulated.clear();
         self.changed = false;
         for def in defs {
             self.values
@@ -53,6 +65,7 @@ impl ParamStore {
         }
         self.defs = new_defs.to_vec();
         self.values = new_values;
+        self.modulated.clear();
         self.changed = true;
     }
 
@@ -73,8 +86,39 @@ impl ParamStore {
         self.changed = true;
     }
 
+    /// Lay a binding's output over the base value for this frame. Not a user
+    /// edit: the base value and `changed` are left alone, so the preset does
+    /// not read as dirty, the user-effect `.pfx` autosave does not arm (#3174),
+    /// and a save or a morph snapshot still sees the user's value (#4053). Same
+    /// non-finite guard as `set`.
+    pub fn set_modulated(&mut self, name: &str, value: ParamValue) {
+        if !value.is_finite() {
+            log::warn!("Ignoring non-finite modulated value for param '{name}': {value:?}");
+            return;
+        }
+        self.modulated.insert(name.to_string(), value);
+    }
+
+    /// Drop this frame's modulation. The binding bus calls it before it
+    /// applies, so only bindings that fired this frame are laid over the base.
+    pub fn clear_modulation(&mut self) {
+        self.modulated.clear();
+    }
+
+    /// The base value: the user's, not what a binding is doing to it.
     pub fn get(&self, name: &str) -> Option<&ParamValue> {
         self.values.get(name)
+    }
+
+    /// This frame's binding output for `name`, if one is laid over it.
+    pub fn modulated(&self, name: &str) -> Option<&ParamValue> {
+        self.modulated.get(name)
+    }
+
+    /// What renders this frame: the binding's value when one is laid over the
+    /// param, the base value otherwise.
+    pub fn effective(&self, name: &str) -> Option<&ParamValue> {
+        self.modulated.get(name).or_else(|| self.values.get(name))
     }
 
     pub fn reset(&mut self, name: &str) {
@@ -110,7 +154,8 @@ impl ParamStore {
         (out, offset)
     }
 
-    /// Pack all param values into a fixed-size f32 array in definition order.
+    /// Pack the effective values (this frame's modulation over the base) into
+    /// a fixed-size f32 array in definition order.
     pub fn pack_to_buffer(&self) -> [f32; 16] {
         let mut buf = [0.0f32; 16];
         let mut offset = 0;
@@ -118,7 +163,7 @@ impl ParamStore {
             if offset >= 16 {
                 break;
             }
-            if let Some(value) = self.values.get(def.name()) {
+            if let Some(value) = self.effective(def.name()) {
                 let count = value.float_count();
                 if offset + count <= 16 {
                     value.write_to(&mut buf, offset);
@@ -207,6 +252,79 @@ mod tests {
         assert!(!s.changed);
         s.set("speed", ParamValue::Float(0.8));
         assert!(s.changed);
+    }
+
+    // ---- base vs modulated (#4053) ----
+
+    fn float(v: Option<&ParamValue>) -> f32 {
+        match v {
+            Some(ParamValue::Float(f)) => *f,
+            other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn modulation_renders_over_the_base_without_touching_it() {
+        let mut s = ParamStore::new();
+        s.load_from_defs(&test_defs());
+        s.set("speed", ParamValue::Float(0.2));
+        s.changed = false;
+        s.set_modulated("speed", ParamValue::Float(0.9));
+        // The GPU and anything asking for the effective value see the binding.
+        assert!(approx_eq(float(s.effective("speed")), 0.9, 1e-6));
+        assert!(approx_eq(s.pack_to_buffer()[0], 0.9, 1e-6));
+        assert!(approx_eq(float(s.modulated("speed")), 0.9, 1e-6));
+        // A preset save, a morph snapshot and the slider read the base.
+        assert!(approx_eq(float(s.get("speed")), 0.2, 1e-6));
+        assert!(approx_eq(float(s.values.get("speed")), 0.2, 1e-6));
+        assert!(!s.changed);
+    }
+
+    #[test]
+    fn a_user_edit_under_a_binding_moves_the_base_only() {
+        let mut s = ParamStore::new();
+        s.load_from_defs(&test_defs());
+        s.set_modulated("speed", ParamValue::Float(0.9));
+        // The slider is dragged while the binding runs: the drag is kept as the
+        // base (and counts as an edit), the binding still renders.
+        s.set("speed", ParamValue::Float(0.3));
+        assert!(s.changed);
+        assert!(approx_eq(float(s.get("speed")), 0.3, 1e-6));
+        assert!(approx_eq(s.pack_to_buffer()[0], 0.9, 1e-6));
+    }
+
+    #[test]
+    fn clearing_modulation_hands_the_param_back_to_its_base() {
+        let mut s = ParamStore::new();
+        s.load_from_defs(&test_defs());
+        s.set("speed", ParamValue::Float(0.2));
+        s.set_modulated("speed", ParamValue::Float(0.9));
+        s.clear_modulation();
+        assert!(s.modulated("speed").is_none());
+        assert!(approx_eq(float(s.effective("speed")), 0.2, 1e-6));
+        assert!(approx_eq(s.pack_to_buffer()[0], 0.2, 1e-6));
+    }
+
+    #[test]
+    fn loading_or_merging_defs_drops_stale_modulation() {
+        let mut s = ParamStore::new();
+        s.load_from_defs(&test_defs());
+        s.set_modulated("speed", ParamValue::Float(0.9));
+        s.merge_from_defs(&test_defs());
+        assert!(s.modulated("speed").is_none());
+        s.set_modulated("speed", ParamValue::Float(0.9));
+        s.load_from_defs(&test_defs());
+        assert!(s.modulated("speed").is_none());
+        assert!(approx_eq(s.pack_to_buffer()[0], 0.5, 1e-6));
+    }
+
+    #[test]
+    fn modulation_ignores_non_finite_values() {
+        let mut s = ParamStore::new();
+        s.load_from_defs(&test_defs());
+        s.set_modulated("speed", ParamValue::Float(f32::NAN));
+        assert!(s.modulated("speed").is_none());
+        assert!(approx_eq(s.pack_to_buffer()[0], 0.5, 1e-6));
     }
 
     #[test]

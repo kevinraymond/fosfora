@@ -603,7 +603,7 @@ Media layers support:
   - Play/pause, loop toggle
   - Speed control (0.1x–4.0x)
   - Direction: forward, reverse, ping-pong
-- Video playback with seek slider and time display (max 60s pre-decoded)
+- Video playback with seek slider and time display (clips up to 60 s are pre-decoded for instant scrubbing; longer ones decode as they play)
 
 **Tip:** Loading an effect onto a media layer converts it back to an effect layer.
 
@@ -977,6 +977,8 @@ Press **B** for a full-screen patch bay: drag a line from any source to any targ
 2. Pick a source on the left. Start with **Audio · Bands → Bass**
 3. Pick a target on the right: any parameter of any layer
 4. Play something. The cable animates when signal is flowing.
+
+A bound control keeps the value you set. Its slider stays where you left it, a small triangle under it (in the inspector and in the web remote) shows where the binding has it right now, and the preset saves your value, not the binding's. Remove the binding and the control goes back to your value. This holds for every target with a control: effect parameters, layer opacity and visibility, Master post-processing, and particle and obstacle settings.
 
 The **Templates** dropdown wires up a whole set at once against the layer you have selected. **Audio Reactive** maps kick, level, brightness and beat phase onto whichever of the current effect's parameters best match; **Spectral Bands** puts the seven frequency bands on the first seven parameters.
 

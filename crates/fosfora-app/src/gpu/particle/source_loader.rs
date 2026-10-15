@@ -1,9 +1,12 @@
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, OnceLock};
 use std::thread;
+use std::time::Instant;
 
 use crossbeam_channel::{Receiver, TryRecvError, bounded};
 
+use crate::media::decoder::MediaProgress;
 use crate::media::types::DecodedFrame;
 
 /// The display name a `raster_*.png` file is listed under, or `None` if the file is not a
@@ -79,7 +82,7 @@ pub fn builtin_raster_path(display_name: &str) -> PathBuf {
 /// puts the media on the wrong layer; the splat loader already avoids this by
 /// carrying its `layer_idx` through the request, and this is the same idea for
 /// every field the drain needs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SourceRequest {
     /// The layer that asked. A result whose layer is gone, is no longer an
     /// effect, or no longer has a particle system is simply dropped.
@@ -88,6 +91,12 @@ pub struct SourceRequest {
     pub as_morph_target: bool,
     /// Which morph slot; `None` means the first empty one.
     pub morph_slot: Option<u32>,
+    /// A video for the layer's OBSTACLE rather than its particle source (#3159).
+    pub as_obstacle: bool,
+    /// Transport a preset restores onto a video source once it lands; `None`
+    /// keeps the source's defaults.
+    pub video_speed: Option<f32>,
+    pub video_looping: Option<bool>,
 }
 
 /// Result from background particle source loading.
@@ -117,71 +126,110 @@ pub enum ParticleSourceResult {
     Error(String),
 }
 
-/// Manages background loading of particle image/video sources.
-/// Designed for single in-flight load at a time (new request cancels previous via generation).
-pub struct ParticleSourceLoader {
-    result_rx: Receiver<(u64, ParticleSourceResult)>,
-    generation: u64,
-    /// Context of the in-flight request, returned alongside its result. One
-    /// field is enough because the loader is single-in-flight — a new request
-    /// bumps `generation` and any older result is discarded as stale.
+/// One source load as the panel shows it: which file, how far, how long.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceLoading {
+    /// Position in the loader's list, what Cancel names.
+    pub index: usize,
+    pub name: String,
+    /// Frames decoded, and how many the probe expects (0 = not known yet).
+    pub done: u32,
+    pub total: u32,
+    pub secs: f32,
+}
+
+/// A load on its own thread, with the context it was asked in.
+struct InFlight {
     request: SourceRequest,
-    pub loading: bool,
-    pub loading_name: String,
+    name: String,
+    progress: Arc<MediaProgress>,
+    rx: Receiver<ParticleSourceResult>,
+    started: Instant,
+}
+
+impl InFlight {
+    /// The role a load fills; a new request for the same role supersedes it.
+    fn role(&self) -> (usize, bool, bool) {
+        role_of(&self.request)
+    }
+}
+
+fn role_of(r: &SourceRequest) -> (usize, bool, bool) {
+    (r.layer_idx, r.as_morph_target, r.as_obstacle)
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Background loading of particle image/video sources and obstacle videos.
+///
+/// Several loads can be in flight at once (a preset that restores a video on
+/// two layers), each with its own progress and cancel. A new request for the
+/// same layer and role cancels the one still running for it, so a result can
+/// never land over a newer choice; a cancelled or dismissed load leaves the
+/// list without a result (#3159).
+pub struct ParticleSourceLoader {
+    loads: Vec<InFlight>,
 }
 
 impl ParticleSourceLoader {
     pub fn new() -> Self {
-        // Create a dummy channel (no thread yet — threads are spawned per-request)
-        let (_tx, rx) = bounded(1);
-        Self {
-            result_rx: rx,
-            generation: 0,
-            request: SourceRequest::default(),
-            loading: false,
-            loading_name: String::new(),
+        Self { loads: Vec::new() }
+    }
+
+    /// Something is still decoding or a file dialog is still open.
+    pub fn is_loading(&self) -> bool {
+        !self.loads.is_empty()
+    }
+
+    /// Every load in flight, in list order, for the panel.
+    pub fn loads(&self) -> Vec<SourceLoading> {
+        self.loads
+            .iter()
+            .enumerate()
+            .map(|(index, l)| SourceLoading {
+                index,
+                name: l.name.clone(),
+                done: l.progress.done.load(Ordering::Relaxed),
+                total: l.progress.total.load(Ordering::Relaxed),
+                secs: l.started.elapsed().as_secs_f32(),
+            })
+            .collect()
+    }
+
+    /// Stop load `index` of [`Self::loads`] (the panel's Cancel). Its thread
+    /// notices on the next frame it decodes and its result is never delivered.
+    pub fn cancel(&mut self, index: usize) {
+        if index < self.loads.len() {
+            let load = self.loads.remove(index);
+            load.progress.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Stop every load: the stack they were meant for is being replaced.
+    pub fn cancel_all(&mut self) {
+        for load in self.loads.drain(..) {
+            load.progress.cancel.store(true, Ordering::Relaxed);
         }
     }
 
     /// Start loading an image file in the background.
     pub fn load_image(&mut self, path: PathBuf, request: SourceRequest) -> std::io::Result<()> {
-        self.generation += 1;
-        let load_gen = self.generation;
-        self.request = request;
-        self.loading = true;
-        self.loading_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let (tx, rx) = bounded(1);
-        self.result_rx = rx;
-
-        self.spawn("particle-source-loader", move || {
-            let result = load_image_sync(&path);
-            let _ = tx.send((load_gen, result));
+        let name = file_name(&path);
+        self.start("particle-source-loader", name, request, move |_| {
+            Some(load_image_sync(&path))
         })
     }
 
-    /// Start loading a video file in the background.
-    #[cfg(feature = "video")]
-    #[allow(dead_code)]
+    /// Start decoding a video file in the background. Without the `video`
+    /// feature the result is an error saying so.
     pub fn load_video(&mut self, path: PathBuf, request: SourceRequest) -> std::io::Result<()> {
-        self.generation += 1;
-        let load_gen = self.generation;
-        self.request = request;
-        self.loading = true;
-        self.loading_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let (tx, rx) = bounded(1);
-        self.result_rx = rx;
-
-        self.spawn("particle-source-loader", move || {
-            let result = load_video_sync(&path);
-            let _ = tx.send((load_gen, result));
+        let name = file_name(&path);
+        self.start("particle-source-loader", name, request, move |p| {
+            Some(load_video_sync(&path, p))
         })
     }
 
@@ -189,49 +237,40 @@ impl ParticleSourceLoader {
     /// The dialog + decode both run off the main thread to avoid freezing.
     #[cfg(feature = "desktop")]
     pub fn open_image_dialog(&mut self, request: SourceRequest) -> std::io::Result<()> {
-        self.generation += 1;
-        let load_gen = self.generation;
-        self.request = request;
-        self.loading = true;
-        self.loading_name = "choosing file...".to_string();
-
-        let (tx, rx) = bounded(1);
-        self.result_rx = rx;
-
-        self.spawn("particle-source-dialog", move || {
-            let dialog = rfd::FileDialog::new()
-                .set_title("Load Image for Particle Source")
-                .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"]);
-            if let Some(path) = dialog.pick_file() {
-                let result = load_image_sync(&path);
-                let _ = tx.send((load_gen, result));
-            }
-            // If dialog cancelled, tx drops → Disconnected on rx → loading resets
-        })
+        self.start(
+            "particle-source-dialog",
+            "choosing file...".to_string(),
+            request,
+            move |_| {
+                let dialog = rfd::FileDialog::new()
+                    .set_title("Load Image for Particle Source")
+                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"]);
+                dialog.pick_file().map(|path| load_image_sync(&path))
+            },
+        )
     }
 
-    /// Open a file dialog for video on a background thread, then decode.
+    /// Open a file dialog for video on a background thread, then decode. With
+    /// `as_obstacle` set the video is for the layer's obstacle.
     #[cfg(feature = "video")]
     pub fn open_video_dialog(&mut self, request: SourceRequest) -> std::io::Result<()> {
-        self.generation += 1;
-        let load_gen = self.generation;
-        self.request = request;
-        self.loading = true;
-        self.loading_name = "choosing file...".to_string();
-
-        let (tx, rx) = bounded(1);
-        self.result_rx = rx;
-
-        self.spawn("particle-source-dialog", move || {
-            let mut dialog = rfd::FileDialog::new().set_title("Load Video for Particle Source");
-            if crate::media::video::ffmpeg_available() {
-                dialog = dialog.add_filter("Video", &["mp4", "mov", "avi", "mkv", "webm", "m4v"]);
-            }
-            if let Some(path) = dialog.pick_file() {
-                let result = load_video_sync(&path);
-                let _ = tx.send((load_gen, result));
-            }
-        })
+        let title = if request.as_obstacle {
+            "Load Video for Obstacle"
+        } else {
+            "Load Video for Particle Source"
+        };
+        self.start(
+            "particle-source-dialog",
+            "choosing file...".to_string(),
+            request,
+            move |p| {
+                let mut dialog = rfd::FileDialog::new().set_title(title);
+                if crate::media::video::ffmpeg_available() {
+                    dialog = dialog.add_filter("Video", crate::media::decoder::VIDEO_EXTENSIONS);
+                }
+                dialog.pick_file().map(|path| load_video_sync(&path, p))
+            },
+        )
     }
 
     /// Open a file dialog for a 3D model on a background thread (#1993).
@@ -240,65 +279,79 @@ impl ParticleSourceLoader {
     /// why the raster cannot happen here.
     #[cfg(feature = "desktop")]
     pub fn open_model_dialog(&mut self, request: SourceRequest) -> std::io::Result<()> {
-        self.generation += 1;
-        let load_gen = self.generation;
-        self.request = request;
-        self.loading = true;
-        self.loading_name = "choosing file...".to_string();
+        self.start(
+            "particle-source-dialog",
+            "choosing file...".to_string(),
+            request,
+            move |_| {
+                let dialog = rfd::FileDialog::new()
+                    .set_title("Load 3D Model for Particle Source")
+                    .add_filter("3D model", super::model_source::MODEL_EXTENSIONS);
+                dialog.pick_file().map(|path| ParticleSourceResult::Model {
+                    path: path.to_string_lossy().to_string(),
+                })
+            },
+        )
+    }
 
+    /// Run `job` on a thread named `thread_name` and track it. `None` from the
+    /// job means nothing was chosen (a dismissed dialog) and the load just
+    /// goes away. A load already running for the same layer and role is
+    /// cancelled first. If the thread cannot be spawned nothing is tracked and
+    /// the caller only has to report the error.
+    fn start(
+        &mut self,
+        thread_name: &str,
+        name: String,
+        request: SourceRequest,
+        job: impl FnOnce(&MediaProgress) -> Option<ParticleSourceResult> + Send + 'static,
+    ) -> std::io::Result<()> {
+        let role = role_of(&request);
+        self.loads.retain(|l| {
+            let same = l.role() == role;
+            if same {
+                l.progress.cancel.store(true, Ordering::Relaxed);
+            }
+            !same
+        });
+        let progress = Arc::new(MediaProgress::default());
         let (tx, rx) = bounded(1);
-        self.result_rx = rx;
-
-        self.spawn("particle-source-dialog", move || {
-            let dialog = rfd::FileDialog::new()
-                .set_title("Load 3D Model for Particle Source")
-                .add_filter("3D model", super::model_source::MODEL_EXTENSIONS);
-            if let Some(path) = dialog.pick_file() {
-                let _ = tx.send((
-                    load_gen,
-                    ParticleSourceResult::Model {
-                        path: path.to_string_lossy().to_string(),
-                    },
-                ));
-            }
-            // If dialog cancelled, tx drops → Disconnected on rx → loading resets
-        })
+        let p = progress.clone();
+        thread::Builder::new()
+            .name(thread_name.into())
+            .spawn(move || {
+                if let Some(result) = job(&p) {
+                    let _ = tx.send(result);
+                }
+            })?;
+        self.loads.push(InFlight {
+            request,
+            name,
+            progress,
+            rx,
+            started: Instant::now(),
+        });
+        Ok(())
     }
 
-    /// Run `job` on a background thread named `name`. If the thread cannot be
-    /// spawned, the request this call just started is abandoned, so `loading`
-    /// is cleared here and the caller only has to report the error.
-    fn spawn(&mut self, name: &str, job: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
-        match thread::Builder::new().name(name.into()).spawn(job) {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                self.loading = false;
-                self.loading_name.clear();
-                Err(e)
-            }
-        }
-    }
-
-    /// Check for completed results, with the context the load was requested in.
-    /// Returns None if still loading or no result.
+    /// One finished load, with the context it was requested in, or `None`
+    /// when nothing has finished. Dismissed dialogs and dead threads leave
+    /// the list here.
     pub fn try_recv(&mut self) -> Option<(SourceRequest, ParticleSourceResult)> {
-        match self.result_rx.try_recv() {
-            Ok((load_gen, result)) => {
-                if load_gen == self.generation {
-                    self.loading = false;
-                    self.loading_name.clear();
-                    Some((self.request, result))
-                } else {
-                    None // Stale result from cancelled load
+        let mut i = 0;
+        while i < self.loads.len() {
+            match self.loads[i].rx.try_recv() {
+                Ok(result) => {
+                    let load = self.loads.remove(i);
+                    return Some((load.request, result));
+                }
+                Err(TryRecvError::Empty) => i += 1,
+                Err(TryRecvError::Disconnected) => {
+                    self.loads.remove(i);
                 }
             }
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => {
-                self.loading = false;
-                self.loading_name.clear();
-                None
-            }
         }
+        None
     }
 }
 
@@ -479,35 +532,23 @@ fn load_animated_webp_sync(path: &std::path::Path) -> Option<ParticleSourceResul
 
 /// Synchronous video loading (runs on background thread).
 #[cfg(feature = "video")]
-fn load_video_sync(path: &std::path::Path) -> ParticleSourceResult {
-    use crate::media::video::{
-        MAX_PREDECODE_SECS, decode_all_frames, ffmpeg_available, probe_video,
-    };
-
-    if !ffmpeg_available() {
-        return ParticleSourceResult::Error("ffmpeg/ffprobe not found on PATH".to_string());
-    }
-
-    let meta = match probe_video(path) {
-        Ok(m) => m,
-        Err(e) => return ParticleSourceResult::Error(format!("Failed to probe video: {e}")),
-    };
-
-    if meta.duration_secs > MAX_PREDECODE_SECS {
-        return ParticleSourceResult::Error(format!(
-            "Video too long ({:.0}s > {:.0}s max)",
-            meta.duration_secs, MAX_PREDECODE_SECS,
-        ));
-    }
-
-    match decode_all_frames(path, &meta, &Default::default()) {
+fn load_video_sync(path: &Path, progress: &MediaProgress) -> ParticleSourceResult {
+    match crate::media::video::decode_video(path, progress) {
         Ok((frames, delays_ms)) => ParticleSourceResult::Animated {
             path: path.to_string_lossy().to_string(),
             frames,
             delays_ms,
         },
-        Err(e) => ParticleSourceResult::Error(format!("Failed to decode video: {e}")),
+        Err(e) => ParticleSourceResult::Error(format!("Failed to load video: {e}")),
     }
+}
+
+#[cfg(not(feature = "video"))]
+fn load_video_sync(path: &Path, _progress: &MediaProgress) -> ParticleSourceResult {
+    ParticleSourceResult::Error(format!(
+        "This build has no video support, cannot load '{}'",
+        path.display()
+    ))
 }
 
 #[cfg(test)]
@@ -634,5 +675,173 @@ mod tests {
             );
         }
         assert!(checked > 0, "no built-in images sampled");
+    }
+
+    // ---- the loader itself: no ffmpeg, no GPU, jobs are closures ----
+
+    fn req(layer_idx: usize) -> SourceRequest {
+        SourceRequest {
+            layer_idx,
+            ..Default::default()
+        }
+    }
+
+    fn model(path: &str) -> ParticleSourceResult {
+        ParticleSourceResult::Model {
+            path: path.to_string(),
+        }
+    }
+
+    fn path_of(r: &ParticleSourceResult) -> &str {
+        match r {
+            ParticleSourceResult::Model { path } => path,
+            _ => panic!("expected a Model result"),
+        }
+    }
+
+    /// Poll `try_recv` until `n` results or a deadline, like the frame loop does.
+    fn collect(
+        l: &mut ParticleSourceLoader,
+        n: usize,
+    ) -> Vec<(SourceRequest, ParticleSourceResult)> {
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let mut got = Vec::new();
+        while got.len() < n && Instant::now() < deadline {
+            match l.try_recv() {
+                Some(r) => got.push(r),
+                None => thread::sleep(std::time::Duration::from_millis(1)),
+            }
+        }
+        got
+    }
+
+    #[test]
+    fn loads_for_different_layers_run_side_by_side() {
+        let mut l = ParticleSourceLoader::new();
+        l.start("t", "a".into(), req(0), |_| Some(model("a")))
+            .unwrap();
+        l.start("t", "b".into(), req(1), |_| Some(model("b")))
+            .unwrap();
+        assert_eq!(l.loads().len(), 2, "both stay listed until they land");
+        let mut got: Vec<usize> = collect(&mut l, 2)
+            .iter()
+            .map(|(r, _)| r.layer_idx)
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, vec![0, 1]);
+        assert!(!l.is_loading());
+    }
+
+    #[test]
+    fn a_new_request_for_the_same_layer_cancels_the_old_one() {
+        let mut l = ParticleSourceLoader::new();
+        let (gate_tx, gate_rx) = bounded::<()>(1);
+        let (saw_tx, saw_rx) = bounded::<bool>(1);
+        l.start("t", "old".into(), req(0), move |p| {
+            let _ = gate_rx.recv();
+            let _ = saw_tx.send(p.cancel.load(Ordering::Relaxed));
+            Some(model("old"))
+        })
+        .unwrap();
+        l.start("t", "new".into(), req(0), |_| Some(model("new")))
+            .unwrap();
+        assert_eq!(
+            l.loads().len(),
+            1,
+            "the superseded load left the list at once"
+        );
+        assert_eq!(l.loads()[0].name, "new");
+
+        let got = collect(&mut l, 1);
+        assert_eq!(path_of(&got[0].1), "new");
+        gate_tx.send(()).unwrap();
+        assert!(saw_rx.recv().unwrap(), "the old thread was told to stop");
+        assert!(
+            collect(&mut l, 1).is_empty(),
+            "the old result never arrives"
+        );
+    }
+
+    #[test]
+    fn a_different_role_on_the_same_layer_is_not_superseded() {
+        let mut l = ParticleSourceLoader::new();
+        l.start("t", "src".into(), req(0), |_| Some(model("src")))
+            .unwrap();
+        let obstacle = SourceRequest {
+            as_obstacle: true,
+            ..req(0)
+        };
+        l.start("t", "obs".into(), obstacle, |_| Some(model("obs")))
+            .unwrap();
+        assert_eq!(l.loads().len(), 2);
+        let got = collect(&mut l, 2);
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().any(|(r, _)| r.as_obstacle));
+    }
+
+    #[test]
+    fn cancel_drops_the_load_and_flags_its_thread() {
+        let mut l = ParticleSourceLoader::new();
+        let (gate_tx, gate_rx) = bounded::<()>(1);
+        let (saw_tx, saw_rx) = bounded::<bool>(1);
+        l.start("t", "slow".into(), req(0), move |p| {
+            let _ = gate_rx.recv();
+            let _ = saw_tx.send(p.cancel.load(Ordering::Relaxed));
+            Some(model("slow"))
+        })
+        .unwrap();
+        l.cancel(0);
+        assert!(!l.is_loading());
+        gate_tx.send(()).unwrap();
+        assert!(saw_rx.recv().unwrap());
+        assert!(collect(&mut l, 1).is_empty());
+    }
+
+    #[test]
+    fn cancel_all_empties_the_list() {
+        let mut l = ParticleSourceLoader::new();
+        let (_gate_tx, gate_rx) = bounded::<()>(1);
+        let gate_rx2 = gate_rx.clone();
+        l.start("t", "a".into(), req(0), move |_| {
+            let _ = gate_rx.recv();
+            Some(model("a"))
+        })
+        .unwrap();
+        l.start("t", "b".into(), req(1), move |_| {
+            let _ = gate_rx2.recv();
+            Some(model("b"))
+        })
+        .unwrap();
+        l.cancel_all();
+        assert!(!l.is_loading());
+        assert!(l.loads().is_empty());
+    }
+
+    #[test]
+    fn a_dismissed_dialog_clears_the_load() {
+        let mut l = ParticleSourceLoader::new();
+        l.start("t", "choosing file...".into(), req(0), |_| None)
+            .unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while l.is_loading() && Instant::now() < deadline {
+            assert!(l.try_recv().is_none());
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!l.is_loading());
+    }
+
+    #[test]
+    fn a_result_carries_the_request_it_was_asked_with() {
+        let mut l = ParticleSourceLoader::new();
+        let request = SourceRequest {
+            layer_idx: 3,
+            video_speed: Some(0.5),
+            video_looping: Some(false),
+            ..Default::default()
+        };
+        l.start("t", "v".into(), request, |_| Some(model("v")))
+            .unwrap();
+        let got = collect(&mut l, 1);
+        assert_eq!(got[0].0, request);
     }
 }

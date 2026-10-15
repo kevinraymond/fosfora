@@ -9,6 +9,7 @@ use crate::params::{ParamDef, ParamStore, ParamValue};
 use crate::ui::panels::osc_panel;
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
+use crate::ui::widgets::rows;
 
 const MIDI_BLUE: Color32 = Color32::from_rgb(0x60, 0xA0, 0xE0);
 
@@ -139,6 +140,7 @@ fn float_row(
     name: &str,
     val: &mut f32,
     range: std::ops::RangeInclusive<f32>,
+    live: Option<f32>,
     badges: impl FnOnce(&mut Ui),
 ) {
     let tc = theme_colors(ui.ctx());
@@ -159,11 +161,24 @@ fn float_row(
                     .color(tc.text_secondary),
             );
             ui.spacing_mut().slider_width = ui.available_width();
-            ui.add(
-                egui::Slider::new(val, range)
+            let slider = ui.add(
+                egui::Slider::new(val, range.clone())
                     .clamping(egui::SliderClamping::Always)
                     .show_value(false),
             );
+            if let Some(live) = live {
+                let t = rows::live_t(
+                    f64::from(*range.start()),
+                    f64::from(*range.end()),
+                    f64::from(live),
+                    false,
+                );
+                rows::live_marker(ui, &slider.rect, t);
+                slider.on_hover_text(format!(
+                    "Binding output {}. The slider holds your own value, which presets save.",
+                    fmt_val(live)
+                ));
+            }
         });
     });
 }
@@ -173,7 +188,7 @@ fn float_row(
 /// anything.
 pub fn draw_example_row(ui: &mut Ui) {
     let mut val = 0.62;
-    float_row(ui, "speed", &mut val, 0.0..=1.0, |ui| {
+    float_row(ui, "speed", &mut val, 0.0..=1.0, Some(0.31), |ui| {
         let _ = ui.add(learn_badge("O"));
         let _ = ui.add(learn_badge("M"));
         let _ = ui.add(bind_button(ui.ctx(), &["audio.band.1"]));
@@ -237,13 +252,19 @@ pub fn draw_param_panel(
         let row_top = ui.cursor().top();
         match def {
             ParamDef::Float { name, min, max, .. } => {
+                // The slider edits the base value; a binding's output this
+                // frame is shown beside it, never written back (#4053).
                 let current = match store.get(name) {
                     Some(ParamValue::Float(v)) => *v,
                     _ => *min,
                 };
+                let live = match store.modulated(name) {
+                    Some(ParamValue::Float(v)) => Some(*v),
+                    _ => None,
+                };
                 let mut val = current;
 
-                float_row(ui, name, &mut val, *min..=*max, |ui| {
+                float_row(ui, name, &mut val, *min..=*max, live, |ui| {
                     osc_panel::draw_osc_badge(ui, osc, name);
                     draw_midi_badge(ui, midi, name);
                     draw_bind_control(ui, binds, name);
@@ -285,6 +306,10 @@ pub fn draw_param_panel(
                     Some(ParamValue::Bool(b)) => *b,
                     _ => false,
                 };
+                let live = match store.modulated(name) {
+                    Some(ParamValue::Bool(b)) => Some(*b),
+                    _ => None,
+                };
                 let mut val = current;
 
                 ui.horizontal(|ui| {
@@ -293,6 +318,18 @@ pub fn draw_param_panel(
                         osc_panel::draw_osc_badge(ui, osc, name);
                         draw_midi_badge(ui, midi, name);
                         draw_bind_control(ui, binds, name);
+                        if let Some(live) = live {
+                            // The binding's state this frame; the box keeps
+                            // the user's own value (#4053).
+                            ui.label(
+                                RichText::new(if live { "live: on" } else { "live: off" })
+                                    .size(SMALL_SIZE)
+                                    .color(tc.text_secondary),
+                            )
+                            .on_hover_text(
+                                "What the binding has this control at. The box holds your own value, which presets save.",
+                            );
+                        }
                     });
                 });
 

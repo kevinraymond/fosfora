@@ -427,6 +427,7 @@ impl ApplicationHandler for FosforaApp {
                                 initial_size: ps.def.initial_size,
                                 size_end: ps.def.size_end,
                                 drag: ps.def.drag,
+                                live: ps.modulation,
                                 attraction_strength: ps.def.attraction_strength,
                                 blend_mode: ps.blend_mode.clone(),
                                 has_flow_field: ps.def.flow_field,
@@ -459,7 +460,7 @@ impl ApplicationHandler for FosforaApp {
                                 video_duration_secs: ps.source.video_duration_secs(),
                                 is_transitioning: ps.source_transition.is_some(),
                                 source_loading: false, // set below
-                                source_loading_name: String::new(),
+                                source_loads: Vec::new(),
                                 builtin_images: Vec::new(), // set below
                                 model_yaw: ps.model_sample.yaw_degrees,
                                 model_pitch: ps.model_sample.pitch_degrees,
@@ -572,8 +573,8 @@ impl ApplicationHandler for FosforaApp {
                         });
                     // Overlay loader state + built-in images onto particle info
                     if let Some(ref mut pi) = particle_info {
-                        pi.source_loading = app.particle_source_loader.loading;
-                        pi.source_loading_name = app.particle_source_loader.loading_name.clone();
+                        pi.source_loading = app.particle_source_loader.is_loading();
+                        pi.source_loads = app.particle_source_loader.loads();
                         if pi.has_image_source {
                             pi.builtin_images =
                                 crate::gpu::particle::builtin_raster_images().to_vec();
@@ -691,6 +692,9 @@ impl ApplicationHandler for FosforaApp {
                                         fit: ps.obstacle_fit,
                                         threshold: ps.obstacle_threshold,
                                         elasticity: ps.obstacle_elasticity,
+                                        live_enabled: ps.modulation.obstacle_enabled,
+                                        live_threshold: ps.modulation.obstacle_threshold,
+                                        live_elasticity: ps.modulation.obstacle_elasticity,
                                         source: ps.obstacle_source.clone(),
                                         image_path: ps.obstacle_image_path.clone(),
                                         has_particles,
@@ -729,6 +733,9 @@ impl ApplicationHandler for FosforaApp {
                                         fit: crate::gpu::particle::ObstacleFit::Cover,
                                         threshold: 0.5,
                                         elasticity: 0.7,
+                                        live_enabled: None,
+                                        live_threshold: None,
+                                        live_elasticity: None,
                                         source: String::new(),
                                         image_path: None,
                                         has_particles,
@@ -1052,6 +1059,7 @@ impl ApplicationHandler for FosforaApp {
                                 effect_loader: &app.effect_loader,
                                 postprocess: &mut app.master_postprocess,
                                 postprocess_previous: app.master_postprocess_previous.as_ref(),
+                                postprocess_modulation: &app.master_postprocess_modulation,
                                 volumetric_enabled: &mut app.volumetric_enabled,
                                 volumetric_params: &mut app.volumetric_params,
                                 particle_count,
@@ -2676,6 +2684,8 @@ impl ApplicationHandler for FosforaApp {
                     if let Some(cmd) = obstacle_cmd.filter(|c| !matches!(c, ObstacleCommand::None))
                     {
                         app.preset_store.mark_dirty();
+                        #[cfg(feature = "video")]
+                        let active_idx = app.layer_stack.active_layer;
                         if let Some(layer) = app.layer_stack.active_mut() {
                             if let Some(e) = layer.as_effect_mut() {
                                 if let Some(ps) = &mut e.pass_executor.particle_system {
@@ -2719,22 +2729,24 @@ impl ApplicationHandler for FosforaApp {
                                             }
                                         }
                                         ObstacleCommand::LoadVideo => {
+                                            // The dialog and the decode both run on the
+                                            // loader's thread; the result lands through
+                                            // the particle source drain (#3159).
                                             #[cfg(feature = "video")]
-                                            if self.obstacle_dialog_rx.is_none() {
-                                                let (tx, rx) = crossbeam_channel::bounded(1);
-                                                self.obstacle_dialog_rx = Some(rx);
-                                                std::thread::Builder::new()
-                                                    .name("obstacle-video-dialog".into())
-                                                    .spawn(move || {
-                                                        let video_exts =
-                                                            crate::media::decoder::VIDEO_EXTENSIONS;
-                                                        let dialog = rfd::FileDialog::new()
-                                                            .add_filter("Video", video_exts);
-                                                        if let Some(path) = dialog.pick_file() {
-                                                            let _ = tx.send(path);
-                                                        }
-                                                    })
-                                                    .ok();
+                                            {
+                                                let request = crate::gpu::particle::SourceRequest {
+                                                    layer_idx: active_idx,
+                                                    as_obstacle: true,
+                                                    ..Default::default()
+                                                };
+                                                if let Err(e) = app
+                                                    .particle_source_loader
+                                                    .open_video_dialog(request)
+                                                {
+                                                    log::error!(
+                                                        "Could not open the obstacle video dialog: {e}"
+                                                    );
+                                                }
                                             }
                                         }
                                         ObstacleCommand::LoadModel => {
@@ -2925,17 +2937,6 @@ impl ApplicationHandler for FosforaApp {
                             .map(|e| e.to_string_lossy().to_lowercase())
                             .unwrap_or_default();
                         let is_model = matches!(ext.as_str(), "glb" | "gltf" | "ply" | "splat");
-                        let is_video = {
-                            #[cfg(feature = "video")]
-                            {
-                                crate::media::decoder::VIDEO_EXTENSIONS.contains(&ext.as_str())
-                            }
-                            #[cfg(not(feature = "video"))]
-                            {
-                                let _ = &ext;
-                                false
-                            }
-                        };
                         if is_model {
                             let path_str = path.to_string_lossy().to_string();
                             if let Some(layer) = app.layer_stack.active_mut() {
@@ -2953,42 +2954,6 @@ impl ApplicationHandler for FosforaApp {
                                             log::info!("Loaded obstacle model: {path_str}");
                                         }
                                     }
-                                }
-                            }
-                        } else if is_video {
-                            #[cfg(feature = "video")]
-                            {
-                                match crate::media::video::probe_video(&path) {
-                                    Ok(meta) => {
-                                        match crate::media::video::decode_all_frames(
-                                            &path,
-                                            &meta,
-                                            &Default::default(),
-                                        ) {
-                                            Ok((frames, delays_ms)) => {
-                                                let path_str = path.to_string_lossy().to_string();
-                                                if let Some(layer) = app.layer_stack.active_mut() {
-                                                    if let Some(e) = layer.as_effect_mut() {
-                                                        if let Some(ps) =
-                                                            &mut e.pass_executor.particle_system
-                                                        {
-                                                            ps.set_obstacle_video(
-                                                                &app.gpu.device,
-                                                                &app.gpu.queue,
-                                                                frames,
-                                                                delays_ms,
-                                                                path_str,
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                log::error!("Failed to decode obstacle video: {e}");
-                                            }
-                                        }
-                                    }
-                                    Err(e) => log::error!("Failed to probe obstacle video: {e}"),
                                 }
                             }
                         } else {
@@ -3088,6 +3053,15 @@ impl ApplicationHandler for FosforaApp {
                 });
                 if let Some(i) = cancel_load {
                     app.cancel_media_load(i);
+                }
+                let cancel_source: Option<usize> = app.egui_overlay.context().data_mut(|d| {
+                    let id = egui::Id::new("cancel_source_load");
+                    let v = d.get_temp(id);
+                    d.remove::<usize>(id);
+                    v
+                });
+                if let Some(i) = cancel_source {
+                    app.particle_source_loader.cancel(i);
                 }
                 let loading: Vec<crate::ui::panels::media_panel::MediaLoading> = app
                     .media_loads
@@ -3389,15 +3363,14 @@ impl ApplicationHandler for FosforaApp {
                     // when the dialog returns (#2012).
                     let base_request = crate::gpu::particle::SourceRequest {
                         layer_idx: app.layer_stack.active_layer,
-                        as_morph_target: false,
-                        morph_slot: None,
+                        ..Default::default()
                     };
 
                     // Select built-in raster image
                     let select_builtin: Option<String> =
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_select_builtin")));
                     if let Some(name) = select_builtin {
-                        if !app.particle_source_loader.loading {
+                        if !app.particle_source_loader.is_loading() {
                             let path = crate::gpu::particle::builtin_raster_path(&name);
                             if let Err(e) =
                                 app.particle_source_loader.load_image(path, base_request)
@@ -3411,7 +3384,7 @@ impl ApplicationHandler for FosforaApp {
                     // Load image as particle source (dialog + decode on background thread)
                     let load_image: Option<bool> =
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_load_image")));
-                    if load_image.is_some() && !app.particle_source_loader.loading {
+                    if load_image.is_some() && !app.particle_source_loader.is_loading() {
                         if let Err(e) = app.particle_source_loader.open_image_dialog(base_request) {
                             log::error!("Failed to spawn particle source dialog thread: {e}");
                         }
@@ -3423,7 +3396,7 @@ impl ApplicationHandler for FosforaApp {
                     {
                         let load_video: Option<bool> =
                             ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_load_video")));
-                        if load_video.is_some() && !app.particle_source_loader.loading {
+                        if load_video.is_some() && !app.particle_source_loader.is_loading() {
                             if let Err(e) =
                                 app.particle_source_loader.open_video_dialog(base_request)
                             {
@@ -3437,7 +3410,7 @@ impl ApplicationHandler for FosforaApp {
                     // background thread; the raster happens where the device lives.
                     let load_model: Option<bool> =
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_load_model")));
-                    if load_model.is_some() && !app.particle_source_loader.loading {
+                    if load_model.is_some() && !app.particle_source_loader.is_loading() {
                         if let Err(e) = app.particle_source_loader.open_model_dialog(base_request) {
                             log::error!("Failed to spawn particle source dialog thread: {e}");
                         }
@@ -3879,6 +3852,7 @@ impl ApplicationHandler for FosforaApp {
                                             layer_idx: app.layer_stack.active_layer,
                                             as_morph_target: true,
                                             morph_slot: morph_selected_slot,
+                                            ..Default::default()
                                         };
                                         let clear_slot = || {
                                             ctx.data_mut(|d| {
@@ -4129,16 +4103,43 @@ impl ApplicationHandler for FosforaApp {
                                                 #[cfg(feature = "video")]
                                                 {
                                                     let path_clone = path.clone();
-                                                    ps.set_video_source(
-                                                        &app.gpu.queue,
-                                                        frames,
-                                                        delays_ms,
-                                                        path_clone,
-                                                    );
-                                                    log::info!(
-                                                        "Loaded animated particle source: {}",
-                                                        path,
-                                                    );
+                                                    if request.as_obstacle {
+                                                        ps.set_obstacle_video(
+                                                            &app.gpu.device,
+                                                            &app.gpu.queue,
+                                                            frames,
+                                                            delays_ms,
+                                                            path_clone,
+                                                        );
+                                                        log::info!(
+                                                            "Loaded obstacle video: {}",
+                                                            path
+                                                        );
+                                                    } else {
+                                                        ps.set_video_source(
+                                                            &app.gpu.queue,
+                                                            frames,
+                                                            delays_ms,
+                                                            path_clone,
+                                                        );
+                                                        // A preset restore carries the
+                                                        // transport it saved (#3159).
+                                                        if let Some(playback) =
+                                                            ps.source.playback_mut()
+                                                        {
+                                                            if let Some(spd) = request.video_speed {
+                                                                playback.speed = spd;
+                                                            }
+                                                            if let Some(lp) = request.video_looping
+                                                            {
+                                                                playback.looping = lp;
+                                                            }
+                                                        }
+                                                        log::info!(
+                                                            "Loaded animated particle source: {}",
+                                                            path,
+                                                        );
+                                                    }
                                                 }
                                                 #[cfg(not(feature = "video"))]
                                                 {

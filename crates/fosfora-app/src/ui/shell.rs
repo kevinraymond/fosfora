@@ -77,6 +77,8 @@ pub struct ShellState<'a> {
     pub uniforms: &'a ShaderUniforms,
     pub effect_loader: &'a EffectLoader,
     pub postprocess: &'a mut PostProcessDef,
+    /// This frame's binding output over `postprocess` (#4055).
+    pub postprocess_modulation: &'a crate::effect::format::PostProcessModulation,
     /// Master's post-processing before its last reset, if it has one.
     pub postprocess_previous: Option<&'a PostProcessDef>,
     pub volumetric_enabled: &'a mut bool,
@@ -948,6 +950,11 @@ fn blend_controls(ui: &mut egui::Ui, layer: &crate::gpu::layer::LayerInfo, i: us
                     d.insert_temp(egui::Id::new("layer_toggle_enable"), (i, visible));
                 });
             }
+            if let Some(live) = layer.live_enabled {
+                // A binding's say this frame; the box keeps the user's own (#4055).
+                ui.label(egui::RichText::new(if live { "live: shown" } else { "live: hidden" }).size(13.0))
+                    .on_hover_text("What the binding has this layer at. The box holds your own setting, which presets save.");
+            }
         });
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Opacity").size(13.0));
@@ -956,6 +963,18 @@ fn blend_controls(ui: &mut egui::Ui, layer: &crate::gpu::layer::LayerInfo, i: us
                 egui::Slider::new(&mut opacity, 0.0..=1.0)
                     .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
             );
+            let r = match layer.live_opacity {
+                Some(live) => {
+                    use crate::ui::widgets::rows;
+                    // The response spans the value box too; mark the rail only.
+                    rows::live_marker(ui, &rows::rail_of_valued_slider(ui, &r.rect), live);
+                    r.on_hover_text(format!(
+                        "Binding output {:.0}%. The slider holds your own value, which presets save.",
+                        live * 100.0
+                    ))
+                }
+                None => r,
+            };
             if r.changed() {
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(egui::Id::new("layer_opacity"), opacity));
@@ -1095,7 +1114,7 @@ fn master_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
         widgets::section(ui, "v2_postfx", "Post-Processing", None, true, |ui| {
             postfx_source(ui, s);
             ui.add_space(4.0);
-            postfx_panel::draw_postfx_panel(ui, s.postprocess);
+            postfx_panel::draw_postfx_panel(ui, s.postprocess, s.postprocess_modulation);
         });
     });
     tour::anchor(ui, tour::Anchor::PostProcessing, r.response.rect);
@@ -1474,6 +1493,9 @@ mod tests {
             fit: ObstacleFit::Stretch,
             threshold: 0.5,
             elasticity: 0.5,
+            live_enabled: None,
+            live_threshold: None,
+            live_elasticity: None,
             source: String::new(),
             image_path: None,
             has_particles: true,

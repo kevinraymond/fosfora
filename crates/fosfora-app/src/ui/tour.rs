@@ -1964,6 +1964,8 @@ mod tests {
         LayerInfo {
             name: name.into(),
             custom_name: None,
+            live_opacity: None,
+            live_enabled: None,
             effect_index: (kind == "effect").then_some(0),
             effect_name: (kind == "effect").then(|| name.to_string()),
             blend_mode: BlendMode::default(),

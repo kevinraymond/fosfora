@@ -42,6 +42,9 @@ pub struct ParamRow<'a> {
     formatter: Option<fn(f64) -> String>,
     /// Slider step: whole numbers only when set to 1.
     step: Option<f64>,
+    /// A binding's output this frame, in the slider's units: drawn as a
+    /// marker under the rail while the thumb stays on the saved value (#4055).
+    live: Option<f64>,
 }
 
 impl<'a> ParamRow<'a> {
@@ -55,7 +58,15 @@ impl<'a> ParamRow<'a> {
             enabled: true,
             formatter: None,
             step: None,
+            live: None,
         }
+    }
+
+    /// Where a binding has this control this frame, if one drives it. The
+    /// slider keeps the saved value; the marker shows the live one.
+    pub fn live(mut self, live: Option<f64>) -> Self {
+        self.live = live;
+        self
     }
 
     pub fn tooltip(mut self, tip: &'a str) -> Self {
@@ -106,6 +117,7 @@ impl<'a> ParamRow<'a> {
         value: &mut T,
         range: RangeInclusive<T>,
     ) -> RowResponse {
+        let (lo, hi) = (range.start().to_f64(), range.end().to_f64());
         self.show_impl(ui, value, |ui, this, value| {
             ui.spacing_mut().slider_width = ui.available_width();
             let mut slider = egui::Slider::new(value, range)
@@ -115,7 +127,21 @@ impl<'a> ParamRow<'a> {
             if let Some(step) = this.step {
                 slider = slider.step_by(step);
             }
-            ui.add(slider)
+            let resp = ui.add(slider);
+            match this.live {
+                Some(live) => {
+                    live_marker(ui, &resp.rect, live_t(lo, hi, live, this.logarithmic));
+                    let shown = match this.formatter {
+                        Some(f) => f(live),
+                        None if T::INTEGRAL => format!("{live:.0}"),
+                        None => fmt_val(live),
+                    };
+                    resp.on_hover_text(format!(
+                        "Binding output {shown}. The slider holds your own value, which presets save."
+                    ))
+                }
+                None => resp,
+            }
         })
     }
 
@@ -195,6 +221,57 @@ impl<'a> ParamRow<'a> {
             response: widget_resp,
         }
     }
+}
+
+/// Where `live` sits along a slider of `lo..=hi`, 0..1. Mirrors egui's
+/// positive logarithmic mapping; a logarithmic range that touches zero falls
+/// back to linear, which puts the marker a little off on such a row.
+pub fn live_t(lo: f64, hi: f64, live: f64, logarithmic: bool) -> f32 {
+    let span = hi - lo;
+    if span <= 0.0 || !span.is_finite() {
+        return 0.0;
+    }
+    let t = if logarithmic && lo > 0.0 && live > 0.0 {
+        (live.ln() - lo.ln()) / (hi.ln() - lo.ln())
+    } else {
+        (live - lo) / span
+    };
+    t.clamp(0.0, 1.0) as f32
+}
+
+/// The rail of a slider that also shows its value box: egui's response then
+/// covers both, so the marker needs the rail alone. egui allocates the rail
+/// `slider_width` wide and the body text height (at least `interact_size.y`)
+/// tall, at the left, centered on the row.
+pub fn rail_of_valued_slider(ui: &Ui, response_rect: &egui::Rect) -> egui::Rect {
+    let w = ui.spacing().slider_width.min(response_rect.width());
+    let h = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.spacing().interact_size.y)
+        .min(response_rect.height());
+    egui::Rect::from_min_size(
+        egui::pos2(response_rect.left(), response_rect.center().y - h / 2.0),
+        egui::vec2(w, h),
+    )
+}
+
+/// Where a binding has a control this frame: a small triangle under the
+/// slider's rail at `t` in 0..1, so the thumb can stay on the saved value
+/// (#4053, #4055). Shape and the text color, never a hue alone.
+pub fn live_marker(ui: &Ui, rect: &egui::Rect, t: f32) {
+    // egui's rail spans the slider's rect shrunk by the handle radius.
+    let r = rect.height() / 2.5;
+    let x = egui::lerp((rect.left() + r)..=(rect.right() - r), t.clamp(0.0, 1.0));
+    let base = rect.bottom();
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(x, base - 4.0),
+            egui::pos2(x - 3.5, base),
+            egui::pos2(x + 3.5, base),
+        ],
+        theme_colors(ui.ctx()).text_primary,
+        egui::Stroke::NONE,
+    ));
 }
 
 /// Label column + arbitrary control filling the remainder — the escape hatch
@@ -293,6 +370,23 @@ fn row_label(ui: &mut Ui, label: &str, width: f32) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- the live marker's position (#4055) ----
+
+    #[test]
+    fn live_t_maps_linear_and_logarithmic_rows_like_the_slider() {
+        assert_eq!(live_t(0.0, 1.0, 0.25, false), 0.25);
+        assert_eq!(live_t(0.5, 1.5, 1.0, false), 0.5);
+        // Clamped to the rail.
+        assert_eq!(live_t(0.0, 1.0, 7.0, false), 1.0);
+        assert_eq!(live_t(0.0, 1.0, -7.0, false), 0.0);
+        // Logarithmic: the geometric middle sits at the rail's middle.
+        assert!((live_t(10.0, 1000.0, 100.0, true) - 0.5).abs() < 1e-6);
+        // A logarithmic range touching zero falls back to linear.
+        assert_eq!(live_t(0.0, 2.0, 1.0, true), 0.5);
+        // A degenerate range puts the marker at the left, not at NaN.
+        assert_eq!(live_t(1.0, 1.0, 1.0, false), 0.0);
+    }
 
     /// One frame of a row holding `value`, with `events`. Returns the texts
     /// painted and where the slider was.

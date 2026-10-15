@@ -3,7 +3,21 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v2.5.0 — 2026-10-12
+
+Bindings play over the values you set instead of overwriting them, so bound presets stay clean and save what you meant; videos longer than a minute play as layers; particle and obstacle videos load without freezing the app.
+
+### Added
+- **Videos longer than a minute play as layers.** They used to be refused with "Video too long for pre-decode". A long clip now decodes as it plays on its own thread, with seek and loop, and shows its first frame as soon as it opens; clips up to a minute still pre-decode for instant scrubbing. Particle video sources keep the one-minute limit.
+
+### Fixed
+- **Loading a preset with a particle video source, or picking an obstacle video, froze the app until the whole clip was decoded.** Those decodes now run on their own thread like media layers do, the particle panel shows how far each one has got with a Cancel button, several layers can decode at once, and a video a preset restores keeps its saved speed and loop settings.
+- **A preset with parameter bindings showed as edited the moment it loaded, and saving it kept whatever the bindings had written that frame.** Every binding write counted as a user edit, so the `*` never went away, and for a user effect the same path armed the `.pfx` autosave, so once a bound source went quiet the modulated values became the effect's new defaults. A binding now plays over your value instead of replacing it: sliders hold what you set, a marker under the slider (and in the web remote) shows where the binding has it, and presets and `.pfx` files save your value.
+- **Bound layer opacity, blend, visibility, Master post-processing and particle settings saved whatever the binding last wrote.** A binding on any of them now plays over your setting the way parameter bindings do: the slider keeps your value with a marker at the binding's, presets save yours, and removing the binding puts the control back.
+
+## v2.4.0 — 2026-10-11
+
+Audio analysis no longer depends on the input sample rate, the beat grid reports whether it can be trusted, input trim and a level meter join Setup, eight new trama nodes, and release downloads ship with checksums and provenance.
 
 ### Added
 - **Release downloads come with checksums and signed build provenance.** Each release now includes a `SHA256SUMS` file, and every asset carries a provenance attestation, so you can check that a download is the one CI built from the tagged source (`sha256sum -c SHA256SUMS`, or `gh attestation verify <file> --repo kevinraymond/fosfora`).

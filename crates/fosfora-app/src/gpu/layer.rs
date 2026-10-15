@@ -286,12 +286,42 @@ impl ChainBadge {
     }
 }
 
+/// This frame's binding output for a layer's own fields, laid over the saved
+/// values the way `ParamStore`'s overlay is laid over its params (#4055). The
+/// compositor reads the effective value; the stack panel, presets and morphs
+/// read the field itself, so a bound opacity saves and shows as the user set
+/// it. Emptied by [`Layer::clear_modulation`] before the binding bus applies.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LayerModulation {
+    pub opacity: Option<f32>,
+    pub blend_mode: Option<BlendMode>,
+    pub displace_amount: Option<f32>,
+    pub enabled: Option<bool>,
+}
+
+impl LayerModulation {
+    pub fn opacity_over(&self, base: f32) -> f32 {
+        self.opacity.unwrap_or(base)
+    }
+    pub fn blend_mode_over(&self, base: BlendMode) -> BlendMode {
+        self.blend_mode.unwrap_or(base)
+    }
+    pub fn displace_amount_over(&self, base: f32) -> f32 {
+        self.displace_amount.unwrap_or(base)
+    }
+    pub fn enabled_over(&self, base: bool) -> bool {
+        self.enabled.unwrap_or(base)
+    }
+}
+
 /// A single compositing layer. Owns its own rendering pipeline and parameters.
 pub struct Layer {
     pub name: String,
     pub custom_name: Option<String>,
     pub param_store: ParamStore,
     pub content: LayerContent,
+    /// The saved blend, opacity, displacement and switch: what the user set
+    /// and the preset keeps. A binding writes `modulation` instead.
     pub blend_mode: BlendMode,
     pub opacity: f32,
     /// Warp strength for the displacement blend modes (#1478). Ignored by the
@@ -306,6 +336,8 @@ pub struct Layer {
     /// inactive and the layer's own picture passes through
     /// (`NodeGraph::contributes`).
     pub chain: Option<Box<LayerChain>>,
+    /// This frame's binding output for the fields above (#4055).
+    pub modulation: LayerModulation,
 }
 
 impl Layer {
@@ -324,6 +356,40 @@ impl Layer {
             pinned: false,
             postprocess: PostProcessDef::default(),
             chain: None,
+            modulation: LayerModulation::default(),
+        }
+    }
+
+    /// Opacity as composited this frame: a binding's when one drives it, else
+    /// the layer's own.
+    pub fn effective_opacity(&self) -> f32 {
+        self.modulation.opacity_over(self.opacity)
+    }
+
+    pub fn effective_blend_mode(&self) -> BlendMode {
+        self.modulation.blend_mode_over(self.blend_mode)
+    }
+
+    pub fn effective_displace_amount(&self) -> f32 {
+        self.modulation.displace_amount_over(self.displace_amount)
+    }
+
+    /// Whether the layer renders this frame: a binding's say when one drives
+    /// the switch, else the switch itself.
+    pub fn is_shown(&self) -> bool {
+        self.modulation.enabled_over(self.enabled)
+    }
+
+    /// Drop this frame's binding output on the layer, its params and its
+    /// particle system. The binding bus calls it before it applies.
+    pub fn clear_modulation(&mut self) {
+        self.modulation = LayerModulation::default();
+        self.param_store.clear_modulation();
+        if let Some(ps) = self
+            .as_effect_mut()
+            .and_then(|e| e.pass_executor.particle_system.as_mut())
+        {
+            ps.modulation = Default::default();
         }
     }
 
@@ -342,6 +408,7 @@ impl Layer {
             pinned: false,
             postprocess: PostProcessDef::default(),
             chain: None,
+            modulation: LayerModulation::default(),
         }
     }
 
@@ -520,6 +587,10 @@ pub struct LayerInfo {
     pub opacity: f32,
     pub displace_amount: f32,
     pub enabled: bool,
+    /// A binding's opacity this frame, for the slider's live marker (#4055).
+    pub live_opacity: Option<f32>,
+    /// A binding's say on the switch this frame.
+    pub live_enabled: Option<bool>,
     pub locked: bool,
     pub pinned: bool,
     #[allow(dead_code)]
@@ -552,6 +623,14 @@ impl LayerStack {
         Self {
             layers: Vec::new(),
             active_layer: 0,
+        }
+    }
+
+    /// Drop every layer's binding output for this frame; the bus then lays
+    /// down only the bindings that fire now (#4053, #4055).
+    pub fn clear_modulation(&mut self) {
+        for layer in &mut self.layers {
+            layer.clear_modulation();
         }
     }
 
@@ -612,6 +691,8 @@ impl LayerStack {
                     opacity: l.opacity,
                     displace_amount: l.displace_amount,
                     enabled: l.enabled,
+                    live_opacity: l.modulation.opacity,
+                    live_enabled: l.modulation.enabled,
                     locked: l.locked,
                     pinned: l.pinned,
                     has_particles: l.has_particles(),
@@ -703,6 +784,31 @@ pub fn adjusted_active_after_move(active: usize, from: usize, to: usize) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- base vs modulated layer fields (#4055) ----
+
+    #[test]
+    fn layer_modulation_plays_over_the_saved_fields_only_where_set() {
+        let m = LayerModulation::default();
+        assert_eq!(m.opacity_over(0.4), 0.4);
+        assert_eq!(m.blend_mode_over(BlendMode::Add), BlendMode::Add);
+        assert_eq!(m.displace_amount_over(0.3), 0.3);
+        assert!(m.enabled_over(true));
+        assert!(!m.enabled_over(false));
+
+        let m = LayerModulation {
+            opacity: Some(0.9),
+            enabled: Some(false),
+            ..LayerModulation::default()
+        };
+        // A bound opacity composites at the binding's value; the saved one is
+        // what the slider and the preset keep.
+        assert_eq!(m.opacity_over(0.4), 0.9);
+        assert!(!m.enabled_over(true));
+        // Unbound fields fall through untouched.
+        assert_eq!(m.blend_mode_over(BlendMode::Add), BlendMode::Add);
+        assert_eq!(m.displace_amount_over(0.3), 0.3);
+    }
 
     #[test]
     fn the_master_badge_speaks_about_the_output_not_a_layer() {

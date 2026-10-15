@@ -52,6 +52,29 @@ const WORKGROUP_SIZE: u32 = 256;
 /// (render mode 0) only: no sprite atlas, trails or spin, and none of the
 /// compute-raster, splat or volumetric modes; blend `"alpha"` selects alpha
 /// blending, anything else additive.
+/// This frame's binding output for a particle system's bindable settings,
+/// laid over `def` and the obstacle fields only where a binding fired (#4055).
+/// `update_uniforms` and the frame prep read the effective value; the
+/// particle and obstacle panels, presets and the `.pfx` save read the fields
+/// themselves. Emptied by `Layer::clear_modulation` before the bus applies.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ParticleModulation {
+    pub emit_rate: Option<f32>,
+    pub burst_on_beat: Option<u32>,
+    pub lifetime: Option<f32>,
+    pub initial_speed: Option<f32>,
+    pub initial_size: Option<f32>,
+    pub drag: Option<f32>,
+    pub turbulence: Option<f32>,
+    pub gravity_x: Option<f32>,
+    pub gravity_y: Option<f32>,
+    pub vortex_strength: Option<f32>,
+    pub obstacle_enabled: Option<bool>,
+    pub obstacle_mode: Option<super::types::ObstacleMode>,
+    pub obstacle_threshold: Option<f32>,
+    pub obstacle_elasticity: Option<f32>,
+}
+
 pub struct ParticleSystem {
     pub max_particles: u32,
     pub uniforms: ParticleUniforms,
@@ -382,6 +405,9 @@ pub struct ParticleSystem {
     pub emit_rate: f32,
     pub burst_on_beat: u32,
     pub def: ParticleDef,
+    /// This frame's binding output over `def`, `emit_rate`, `burst_on_beat`
+    /// and the obstacle fields (#4055).
+    pub modulation: ParticleModulation,
     /// Tracked for content-change detection in hot-reload.
     pub current_compute_source: String,
 
@@ -394,6 +420,11 @@ pub struct ParticleSystem {
     /// left both set and the panel named the model while showing the picture.
     /// Change it only through [`ParticleSystem::set_source`].
     pub source: ParticleSource,
+    /// A video the effect's `.pfx` names for its emitter, not decoded yet: the
+    /// builder records the path and the app decodes it off the main thread
+    /// into [`ParticleSystem::set_video_source`] (#3159). Headless renders
+    /// take it synchronously through [`ParticleSystem::decode_pending_video`].
+    pub pending_video: Option<String>,
     /// The camera a webcam source is fed by, as the camera list names it;
     /// `None` for the default camera. Read only while the source is a webcam.
     pub webcam_device: Option<String>,
@@ -1579,9 +1610,11 @@ impl ParticleSystem {
             emit_accumulator: 0.0,
             emit_rate: def.emit_rate,
             burst_on_beat: def.burst_on_beat,
+            modulation: ParticleModulation::default(),
             def: def.clone(),
             current_compute_source: compute_source.to_string(),
             source: ParticleSource::None,
+            pending_video: None,
             webcam_device: None,
             source_transition: None,
             sample_def: def.image_sample.clone().unwrap_or(ImageSampleDef {
@@ -1703,12 +1736,15 @@ impl ParticleSystem {
         self.lattice_orbit_phase =
             wrap_angle(self.lattice_orbit_phase + dt * self.lattice_params.render.cam_orbit_speed);
 
-        // Accumulate emissions
-        self.emit_accumulator += self.emit_rate * dt;
+        // Accumulate emissions. A binding's rate this frame plays over the
+        // saved one (#4055).
+        let m = self.modulation;
+        self.emit_accumulator += m.emit_rate.unwrap_or(self.emit_rate) * dt;
 
         // Beat burst — use dedicated beat trigger instead of onset threshold
-        if beat > 0.5 && self.burst_on_beat > 0 {
-            self.emit_accumulator += self.burst_on_beat as f32;
+        let burst = m.burst_on_beat.unwrap_or(self.burst_on_beat);
+        if beat > 0.5 && burst > 0 {
+            self.emit_accumulator += burst as f32;
         }
 
         let emit_count = self.emit_accumulator as u32;
@@ -1726,13 +1762,16 @@ impl ParticleSystem {
         self.uniforms.emitter_pos = self.def.emitter.position;
         self.uniforms.emitter_radius = self.def.emitter.radius;
         self.uniforms.emitter_shape = self.def.emitter.shape_index();
-        self.uniforms.lifetime = self.def.lifetime;
-        self.uniforms.initial_speed = self.def.initial_speed;
-        self.uniforms.initial_size = self.def.initial_size;
+        self.uniforms.lifetime = m.lifetime.unwrap_or(self.def.lifetime);
+        self.uniforms.initial_speed = m.initial_speed.unwrap_or(self.def.initial_speed);
+        self.uniforms.initial_size = m.initial_size.unwrap_or(self.def.initial_size);
         self.uniforms.size_end = self.def.size_end;
-        self.uniforms.gravity = self.def.gravity;
-        self.uniforms.drag = self.def.drag;
-        self.uniforms.turbulence = self.def.turbulence;
+        self.uniforms.gravity = [
+            m.gravity_x.unwrap_or(self.def.gravity[0]),
+            m.gravity_y.unwrap_or(self.def.gravity[1]),
+        ];
+        self.uniforms.drag = m.drag.unwrap_or(self.def.drag);
+        self.uniforms.turbulence = m.turbulence.unwrap_or(self.def.turbulence);
         self.uniforms.attraction_point = [0.0, 0.0];
         self.uniforms.attraction_strength = self.def.attraction_strength;
 
@@ -1755,7 +1794,7 @@ impl ParticleSystem {
         // Wind + vortex + ground
         self.uniforms.wind = self.def.wind;
         self.uniforms.vortex_center = self.def.vortex_center;
-        self.uniforms.vortex_strength = self.def.vortex_strength;
+        self.uniforms.vortex_strength = m.vortex_strength.unwrap_or(self.def.vortex_strength);
         self.uniforms.vortex_radius = self.def.vortex_radius;
         self.uniforms.ground_y = self.def.ground_y;
         self.uniforms.ground_bounce = self.def.ground_bounce;
@@ -2298,11 +2337,35 @@ impl ParticleSystem {
         self.counter_map_pending.store(false, Ordering::Release);
     }
 
+    /// Obstacle collision as it runs this frame: a binding's when one drives
+    /// the switch, else the saved switch (#4055).
+    pub fn obstacle_enabled_now(&self) -> bool {
+        self.modulation
+            .obstacle_enabled
+            .unwrap_or(self.obstacle_enabled)
+    }
+
+    pub fn obstacle_mode_now(&self) -> super::types::ObstacleMode {
+        self.modulation.obstacle_mode.unwrap_or(self.obstacle_mode)
+    }
+
+    pub fn obstacle_threshold_now(&self) -> f32 {
+        self.modulation
+            .obstacle_threshold
+            .unwrap_or(self.obstacle_threshold)
+    }
+
+    pub fn obstacle_elasticity_now(&self) -> f32 {
+        self.modulation
+            .obstacle_elasticity
+            .unwrap_or(self.obstacle_elasticity)
+    }
+
     /// Render particles into the given target using indirect draw.
     pub fn render(&self, encoder: &mut CommandEncoder, queue: &Queue, target: &TextureView) {
         // Faint obstacle-model underlay (#1851), beneath the particles, so the
         // form the water flows over is visible.
-        if self.obstacle_enabled && self.obstacle_model_display > 0.0 {
+        if self.obstacle_enabled_now() && self.obstacle_model_display > 0.0 {
             self.obstacle_display.render(
                 encoder,
                 queue,
@@ -2926,6 +2989,19 @@ impl ParticleSystem {
         false
     }
 
+    /// Decode [`Self::pending_video`] on this thread, for headless renders
+    /// that need every frame ready before the first one is drawn.
+    #[cfg(feature = "video")]
+    pub fn decode_pending_video(&mut self, queue: &Queue) {
+        let Some(path) = self.pending_video.take() else {
+            return;
+        };
+        match crate::media::video::decode_video(std::path::Path::new(&path), &Default::default()) {
+            Ok((frames, delays_ms)) => self.set_video_source(queue, frames, delays_ms, path),
+            Err(e) => log::warn!("Failed to decode particle video '{path}': {e}"),
+        }
+    }
+
     /// Set a video file as the particle source. Initiates a transition from current aux.
     #[cfg(feature = "video")]
     pub fn set_video_source(
@@ -3353,7 +3429,7 @@ impl ParticleSystem {
     /// level scale into the collision uniforms. Cheap when nothing changed.
     /// Call before `dispatch`.
     pub fn sync_water(&mut self, device: &Device, queue: &Queue) {
-        let want = self.obstacle_water_enabled && self.obstacle_enabled;
+        let want = self.obstacle_water_enabled && self.obstacle_enabled_now();
         if !want {
             if self.water_sim.is_some() {
                 self.water_sim = None;
@@ -3385,7 +3461,7 @@ impl ParticleSystem {
     /// changed. Call before `dispatch` (and after `sync_water`, so the fluid sim
     /// can fold pooled water into its solid mask).
     pub fn sync_fluid(&mut self, device: &Device, queue: &Queue) {
-        let want = self.obstacle_fluid_enabled && self.obstacle_enabled;
+        let want = self.obstacle_fluid_enabled && self.obstacle_enabled_now();
         if !want {
             if self.fluid_sim.is_some() {
                 self.fluid_sim = None;
@@ -3415,7 +3491,7 @@ impl ParticleSystem {
         } else {
             0.0
         };
-        self.obstacle_fluid_params.threshold = self.obstacle_threshold;
+        self.obstacle_fluid_params.threshold = self.obstacle_threshold_now();
         self.uniforms.fluid_enabled = 1.0;
         self.uniforms.fluid_coupling = self.obstacle_fluid_coupling;
         if need_new {

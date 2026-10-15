@@ -53,6 +53,8 @@ pub struct SceneRenderer {
     pub post_process: PostProcessChain,
     /// Master post-processing, from the preset (#3147).
     pub master_postprocess: crate::effect::format::PostProcessDef,
+    /// This frame's binding output over it (#4055), as in the app.
+    pub master_postprocess_modulation: crate::effect::format::PostProcessModulation,
     pub capture: FrameCapture,
     pub placeholder: PlaceholderTexture,
     pub audio_textures: AudioTextures,
@@ -123,6 +125,7 @@ impl SceneRenderer {
             chain_targets: crate::gpu::chain_targets::ChainTargets::new(width, height),
             post_process,
             master_postprocess: Default::default(),
+            master_postprocess_modulation: Default::default(),
             capture,
             placeholder,
             audio_textures,
@@ -270,11 +273,19 @@ impl SceneRenderer {
                                 &self.compositor.backdrop.sampler,
                             )),
                         };
-                        crate::gpu::layer_builder::prepare_particles(
+                        let ps = crate::gpu::layer_builder::prepare_particles(
                             &ctx,
                             &mut self.effect_loader,
                             &effect,
-                        )
+                        );
+                        // Headless renders want every frame before the first
+                        // draw, so the emitter video decodes right here (#3159).
+                        #[cfg(feature = "video")]
+                        let ps = ps.map(|mut ps| {
+                            ps.decode_pending_video(&self.queue);
+                            ps
+                        });
+                        ps
                     };
                     if effect
                         .particles
@@ -630,6 +641,9 @@ impl SceneRenderer {
             crate::gpu::profiler::ProfilerHandle::none(),
         );
         if capture {
+            let postprocess = self
+                .master_postprocess
+                .with_modulation(&self.master_postprocess_modulation);
             self.post_process.render(
                 &self.device,
                 &self.queue,
@@ -640,7 +654,7 @@ impl SceneRenderer {
                 self.uniforms.rms,
                 self.uniforms.onset,
                 self.uniforms.flatness,
-                &self.master_postprocess,
+                &postprocess,
                 crate::gpu::frame_graph::resolve_output_alpha(
                     self.output_alpha,
                     &self.layer_stack,
@@ -706,12 +720,14 @@ impl SceneRenderer {
         let outs =
             self.binding_bus
                 .evaluate_offline(Some(&features), &out.frame.mel, &out.frame.dmfcc);
+        self.layer_stack.clear_modulation();
+        self.master_postprocess_modulation = Default::default();
         {
             let mut ctx = crate::bindings::apply::BindingTargetCtx {
                 layer_stack: &mut self.layer_stack,
                 effects: &self.effect_loader.effects,
                 uniforms: &mut self.uniforms,
-                postprocess: &mut self.master_postprocess,
+                postprocess: &mut self.master_postprocess_modulation,
                 pending_triggers: &mut self.binding_bus.pending_triggers,
             };
             for o in &outs {
@@ -936,7 +952,7 @@ mod tests {
                 layer_stack: &mut sr.layer_stack,
                 effects: &sr.effect_loader.effects,
                 uniforms: &mut sr.uniforms,
-                postprocess: &mut sr.master_postprocess,
+                postprocess: &mut sr.master_postprocess_modulation,
                 pending_triggers: &mut sr.binding_bus.pending_triggers,
             };
             for out in &outs {
@@ -948,9 +964,16 @@ mod tests {
                 );
             }
         }
+        let effective = sr
+            .master_postprocess
+            .with_modulation(&sr.master_postprocess_modulation);
         assert!(
-            (sr.master_postprocess.bloom_intensity - 0.9).abs() < 1e-5,
+            (effective.bloom_intensity - 0.9).abs() < 1e-5,
             "kick binding did not reach Master's post-processing"
+        );
+        assert!(
+            (sr.master_postprocess.bloom_intensity - 0.9).abs() > 1e-3,
+            "the binding must play over the saved def, not rewrite it (#4055)"
         );
 
         for frame in 0..30u32 {

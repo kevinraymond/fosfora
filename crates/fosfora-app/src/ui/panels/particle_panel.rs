@@ -14,6 +14,9 @@ pub struct ParticleInfo {
     pub emit_rate: f32,
     pub burst_on_beat: u32,
     pub lifetime: f32,
+    /// This frame's binding output over the fields above (#4055): the rows
+    /// mark it under their sliders.
+    pub live: crate::gpu::particle::system::ParticleModulation,
     pub initial_speed: f32,
     pub initial_size: f32,
     #[allow(dead_code)]
@@ -47,7 +50,8 @@ pub struct ParticleInfo {
     #[allow(dead_code)]
     pub is_transitioning: bool,
     pub source_loading: bool,
-    pub source_loading_name: String,
+    /// Every source or obstacle decode in flight, for the progress rows.
+    pub source_loads: Vec<crate::gpu::particle::SourceLoading>,
     /// Built-in image names (e.g. "skull", "phoenix") available for quick select.
     pub builtin_images: Vec<String>,
     /// Pose + shading the live model source was sampled at (#1993). Only shown
@@ -432,16 +436,40 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
             });
         }
 
-        // Source loading indicator
-        if info.source_loading {
+        // One row per source or obstacle still decoding: what, how far, and a
+        // way to stop it (#3159). A video decodes every frame before it plays.
+        for l in &info.source_loads {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label(
-                    RichText::new(format!("Loading {}...", info.source_loading_name))
+                    RichText::new(format!("Loading {}", l.name))
                         .size(SMALL_SIZE)
                         .color(tc.text_secondary),
                 );
+                let (fraction, words) = if l.total > 0 {
+                    (
+                        l.done as f32 / l.total as f32,
+                        format!("{} of {} frames", l.done.min(l.total), l.total),
+                    )
+                } else {
+                    (0.0, "reading the file".to_string())
+                };
+                ui.add(
+                    egui::ProgressBar::new(fraction.clamp(0.0, 1.0))
+                        .desired_width(120.0)
+                        .text(RichText::new(words).size(SMALL_SIZE)),
+                );
+                ui.label(
+                    RichText::new(format!("{:.0} s", l.secs))
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
+                if ui.small_button("Cancel").clicked() {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(egui::Id::new("cancel_source_load"), l.index));
+                }
             });
+            ui.ctx().request_repaint();
         }
 
         // Model pose and lighting (#1993, #1996). A model source is a STILL:
@@ -1031,9 +1059,11 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     let drag_min = drag.min(0.8);
 
     // Shared aligned rows; each edit is posted via temp data for main.rs to apply.
+    let live = &info.live;
     if rows::ParamRow::new("Emit rate")
         .logarithmic(true)
         .formatter(|v| format!("{v:.0}/s"))
+        .live(live.emit_rate.map(f64::from))
         .show_slider(ui, &mut emit_rate, 10.0..=emit_max)
         .changed
     {
@@ -1041,6 +1071,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
             .data_mut(|d| d.insert_temp(egui::Id::new("particle_emit_rate"), emit_rate));
     }
     if rows::ParamRow::new("Burst")
+        .live(live.burst_on_beat.map(f64::from))
         .show_slider(ui, &mut burst, 0..=burst_max)
         .changed
     {
@@ -1049,6 +1080,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     }
     if rows::ParamRow::new("Lifetime")
         .formatter(|v| format!("{v:.1}s"))
+        .live(live.lifetime.map(f64::from))
         .show_slider(ui, &mut lifetime, 0.5..=life_max)
         .changed
     {
@@ -1058,6 +1090,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     if rows::ParamRow::new("Speed")
         .logarithmic(speed_log)
         .formatter(|v| format!("{v:.3}"))
+        .live(live.initial_speed.map(f64::from))
         .show_slider(ui, &mut speed, speed_min..=speed_max)
         .changed
     {
@@ -1067,6 +1100,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     if rows::ParamRow::new("Size")
         .logarithmic(true)
         .formatter(|v| format!("{v:.4}"))
+        .live(live.initial_size.map(f64::from))
         .show_slider(ui, &mut size, size_min..=size_max)
         .changed
     {
@@ -1075,6 +1109,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     }
     if rows::ParamRow::new("Drag")
         .formatter(|v| format!("{v:.3}"))
+        .live(live.drag.map(f64::from))
         .show_slider(ui, &mut drag, drag_min..=1.0)
         .changed
     {
