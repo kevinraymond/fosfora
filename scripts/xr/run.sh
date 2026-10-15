@@ -26,8 +26,9 @@
 # Env: ANDROID_HOME (default ~/Android/Sdk), ANDROID_NDK_HOME (default: newest
 # NDK under $ANDROID_HOME/ndk), ANDROID_SERIAL to pick a device.
 # Release signing (docs/xr/RELEASE.md, scripts/xr/release-keystore.sh):
-# XR_RELEASE_KEYSTORE, XR_RELEASE_KEYSTORE_PASS, XR_RELEASE_KEY_ALIAS (default
-# fosfora-xr), XR_RELEASE_KEY_PASS (default: the store password).
+# XR_RELEASE_KEYSTORE, XR_RELEASE_KEYSTORE_PASS (asked for at a terminal when
+# unset), XR_RELEASE_KEY_ALIAS (default fosfora-xr), XR_RELEASE_KEY_PASS
+# (default: the store password).
 # XR_VERSION_CODE / XR_VERSION_NAME override android/version.properties.
 set -euo pipefail
 
@@ -109,11 +110,31 @@ gradle_build() {
 
 # Checked before the cargo build so a missing key costs nothing; Gradle's
 # checkReleaseSigning makes the same check for a direct assembleRelease.
+# A hand build at a terminal is asked for the store password when
+# XR_RELEASE_KEYSTORE_PASS is unset (no echo; the value stays in this
+# process); a non-interactive run must export it.
 require_release_key() {
-    if [ -z "${XR_RELEASE_KEYSTORE:-}" ] || [ -z "${XR_RELEASE_KEYSTORE_PASS:-}" ]; then
-        echo "release: set XR_RELEASE_KEYSTORE and XR_RELEASE_KEYSTORE_PASS" \
-            "(scripts/xr/release-keystore.sh, docs/xr/RELEASE.md)" >&2
+    if [ -z "${XR_RELEASE_KEYSTORE:-}" ]; then
+        echo "release: set XR_RELEASE_KEYSTORE (and XR_RELEASE_KEYSTORE_PASS, or be" \
+            "asked for it; scripts/xr/release-keystore.sh, docs/xr/RELEASE.md)" >&2
         exit 1
+    fi
+    if [ ! -r "$XR_RELEASE_KEYSTORE" ]; then
+        echo "release: XR_RELEASE_KEYSTORE=$XR_RELEASE_KEYSTORE is not a readable file" >&2
+        exit 1
+    fi
+    if [ -z "${XR_RELEASE_KEYSTORE_PASS:-}" ]; then
+        if [ ! -t 0 ]; then
+            echo "release: set XR_RELEASE_KEYSTORE_PASS (no terminal to ask on)" >&2
+            exit 1
+        fi
+        read -r -s -p "Release keystore password ($XR_RELEASE_KEYSTORE): " XR_RELEASE_KEYSTORE_PASS
+        echo
+        if [ -z "$XR_RELEASE_KEYSTORE_PASS" ]; then
+            echo "release: empty password" >&2
+            exit 1
+        fi
+        export XR_RELEASE_KEYSTORE_PASS
     fi
 }
 

@@ -23,7 +23,7 @@ prints the variables the build reads:
 | Variable | Meaning |
 |---|---|
 | `XR_RELEASE_KEYSTORE` | Path to the keystore. Required. |
-| `XR_RELEASE_KEYSTORE_PASS` | Store password. Required. |
+| `XR_RELEASE_KEYSTORE_PASS` | Store password. `run.sh release` asks for it at a terminal when unset; a non-interactive run must export it. |
 | `XR_RELEASE_KEY_ALIAS` | Key alias; default `fosfora-xr`. |
 | `XR_RELEASE_KEY_PASS` | Key password; default the store password. |
 
@@ -68,8 +68,9 @@ scripts/xr/run.sh verify-release   # apksigner, zipalign and aapt checks
 
 `release` prints the APK path,
 `android/app/build/outputs/apk/release/app-release.apk`. Without
-`XR_RELEASE_KEYSTORE` and `XR_RELEASE_KEYSTORE_PASS` it stops before building,
-and a direct `./gradlew assembleRelease` stops at its first task
+`XR_RELEASE_KEYSTORE` it stops before building; without
+`XR_RELEASE_KEYSTORE_PASS` it asks for the password at the terminal (no echo,
+kept in that process only), and a direct `./gradlew assembleRelease` stops at its first task
 (`checkReleaseSigning`) with a message naming the variables: an unsigned
 release APK is never produced.
 
