@@ -1,0 +1,62 @@
+{
+  "schema": "fosfora-bench-q-phase-frozen/v1",
+  "_policy": "Pre-registered targets for the beat phase-selection round (board #4160), frozen 2026-10-16 BEFORE any variant was built or scored. Modeled on q_onset_frozen.json (q63-onset) and q3_key_frozen.json: numbers move or the change reverts. Variant selection reads the TUNE halves only; holdout halves are scored once, at round end, on the chosen config. Every candidate is measured alone and a rejected one is recorded with its evidence.",
+  "issue": "With the tempo right, the beat grid often sits on the off-beat or a quarter off: on the Harmonix tune half 28% of emitted beats land on the half-beat and 54 of 180 tracks emit more off-beat than on-beat beats (board #4159). Against an in-TouchDesigner neural tracker on the same audio this is most of the beat gap (#4158).",
+  "mechanism_evidence": "Board #4159 + this round's diagnosis on the baseline dumps (Harmonix tune, 438 beat segments split at >2.5-period gaps): segments START on-beat 150, off-beat 105, quarter-off 183; only 49 stable on/off flips happen inside segments. The phase is mostly decided when the grid anchors (on the first gated onset) and the PLL cannot escape a half-beat error: its capture reach is +-25% of a period, the true beat is 50% away. Batida house is phase-bimodal at baseline (2 of 6 seeds off-beat locked); batida techno sits 34-178 ms late on all 6 seeds.",
+  "design_constraint": "Handover from the GH #63 round (#4160 note): a fixed low-band/kick-band reweight of the onset function moves phase in OPPOSITE directions by genre (techno .343 -> .526, house .809 -> .497), because house's off-beat bassline lives in the kick band. Candidates must therefore not reweight the PLL's evidence globally; the round tests SCORED COMPETING PHASE HYPOTHESES (switch the grid with hysteresis when an alternative phase clearly wins), with the evidence source as the variable. The shipped kick model (kick_model.rs, trained to reject bass notes) is computed before the beat detector on every hop, so it is available at zero latency.",
+  "split": {
+    "rule": "sha256(track_id) parity, even -> tune, odd -> holdout, on ballroom, harmonix and giantsteps_tempo (Harmonix included: its 10-track dev subset was already read in #4158/#4159, so none of it is treated as blind except the odd half)",
+    "selection_reads": ["ballroom tune", "harmonix tune", "giantsteps_tempo tune", "batida house + techno seeds 1-6", "the 155 beatless FMA clips"],
+    "scored_once_at_end": ["ballroom holdout", "harmonix holdout", "giantsteps_tempo holdout"]
+  },
+  "tools": {
+    "phase": "bench/analyze_beat_phase.py <out_root> ballroom harmonix: per half, share of emitted beats on / anti (half-beat) / quarter, anti-locked track count, beat F",
+    "split_metrics": "bench/q_split_baseline.py <out_root> ballroom harmonix giantsteps_tempo",
+    "batida": "~/ai/audio/kick-work/odf3743/run_batida.sh pattern, TEMPLATES='house techno' SEEDS='1 2 3 4 5 6', binary swapped for the round's",
+    "negatives": "~/ai/audio/kick-work/odf3743/neg_real.py run|report pattern, binary swapped",
+    "td_head_to_head": "bench/td_compare (branch td-signal): the 26-track dev subset vs lastBeatStanding / EssentiaTD, reported only (dev data)"
+  },
+  "baseline": {
+    "_provenance": "main 1fd0c41, analyze build c63085076ed7d00f, run_bench defaults (30 Hz, stems), results + dumps ~/ai/audio/kick-work/q-onset/base (the GH #63 round's baseline, identical binary); split metrics ~/ai/audio/kick-work/q-phase/base_split.json, phase ~/ai/audio/kick-work/q-phase/base_phase.json. Tempo acc counts no-estimate as a miss.",
+    "ballroom": {
+      "tune": {"n": 344, "acc1": 0.5378, "acc2": 0.8547, "no_est": 28, "beat_f": 0.4246, "cmlt": 0.2600, "amlt": 0.5414, "downbeat_f": 0.1250, "phase_on": 0.515, "phase_anti": 0.266, "anti_locked": 98},
+      "holdout": {"n": 341, "acc1": 0.5718, "acc2": 0.8065, "no_est": 45, "beat_f": 0.3701, "cmlt": 0.2419, "amlt": 0.4847, "downbeat_f": 0.1075, "phase_on": 0.483, "phase_anti": 0.269, "anti_locked": 107}
+    },
+    "harmonix": {
+      "tune": {"n": 180, "acc1": 0.6833, "acc2": 0.9111, "no_est": 0, "beat_f": 0.5523, "cmlt": 0.4231, "amlt": 0.6839, "downbeat_f": 0.1792, "phase_on": 0.535, "phase_anti": 0.281, "anti_locked": 54},
+      "holdout": {"n": 194, "acc1": 0.6134, "acc2": 0.8814, "no_est": 1, "beat_f": 0.5039, "cmlt": 0.3598, "amlt": 0.6440, "downbeat_f": 0.1689, "phase_on": 0.496, "phase_anti": 0.302, "anti_locked": 59},
+      "all": {"drop_hit_rate": 0.0922, "false_drops_per_min": 0.4121, "predict_drop_false_alarms_per_min": 2.0167, "predict_drop_coverage_0_5": 0.4184, "predict_drop_coverage_0_8": 0.2624, "boundary_3_0s_f": 0.1424}
+    },
+    "giantsteps_tempo": {
+      "tune": {"n": 311, "acc1": 0.7138, "acc2": 0.8232, "no_est": 1},
+      "holdout": {"n": 350, "acc1": 0.6857, "acc2": 0.8000, "no_est": 2}
+    },
+    "batida_6seed": {
+      "_source": "~/ai/audio/kick-work/q-onset/batida/base6.jsonl",
+      "house_beat_f": [0.868, 0.897, 0.933, 0.633, 0.93, 0.595],
+      "house_offbeat_locked_seeds": 2,
+      "techno_beat_f": [0.174, 0.416, 0.428, 0.584, 0.423, 0.032],
+      "techno_beat_lag_ms": [170, 138, 83, 34, 129, 178]
+    },
+    "negatives_fma_155": {
+      "_source": "~/ai/audio/kick-work/q-onset/negreal/base (neg_real.py report base)",
+      "publish": 53, "locked_frac": 0.139, "beats_per_min": 28.2, "pulse_low_beats_per_min": 8.4
+    }
+  },
+  "targets": {
+    "P1_motivating": "harmonix holdout: phase_on >= 0.496 + 0.03 AND anti_locked < 59; batida house: fewer than 2 of 6 seeds off-beat locked (beat F < 0.7)",
+    "P2_headline": "harmonix holdout beat_f >= 0.5039 + 0.02",
+    "P3_no_harm_ballroom": "ballroom holdout beat_f >= 0.3701 - 0.005 (kick-sparse material: the arbiter should mostly stand aside)",
+    "G1_ballroom": "holdout acc1, acc2, cmlt, amlt, downbeat_f each >= baseline - 0.005; no_est <= 45",
+    "G2_giantsteps_tempo": "holdout acc1, acc2 each >= baseline - 0.005; no_est <= 2",
+    "G3_harmonix": "holdout acc1, acc2, cmlt, amlt, downbeat_f each >= baseline - 0.005; no_est <= 1",
+    "G4_distribution": "means hide offsetting losses (memory scalar-image-summary-cancels-errors): per-genre ballroom beat_f, no genre down by more than 0.02; tracks whose beat_f drops by more than 0.1 reported next to those that rise by more than 0.1, and the round must not lose more than it gains on either dataset",
+    "G5_negatives": "155 beatless FMA clips: beats/min <= 28.2 + 1.0, pulse-low third <= 8.4 + 1.0, publish <= 53. A phase arbiter that adds grid shifts must not add beats where there is no beat",
+    "G6_batida": "techno: no seed worse than baseline beat F by more than 0.02, mean lag not later; every other template x 2 seeds (scorecard): beat F and tempo not worse by more than 0.01",
+    "G7_structure_drop": "harmonix all: drop hit_rate >= 0.0922 - 0.01, false_drops_per_min <= 0.4121 + 0.02, predict_drop false_alarms_per_min <= 2.0167 + 0.05 and coverage at 0.5 / 0.8 each >= baseline - 0.01, boundary_3_0s f >= 0.1424 - 0.005 (bar and phrase positions follow the grid)",
+    "G8_fixture": "bench/check_fixture.py passes",
+    "G9_build": "cargo test (both CI feature sets), exact CI clippy sets (--all-targets, --features release), and clippy -p fosfora-app --lib --no-default-features (XR)",
+    "G10_owner": "Kevin watches it on his own music (live, with the TouchDesigner example and in the app) before release"
+  },
+  "on_miss": "a missed guard reverts that candidate, or is stated with its numbers and explicitly accepted by Kevin; never silently"
+}

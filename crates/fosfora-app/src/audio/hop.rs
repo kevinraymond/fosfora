@@ -310,6 +310,7 @@ impl HopAnalyzer {
         }
 
         // Beat detection (on raw magnitude spectra)
+        self.beat_detector.set_kick(raw.kick);
         let beat_result = self.beat_detector.process(
             self.analyzer.bass_magnitude(),
             self.analyzer.mid_magnitude(),

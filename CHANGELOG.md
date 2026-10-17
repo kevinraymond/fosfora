@@ -3,6 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- **Beats landed between the beats on a lot of music.** With the tempo right, the beat grid often locked onto the off-beat (an off-beat bassline or hi-hats are louder there) and stayed, so beat-bound visuals pulsed between the hits. The grid now checks itself against the kick drum and moves half a beat when the kicks clearly say so: beat accuracy went from 0.53 to 0.65 on the Harmonix pop/EDM set and 0.40 to 0.47 on Ballroom. A few songs that used to lock correctly now land on the off-beat (7 of 374 on Harmonix, against 48 fixed); music without a kick drum behaves as before.
+
 ## v2.5.0 — 2026-10-12
 
 Bindings play over the values you set instead of overwriting them, so bound presets stay clean and save what you meant; videos longer than a minute play as layers; particle and obstacle videos load without freezing the app.
