@@ -6,6 +6,7 @@
 ## Unreleased
 
 ### Fixed
+- **The drop warning has fired on fewer drops since v2.0.1.** An internal band scale got 6 dB louder in that release and the warning's calibration was never adjusted, so build-ups read as weaker than they are. The warning now covers 45% of the drops in the Harmonix set at the 0.5 tier (41% before) and 34% at the 0.8 tier (24%), and fires about as often as it did before v2.0.1 (2.3 false alarms a minute, up from 2.0). Section-boundary detection recovers slightly too.
 - **Beats landed between the beats on a lot of music.** With the tempo right, the beat grid often locked onto the off-beat (an off-beat bassline or hi-hats are louder there) and stayed, so beat-bound visuals pulsed between the hits. The grid now checks itself against the kick drum and moves half a beat when the kicks clearly say so: beat accuracy went from 0.53 to 0.65 on the Harmonix pop/EDM set and 0.40 to 0.47 on Ballroom. A few songs that used to lock correctly now land on the off-beat (7 of 374 on Harmonix, against 48 fixed); music without a kick drum behaves as before.
 
 ### Security
