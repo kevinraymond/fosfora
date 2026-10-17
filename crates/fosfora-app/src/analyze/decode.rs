@@ -121,6 +121,15 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
         interleaved = out;
     }
 
+    // TEMP GH #63 round: input-level guard knob, removed before commit.
+    if let Ok(g) = std::env::var("FOSFORA_DEV_GAIN_DB") {
+        let k = 10f32.powf(g.parse::<f32>().expect("FOSFORA_DEV_GAIN_DB") / 20.0);
+        for s in &mut interleaved {
+            *s *= k;
+        }
+        eprintln!("FOSFORA_DEV_GAIN_DB {g} dB (x{k})");
+    }
+
     Ok(DecodedAudio {
         interleaved,
         sample_rate: crate::audio::decimate::analysis_rate(sample_rate as u32) as f32,

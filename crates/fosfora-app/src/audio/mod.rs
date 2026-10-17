@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod beat;
+pub mod beat_sidecar;
 pub mod capture;
 pub mod chroma;
 pub mod decimate;
