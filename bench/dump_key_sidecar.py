@@ -70,6 +70,9 @@ def main() -> int:
     def dump(job: tuple[str, Path, Path]) -> str | None:
         tid, audio, sidecar = job
         part = sidecar.with_suffix(".jsonl.part")
+        # The binary refuses to overwrite a sidecar that holds data, so a .part left by a
+        # killed run is cleared here, on purpose, before the dump.
+        part.unlink(missing_ok=True)
         env = os.environ | {"FOSFORA_KEY_SIDECAR": str(part)}
         r = subprocess.run(
             [str(binary), "--signal-dump", str(audio), "--out", os.devnull],

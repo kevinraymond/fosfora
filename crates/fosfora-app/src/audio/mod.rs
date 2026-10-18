@@ -25,6 +25,7 @@ pub mod ranging;
 pub mod reconnect;
 pub mod resample;
 pub mod schema;
+pub mod sidecar_file;
 pub mod smoother;
 pub mod stereo;
 pub mod structure;

@@ -41,8 +41,7 @@ impl BeatSidecar {
     /// loud — a sweep silently missing tracks would corrupt the comparison.
     pub fn from_env() -> Option<Self> {
         let path = std::env::var("FOSFORA_BEAT_SIDECAR").ok()?;
-        let file = File::create(&path)
-            .unwrap_or_else(|e| panic!("FOSFORA_BEAT_SIDECAR: cannot create {path}: {e}"));
+        let file = super::sidecar_file::create_sidecar("FOSFORA_BEAT_SIDECAR", &path);
         Some(Self {
             out: BufWriter::new(file),
             path,
