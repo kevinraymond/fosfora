@@ -1,0 +1,37 @@
+{
+  "schema": "fosfora-bench-q-drop-scale-frozen/v1",
+  "_policy": "Frozen 2026-10-17 before the fix was written as shipped code (board #4172, root cause #4170). This is a RESTORATION of a calibration, not a tuning search: the candidate is one constant whose value is fixed by the mechanism (the +6.02 dB magnitude rescale of 88cd4da), so there is no selection step to blind. The guards are what matter: the fix must move only the consumers of the pre-normalization dB band map and must not touch beat, tempo, downbeat or key; the drop-warning numbers must come back to the probe's prediction within count noise; Kevin listens before it ships (he reports strange drop triggers on his music).",
+  "issue": "Since v2.0.1 the drop warning (/predict/drop) has covered fewer drops on Harmonix (68 -> 57 of 141 at the 0.5 tier, 44 -> 34 at 0.8) and the section-boundary F fell .5027 -> .4962; the page was never regenerated so it went unnoticed until #4160's regeneration (#4161).",
+  "mechanism_evidence": "#4170 bisected the step to 88cd4da. Probes on a worktree (/mnt/t9/fosfora-work/q4171, dumps /mnt/t9/fosfora-work/q4161/P0..P3): the commit's FFT magnitude scale change (2/size -> 2/sum(window), +6.02 dB) shifted the BandScale::Db band map by a flat +0.094 (predicted +0.100; the residual is the 5 Hz DC blocker), while the linear onset/bass paths were compensated by doubling FLUX_FLOOR and BASS_ABS_FLOOR. Undoing the Db-path offset alone (FOSFORA_PROBE_DB_OFFSET=-6.02, P1) gives 64 / 48 at 0.5 / 0.8, false alarms 2.297/min (parent 2.305), boundary-events F .5000, and leaves beat.*, downbeat.*, tempo.* identical to four decimals and giantsteps_key identical (score .5295, taxonomy identical). Undoing the loudness-meter change alone (P2) is +2 / -1 and NOT additive (P3 = P1 at 0.5), and it moves beat F and tempo accuracy, so the loudness meter stays as it is. The ~4 drops still below the parent at 0.5 (64 vs 68) are churn from the DC blocker, the gate hysteresis and later commits, on 8 tracks neither knob touches.",
+  "candidate": "A constant -6.02 dB compensation applied where the BandScale::Db band map takes its magnitudes (analyzer.rs bands(), the Db branch), so the pre-normalization dB band features read as they did when the build-up logistic, the drop rules and the structure fingerprint were tuned. No other constant changes. The probe knob becomes the constant; a unit test pins the band value with and without the compensation so removing it fails the test.",
+  "baseline": {
+    "_provenance": "main 43e31eb (= P0 dumps, byte-identical to bench/out): Harmonix all 374 tracks, 141 proxy drops",
+    "predict_drop_count_0_5": 58,
+    "predict_drop_count_0_8": 34,
+    "predict_drop_false_alarms_per_min": 2.0325,
+    "drop_hit_rate": 0.0922,
+    "false_drops_per_min": 0.4121,
+    "boundary_events_3_0s_f": 0.4905,
+    "boundary_3_0s_f": 0.1446,
+    "pairwise_f": 0.4534,
+    "beat_f_all": 0.6530,
+    "tempo_acc1_all": 0.6488,
+    "giantsteps_key_score": 0.5295
+  },
+  "predicted_by_probe_P1": {
+    "predict_drop_count_0_5": 64,
+    "predict_drop_count_0_8": 48,
+    "predict_drop_false_alarms_per_min": 2.297,
+    "boundary_events_3_0s_f": 0.5000
+  },
+  "targets": {
+    "T1_restore": "Harmonix all: predict_drop count at 0.5 >= 64 - 2 and at 0.8 >= 48 - 2 (the shipped constant must reproduce the probe; a 2-drop slack covers float differences between knob and constant paths; byte-identical dumps vs P1 are the expectation)",
+    "T2_false_alarms": "predict_drop false_alarms_per_min <= 2.305 + 0.05 (the parent's rate; the warning fires as often as it did when it was tuned, not more)",
+    "T3_untouched_consumers": "Harmonix beat.*, downbeat.*, tempo.* summary metrics identical to baseline to four decimals; giantsteps_key score and taxonomy identical; ballroom and giantsteps_tempo summaries identical (the compensation must be invisible to every linear-path consumer)",
+    "T4_structure": "boundary_events 3 s F >= 0.4905 (not down); drop hit_rate >= 0.0922 - 0.01; false_drops_per_min <= 0.4121 + 0.02",
+    "T5_level_invariance": "the compensated Db map at -30 dB input (FOSFORA_DEV_GAIN_DB on a dev build, or the bench fixture's level cases) behaves as the baseline does at -30 dB: predict_drop count change no worse than the baseline's by more than 2 drops",
+    "T6_fixture_build": "bench/check_fixture.py passes (re-record expectations only for predict_drop / structure values, with the diff listed); cargo test (both CI feature sets), exact CI clippy sets, XR no-default lint",
+    "T7_owner": "Kevin listens on his own music, in the app and the TouchDesigner example, with attention to the drop warning's timing and false alarms, before it reaches a release"
+  },
+  "on_miss": "a missed target is stated with its numbers and either fixed or explicitly accepted by Kevin; never silently. If T3 moves anything, the compensation is in the wrong place."
+}
