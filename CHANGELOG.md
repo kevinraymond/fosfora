@@ -11,6 +11,7 @@
 - **Beats landed between the beats on a lot of music.** With the tempo right, the beat grid often locked onto the off-beat (an off-beat bassline or hi-hats are louder there) and stayed, so beat-bound visuals pulsed between the hits. The grid now checks itself against the kick drum and moves half a beat when the kicks clearly say so: beat accuracy went from 0.53 to 0.65 on the Harmonix pop/EDM set and 0.40 to 0.47 on Ballroom. A few songs that used to lock correctly now land on the off-beat (7 of 374 on Harmonix, against 48 fixed); music without a kick drum behaves as before.
 
 ### Security
+- **File dialogs on Linux no longer pull in `zbus` (RUSTSEC-2026-0370, RUSTSEC-2026-0371, RUSTSEC-2026-0372).** The three advisories mark `zvariant` and `zbus_names` unmaintained; `rfd` 0.17 talks to the desktop portal through the system `libdbus-1` instead, which drops 39 crates from the build. The dialogs behave the same; a Linux desktop without `libdbus-1` (every mainstream distribution ships it) would not show them.
 - **`zip` updated to 9 (RUSTSEC-2026-0367, RUSTSEC-2026-0368, RUSTSEC-2026-0369).** The advisories cover permission bits and symlinks written while extracting an untrusted archive. Fosfora only reads one file out of Microsoft's ONNX Runtime download for depth estimation and never called the affected extraction functions, so no build was exposed.
 
 ## v2.5.0 — 2026-10-12

@@ -83,7 +83,7 @@ image-webp = "0.2"
 # GIF decoding (animated GIF frame extraction)
 gif = "0.14"
 # Native file dialogs
-rfd = { version = "0.15", optional = true }
+rfd = { version = "0.17", optional = true }
 # Linear algebra (camera, projection)
 glam = "0.29"
 # glTF/GLB import (3D-model obstacle source #1851) — pure Rust, no system deps
