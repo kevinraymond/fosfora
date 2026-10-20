@@ -14,7 +14,8 @@ hop sidecar (~1 KB per hop) and the beat sidecar are deleted after conversion un
 ts = (h + 1) * hop / sr.
 
 npz contents:
-  ts, silent, kick_prob, kf, sf, pn      per hop, raw, every hop (see hopdump.py);
+  ts, silent, kick_prob, kf, sf, pn, act per hop, raw, every hop (see hopdump.py; act is the
+                                         runtime's beat activation, NaN from a v1 dump);
   kf_names, sf_names, pn_names           column names
   beats          float64  event times of the beats the grid fired (the hop sidecar's `bt`,
                           cross-checked against the signal dump's /beat events)
@@ -133,7 +134,7 @@ def run(bin_path: Path, audio: Path, out: Path, keep_jsonl: bool = False, nice: 
     meta = dict(
         binary=str(bin_path), binary_sha256=sha256_file(bin_path),
         audio=str(audio), audio_sha256=sha256_file(audio),
-        sr=d.sr, hop=d.hop, hop_hz=d.hop_hz, n_hops=d.n_hops, duration_s=d.duration,
+        sr=d.sr, hop=d.hop, hop_hz=d.hop_hz, n_hops=d.n_hops, duration_s=d.duration, hop_format=d.version,
         silent_hops=int(d.silent.sum()), n_beats=len(d.beat_times),
         counts={k: len(v) for k, v in events.items()},
         n_tempo_updates=len(sc["ts"]), n_events=len(ev_ts),
@@ -141,7 +142,7 @@ def run(bin_path: Path, audio: Path, out: Path, keep_jsonl: bool = False, nice: 
         sample_rate=meta_line["sample_rate"], hop_sidecar_bytes=hop_jsonl.stat().st_size,
     )
     arrays = dict(
-        ts=d.ts, silent=d.silent, kick_prob=d.kick_prob, kf=d.kf, sf=d.sf, pn=d.pn,
+        ts=d.ts, silent=d.silent, kick_prob=d.kick_prob, kf=d.kf, sf=d.sf, pn=d.pn, act=d.act,
         kf_names=np.array(d.kf_names), sf_names=np.array(d.sf_names), pn_names=np.array(d.pn_names),
         beats=d.beat_times,
         **{k: np.asarray(v, np.float64) for k, v in events.items()},

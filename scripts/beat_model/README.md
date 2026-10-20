@@ -1,7 +1,11 @@
 # Beat model
 
 Tooling for the beat-likelihood model: a per-hop activation from Fosfora's own analysis
-chain, used as evidence by the beat grid's phase arbiter. The runtime is
+chain, used as evidence by the beat grid's phase arbiter (its peaks, at the threshold
+`ARB_ACTIVATION_THRESHOLD` in `beat.rs`, join the kick events in the arbiter's window; the
+round that chose this is `bench/manifests/q4163_arbiter_frozen.json`, with
+`bench/q4163_arm.sh`, `q4163_report.py`, `q4163_verdict.py` and `q4163_listen.py` as its
+tools). The runtime is
 `crates/fosfora-app/src/audio/beat_model.rs`, which evaluates the exported
 `beat_model.json` (flat trees plus the input map, the target lag and the picker) inside the
 beat detector every hop; `beat_model_tracks.md` beside it credits the CC BY training audio.

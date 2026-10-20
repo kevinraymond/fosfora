@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use super::beat_model::{BeatActivation, RawEvidence};
+use super::beat_model::{BeatActivation, PeakPicker, RawEvidence};
 use super::features::AudioFeatures;
 use super::kick_model::N_FRAME;
 
@@ -1686,11 +1686,15 @@ const PLL_ACQ_STALE_PERIODS: f64 = 4.0;
 // with the tempo right, and the phase was decided at the anchor far more often
 // than it drifted later.
 //
-// The arbiter folds the last bars of KICK events onto the grid and moves the grid
-// half a beat when the kicks clearly and repeatedly sit on the half-beat. Kicks,
-// not onsets: the kick model rejects bass notes, while in the onset function a
-// house off-beat bassline outvotes the beat (measured: onset evidence pulled three
-// correct batida house renders onto the off-beat). A 32-beat guard keeps a grid
+// The arbiter folds the last bars of events onto the grid and moves the grid half a
+// beat when the events clearly and repeatedly sit on the half-beat. Two streams fill
+// the window (#4163): KICK events (the kick model rejects bass notes, while in the onset
+// function a house off-beat bassline outvotes the beat: onset evidence pulled three
+// correct batida house renders onto the off-beat) and the beat activation's peaks
+// (`beat_model.rs`), which know the snare and backbeat the kicks do not. Kicks sit on
+// the 'and' on some music and vote wrong there; the activation's events are balanced
+// on music where a single early kick vote is what sets the grid right; together they
+// gained 17 Harmonix holdout tracks and lost none. A 32-beat guard keeps a grid
 // the long-run evidence still backs, so a burst of misread events (chiptune
 // square-wave bass read as kicks) cannot flip it. The configuration and its
 // evidence are in bench/manifests/q4160_phase_frozen.json and board #4160.
@@ -1725,6 +1729,30 @@ const PHASE_ARBITER: PhaseArbiterCfg = PhaseArbiterCfg {
 
 /// A kick counts toward a phase when it lies within this fraction of a period.
 const ARB_PHASE_TOLERANCE: f64 = 0.125;
+
+/// Which events the arbiter folds onto the grid. The #4163 round measured kicks alone (the
+/// #4160 configuration), the beat activation's peaks alone, and both streams in one window
+/// at four event thresholds; the union at .70 is what ships (bench/manifests/
+/// q4163_arbiter_frozen.json: Harmonix holdout beat F .620 -> .654 with 17 tracks gained
+/// and none lost, Ballroom .437 -> .445, every guard held).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArbEvidence {
+    /// Kick model events (the #4160 arbiter as shipped).
+    Kicks,
+    /// Peaks of the beat activation (`beat_model.rs`), each placed `lag_hops` back.
+    Activation,
+    /// Both streams in one window; an instant where both fire counts twice.
+    Union,
+}
+
+/// The arbiter's event streams, as the #4163 round selected them.
+const ARB_EVIDENCE: ArbEvidence = ArbEvidence::Union;
+
+/// The activation's event threshold for the arbiter's window. Higher than the picker
+/// threshold the training chose for a standalone picker (.45, F-optimal): the round found
+/// the vote wants fewer, surer events (.45 and .60 flipped correct grids on syncopated
+/// material; .75 was too sparse to vote where the kicks are wrong).
+const ARB_ACTIVATION_THRESHOLD: f32 = 0.70;
 
 struct BeatScheduler {
     /// Q3: the estimator's hysteretic lock state — selects the firing mode.
@@ -1762,7 +1790,13 @@ struct BeatScheduler {
 
     /// #4160 phase arbiter; `None` disables it (tests).
     arbiter: Option<PhaseArbiterCfg>,
-    /// Kick event times within the arbiter's longest window.
+    /// #4163: which event streams feed the arbiter's window.
+    arb_evidence: ArbEvidence,
+    /// #4163: an activation peak for this hop, placed at its beat time (lag removed);
+    /// taken by `process` like `kick_event`.
+    act_event: Option<f64>,
+    /// Event times within the arbiter's longest window (kicks, activation peaks or
+    /// both, per `arb_evidence`), kept in time order.
     arb_kicks: VecDeque<f64>,
     /// Consecutive grid instants that voted to move half a beat.
     arb_streak: u32,
@@ -1801,6 +1835,8 @@ impl BeatScheduler {
             muted: false,
             beat_strength: 0.0,
             arbiter: Some(PHASE_ARBITER),
+            arb_evidence: ArbEvidence::Kicks,
+            act_event: None,
             arb_kicks: VecDeque::new(),
             arb_streak: 0,
             kick_event: false,
@@ -1949,6 +1985,7 @@ impl BeatScheduler {
         // Sustained silence: mute and drop the grid — re-entry re-acquires
         // fresh instead of trusting a phase that free-ran through the gap.
         let kick_event = std::mem::take(&mut self.kick_event);
+        let act_event = self.act_event.take();
         if is_silence {
             self.next_beat_time = None;
             self.period_trim = 0.0;
@@ -1966,8 +2003,20 @@ impl BeatScheduler {
             return (false, 0.0, 0.0, self.bpm);
         }
         let period = self.grid_period();
-        if kick_event && self.arbiter.is_some() {
-            self.arb_kicks.push_back(timestamp);
+        if self.arbiter.is_some() {
+            if kick_event && self.arb_evidence != ArbEvidence::Activation {
+                self.arb_kicks.push_back(timestamp);
+            }
+            if let Some(t) = act_event.filter(|_| self.arb_evidence != ArbEvidence::Kicks) {
+                // Placed `lag` before this hop, so it may precede a kick pushed above
+                // at this hop: keep the window ordered for the fold's trim.
+                let pos = self
+                    .arb_kicks
+                    .iter()
+                    .rposition(|&x| x <= t)
+                    .map_or(0, |p| p + 1);
+                self.arb_kicks.insert(pos, t);
+            }
         }
 
         // No grid anchored yet: anchor on the first gated onset. Locked or
@@ -2254,6 +2303,11 @@ pub struct BeatDetector {
     /// #4163: the beat activation and the hop's raw evidence it reads, set by
     /// [`BeatDetector::set_hop_evidence`] before each [`BeatDetector::process`].
     activation: BeatActivation,
+    /// #4163: the activation's causal peak picker (the training's rule); an event sits
+    /// `act_lag` hops back from the hop that fires it.
+    act_picker: PeakPicker,
+    act_lag: f64,
+    hop_secs: f64,
     hop_kick_frame: [f32; N_FRAME],
     hop_kick_probability: f32,
     hop_pre_norm: AudioFeatures,
@@ -2275,6 +2329,8 @@ impl BeatDetector {
         tempo_estimator.dbg = dbg;
         let mut beat_scheduler = BeatScheduler::new();
         beat_scheduler.dbg = dbg;
+        beat_scheduler.arb_evidence = ARB_EVIDENCE;
+        let picker = BeatActivation::picker();
 
         Self {
             onset_detector: OnsetDetector::new(sample_rate, history_size, long_term_size),
@@ -2289,6 +2345,9 @@ impl BeatDetector {
             kick_armed: true,
             last_kick_time: f64::NEG_INFINITY,
             activation: BeatActivation::new(),
+            act_picker: PeakPicker::with_threshold(picker, ARB_ACTIVATION_THRESHOLD),
+            act_lag: f64::from(BeatActivation::lag_hops()),
+            hop_secs: 1.0 / frame_rate,
             hop_kick_frame: [0.0; N_FRAME],
             hop_kick_probability: 0.0,
             hop_pre_norm: AudioFeatures::default(),
@@ -2395,6 +2454,13 @@ impl BeatDetector {
             pre_norm: &self.hop_pre_norm,
             loud_silent,
         });
+        // Its causal peak picker, the one the training chose, as an EVENT for the
+        // arbiter's window (#4163), placed where the beat was: `act_lag` hops back.
+        if self.act_picker.push(beat_activation) {
+            self.beat_scheduler.act_event = Some(timestamp - self.act_lag * self.hop_secs);
+            self.beat_scheduler
+                .dbg_event("act_fire", f64::from(beat_activation));
+        }
 
         // Apply onset cooldown
         let mut onset_gated = is_onset;
@@ -2987,6 +3053,27 @@ mod tests {
 
     /// A shift moves the grid LATER by half a beat: a longer gap, never two
     /// beats closer than the scheduler's 0.3-period floor.
+    /// #4163: the evidence knob decides which events reach the arbiter's window, and an
+    /// activation event (placed before this hop) is inserted in time order.
+    #[test]
+    fn arbiter_window_follows_the_evidence_mode() {
+        let window = |mode: ArbEvidence| {
+            let mut bs = BeatScheduler::new();
+            bs.arbiter = Some(PHASE_ARBITER);
+            bs.arb_evidence = mode;
+            bs.update_tempo(120.0, 0.5, 1.0, true);
+            // Anchor a grid first so `process` reaches the window code.
+            bs.process(true, 1.0, 1.0, false);
+            bs.kick_event = true;
+            bs.act_event = Some(1.5 - 0.035);
+            bs.process(false, 0.0, 1.5, false);
+            bs.arb_kicks.iter().copied().collect::<Vec<f64>>()
+        };
+        assert_eq!(window(ArbEvidence::Kicks), vec![1.5]);
+        assert_eq!(window(ArbEvidence::Activation), vec![1.5 - 0.035]);
+        assert_eq!(window(ArbEvidence::Union), vec![1.5 - 0.035, 1.5]);
+    }
+
     #[test]
     fn arbiter_shift_never_doubles_a_beat() {
         let mut bs = BeatScheduler::new();

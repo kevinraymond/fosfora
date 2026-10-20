@@ -3,6 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- **Beats still landed on the off-beat on some music after v2.6.0's kick-based fix.** The beat grid's phase check now weighs a learned per-frame beat witness together with the kick drum, so it can move the grid where the kick sits on the "and" or is missing. On the Harmonix pop/EDM set beat accuracy went from 0.65 to 0.68 and on Ballroom from 0.47 to 0.48, with 17 holdout tracks fixed and none broken; tempo, downbeat and section numbers are unchanged, and beatless audio gets no new beats. The witness is a small tree model trained on Creative Commons music, credited in the source tree.
+
 ## v2.6.0 — 2026-10-20
 
 Beats land on the kick drum instead of between the beats, the drop warning covers the drops it had quietly stopped covering since v2.0.1 and no longer fires when a song fades into the next, and two dependency advisories are closed.

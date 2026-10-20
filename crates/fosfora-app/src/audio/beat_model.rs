@@ -16,6 +16,7 @@
 //! Causal by construction: every offset is at or before this hop, and hops before the start
 //! of the stream read as zero, exactly as the training rows were built.
 
+use std::collections::VecDeque;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -207,6 +208,57 @@ impl Model {
 fn model() -> &'static Model {
     static MODEL: OnceLock<Model> = OnceLock::new();
     MODEL.get_or_init(|| Model::load(include_str!("beat_model.json")))
+}
+
+/// The causal peak picker as a per-hop state machine: [`PeakPicker::push`] is true on the
+/// hops where `scripts/beat_model/train.py`'s `causal_peaks` would fire, so the runtime's
+/// events are the ones the picker parameters were chosen for.
+pub struct PeakPicker {
+    thr: f32,
+    k: usize,
+    /// The previous `k - 1` activations.
+    recent: VecDeque<f32>,
+    hops: u64,
+    /// The hop count at the last event; 0 = none yet.
+    last_fire: u64,
+}
+
+impl PeakPicker {
+    pub fn new(picker: Picker) -> Self {
+        Self::with_threshold(picker, picker.thr)
+    }
+
+    pub fn with_threshold(picker: Picker, thr: f32) -> Self {
+        let k = picker.k.max(1) as usize;
+        Self {
+            thr,
+            k,
+            recent: VecDeque::with_capacity(k),
+            hops: 0,
+            last_fire: 0,
+        }
+    }
+
+    /// Feed this hop's activation; true when it is an event: at least `thr`, the maximum of
+    /// the last `k` hops (this one included), and more than `k` hops after the last event.
+    pub fn push(&mut self, a: f32) -> bool {
+        self.hops += 1;
+        let recent_max = self
+            .recent
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        let spaced = self.last_fire == 0 || self.hops - self.last_fire > self.k as u64;
+        let fire = a >= self.thr && a >= recent_max && spaced;
+        if fire {
+            self.last_fire = self.hops;
+        }
+        self.recent.push_back(a);
+        while self.recent.len() + 1 > self.k {
+            self.recent.pop_front();
+        }
+        fire
+    }
 }
 
 /// Per-hop beat activation. Owns the recent hops' column values; call [`process`]
@@ -410,6 +462,37 @@ mod tests {
         }
         assert_eq!(n, golden.act.len());
         assert!(n >= 100);
+    }
+
+    /// The picker fires exactly where train.py's `causal_peaks` does: at or above the
+    /// threshold, the maximum of the last k hops, more than k hops after the last fire.
+    #[test]
+    fn peak_picker_matches_the_training_rule() {
+        let seq = [
+            0.1, 0.5, 0.6, 0.4, 0.7, 0.2, 0.2, 0.9, 0.95, 0.3, 0.46, 0.1, 0.1, 0.1, 0.5,
+        ];
+        // k = 3, thr = .45, by hand with the Python rule (0-based hops):
+        //  h1 .5: >= thr, max of [h0] -> fire (last = 1)
+        //  h2 .6: h - last = 1 <= 3 -> no;  h3 .4 < thr;  h4 .7: h - last = 3 <= 3 -> no
+        //  h7 .9: >= thr, max of h5, h6 -> fire (last = 7); h8 .95: 1 <= 3 -> no
+        //  h10 .46: 3 <= 3 -> no;  h14 .5: >= thr, max of h12, h13, 7 > 3 -> fire
+        let mut p = PeakPicker::with_threshold(Picker { k: 3, thr: 0.45 }, 0.45);
+        let fired: Vec<usize> = seq
+            .iter()
+            .enumerate()
+            .filter(|&(_, &a)| p.push(a))
+            .map(|(h, _)| h)
+            .collect();
+        assert_eq!(fired, vec![1, 7, 14]);
+        // k = 1: every hop at or above the threshold that is not right after a fire.
+        let mut p = PeakPicker::new(Picker { k: 1, thr: 0.5 });
+        let fired: Vec<usize> = seq
+            .iter()
+            .enumerate()
+            .filter(|&(_, &a)| p.push(a))
+            .map(|(h, _)| h)
+            .collect();
+        assert_eq!(fired, vec![1, 4, 7, 14]);
     }
 
     /// Per-hop cost against the kick model, at full clock: the round's cap is 3x.
