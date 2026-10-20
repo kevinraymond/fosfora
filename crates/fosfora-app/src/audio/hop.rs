@@ -14,6 +14,7 @@
 
 use super::analyzer::FftAnalyzer;
 use super::beat::{BeatDetector, TempoCommand, TempoConfig};
+use super::beat_sidecar::BeatSidecar;
 use super::downbeat::DownbeatTracker;
 use super::hpss::HpssAnalyzer;
 use super::key::KeyDetector;
@@ -118,6 +119,8 @@ pub struct HopAnalyzer {
     key_sidecar: Option<KeySidecar>,
     /// Dev-only sweep instrumentation, active iff `FOSFORA_STRUCTURE_SIDECAR` is set (#2080).
     structure_sidecar: Option<StructureSidecar>,
+    /// Dev-only beat-path instrumentation, active iff `FOSFORA_BEAT_SIDECAR` is set (#4153).
+    beat_sidecar: Option<BeatSidecar>,
     /// `ANALYSIS_HOP / sample_rate` — the attack/release EMAs and the onset decay are
     /// expressed as time constants, so they need the hop duration, not the hop length.
     dt: f32,
@@ -146,6 +149,7 @@ impl HopAnalyzer {
             dmfcc_analyzer: DeltaMfccAnalyzer::new(hop_rate),
             key_sidecar: KeySidecar::from_env(),
             structure_sidecar: StructureSidecar::from_env(),
+            beat_sidecar: BeatSidecar::from_env(),
             dt: ANALYSIS_HOP as f32 / sample_rate,
         }
     }
@@ -310,6 +314,7 @@ impl HopAnalyzer {
         }
 
         // Beat detection (on raw magnitude spectra)
+        self.beat_detector.set_kick(raw.kick);
         let beat_result = self.beat_detector.process(
             self.analyzer.bass_magnitude(),
             self.analyzer.mid_magnitude(),
@@ -317,6 +322,10 @@ impl HopAnalyzer {
             timestamp,
             loud_silent,
         );
+        // Dev-only (#4153): dump the beat path's internals for offline reading.
+        if let Some(sidecar) = &mut self.beat_sidecar {
+            sidecar.record(timestamp, self.beat_detector.debug_state());
+        }
         raw.onset = beat_result.onset_strength;
         raw.beat = beat_result.beat;
         raw.beat_phase = beat_result.beat_phase;

@@ -4,6 +4,7 @@
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -758,6 +759,33 @@ fn comb_score(acf: &[f64], lag: f64) -> f64 {
     if wsum > 0.0 { num / wsum } else { 0.0 }
 }
 
+/// One tempo update's internals, for the dev-only beat sidecar (#4153). Filled
+/// by plain reads of values the update computes anyway; nothing reads it back.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TempoDebug {
+    /// Winner after the octave override.
+    pub raw_bpm: f64,
+    pub conf: f64,
+    /// The winner's comb score before prior and continuity weighting.
+    pub comb: f64,
+    /// ACF at the winning lag, and the median floor confidence is judged against.
+    pub peak: f64,
+    pub floor: f64,
+    /// ACF at 2x, 3x, 4x the winning lag; `None` past the end of the ACF.
+    pub c2: Option<f64>,
+    pub c3: Option<f64>,
+    pub c4: Option<f64>,
+    /// The measurement after folding onto the anchor level, and the filter output.
+    pub meas_bpm: f64,
+    pub filt_bpm: f64,
+    pub support: f64,
+    pub locked: bool,
+    pub seeded: bool,
+    pub anchor_bpm: Option<f64>,
+    pub challenge: f64,
+    pub pub_bpm: f64,
+}
+
 struct TempoEstimator {
     bpm_range: (f32, f32),
 
@@ -822,6 +850,13 @@ struct TempoEstimator {
     last_locked_bpm: f64,
     /// Buffers `compute_tempo` reuses across its every-few-hops runs (#75).
     acf: AcfScratch,
+    /// #4153 sidecar: the last update's internals, whether the ACF ran this
+    /// hop, and the state transitions since the last drain (name, extra).
+    /// Events are only collected while `dbg` is set.
+    last_debug: TempoDebug,
+    ran_this_hop: bool,
+    dbg: bool,
+    dbg_events: Vec<(&'static str, f64)>,
 }
 
 /// Working storage for one autocorrelation tempo estimate, kept on the estimator so a
@@ -876,7 +911,34 @@ impl TempoEstimator {
             challenge_above_since: None,
             last_locked_bpm: 0.0,
             acf: AcfScratch::default(),
+            last_debug: TempoDebug::default(),
+            ran_this_hop: false,
+            dbg: false,
+            dbg_events: Vec::new(),
         }
+    }
+
+    /// #4153 sidecar event; a no-op unless `dbg` is set.
+    fn dbg_event(&mut self, name: &'static str, extra: f64) {
+        if self.dbg {
+            self.dbg_events.push((name, extra));
+        }
+    }
+
+    /// #4153: snapshot the update's outcome and the state it left behind.
+    fn fill_debug(&mut self, raw_bpm: f64, conf: f64, meas_bpm: f64, filt_bpm: f64) {
+        let pub_bpm = self.published_bpm();
+        let d = &mut self.last_debug;
+        d.raw_bpm = raw_bpm;
+        d.conf = conf;
+        d.meas_bpm = meas_bpm;
+        d.filt_bpm = filt_bpm;
+        d.support = self.support;
+        d.locked = self.locked;
+        d.seeded = self.kalman.initialized;
+        d.anchor_bpm = self.anchor_log2.map(|a| 2.0f64.powf(a));
+        d.challenge = self.challenge;
+        d.pub_bpm = pub_bpm;
     }
 
     /// Apply live config from the shared [`TempoControl`] (A7 #1458). In auto mode the
@@ -990,6 +1052,7 @@ impl TempoEstimator {
     fn update(&mut self, onset_value: f64) -> (f64, f64, f64) {
         self.onset_history.push(onset_value);
         self.frame_count += 1;
+        self.ran_this_hop = false;
 
         // Need enough history (at least 2s)
         let min_frames = (2.0 * self.frame_rate).ceil() as usize;
@@ -1004,6 +1067,7 @@ impl TempoEstimator {
         }
 
         let (raw_bpm, confidence, _raw_period_frames) = self.compute_tempo();
+        self.ran_this_hop = true;
 
         // A7 (#1458): honour the user's octave override before filtering.
         let raw_bpm = self.apply_octave_offset(raw_bpm);
@@ -1037,9 +1101,11 @@ impl TempoEstimator {
                     }
                 }
                 self.current_confidence = confidence;
+                self.fill_debug(raw_bpm, confidence, 0.0, 0.0);
                 return (0.0, self.current_confidence, 0.0);
             }
             self.pending_seed = None;
+            self.dbg_event("seed", f64::NAN);
         }
 
         // Q2b metrical anchor: classify the winner against the anchor level.
@@ -1154,6 +1220,7 @@ impl TempoEstimator {
                     self.challenge = 0.0;
                     self.challenge_above_since = None;
                     filtered_bpm = new_bpm;
+                    self.dbg_event("anchor_displaced", f64::NAN);
                 }
             } else {
                 self.challenge_above_since = None;
@@ -1180,6 +1247,7 @@ impl TempoEstimator {
                 self.locked_since = None;
                 self.challenge = 0.0;
                 self.challenge_above_since = None;
+                self.dbg_event("anchor_abandoned", f64::NAN);
             }
         }
 
@@ -1206,9 +1274,11 @@ impl TempoEstimator {
             if self.locked {
                 if self.support < LOCK_EXIT_SUPPORT {
                     self.locked = false;
+                    self.dbg_event("unlock", f64::NAN);
                 }
             } else if self.support > LOCK_ENTER_SUPPORT {
                 self.locked = true;
+                self.dbg_event("lock", f64::NAN);
             }
         }
 
@@ -1257,6 +1327,7 @@ impl TempoEstimator {
                     };
                     self.anchor_born_at = Some(self.frame_count);
                     self.ghost_anchor = None;
+                    self.dbg_event("anchor_earned", f64::NAN);
                 }
             } else if let Some(a) = &mut self.anchor_log2 {
                 if filtered_bpm > 0.0 && (filtered_bpm.log2() - *a).abs() <= RELATED_TOL_LOG2 {
@@ -1292,6 +1363,7 @@ impl TempoEstimator {
             0.0
         };
 
+        self.fill_debug(raw_bpm, confidence, measurement_bpm, filtered_bpm);
         let period_s = self.current_period_frames * self.frame_time;
         (self.current_bpm, self.current_confidence, period_s)
     }
@@ -1304,6 +1376,8 @@ impl TempoEstimator {
     }
 
     fn compute_tempo_with(&mut self, acf: &mut AcfScratch) -> (f64, f64, f64) {
+        // #4153: an early return leaves the ACF fields at zero, not stale.
+        self.last_debug = TempoDebug::default();
         self.onset_history.copy_values_into(&mut acf.history);
         let history = &acf.history;
         let n = history.len();
@@ -1422,7 +1496,7 @@ impl TempoEstimator {
         let min_lag_f = 60.0 / (self.bpm_range.1 as f64 * self.frame_time);
         let max_lag_f = 60.0 / (self.bpm_range.0 as f64 * self.frame_time);
 
-        let mut best: Option<(f64, f64)> = None; // (lag, weighted score)
+        let mut best: Option<(f64, f64, f64)> = None; // (lag, weighted score, comb)
         for &(peak_lag, _) in peaks.iter() {
             for &(num, den) in &ratios {
                 let cand = peak_lag * num / den;
@@ -1430,17 +1504,17 @@ impl TempoEstimator {
                     continue;
                 }
                 let bpm = 60.0 / (cand * self.frame_time);
-                let weighted = comb_score(autocorr, cand)
-                    * self.tempo_prior_weight(bpm)
-                    * self.continuity_weight(bpm);
-                if best.is_none_or(|(_, b)| weighted > b) {
-                    best = Some((cand, weighted));
+                let comb = comb_score(autocorr, cand);
+                let weighted = comb * self.tempo_prior_weight(bpm) * self.continuity_weight(bpm);
+                if best.is_none_or(|(_, b, _)| weighted > b) {
+                    best = Some((cand, weighted, comb));
                 }
             }
         }
-        let Some((best_lag_f, _)) = best else {
+        let Some((best_lag_f, _, best_comb)) = best else {
             return (0.0, 0.0, 0.0);
         };
+        self.last_debug.comb = best_comb;
 
         let bpm = 60.0 / (best_lag_f * self.frame_time);
 
@@ -1455,8 +1529,18 @@ impl TempoEstimator {
             // Upper median, by selection rather than a sort.
             let noise_floor = *floor.select_nth_unstable_by(mid, f64::total_cmp).1;
             let peak = acf_at(autocorr, best_lag_f);
+            self.last_debug.peak = peak;
+            self.last_debug.floor = noise_floor;
             ((peak - noise_floor) / (1.0 - noise_floor).max(1e-6)).clamp(0.0, 1.0)
         };
+        // #4153: the winner's harmonics, where the ACF reaches them.
+        let harmonic = |h: f64| {
+            let x = best_lag_f * h;
+            (x <= acr_max as f64).then(|| acf_at(autocorr, x))
+        };
+        self.last_debug.c2 = harmonic(2.0);
+        self.last_debug.c3 = harmonic(3.0);
+        self.last_debug.c4 = harmonic(4.0);
 
         // Safety net only — the float bounds above already confine candidates.
         if bpm < self.bpm_range.0 as f64 || bpm > self.bpm_range.1 as f64 {
@@ -1577,6 +1661,57 @@ const PLL_ACQ_MIN_SPACING: f64 = 0.6;
 /// re-anchor on the next onset instead of letting a dead grid veto agreement.
 const PLL_ACQ_STALE_PERIODS: f64 = 4.0;
 
+// ---------------------------------------------------------------------------
+// Stage 3b: phase arbiter (#4160)
+// ---------------------------------------------------------------------------
+//
+// The PLL only pulls the grid toward onsets within +-[`PLL_CAPTURE_PERIOD_FRAC`]
+// of a period, and the grid anchors on the first gated onset, which can be any
+// hit. A grid that anchored on the off-beat therefore stays there: the true beat
+// is half a period away. On the bench, 28% of emitted beats sat on the half-beat
+// with the tempo right, and the phase was decided at the anchor far more often
+// than it drifted later.
+//
+// The arbiter folds the last bars of KICK events onto the grid and moves the grid
+// half a beat when the kicks clearly and repeatedly sit on the half-beat. Kicks,
+// not onsets: the kick model rejects bass notes, while in the onset function a
+// house off-beat bassline outvotes the beat (measured: onset evidence pulled three
+// correct batida house renders onto the off-beat). A 32-beat guard keeps a grid
+// the long-run evidence still backs, so a burst of misread events (chiptune
+// square-wave bass read as kicks) cannot flip it. The configuration and its
+// evidence are in bench/manifests/q4160_phase_frozen.json and board #4160.
+
+#[derive(Clone, Copy, Debug)]
+struct PhaseArbiterCfg {
+    /// Beats of kick evidence each vote folds onto the grid.
+    win_beats: f64,
+    /// Fewer kicks than this in the window: abstain (kick-sparse music keeps
+    /// the PLL's phase untouched).
+    min_kicks: usize,
+    /// The half-beat must hold this many times the on-grid kicks.
+    ratio: f64,
+    /// Consecutive grid instants that must vote to move before the grid moves.
+    streak: u32,
+    /// Stability guard over this many beats (0 = off): the half-beat must also
+    /// win by `ratio` there, and the on-grid phase may hold at most
+    /// `long_share` of that window's kicks.
+    long_beats: f64,
+    long_share: f64,
+}
+
+/// The configuration the #4160 round selected.
+const PHASE_ARBITER: PhaseArbiterCfg = PhaseArbiterCfg {
+    win_beats: 8.0,
+    min_kicks: 4,
+    ratio: 2.0,
+    streak: 4,
+    long_beats: 32.0,
+    long_share: 0.3,
+};
+
+/// A kick counts toward a phase when it lies within this fraction of a period.
+const ARB_PHASE_TOLERANCE: f64 = 0.125;
+
 struct BeatScheduler {
     /// Q3: the estimator's hysteretic lock state — selects the firing mode.
     tempo_locked: bool,
@@ -1610,7 +1745,28 @@ struct BeatScheduler {
     grid_beat_count: u64,
     muted: bool,
     beat_strength: f64,
+
+    /// #4160 phase arbiter; `None` disables it (tests).
+    arbiter: Option<PhaseArbiterCfg>,
+    /// Kick event times within the arbiter's longest window.
+    arb_kicks: VecDeque<f64>,
+    /// Consecutive grid instants that voted to move half a beat.
+    arb_streak: u32,
+    /// Set by [`BeatDetector::process`] for the hop being processed.
+    kick_event: bool,
+    /// Grid phase shifts the arbiter made (diagnostics).
+    phase_shifts: u64,
+
+    /// #4153 sidecar: the last 8 grid instants as (time, had in-window onset
+    /// support), the state transitions since the last drain (name, extra).
+    /// Both only maintained while `dbg` is set.
+    dbg: bool,
+    dbg_grid: VecDeque<(f64, bool)>,
+    dbg_events: Vec<(&'static str, f64)>,
 }
+
+/// #4153: how many grid instants the sidecar's support fractions cover.
+const DBG_GRID_LEN: usize = 8;
 
 impl BeatScheduler {
     fn new() -> Self {
@@ -1630,7 +1786,119 @@ impl BeatScheduler {
             grid_beat_count: 0,
             muted: false,
             beat_strength: 0.0,
+            arbiter: Some(PHASE_ARBITER),
+            arb_kicks: VecDeque::new(),
+            arb_streak: 0,
+            kick_event: false,
+            phase_shifts: 0,
+            dbg: false,
+            dbg_grid: VecDeque::new(),
+            dbg_events: Vec::new(),
         }
+    }
+
+    /// #4153 sidecar event; a no-op unless `dbg` is set.
+    fn dbg_event(&mut self, name: &'static str, extra: f64) {
+        if self.dbg {
+            self.dbg_events.push((name, extra));
+        }
+    }
+
+    /// #4153: note a grid instant passing (every `grid_beat_count += 1`), with
+    /// whether an in-window onset backed it. A no-op unless `dbg` is set.
+    fn dbg_grid_instant(&mut self, time: f64, supported: bool) {
+        if !self.dbg {
+            return;
+        }
+        if self.dbg_grid.len() == DBG_GRID_LEN {
+            self.dbg_grid.pop_front();
+        }
+        self.dbg_grid.push_back((time, supported));
+    }
+
+    /// #4153: fraction of the tracked grid instants that had onset support.
+    fn dbg_onset_support(&self) -> f64 {
+        if self.dbg_grid.is_empty() {
+            return 0.0;
+        }
+        let n = self.dbg_grid.iter().filter(|&&(_, s)| s).count();
+        n as f64 / self.dbg_grid.len() as f64
+    }
+
+    /// #4153: fraction of the tracked grid instants with a kick event within
+    /// [`ARB_PHASE_TOLERANCE`] of a period, from the arbiter's kick window.
+    fn dbg_kick_support(&self) -> f64 {
+        let period = self.grid_period();
+        if self.dbg_grid.is_empty() || period <= 0.0 {
+            return 0.0;
+        }
+        let tol = ARB_PHASE_TOLERANCE * period;
+        let n = self
+            .dbg_grid
+            .iter()
+            .filter(|&&(t, _)| self.arb_kicks.iter().any(|&k| (k - t).abs() <= tol))
+            .count();
+        n as f64 / self.dbg_grid.len() as f64
+    }
+
+    /// #4153: which firing path the scheduler is on.
+    fn dbg_mode(&self) -> &'static str {
+        if self.next_beat_time.is_none() || self.period <= 0.0 {
+            "none"
+        } else if !self.tempo_locked {
+            "acq"
+        } else if self.muted {
+            "muted"
+        } else {
+            "locked"
+        }
+    }
+
+    /// #4160: fold the kicks of the window ending at the grid instant `now`
+    /// onto the grid. True once the half-beat has won `streak` instants in a
+    /// row (and the stability guard agrees): the caller moves the grid.
+    fn arbitrate(&mut self, cfg: PhaseArbiterCfg, now: f64, period: f64) -> bool {
+        let keep = cfg.win_beats.max(cfg.long_beats) * period;
+        while self.arb_kicks.front().is_some_and(|&t| t < now - keep) {
+            self.arb_kicks.pop_front();
+        }
+        // (on the grid, on the half-beat, all) kicks of the last `beats` periods.
+        let fold = |beats: f64| {
+            let (mut on, mut half, mut total) = (0usize, 0usize, 0usize);
+            for &t in self
+                .arb_kicks
+                .iter()
+                .filter(|&&t| t >= now - beats * period)
+            {
+                total += 1;
+                let f = ((t - now) / period).rem_euclid(1.0);
+                if f.min(1.0 - f) <= ARB_PHASE_TOLERANCE {
+                    on += 1;
+                }
+                if (f - 0.5).abs() <= ARB_PHASE_TOLERANCE {
+                    half += 1;
+                }
+            }
+            (on, half, total)
+        };
+        let (on, half, total) = fold(cfg.win_beats);
+        let mut vote =
+            half > on && total >= cfg.min_kicks && half as f64 >= cfg.ratio * on.max(1) as f64;
+        if vote && cfg.long_beats > 0.0 {
+            let (on, half, total) = fold(cfg.long_beats);
+            vote = on as f64 <= cfg.long_share * total as f64
+                && half as f64 >= cfg.ratio * on.max(1) as f64;
+        }
+        if !vote {
+            self.arb_streak = 0;
+            return false;
+        }
+        self.arb_streak += 1;
+        if self.arb_streak < cfg.streak {
+            return false;
+        }
+        self.arb_streak = 0;
+        true
     }
 
     fn update_tempo(&mut self, bpm: f64, period: f64, confidence: f64, locked: bool) {
@@ -1666,6 +1934,7 @@ impl BeatScheduler {
     ) -> (bool, f64, f64, f64) {
         // Sustained silence: mute and drop the grid — re-entry re-acquires
         // fresh instead of trusting a phase that free-ran through the gap.
+        let kick_event = std::mem::take(&mut self.kick_event);
         if is_silence {
             self.next_beat_time = None;
             self.period_trim = 0.0;
@@ -1673,6 +1942,8 @@ impl BeatScheduler {
             self.muted = false;
             self.slot_early_best = None;
             self.closing_slot = None;
+            self.arb_kicks.clear();
+            self.arb_streak = 0;
             return (false, 0.0, 0.0, self.bpm);
         }
 
@@ -1681,12 +1952,16 @@ impl BeatScheduler {
             return (false, 0.0, 0.0, self.bpm);
         }
         let period = self.grid_period();
+        if kick_event && self.arbiter.is_some() {
+            self.arb_kicks.push_back(timestamp);
+        }
 
         // No grid anchored yet: anchor on the first gated onset. Locked or
         // not, the first beat needs an event to phase against.
         let Some(mut next_beat_time) = self.next_beat_time.take() else {
             if is_onset {
                 self.next_beat_time = Some(self.anchor(onset_strength, timestamp, period));
+                self.dbg_event("first_anchor", f64::NAN);
                 return (true, timestamp, 0.0, self.bpm);
             }
             return (false, 0.0, 0.0, self.bpm);
@@ -1708,6 +1983,7 @@ impl BeatScheduler {
         self.beat_strength = f64::from(onset_strength);
         self.last_beat_time = timestamp;
         self.last_fired_time = timestamp;
+        self.dbg_grid_instant(timestamp, self.onset_support_pending);
         self.onset_support_pending = false;
         self.grid_beat_count += 1;
         timestamp + period
@@ -1824,6 +2100,21 @@ impl BeatScheduler {
                 self.last_beat_time = *next_beat_time;
                 *next_beat_time += period;
                 self.grid_beat_count += 1;
+                self.dbg_grid_instant(beat_time, supported);
+                if let Some(cfg) = self.arbiter {
+                    if self.arbitrate(cfg, beat_time, period) {
+                        // Move the grid half a beat LATER (a long gap reads
+                        // better than a double beat); the PLL's pending bids
+                        // and trim belong to the old phase.
+                        *next_beat_time += 0.5 * period;
+                        self.period_trim = 0.0;
+                        self.closing_slot = None;
+                        self.slot_early_best = None;
+                        self.onset_support_pending = false;
+                        self.phase_shifts += 1;
+                        self.dbg_event("arb_shift", f64::NAN);
+                    }
+                }
                 if !supported {
                     self.beat_strength = 0.5;
                 }
@@ -1845,6 +2136,8 @@ impl BeatScheduler {
                 self.last_fired_time = timestamp;
                 self.last_beat_time = timestamp;
                 self.grid_beat_count += 1;
+                self.dbg_grid_instant(timestamp, self.onset_support_pending);
+                self.dbg_event("acq_fire", f64::from(onset_strength));
                 // Fold the grid onto this fire so phase reads from it.
                 while *next_beat_time <= timestamp {
                     *next_beat_time += period;
@@ -1857,12 +2150,14 @@ impl BeatScheduler {
                 // re-anchor on this onset rather than let a dead grid veto
                 // every candidate forever.
                 *next_beat_time = self.anchor(onset_strength, timestamp, period);
+                self.dbg_event("stale_reanchor", f64::from(onset_strength));
                 return (true, timestamp, 0.0, self.bpm);
             }
             // Advance the provisional grid past due instants (no emission —
             // unsupported unlocked beats are exactly the old over-firing).
             while *next_beat_time <= timestamp {
                 self.last_beat_time = *next_beat_time;
+                self.dbg_grid_instant(*next_beat_time, self.onset_support_pending);
                 *next_beat_time += period;
                 self.onset_support_pending = false;
                 self.grid_beat_count += 1;
@@ -1903,6 +2198,22 @@ pub struct BeatResult {
     pub beat_locked: bool,
 }
 
+/// One hop's view of the detector's internals for the dev-only beat sidecar
+/// (#4153). `events` are the state transitions since the previous call, in
+/// processing order (estimator first, then scheduler), as (name, extra) where
+/// `extra` is the onset strength for the fires that carry one and NaN otherwise.
+pub struct BeatDebug {
+    /// Whether the tempo estimator ran its autocorrelation this hop.
+    pub ran: bool,
+    pub tempo: TempoDebug,
+    pub mode: &'static str,
+    /// Fraction of the last 8 grid instants with an in-window onset / a kick.
+    pub on_sup: f64,
+    pub kick_sup: f64,
+    pub grid_n: u64,
+    pub events: Vec<(&'static str, f64)>,
+}
+
 /// 3-stage beat detection pipeline.
 pub struct BeatDetector {
     onset_detector: OnsetDetector,
@@ -1917,6 +2228,11 @@ pub struct BeatDetector {
     // Onset cooldown
     onset_cooldown: f64,
     last_onset_time: f64,
+
+    /// #4160: this hop's kick envelope (0.5 = a kick) and the event rule's state.
+    kick_now: f32,
+    kick_armed: bool,
+    last_kick_time: f64,
 }
 
 impl BeatDetector {
@@ -1929,16 +2245,31 @@ impl BeatDetector {
         let history_size = (0.5 * frame_rate) as usize; // ~0.5s
         let long_term_size = (4.0 * frame_rate) as usize; // ~4s
 
+        // #4153: collect sidecar events only when something will read them.
+        let dbg = std::env::var_os("FOSFORA_BEAT_SIDECAR").is_some();
+        let mut tempo_estimator = TempoEstimator::new(8.0, frame_rate, tempo);
+        tempo_estimator.dbg = dbg;
+        let mut beat_scheduler = BeatScheduler::new();
+        beat_scheduler.dbg = dbg;
+
         Self {
             onset_detector: OnsetDetector::new(sample_rate, history_size, long_term_size),
-            tempo_estimator: TempoEstimator::new(8.0, frame_rate, tempo),
-            beat_scheduler: BeatScheduler::new(),
+            tempo_estimator,
+            beat_scheduler,
             held_onset: 0.0,
             onset_decay_tau: 0.20,
             last_timestamp: 0.0,
             onset_cooldown: 0.05,
             last_onset_time: 0.0,
+            kick_now: 0.0,
+            kick_armed: true,
+            last_kick_time: f64::NEG_INFINITY,
         }
+    }
+
+    /// The kick model's envelope for the hop about to be processed (#4160).
+    pub fn set_kick(&mut self, kick: f32) {
+        self.kick_now = kick;
     }
 
     /// Apply live tempo config (A7 #1458), snapshotted from the shared `TempoControl`.
@@ -1957,6 +2288,23 @@ impl BeatDetector {
     /// Prior centre in BPM — published back to the shared config in auto mode (A7 #1458).
     pub fn prior_center_bpm(&self) -> f32 {
         self.tempo_estimator.prior_center_bpm()
+    }
+
+    /// #4153: the internals of the hop just processed, draining the pending
+    /// events. Only meaningful when `FOSFORA_BEAT_SIDECAR` was set at
+    /// construction; the per-instant fractions read 0 otherwise.
+    pub fn debug_state(&mut self) -> BeatDebug {
+        let mut events = std::mem::take(&mut self.tempo_estimator.dbg_events);
+        events.append(&mut self.beat_scheduler.dbg_events);
+        BeatDebug {
+            ran: self.tempo_estimator.ran_this_hop,
+            tempo: self.tempo_estimator.last_debug,
+            mode: self.beat_scheduler.dbg_mode(),
+            on_sup: self.beat_scheduler.dbg_onset_support(),
+            kick_sup: self.beat_scheduler.dbg_kick_support(),
+            grid_n: self.beat_scheduler.grid_beat_count,
+            events,
+        }
     }
 
     /// Process one frame of audio data.
@@ -2000,6 +2348,16 @@ impl BeatDetector {
 
         // Stage 2: Tempo estimation
         let (bpm, confidence, period_s) = self.tempo_estimator.update(combined_flux);
+
+        // #4160: a kick EVENT, by the `/stem/drums/onset` rule.
+        if self.kick_now < 0.3 {
+            self.kick_armed = true;
+        }
+        if self.kick_armed && self.kick_now >= 0.5 && timestamp - self.last_kick_time >= 0.10 {
+            self.kick_armed = false;
+            self.last_kick_time = timestamp;
+            self.beat_scheduler.kick_event = true;
+        }
 
         // Stage 3: Beat scheduling
         self.beat_scheduler
@@ -2407,6 +2765,191 @@ mod tests {
             assert!(
                 phase_err < 0.08,
                 "resumed beat at {bt} is {phase_err}s off the original grid"
+            );
+        }
+    }
+
+    /// Drives a locked 120 BPM scheduler for `secs` from an anchor at `anchor`.
+    /// True beats sit at 1.0 + k*0.5. `onsets_at(t)` / `kick_at(t)` say whether a
+    /// hop at t carries an onset / a kick event. Returns the emitted beat times.
+    fn drive_locked(
+        bs: &mut BeatScheduler,
+        anchor: f64,
+        secs: f64,
+        onsets_at: impl Fn(f64) -> bool,
+        kick_at: impl Fn(f64) -> bool,
+    ) -> Vec<f64> {
+        bs.update_tempo(120.0, 0.5, 0.9, true);
+        bs.process(true, 0.9, anchor, false);
+        let dt = 512.0 / 44100.0;
+        let mut t = anchor;
+        let mut beats = Vec::new();
+        while t < anchor + secs {
+            t += dt;
+            bs.kick_event = kick_at(t);
+            let (fired, bt, _, _) = bs.process(onsets_at(t), 0.8, t, false);
+            if fired {
+                beats.push(bt);
+            }
+        }
+        beats
+    }
+
+    /// Is a hop at `t` (hop length dt) the one nearest an instant `offset + k*0.5`?
+    fn near(t: f64, offset: f64) -> bool {
+        let dt = 512.0 / 44100.0;
+        let x = (t - offset) / 0.5;
+        (x - x.round()).abs() * 0.5 < dt * 0.5
+    }
+
+    fn off_grid_by(bt: f64) -> f64 {
+        let x = (bt - 1.0) / 0.5;
+        (x - x.round()).abs() * 0.5
+    }
+
+    /// #4160: a grid anchored on the off-beat, held there by louder off-beat
+    /// onsets (the PLL's +-25% capture never reaches the true beat), is moved
+    /// onto the beat by kick evidence, and stays there.
+    #[test]
+    fn arbiter_moves_an_off_beat_grid_onto_the_kicks() {
+        let mut bs = BeatScheduler::new();
+        bs.arbiter = Some(PHASE_ARBITER);
+        // Onsets on beats AND off-beats; kicks only on the beats.
+        let beats = drive_locked(
+            &mut bs,
+            1.25,
+            16.0,
+            |t| near(t, 1.0) || near(t, 1.25),
+            |t| near(t, 1.0),
+        );
+        assert_eq!(bs.phase_shifts, 1, "exactly one half-beat shift");
+        let late: Vec<f64> = beats.iter().copied().filter(|&b| b > 12.0).collect();
+        assert!(late.len() >= 6, "keeps firing after the shift");
+        for b in late {
+            assert!(
+                off_grid_by(b) < 0.05,
+                "beat at {b} is still {:.3} s off the kick grid",
+                off_grid_by(b)
+            );
+        }
+    }
+
+    /// The same music without the arbiter stays on the off-beat: the case the
+    /// arbiter exists for (guards the test above against passing vacuously).
+    #[test]
+    fn without_the_arbiter_the_off_beat_grid_stays_off() {
+        let mut bs = BeatScheduler::new();
+        bs.arbiter = None;
+        let beats = drive_locked(
+            &mut bs,
+            1.25,
+            16.0,
+            |t| near(t, 1.0) || near(t, 1.25),
+            |t| near(t, 1.0),
+        );
+        let late: Vec<f64> = beats.iter().copied().filter(|&b| b > 12.0).collect();
+        assert!(
+            late.iter().all(|&b| off_grid_by(b) > 0.2),
+            "expected an off-beat lock, got {late:?}"
+        );
+    }
+
+    /// A grid already on the kicks is never moved, and with no kicks at all
+    /// the arbiter abstains: emitted beats are exactly the disabled ones.
+    #[test]
+    fn arbiter_leaves_a_right_grid_alone_and_abstains_without_kicks() {
+        let mut on = BeatScheduler::new();
+        on.arbiter = Some(PHASE_ARBITER);
+        drive_locked(
+            &mut on,
+            1.0,
+            16.0,
+            |t| near(t, 1.0) || near(t, 1.25),
+            |t| near(t, 1.0),
+        );
+        assert_eq!(on.phase_shifts, 0, "kicks agree with the grid: no shift");
+
+        let mut with = BeatScheduler::new();
+        with.arbiter = Some(PHASE_ARBITER);
+        let mut without = BeatScheduler::new();
+        without.arbiter = None;
+        let a = drive_locked(
+            &mut with,
+            1.25,
+            16.0,
+            |t| near(t, 1.0) || near(t, 1.25),
+            |_| false,
+        );
+        let b = drive_locked(
+            &mut without,
+            1.25,
+            16.0,
+            |t| near(t, 1.0) || near(t, 1.25),
+            |_| false,
+        );
+        assert_eq!(with.phase_shifts, 0);
+        assert_eq!(
+            a, b,
+            "no kick evidence: identical to the disabled scheduler"
+        );
+    }
+
+    /// The chiptune case (batida chiptune s2): a grid that kicks have backed
+    /// for 16 s is hit by a 10 s burst where off-beat misfires outnumber the
+    /// real kicks about 3:1 (batida measured 10:4). The 32-beat guard holds the
+    /// grid; without it the same burst moves the grid onto the off-beat.
+    #[test]
+    fn arbiter_guard_ignores_a_short_off_beat_burst() {
+        let kicks = |t: f64| {
+            let burst = (17.0..27.0).contains(&t);
+            let beat = ((t - 1.0) / 0.5).round() as i64;
+            (near(t, 1.0) && (!burst || beat % 3 == 0)) || (burst && near(t, 1.25))
+        };
+        let mut guarded = BeatScheduler::new();
+        guarded.arbiter = Some(PHASE_ARBITER);
+        drive_locked(&mut guarded, 1.0, 28.0, |t| near(t, 1.0), kicks);
+        assert_eq!(
+            guarded.phase_shifts, 0,
+            "the guard must hold a long-backed grid"
+        );
+
+        let mut unguarded = BeatScheduler::new();
+        unguarded.arbiter = Some(PhaseArbiterCfg {
+            long_beats: 0.0,
+            ..PHASE_ARBITER
+        });
+        drive_locked(&mut unguarded, 1.0, 28.0, |t| near(t, 1.0), kicks);
+        assert!(
+            unguarded.phase_shifts >= 1,
+            "without the guard the burst moves the grid (test is not vacuous)"
+        );
+    }
+
+    /// A shift moves the grid LATER by half a beat: a longer gap, never two
+    /// beats closer than the scheduler's 0.3-period floor.
+    #[test]
+    fn arbiter_shift_never_doubles_a_beat() {
+        let mut bs = BeatScheduler::new();
+        bs.arbiter = Some(PHASE_ARBITER);
+        let beats = drive_locked(
+            &mut bs,
+            1.25,
+            16.0,
+            |t| near(t, 1.0) || near(t, 1.25),
+            |t| near(t, 1.0),
+        );
+        assert_eq!(bs.phase_shifts, 1);
+        for pair in beats.windows(2) {
+            let gap = pair[1] - pair[0];
+            assert!(
+                gap > 0.3 * 0.5,
+                "beats {:.3} and {:.3} only {gap:.3} s apart",
+                pair[0],
+                pair[1]
+            );
+            assert!(
+                gap < 1.6 * 0.5,
+                "gap {gap:.3} s is more than the half-beat shift"
             );
         }
     }

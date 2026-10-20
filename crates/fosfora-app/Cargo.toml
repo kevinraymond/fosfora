@@ -83,7 +83,7 @@ image-webp = "0.2"
 # GIF decoding (animated GIF frame extraction)
 gif = "0.14"
 # Native file dialogs
-rfd = { version = "0.15", optional = true }
+rfd = { version = "0.17", optional = true }
 # Linear algebra (camera, projection)
 glam = "0.29"
 # glTF/GLB import (3D-model obstacle source #1851) — pure Rust, no system deps
@@ -107,7 +107,7 @@ sha2 = { version = "0.10", optional = true }
 # Archive extraction for ONNX Runtime download (tgz on Linux/macOS, zip on Windows)
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
-zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
+zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 rustc-hash = "2.1.1"
 fontdue = "0.9"
 wgpu-profiler = { version = "0.25", optional = true }

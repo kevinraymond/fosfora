@@ -3,6 +3,17 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- **The drop warning has fired on fewer drops since v2.0.1.** An internal band scale got 6 dB louder in that release and the warning's calibration was never adjusted, so build-ups read as weaker than they are. The warning now covers 45% of the drops in the Harmonix set at the 0.5 tier (41% before) and 34% at the 0.8 tier (24%), and fires about as often as it did before v2.0.1 (2.3 false alarms a minute, up from 2.0). Section-boundary detection recovers slightly too.
+- **A drop fired when a song faded into the next one, or when a breakdown's silence ended.** The drop test measured the loudness jump against the dip it was climbing out of, so a recovery to a quiet level counted as a drop. A drop now also has to land near the loudest recent music. On an hour of an EDM radio station the wrong drop events fell from 23 to 17 (real drops caught: 14, now 13); on the Harmonix set false drops fell 7% with coverage unchanged.
+- **Beats landed between the beats on a lot of music.** With the tempo right, the beat grid often locked onto the off-beat (an off-beat bassline or hi-hats are louder there) and stayed, so beat-bound visuals pulsed between the hits. The grid now checks itself against the kick drum and moves half a beat when the kicks clearly say so: beat accuracy went from 0.53 to 0.65 on the Harmonix pop/EDM set and 0.40 to 0.47 on Ballroom. A few songs that used to lock correctly now land on the off-beat (7 of 374 on Harmonix, against 48 fixed); music without a kick drum behaves as before.
+
+### Security
+- **File dialogs on Linux no longer pull in `zbus` (RUSTSEC-2026-0370, RUSTSEC-2026-0371, RUSTSEC-2026-0372).** The three advisories mark `zvariant` and `zbus_names` unmaintained; `rfd` 0.17 talks to the desktop portal through the system `libdbus-1` instead, which drops 39 crates from the build. The dialogs behave the same; a Linux desktop without `libdbus-1` (every mainstream distribution ships it) would not show them.
+- **`zip` updated to 9 (RUSTSEC-2026-0367, RUSTSEC-2026-0368, RUSTSEC-2026-0369).** The advisories cover permission bits and symlinks written while extracting an untrusted archive. Fosfora only reads one file out of Microsoft's ONNX Runtime download for depth estimation and never called the affected extraction functions, so no build was exposed.
+
 ## v2.5.0 — 2026-10-12
 
 Bindings play over the values you set instead of overwriting them, so bound presets stay clean and save what you meant; videos longer than a minute play as layers; particle and obstacle videos load without freezing the app.

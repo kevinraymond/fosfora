@@ -38,6 +38,15 @@ const ROLLOFF_PERCENTILE: f32 = 0.85;
 /// so it sits at the same signal level.
 const FLUX_FLOOR: f32 = 2e-3;
 
+/// Flat compensation (dB) on the `BandScale::Db` band map. The FFT magnitude rescale from
+/// `2/size` to `2/sum(window)` (#54) raised every magnitude by 6.02 dB; the two linear-path
+/// floors (`FLUX_FLOOR`, `BASS_ABS_FLOOR`) were doubled to match, but the dB band map was
+/// not, so the pre-normalization band features that the build-up logistic, the drop rules and
+/// the structure fingerprint were tuned on read a flat +0.100 higher, and the drop warning
+/// covered fewer drops (Harmonix 68 -> 57 of 141 at the 0.5 tier). This restores their
+/// calibration (board #4170/#4172).
+const DB_BAND_COMPENSATION_DB: f32 = -6.02;
+
 /// Mel bands for the A17 scrolling spectrogram texture (#1468). Independent of the
 /// MFCC filterbank (N_MELS) — a higher band count gives finer vertical detail in the
 /// waterfall (Strata #1479) without touching MFCC output. Also the height of the
@@ -571,7 +580,7 @@ impl FftAnalyzer {
                     }
                 };
                 let db = |res: &FftResolution, lo: f32, hi: f32| {
-                    res.band_energy_db_window(lo, hi, FLOOR, tilt(lo, hi))
+                    res.band_energy_db_window(lo, hi, FLOOR, tilt(lo, hi) + DB_BAND_COMPENSATION_DB)
                 };
                 [
                     db(&self.large, 20.0, 60.0),
@@ -873,6 +882,57 @@ mod tests {
             feats = a.analyze(&block);
         }
         feats
+    }
+
+    /// The `Db` band map reads what it read before the coherent-gain rescale (#54), which
+    /// the build-up logistic, the drop rules and the structure fingerprint were tuned on.
+    /// The pinned values are a half-scale sine measured at a9401d6 (the rescale's parent) by
+    /// this same harness; without `DB_BAND_COMPENSATION_DB` each band reads +0.100 higher
+    /// (6.02 dB over the 60 dB window), which is what cost the drop warning a sixth of its
+    /// coverage (board #4170).
+    #[test]
+    fn db_band_map_keeps_pre_rescale_calibration() {
+        for (hz, band, pre_rescale) in [
+            (40.0, 0usize, 0.728246f32),
+            (150.0, 1, 0.623569),
+            (1000.0, 3, 0.573345),
+            (5000.0, 5, 0.663109),
+        ] {
+            let f = features_for_sine(BandScale::Db, hz);
+            let got = [
+                f.sub_bass,
+                f.bass,
+                f.low_mid,
+                f.mid,
+                f.upper_mid,
+                f.presence,
+                f.brilliance,
+            ][band];
+            assert!(
+                (got - pre_rescale).abs() < 1e-3,
+                "{hz} Hz band {band}: {got} vs pre-rescale {pre_rescale}"
+            );
+        }
+        // The uncompensated map, from the same spectrum: the rescale alone is a flat +0.100.
+        let mut a = FftAnalyzer::new(SR, BandScale::Db);
+        let mut phase = 0.0f32;
+        let step = 2.0 * std::f32::consts::PI * 40.0 / SR;
+        for _ in 0..5 {
+            let block: Vec<f32> = (0..FFT_LARGE)
+                .map(|_| {
+                    let s = 0.5 * phase.sin();
+                    phase += step;
+                    s
+                })
+                .collect();
+            a.analyze(&block);
+        }
+        let uncompensated = a.large.band_energy_db_window(20.0, 60.0, -60.0, 0.0);
+        let compensated = a.bands()[0];
+        assert!(
+            (uncompensated - compensated - 0.1003).abs() < 2e-3,
+            "uncompensated {uncompensated} vs compensated {compensated}"
+        );
     }
 
     #[test]

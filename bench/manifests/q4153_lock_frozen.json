@@ -1,0 +1,442 @@
+{
+  "schema": "fosfora-bench-q-lock-frozen/v1",
+  "_policy": "Pre-registered targets for the tempo false-lock round (board #4153), frozen 2026-10-17 BEFORE any candidate was built or scored. Modeled on q4160_phase_frozen.json and q_onset_frozen.json: numbers move or the change reverts. Variant selection reads the TUNE halves, the beatless corpus, the synthetic negatives and batida only; holdout halves are scored ONCE, at the end, for the selected candidate. Tolerances on count metrics come from the counts, not a flat 0.01 (the #4160 G7 lesson: 141 drops, one drop = 0.007).",
+  "issue": "Fosfora publishes a tempo and fires beats on audio that has no beat. On 155 CC-licensed FMA Ambient/Drone/Field Recording/Sound Art clips (30 s) the shipped code publishes a tempo on 53, fires 28.2 beats/min on average, and even the clearly beatless third (lowest independent pulse score) gets several beats a minute (board #4154). Kevin confirmed by ear on the five worst clips that the clicks follow nothing (#4153 note 2026-10-16). Synthetic negatives agree: stationary pads hold a tempo lock 80% of the time, random chords and notes 7-9% (#4152).",
+  "mechanism_evidence": "Finding #4166 (fix-binary dumps b4eb3ab0): the false beats come from TWO paths about equally. 56% fire after a false tempo LOCK (the estimator's support EMA crosses 0.6 on an ACF comb that stationary tonal material also produces: a periodic-looking onset function from magnitude ripple in quiet bins, #4153 note 10-16 10:31). 44% are ACQUISITION fires while unlocked: an onset inside the provisional grid's window fires a beat at most once per 0.6 period, and a stale grid re-anchors on any onset; that path fires 12-14 beats/min on everything (beatless 12.5, Ballroom 14.2, GiantSteps 14.3, Harmonix 12.4) and its beats are much less precise on music than locked beats (+-70 ms: Ballroom .44 vs .64, Harmonix .43 vs .66). A lock criterion alone can therefore remove at most ~56% of the false beats; the acquisition path is a second target. This round first LOGS every lock decision and acquisition fire (FOSFORA_BEAT_SIDECAR) and scores the logged features true-vs-false (not music-vs-noise) before choosing candidates.",
+  "design_constraint": "The GH #63 round (#4138) found that every onset-function change that improved tempo on rhythmic music bought extra false-lock time on tonal non-rhythmic material, and that scaling the existing confidence gates (seed .35/.2, support .2) by 1.15-1.75x trades Ballroom tempo accuracy for negatives one-for-one (no point dominates). Candidates here must therefore add EVIDENCE the current gates do not have (onset or kick support at the predicted grid instants, ACF contrast or harmonic consistency), not retune the gates. The estimator's tempo choice, the PLL and the #4160 arbiter stay as they are except where a candidate names a change. Any change must be byte-identical to the baseline with its knob unset until the knob becomes shipped constants.",
+  "split": {
+    "rule": "sha256(track_id) parity, even -> tune, odd -> holdout, on ballroom, harmonix and giantsteps_tempo (same split as #4160 and #63)",
+    "selection_reads": [
+      "ballroom tune",
+      "harmonix tune",
+      "giantsteps_tempo tune",
+      "the 155 beatless FMA clips (all; they are a negative set, no holdout)",
+      "synthetic negatives (hop.rs non_rhythmic_audio_never_publishes_a_tempo, NEG63_SEEDS=0..7, 0 and -30 dB)",
+      "batida techno/house/chiptune/rock/waltz/ambient/lofi seeds 1-6"
+    ],
+    "scored_once_at_end": [
+      "ballroom holdout",
+      "harmonix holdout",
+      "giantsteps_tempo holdout"
+    ]
+  },
+  "tools": {
+    "sidecar": "FOSFORA_BEAT_SIDECAR=<file> on the round's dev build (branch q4153-lock): one 'u' line per tempo update with raw_bpm, conf, comb, peak, floor, c2/c3/c4, support, locked, seeded, anchor, on_sup, kick_sup, mode; 'e' lines for seed/lock/unlock/anchor_*/first_anchor/acq_fire/stale_reanchor/arb_shift",
+    "lock_report": "bench/analyze_lock_decisions.py <sidecar_root>: AUC with sign of each logged feature at lock entry, true vs false locks (music labels: published tempo within 4% of the reference at a related ratio), and for acquisition fires (within 70 ms of a reference beat)",
+    "split_metrics": "bench/q_split_baseline.py <out_root> ballroom harmonix giantsteps_tempo",
+    "phase": "bench/analyze_beat_phase.py <out_root> ballroom harmonix",
+    "negatives": "/mnt/t9/fosfora-work/q4153/neg_dump1.sh <audio> <id> <bin> <outdir> over neg_jobs.txt, then neg_stats.py <outdir> (published, beats/min, locked/acq split, locked-time share; by pulse third)",
+    "batida": "/mnt/t9/fosfora-work/q4153/run_batida.sh <name> '' with FOSFORA=<bin>, TEMPLATES='techno house chiptune rock waltz ambient lofi' SEEDS='1 2 3 4 5 6'",
+    "verdict": "bench/q4153_verdict.py <candidate_out_root> (written at selection time from q4160_verdict.py; checks P1-P4 and G1-G4, G7 mechanically)"
+  },
+  "baseline": {
+    "_provenance": "main 64eb6df, analyze build b4eb3ab0f2f02215 (the #4160 shipped binary, ~/ai/audio/kick-work/q-phase/fosfora-final; byte-identical to a rebuild of 2c151f2 and to the rebased q63-onset with knobs unset on 50 files). Bench results bench/out (run_bench defaults: 30 Hz, stems); split metrics /mnt/t9/fosfora-work/q4153/base_split.json; phase base_phase.json; beatless corpus negreal_base/ + base_neg.json; batida batida/base.jsonl.",
+    "beatless_155": {
+      "published": 53,
+      "clips_with_beats": 78,
+      "beats_per_min": 28.21,
+      "locked_beats_per_min": 15.74,
+      "acq_beats_per_min": 12.47,
+      "locked_time_share": 0.1392,
+      "by_pulse_third": {
+        "low": {
+          "n": 51,
+          "beats_per_min": 8.4,
+          "published": 5,
+          "locked_time": 0.032
+        },
+        "mid": {
+          "n": 51,
+          "beats_per_min": 20.72,
+          "published": 15,
+          "locked_time": 0.068
+        },
+        "high": {
+          "n": 53,
+          "beats_per_min": 54.45,
+          "published": 33,
+          "locked_time": 0.31
+        }
+      }
+    },
+    "synthetic_negatives_mean_locked_fraction_8_seeds": {
+      "_provenance": "#4138 note 10-16 08:47, v2.5 base; the arbiter does not touch the estimator so lock fractions are unchanged; re-verified on the q4153-lock build before selection",
+      "clicks": 0.02,
+      "chords": 0.073,
+      "notes": 0.078,
+      "pads": 0.802,
+      "white_pink": 0.0
+    },
+    "ballroom": {
+      "tune": {
+        "n": 344,
+        "no_est": 28,
+        "acc1": 0.5378,
+        "acc2": 0.8547,
+        "beat_f": 0.4942,
+        "cmlt": 0.3157,
+        "amlt": 0.5404,
+        "downbeat_f": 0.1521
+      },
+      "holdout": {
+        "n": 341,
+        "no_est": 45,
+        "acc1": 0.5718,
+        "acc2": 0.8065,
+        "beat_f": 0.4365,
+        "cmlt": 0.2992,
+        "amlt": 0.4867,
+        "downbeat_f": 0.1341
+      }
+    },
+    "harmonix": {
+      "tune": {
+        "n": 180,
+        "no_est": 0,
+        "acc1": 0.6833,
+        "acc2": 0.9111,
+        "beat_f": 0.6892,
+        "cmlt": 0.5413,
+        "amlt": 0.7334,
+        "downbeat_f": 0.2247
+      },
+      "holdout": {
+        "n": 194,
+        "no_est": 1,
+        "acc1": 0.6134,
+        "acc2": 0.8814,
+        "beat_f": 0.6195,
+        "cmlt": 0.4646,
+        "amlt": 0.6681,
+        "downbeat_f": 0.2164
+      }
+    },
+    "giantsteps_tempo": {
+      "tune": {
+        "n": 311,
+        "no_est": 1,
+        "acc1": 0.7138,
+        "acc2": 0.8232
+      },
+      "holdout": {
+        "n": 350,
+        "no_est": 2,
+        "acc1": 0.6857,
+        "acc2": 0.8
+      }
+    },
+    "phase_anti_locked": {
+      "ballroom_tune": 72,
+      "ballroom_holdout": 75,
+      "harmonix_tune": 32,
+      "harmonix_holdout": 40
+    },
+    "harmonix_all_structure": {
+      "predict_drop_coverage_0_5": 0.4113,
+      "predict_drop_count_0_5": 58,
+      "predict_drop_coverage_0_8": 0.2411,
+      "predict_drop_count_0_8": 34,
+      "predict_drop_false_alarms_per_min": 2.0325,
+      "drop_hit_rate": 0.0922,
+      "false_drops_per_min": 0.4121,
+      "boundary_3_0s_f": 0.1446,
+      "boundary_events_3_0s_f": 0.4905,
+      "n_ref_drops": 141
+    },
+    "batida": {
+      "_provenance": "/mnt/t9/fosfora-work/q4153/batida/base.jsonl, fix binary, 33 template x seed rows",
+      "per_template_seed": {
+        "techno": {
+          "1": {
+            "beat_f": 0.737,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 25,
+            "beat_lock_s": 48.8,
+            "bpm_est": 128.1,
+            "bpm_true": 128.0
+          },
+          "2": {
+            "beat_f": 0.711,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 29,
+            "beat_lock_s": 48.8,
+            "bpm_est": 128.0,
+            "bpm_true": 128.0
+          },
+          "3": {
+            "beat_f": 0.716,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 20,
+            "beat_lock_s": 48.8,
+            "bpm_est": 128.0,
+            "bpm_true": 128.0
+          },
+          "4": {
+            "beat_f": 0.671,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 32,
+            "beat_lock_s": 48.3,
+            "bpm_est": 128.0,
+            "bpm_true": 128.0
+          },
+          "5": {
+            "beat_f": 0.719,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 31,
+            "beat_lock_s": 48.8,
+            "bpm_est": 128.0,
+            "bpm_true": 128.0
+          },
+          "6": {
+            "beat_f": 0.698,
+            "bpm_ratio": 1.001,
+            "beat_lag_ms": 21,
+            "beat_lock_s": 48.8,
+            "bpm_est": 128.1,
+            "bpm_true": 128.0
+          }
+        },
+        "house": {
+          "1": {
+            "beat_f": 0.868,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 25,
+            "beat_lock_s": 2.0,
+            "bpm_est": 122.1,
+            "bpm_true": 122.0
+          },
+          "2": {
+            "beat_f": 0.897,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 24,
+            "beat_lock_s": 2.0,
+            "bpm_est": 122.0,
+            "bpm_true": 122.0
+          },
+          "3": {
+            "beat_f": 0.933,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 19,
+            "beat_lock_s": 2.0,
+            "bpm_est": 122.0,
+            "bpm_true": 122.0
+          },
+          "4": {
+            "beat_f": 0.927,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 19,
+            "beat_lock_s": 2.0,
+            "bpm_est": 122.0,
+            "bpm_true": 122.0
+          },
+          "5": {
+            "beat_f": 0.93,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 20,
+            "beat_lock_s": 2.0,
+            "bpm_est": 122.0,
+            "bpm_true": 122.0
+          },
+          "6": {
+            "beat_f": 0.857,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 24,
+            "beat_lock_s": 2.0,
+            "bpm_est": 122.1,
+            "bpm_true": 122.0
+          }
+        },
+        "chiptune": {
+          "1": {
+            "beat_f": 0.992,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 12,
+            "beat_lock_s": 2.1,
+            "bpm_est": 149.9,
+            "bpm_true": 150.0
+          },
+          "2": {
+            "beat_f": 0.992,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 5,
+            "beat_lock_s": 2.1,
+            "bpm_est": 149.9,
+            "bpm_true": 150.0
+          },
+          "3": {
+            "beat_f": 0.991,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 4,
+            "beat_lock_s": 2.1,
+            "bpm_est": 149.9,
+            "bpm_true": 150.0
+          },
+          "4": {
+            "beat_f": 0.993,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 4,
+            "beat_lock_s": 2.1,
+            "bpm_est": 149.9,
+            "bpm_true": 150.0
+          },
+          "5": {
+            "beat_f": 0.99,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 8,
+            "beat_lock_s": 2.1,
+            "bpm_est": 149.9,
+            "bpm_true": 150.0
+          },
+          "6": {
+            "beat_f": 0.991,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 4,
+            "beat_lock_s": 2.1,
+            "bpm_est": 149.9,
+            "bpm_true": 150.0
+          }
+        },
+        "rock": {
+          "1": {
+            "beat_f": 0.0,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": -228,
+            "beat_lock_s": null,
+            "bpm_est": 118.0,
+            "bpm_true": 118.0
+          },
+          "2": {
+            "beat_f": 0.967,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 25,
+            "beat_lock_s": 7.7,
+            "bpm_est": 118.0,
+            "bpm_true": 118.0
+          },
+          "3": {
+            "beat_f": 0.0,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": -226,
+            "beat_lock_s": null,
+            "bpm_est": 118.0,
+            "bpm_true": 118.0
+          },
+          "4": {
+            "beat_f": 0.942,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 26,
+            "beat_lock_s": 11.3,
+            "bpm_est": 118.0,
+            "bpm_true": 118.0
+          },
+          "5": {
+            "beat_f": 0.0,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": -229,
+            "beat_lock_s": null,
+            "bpm_est": 118.0,
+            "bpm_true": 118.0
+          },
+          "6": {
+            "beat_f": 0.977,
+            "bpm_ratio": 1.0,
+            "beat_lag_ms": 23,
+            "beat_lock_s": 8.2,
+            "bpm_est": 118.0,
+            "bpm_true": 118.0
+          }
+        },
+        "waltz": {
+          "1": {
+            "beat_f": 0.971,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 32,
+            "beat_lock_s": 10.0,
+            "bpm_est": 95.9,
+            "bpm_true": 96.0
+          },
+          "2": {
+            "beat_f": 0.958,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 34,
+            "beat_lock_s": 16.9,
+            "bpm_est": 95.9,
+            "bpm_true": 96.0
+          },
+          "3": {
+            "beat_f": 0.967,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 28,
+            "beat_lock_s": 10.0,
+            "bpm_est": 95.9,
+            "bpm_true": 96.0
+          },
+          "4": {
+            "beat_f": 0.968,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 28,
+            "beat_lock_s": 10.0,
+            "bpm_est": 95.9,
+            "bpm_true": 96.0
+          },
+          "5": {
+            "beat_f": 0.968,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 25,
+            "beat_lock_s": 10.0,
+            "bpm_est": 95.9,
+            "bpm_true": 96.0
+          },
+          "6": {
+            "beat_f": 0.96,
+            "bpm_ratio": 0.999,
+            "beat_lag_ms": 30,
+            "beat_lock_s": 10.0,
+            "bpm_est": 95.9,
+            "bpm_true": 96.0
+          }
+        },
+        "ambient": {
+          "1": {
+            "beat_f": 0.183,
+            "bpm_ratio": 1.675,
+            "beat_lag_ms": -42,
+            "beat_lock_s": null,
+            "bpm_est": 117.2,
+            "bpm_true": 70.0
+          },
+          "2": {
+            "beat_f": 0.197,
+            "bpm_ratio": 1.675,
+            "beat_lag_ms": 11,
+            "beat_lock_s": null,
+            "bpm_est": 117.3,
+            "bpm_true": 70.0
+          },
+          "3": {
+            "beat_f": 0.303,
+            "bpm_ratio": 1.677,
+            "beat_lag_ms": -37,
+            "beat_lock_s": 48.9,
+            "bpm_est": 117.4,
+            "bpm_true": 70.0
+          }
+        }
+      }
+    }
+  },
+  "targets": {
+    "P1_motivating": "155 beatless clips: beats_per_min <= 14.1 (half of 28.21), tempo published on <= 26 clips (half of 53), locked_time_share <= 0.07; lowest-pulse third beats_per_min <= 4.2 (half of 8.40)",
+    "P2_no_harm_tempo": "ballroom / harmonix / giantsteps_tempo HOLDOUT: acc1 and acc2 each >= baseline - 0.005; no_est <= baseline + 2 per dataset (a lock gate must not refuse real tempi)",
+    "P3_no_harm_beats": "ballroom and harmonix HOLDOUT: beat_f, cmlt, amlt, downbeat_f each >= baseline - 0.005; anti_locked (analyze_beat_phase) not above baseline",
+    "P4_structure_drop": "harmonix all: predict_drop coverage counts at 0.5 and 0.8 each >= baseline count - 3 of 141 with lost-vs-gained drops listed and a sign test reported; false_alarms_per_min <= 2.0325 + 0.05; drop hit_rate >= 0.0922 - 0.01; false_drops_per_min <= 0.4121 + 0.02; boundary_3_0s f >= 0.1446 - 0.005",
+    "G1_synthetic_negatives": "mean locked fraction over 8 seeds not above baseline for any signal; white/pink never publish; nothing publishes at -30 dB that did not at 0 dB",
+    "G2_batida": "per template, seeds 1-6: beat F not down by more than 0.02 on any seed vs base.jsonl, tempo not worse, techno mean lag not later; ambient/waltz/lofi (sparse pulse) must keep their tempo",
+    "G3_distribution": "per-genre ballroom beat_f and acc2, no genre down by more than 0.02; tracks whose beat_f drops by more than 0.1 reported next to those that rise by more than 0.1 on both halves, and the round must not lose more than it gains on any dataset",
+    "G4_input_level": "ballroom tune at FOSFORA_DEV_GAIN_DB=-30: the candidate's change from its own 0 dB score is no worse than the baseline's change by more than 0.005 on acc2 and beat_f",
+    "G5_fixture": "bench/check_fixture.py passes",
+    "G6_build": "cargo test (both CI feature sets), exact CI clippy sets (--all-targets; default, analyze, release, depth), and the XR --no-default-features --lib check",
+    "G7_owner": "Kevin listens: click renders of the five beatless clips he already judged (plain / baseline clicks / candidate clicks) and of the five music tracks that moved most in each direction, before anything reaches main"
+  },
+  "on_miss": "a missed target reverts that candidate, or is stated with its numbers and explicitly accepted by Kevin; never silently. The holdout is scored once; a second candidate after the unblind needs a new manifest."
+}

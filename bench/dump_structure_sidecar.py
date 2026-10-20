@@ -106,6 +106,11 @@ def main() -> int:
         part = sidecar.with_suffix(f".jsonl.{os.getpid()}.part")
         # Same .part discipline for the wire dump when we keep it, for the same reason.
         sig_part = signal_out.with_suffix(f".jsonl.{os.getpid()}.part") if signal_out else None
+        # The binary refuses to overwrite a sidecar that holds data, so a .part left by a
+        # killed run is cleared here, on purpose, before the dump.
+        part.unlink(missing_ok=True)
+        if sig_part:
+            sig_part.unlink(missing_ok=True)
         env = os.environ | {"FOSFORA_STRUCTURE_SIDECAR": str(part)}
         # Niced: a fan-out of these must never contend with whatever the human is doing
         # on this machine (#2206).

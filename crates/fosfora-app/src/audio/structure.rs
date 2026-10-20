@@ -204,6 +204,14 @@ const DROP_LOUD_JUMP: f32 = 0.06;
 const DROP_SUBBASS_RETURN: f32 = 0.5;
 /// No further drop for this long (seconds) after one fires.
 const DROP_REFRACTORY: f32 = 16.0;
+/// A drop must land within this much of the recent loudness ceiling (the 90th percentile of
+/// `loudness_m` over [`DROP_CEILING_SECONDS`]). The jump test alone measures against the
+/// running minimum, so a recovery from a dip, a crossfade between songs or the silence
+/// inside a breakdown, read as a drop: on an hour of an EDM radio station 7 of the 23 wrong
+/// drop events were exactly that, firing at a loudness of .3-.6 after music at .8 (#4174).
+const DROP_DIP_FLOOR: f32 = -0.05;
+/// Window of the loudness ceiling above, in seconds.
+const DROP_CEILING_SECONDS: f32 = 30.0;
 
 /// Runtime-tunable A18 thresholds (task #1510). Only the hot-loop build-up weights and
 /// drop-machine thresholds are exposed — a VJ tunes build-up sensitivity and drop firing
@@ -434,6 +442,8 @@ pub struct StructureTracker {
     /// sidecar; a handful of scalar stores at 10 Hz.
     drop_trace: DropTrace,
     tick_index: u64,
+    /// Trailing `loudness_m` for the ceiling the dip test reads (see [`DROP_DIP_FLOOR`]).
+    loud_ceiling_ring: VecDeque<f32>,
 
     last_frame_time: f64,
     /// When the next tick is due; see [`tick_due`].
@@ -495,6 +505,9 @@ impl StructureTracker {
             armed_until: f64::NEG_INFINITY,
             drop_trace: DropTrace::default(),
             tick_index: 0,
+            loud_ceiling_ring: VecDeque::with_capacity(
+                (DROP_CEILING_SECONDS * TICK_HZ).round() as usize + 1,
+            ),
             last_frame_time: -1.0,
             next_tick: f64::NEG_INFINITY,
             started: false,
@@ -731,6 +744,18 @@ impl StructureTracker {
         let jump = pre_norm.loudness_m - baseline;
         let subbass_returning = pre_norm.sub_bass > self.cfg.drop_subbass_return * self.subbass_ref;
 
+        // Dip test: the fire must sit near the recent ceiling, not merely above a dip. The
+        // ceiling is the 90th percentile in index form, `sorted[round((n - 1) * 0.9)]`;
+        // the bench replica (sweep_drop.py) uses the same form, so keep them in step.
+        if self.loud_ceiling_ring.len() == (DROP_CEILING_SECONDS * TICK_HZ).round() as usize {
+            self.loud_ceiling_ring.pop_front();
+        }
+        self.loud_ceiling_ring.push_back(pre_norm.loudness_m);
+        let mut sorted: Vec<f32> = self.loud_ceiling_ring.iter().copied().collect();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let ceiling = sorted[((sorted.len() - 1) as f32 * 0.9).round() as usize];
+        let near_ceiling = pre_norm.loudness_m - ceiling >= DROP_DIP_FLOOR;
+
         // The arm latches for `drop_arm_hold` seconds, so the cut before a drop drains the
         // timer without disarming the machine.
         if self.high_duration >= self.cfg.drop_arm_sustain {
@@ -739,7 +764,11 @@ impl StructureTracker {
         let armed =
             self.high_duration >= self.cfg.drop_arm_sustain || timestamp <= self.armed_until;
         let in_refractory = timestamp < self.refractory_until;
-        let fired = armed && !in_refractory && jump >= self.cfg.drop_loud_jump && subbass_returning;
+        let fired = armed
+            && !in_refractory
+            && jump >= self.cfg.drop_loud_jump
+            && subbass_returning
+            && near_ceiling;
 
         // Dev trace (#2211): snapshot every conjunct *before* the fire branch resets state, so
         // a miss is attributable to the test that failed rather than inferred from proxies.
@@ -1353,5 +1382,62 @@ mod tests {
         let v = timbre_vector(&f);
         let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((n - 1.0).abs() < 1e-5, "expected unit norm, got {n}");
+    }
+
+    /// A recovery from a loudness dip is not a drop (#4174). After a riser arms the machine,
+    /// the music dips (a crossfade, a breakdown's silence) and comes back at .6 with the
+    /// sub-bass: every shipped conjunct passes on the recovery, and the dip test alone holds
+    /// the fire. The same riser followed by a real drop at .85 still fires. Set
+    /// `DROP_DIP_FLOOR` to -1.0 and the first half fails: that is the guard this test proves.
+    #[test]
+    fn recovery_from_a_dip_is_not_a_drop() {
+        let riser = |t: &mut StructureTracker, clock: &mut f64| {
+            drive(t, clock, 10.0, |_| (feat_with(0.45, 0.6, 0.35, 0.0), 0.2));
+            drive(t, clock, 12.0, |s| {
+                let p = s / 12.0;
+                (
+                    feat_with(0.45 + 0.3 * p, 0.6 - 0.45 * p, 0.35 + 0.3 * p, 0.75 * p),
+                    0.2 + 0.6 * p,
+                )
+            });
+        };
+
+        // Dip, then a recovery to well below the riser's ceiling.
+        let mut t = StructureTracker::new();
+        let mut clock = 0.0;
+        riser(&mut t, &mut clock);
+        drive(&mut t, &mut clock, 3.0, |_| {
+            (feat_with(0.15, 0.1, 0.4, 0.0), 0.1)
+        });
+        let dt = 1.0 / HOP as f64;
+        let (mut drops, mut shipped_would_fire) = (0, false);
+        for _ in 0..(5.0 * HOP) as usize {
+            let r = t.process(
+                StructureConfig::default(),
+                &feat_with(0.60, 0.9, 0.5, 0.1),
+                &beat(0.9),
+                clock,
+            );
+            clock += dt;
+            drops += (r.drop > 0.5) as usize;
+            let tr = t.drop_trace();
+            if tr.armed && !tr.in_refractory && tr.jump >= DROP_LOUD_JUMP && tr.sub_returning {
+                shipped_would_fire = true;
+            }
+        }
+        assert!(
+            shipped_would_fire,
+            "scenario is vacuous: the shipped conjuncts never all passed on the recovery"
+        );
+        assert_eq!(drops, 0, "the recovery from the dip fired a drop");
+
+        // Control: the same riser into a real drop at the ceiling.
+        let mut t = StructureTracker::new();
+        let mut clock = 0.0;
+        riser(&mut t, &mut clock);
+        let (drops, _, _) = drive(&mut t, &mut clock, 5.0, |_| {
+            (feat_with(0.85, 0.9, 0.5, 0.1), 0.9)
+        });
+        assert!(drops >= 1, "a real drop at the ceiling no longer fires");
     }
 }
