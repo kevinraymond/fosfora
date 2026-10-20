@@ -3,7 +3,9 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v2.6.0 — 2026-10-20
+
+Beats land on the kick drum instead of between the beats, the drop warning covers the drops it had quietly stopped covering since v2.0.1 and no longer fires when a song fades into the next, and two dependency advisories are closed.
 
 ### Fixed
 - **The drop warning has fired on fewer drops since v2.0.1.** An internal band scale got 6 dB louder in that release and the warning's calibration was never adjusted, so build-ups read as weaker than they are. The warning now covers 45% of the drops in the Harmonix set at the 0.5 tier (41% before) and 34% at the 0.8 tier (24%), and fires about as often as it did before v2.0.1 (2.3 false alarms a minute, up from 2.0). Section-boundary detection recovers slightly too.
