@@ -18,8 +18,9 @@ Sources, each under the work dir unless pointed elsewhere:
   harmonix, ballroom  --bench/<ds>/norm/index.json, TUNE halves only (sha256 parity even);
                     holdout audio is never listed
 
-Output: <work>/raw/<source>/<id>.npz, plus raw/jobs.tsv (what was planned), raw/run.log and
-raw/fail.log. Existing npz are skipped, so a rerun picks up new clips and retries failures.
+Output: <work>/raw/<source>/<id>.npz, plus raw/jobs.<source>.tsv (what was planned, one file
+per source so `--only` reruns leave the others' lists alone), raw/run.log and raw/fail.log.
+Existing npz are skipped, so a rerun picks up new clips and retries failures.
 """
 
 from __future__ import annotations
@@ -104,7 +105,8 @@ def main() -> int:
     jobs = plan(a.work, a.fma_audio, a.guard_clips if a.guard_clips.exists() else None, a.bench, only)
     raw = a.work / "raw"
     raw.mkdir(parents=True, exist_ok=True)
-    (raw / "jobs.tsv").write_text("".join(f"{s}\t{i}\t{p}\n" for s, i, p in jobs))
+    for src in {s for s, _, _ in jobs}:
+        (raw / f"jobs.{src}.tsv").write_text("".join(f"{i}\t{p}\n" for s, i, p in jobs if s == src))
     todo = [(s, i, p) for s, i, p in jobs if not (raw / s / f"{i}.npz").exists()]
     by_src = {}
     for s, _, _ in jobs:

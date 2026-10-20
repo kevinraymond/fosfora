@@ -4,7 +4,9 @@ Imported by the uv scripts beside it (they add this directory to sys.path). Ever
 hangs off one work dir (`--work`, e.g. /mnt/t9/fosfora-work/q4163):
 
   <work>/raw/<source>/<id>.npz        dump_track.py output (raw per-hop evidence + events)
-  <work>/raw/jobs.tsv                 source, id, audio path of every planned dump
+  <work>/raw/jobs.<source>.tsv        id, audio path of every planned dump of that source
+                                      (one file per source, so a partial rerun of
+                                      dump_corpus.py never forgets the other sources)
   <work>/labels/<source>/<id>.npz     build_dataset.py output (targets, weights, split)
   <work>/labels/manifest.json         provenance, rules, counts
   <work>/data/batida/renders/         batida wav + exact label json (+ .spec.json)
@@ -66,13 +68,16 @@ def split_of(source: str, track_id: str) -> str:
     return "pick" if int(track_id) % 10 in PICK_DIGITS else "train"
 
 
-def jobs(work: Path):
-    """(source, id, audio path) for every planned dump, from raw/jobs.tsv."""
+def jobs(work: Path, sources=None):
+    """(source, id, audio path) for every planned dump, from raw/jobs.<source>.tsv."""
     out = []
-    with open(work / "raw" / "jobs.tsv") as f:
-        for line in f:
-            s, i, p = line.rstrip("\n").split("\t")
-            out.append((s, i, Path(p)))
+    for f in sorted((work / "raw").glob("jobs.*.tsv")):
+        source = f.name[len("jobs."):-len(".tsv")]
+        if sources is not None and source not in sources:
+            continue
+        for line in f.read_text().splitlines():
+            i, p = line.split("\t")
+            out.append((source, i, Path(p)))
     return out
 
 
@@ -86,8 +91,7 @@ def labels_path(work: Path, source: str, track_id: str) -> Path:
 
 def dumped(work: Path, sources=None):
     """(source, id) of every planned dump whose raw npz exists."""
-    return [(s, i) for s, i, _ in jobs(work)
-            if (sources is None or s in sources) and raw_path(work, s, i).exists()]
+    return [(s, i) for s, i, _ in jobs(work, sources) if raw_path(work, s, i).exists()]
 
 
 def fma_rows(work: Path) -> dict[str, dict]:

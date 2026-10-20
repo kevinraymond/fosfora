@@ -207,8 +207,10 @@ def evaluate(work, tracks, predict, groups, inputs, hop_hz, lag, picker, onset_p
         w = lab["weight"] > 0
         y = lab["y_beat"] >= 0.5
         pas = lab["passages"]
+        minutes = len(a) / hop_hz / 60
         row = dict(id=tid, hops=int(len(a)), mean_act=float(a.mean()), frac_above=float((a >= picker[1]).mean()),
-                   fires_per_min=float(len(causal_peaks(a, *picker, hop_hz)) / (len(a) / hop_hz / 60)))
+                   fires_per_min=float(len(causal_peaks(a, *picker, hop_hz)) / minutes),
+                   fires_per_min_onset=float(len(causal_peaks(on, *onset_picker, hop_hz)) / minutes))
         if (y & w).any() and (~y & w).any():
             row["auc"] = float(roc_auc_score(y[w], a[w]))
             row["auc_onset"] = float(roc_auc_score(y[w], on[w]))
@@ -227,7 +229,8 @@ def evaluate(work, tracks, predict, groups, inputs, hop_hz, lag, picker, onset_p
         lbl = np.r_[np.ones(len(pos)), np.zeros(len(neg))]
         summ["auc_pooled"] = float(roc_auc_score(lbl, np.r_[pos, neg]))
         summ["auc_onset_pooled"] = float(roc_auc_score(lbl, np.r_[np.concatenate(on_pos), np.concatenate(on_neg)]))
-    for k in ("auc", "auc_onset", "f_model", "f_onset", "f_fosfora", "mean_act", "frac_above", "fires_per_min"):
+    for k in ("auc", "auc_onset", "f_model", "f_onset", "f_fosfora", "mean_act", "frac_above", "fires_per_min",
+              "fires_per_min_onset"):
         v = [r[k] for r in rows if k in r and not np.isnan(r[k])]
         if v:
             summ[f"{k}_mean"] = float(np.mean(v))
@@ -347,6 +350,7 @@ def main() -> int:
     X = np.vstack([p[0] for p in parts]); y = np.concatenate([p[1] for p in parts]); w = np.concatenate([p[2] for p in parts])
     del parts
     assert np.isfinite(X).all(), "non-finite input"
+    assert y.sum() > 0 and (y == 0).any(), f"training rows need both classes ({int(y.sum())} positive of {len(y)})"
     print(f"[{a.name}] train rows {len(y)} ({int(y.sum())} positive, {y.mean():.3f}) x {X.shape[1]}, "
           f"loaded in {time.time() - t0:.0f} s", flush=True)
 
@@ -425,8 +429,9 @@ def main() -> int:
         by_off[d] = by_off.get(d, 0.0) + float(g)
     out["importance"] = dict(by_input=by_input[:60], by_column=sorted(by_col.items(), key=lambda t: -t[1]),
                              by_offset=sorted(by_off.items()))
-    print(f"[{a.name}] top columns: " + ", ".join(f"{n} {g / sum(by_col.values()):.2f}" for n, g in out["importance"]["by_column"][:12]))
-    print(f"[{a.name}] by offset: " + ", ".join(f"{d:+d}:{g / sum(by_off.values()):.2f}" for d, g in out["importance"]["by_offset"]))
+    total = max(sum(by_col.values()), 1e-12)
+    print(f"[{a.name}] top columns: " + ", ".join(f"{n} {g / total:.2f}" for n, g in out["importance"]["by_column"][:12]))
+    print(f"[{a.name}] by offset: " + ", ".join(f"{d:+d}:{g / total:.2f}" for d, g in out["importance"]["by_offset"]))
 
     try:
         commit = subprocess.run(["git", "-C", str(corpus.REPO), "rev-parse", "--short", "HEAD"],
