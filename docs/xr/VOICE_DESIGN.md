@@ -1050,7 +1050,10 @@ Kevin (Oct 8): moving `voice.json` aside is no way for most people to
 try the other provider. The hand menu has an Agent control now, a button
 across its own row under the effect's (the menu is six rows, nine with
 Edit room on; in the debug panel it sits over Pitcher and Debug), so no
-row the wearer already reaches for moved. It reads `Agent: local`,
+row the wearer already reaches for moved. (Amended Oct 20, board #4192:
+Recenter and Rescan went in between the effect's row and the Agent's, so
+the menu is seven rows, ten with Edit room on, 324 and 444 points; the
+debug panel is unchanged, the row being one it had.) It reads `Agent: local`,
 `Agent: Anthropic`, `Agent: OpenAI` or `Agent: off`; each press steps the
 cycle local → the network provider → off → local, skipping what the
 headset lacks: local when the decision model is installed, the network

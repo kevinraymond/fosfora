@@ -114,7 +114,10 @@ pub struct Room {
     returned: usize,
     /// Empty results so far; the runtime answers with nothing until it has
     /// relocalized in the room, so the query is retried before Space Setup
-    /// is considered.
+    /// is considered. Reset when a query returns anchors, when `USE_SCENE`
+    /// is granted ([`Self::requery_after_grant`]) and when Space Setup
+    /// finishes ([`Self::capture_complete`]), so each of those queries gets
+    /// the first query's budget.
     empty_results: u32,
     retry_at: Option<Instant>,
     /// Launch Space Setup when the query returns no anchors.
@@ -453,13 +456,23 @@ impl Room {
     }
 
     /// `XR_TYPE_EVENT_DATA_SCENE_CAPTURE_COMPLETE_FB` arrived: rerun the
-    /// query so the new room becomes obstacles.
+    /// query so the new room becomes obstacles, with a first query's retry
+    /// budget (board #4192). The session refocuses when Space Setup
+    /// returns, and the runtime can answer the first query after it with
+    /// nothing, as it does right after the session first focuses. The
+    /// automatic Space Setup runs once the budget is spent, so without the
+    /// reset that one empty answer gave up on the room Space Setup had just
+    /// captured. `capture_used` keeps a second Space Setup from following,
+    /// so a budget that runs out again ends in the warning. (A rescan from
+    /// the hand menu after a found room had the budget already: a query
+    /// that returns anchors resets it.)
     pub fn capture_complete(&mut self, request: sys::AsyncRequestIdFB, result: sys::Result) {
         if self.capture != Some(request) {
             return;
         }
         info!("scene: Space Setup finished ({result:?}); querying again");
         self.capture = None;
+        self.empty_results = 0;
         self.query_any();
     }
 

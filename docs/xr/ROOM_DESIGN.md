@@ -662,7 +662,11 @@ the desk and turning the palm up is how the desk is chosen; with no
 surface under the beam they say "Point at a surface" and press nothing.
 Each step is saved to the room file through the lanes, as the knob's
 `:<color>:<band>@<strength>` is, and the label at the hit names the
-result ("desk: curls · amber · mid · 0.7").
+result ("desk: curls · amber · mid · 0.7"). (Amended Oct 20, board
+#4192: over Pitcher and Debug the menu now has the world effect's `<`
+`>` row (board #3336), Recenter and Rescan (board #4192) and the Agent
+row (board #3776), so it grows from seven rows to ten, 324 to 444
+points, and the debug panel's block from 12 to 15.)
 
 **Amended, the arm (Oct 8, board #3336).** The editor's hold is now hold
 to arm, hold again within 2.5 s to apply to the kind: a first right hold on
@@ -680,7 +684,10 @@ cell shows it armed. The reason is the gesture audit (`XR_DESIGN.md`,
 a gesture a hand can make by accident. In the same change the hand menu
 gained the world effect's `<` `>` row on top, since the bare pinch-hold no
 longer cycles the effect, so the menu is five rows, eight with Edit room
-on.
+on. (Amended Oct 20, board #4192: seven rows, ten with Edit room on, since
+the Agent row (board #3776) and Recenter and Rescan (board #4192) went in
+under the effect's; the hand menu's Rescan is the one the scan label's "No
+room found. Rescan from the hand menu" points to.)
 
 **Amended, the voice path's grammar (Oct 8, board #3751).** The editor's
 assignments can be spoken (`VOICE_DESIGN.md`, "V2 as built"): hold the

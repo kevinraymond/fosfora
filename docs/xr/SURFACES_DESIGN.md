@@ -353,7 +353,11 @@ no query has returned anchors (the first, its retries, Space Setup),
 the hand menu" for 6 s when the retries give up, each fading over
 0.4 s, re-posed every frame 1.2 m in front of the head along the view
 turned level, at eye height. The editor's label takes its place while
-one shows. The panel's edit status is untouched.
+one shows. The panel's edit status is untouched. (Amended Oct 20, board
+#4192: the query after Space Setup gets the first query's retries, where
+it had one try, so a room Space Setup just captured is not given up on
+at the first empty answer; and Rescan is in the hand menu, under the
+effect's row, not only in the debug panel.)
 
 **Logs.** "surfaces: N lit (rings a, streamlines b, curls c, pulse d,
 spectrum e)" on every change, "surfaces: dropped k (the pass holds 32)"
@@ -656,7 +660,13 @@ after a press (the panel renders before the editor steps).
 panel's 11 or 14 (`debug_rows`), 14 being the headroom its header
 leaves. No row or font shrinks. The quad follows the state the last
 render laid out and keeps its bottom edge, so it grows upward when Edit
-room turns on and the rows under the pointer stay put.
+room turns on and the rows under the pointer stay put. (Amended Oct 20,
+board #4192: the menu is 7 rows or 10, `menu_h` 324 or 444 points, and
+the debug panel's 12 or 15. Three rows joined the menu over Pitcher and
+Debug since: the world effect's `<` `>` on top (board #3336), Recenter
+and Rescan under it (board #4192, the debug panel's row until then, so
+its count held) and the Agent's under those (board #3776, one more in
+the debug panel). 15 is the headroom the debug header leaves now.)
 
 **What each shader does with the three.**
 

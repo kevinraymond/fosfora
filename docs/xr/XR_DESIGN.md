@@ -778,7 +778,12 @@ height does not change with the mode; the debug panel keeps its 11 and 14
 rows. (Board #3776 added the Agent row under the effect's: the menu is six
 rows, nine with Edit room on, 284 and 404 points; the debug panel 12 and
 15, its header allowance 320 → 300 points, the dumps' header being about
-250.) Step 5: the editor's hold is armed first. A first right hold on a
+250.) (Amended Oct 20, board #4192: Recenter and Rescan, the debug panel's
+row alone until then, joined the menu under the effect's row, over the
+Agent's, so the scan label's "Rescan from the hand menu" has a row to
+find: the menu is seven rows, ten with Edit room on, 324 and 444 points;
+the debug panel stays 12 and 15, the row being one it had.) Step 5: the
+editor's hold is armed first. A first right hold on a
 surface arms the class cycle (the highlight pulses twice, the label at the
 hit says what a second would do, "desk: hold again for all tables ->
 streamlines", the status cell appends " · armed"); a second hold on the same

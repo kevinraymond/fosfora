@@ -1122,14 +1122,7 @@ fn panel_ui(
     while let Some(left) = steppers.next() {
         block.push(Control::Pair([Some(left), steppers.next()]));
     }
-    block.push(if view.room {
-        Control::Pair([
-            Some(Cell::Button(Target::Recenter, "Recenter the cloud")),
-            Some(Cell::Button(Target::Rescan, "Rescan the room")),
-        ])
-    } else {
-        Control::Button(Target::Recenter, "Recenter the cloud")
-    });
+    block.push(recenter_row(view.room));
     block.push(agent_row(controls.agent));
     block.push(menu_row(true, controls.pitcher));
     block.push(edit_row(controls.edit_room, view.edit_status));
@@ -1150,6 +1143,7 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Ro
     let editing = controls.edit_room;
     let mut block = Vec::with_capacity(grid::menu_rows(editing));
     block.push(effect_row(view.effect));
+    block.push(recenter_row(view.room));
     block.push(agent_row(controls.agent));
     block.push(menu_row(false, controls.pitcher));
     block.push(edit_row(editing, view.edit_status));
@@ -1228,11 +1222,33 @@ fn music_row(playing: bool, voice: bool) -> Control<'static> {
     ])
 }
 
+/// Recenter the cloud, and with the room on Rescan the room beside it,
+/// over the agent's row in both layouts: under the effect's in the menu,
+/// under the steppers in the debug panel. It was the debug panel's alone
+/// until board #4192: the scan label sends a wearer whose room was not
+/// found to the hand menu ("No room found. Rescan from the hand menu"),
+/// and with the debug panel off the menu had no Rescan to find. It went
+/// in under the effect's row as the Agent row did, so no row the wearer
+/// already reaches for moved (the quad keeps its bottom edge and grows
+/// upward). Without the room there is nothing to rescan, and Recenter
+/// takes the row.
+fn recenter_row(room: bool) -> Control<'static> {
+    if room {
+        Control::Pair([
+            Some(Cell::Button(Target::Recenter, "Recenter the cloud")),
+            Some(Cell::Button(Target::Rescan, "Rescan the room")),
+        ])
+    } else {
+        Control::Button(Target::Recenter, "Recenter the cloud")
+    }
+}
+
 /// The agent's provider (board #3776), one action across the row, over
 /// the pitcher's and the debug panel's toggles in both layouts: each press
 /// steps the cycle (local, the network provider `voice.json` configures,
-/// off; what the headset lacks is skipped). It is the menu's top row under
-/// the effect's, so adding it moved no row the wearer already reaches for
+/// off; what the headset lacks is skipped). It went in as the menu's top
+/// row under the effect's (the Recenter row has been between them since
+/// board #4192), so adding it moved no row the wearer already reaches for
 /// (the quad keeps its bottom edge and grows upward). The state is in the
 /// words, not a color; "Agent: none" with nothing to pick, and a press then
 /// does nothing.
