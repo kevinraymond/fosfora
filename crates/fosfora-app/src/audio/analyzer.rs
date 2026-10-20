@@ -500,6 +500,17 @@ impl FftAnalyzer {
         kick_from_probability(self.kick_probability)
     }
 
+    /// The kick model's raw probability for this hop, before the silence gate and the
+    /// mapping onto `kick` (#4163's hop sidecar).
+    pub fn kick_probability(&self) -> f32 {
+        self.kick_probability
+    }
+
+    /// The kick model's input frame for this hop (#4163's hop sidecar).
+    pub fn kick_frame(&self) -> &[f32; super::kick_model::N_FRAME] {
+        self.kick_detector.last_frame()
+    }
+
     /// A17 (#1468): log-frequency-resampled magnitude spectrum for the `audio_spectrum`
     /// texture (R16Float 512x1). Each output bin takes the peak magnitude in its
     /// log-spaced frequency slice of the large (4096-pt) spectrum, dB-normalized to 0..1

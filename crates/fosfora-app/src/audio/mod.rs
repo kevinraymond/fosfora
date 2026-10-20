@@ -8,6 +8,7 @@ pub mod downbeat;
 pub mod downmix;
 pub mod features;
 pub mod hop;
+pub mod hop_sidecar;
 pub mod hpss;
 pub mod input_level;
 pub mod interp;

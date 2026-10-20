@@ -39,11 +39,42 @@ const LARGE_FFT_MAX_HZ: f64 = 250.0;
 /// The flatness / peakiness span on the large FFT.
 const LOW_SPAN_HZ: (f64, f64) = (30.0, 250.0);
 /// Features per hop: band flux, band level, low-span flatness, low-span peakiness.
-const N_FRAME: usize = 2 * N_BANDS + 2;
+pub const N_FRAME: usize = 2 * N_BANDS + 2;
 /// This hop and the two before it.
 const CONTEXT: usize = 3;
 /// Ensemble inputs.
 pub const N_INPUT: usize = N_FRAME * CONTEXT;
+
+/// Column names of one hop's frame in `frame_features` order: each band's log-flux, then
+/// each band's level relative to the hop's mean (bands named by their Hz edges), then the
+/// low-span flatness and peakiness. The #4163 hop sidecar writes them into its header so
+/// the training side never guesses the layout.
+pub const FRAME_NAMES: [&str; N_FRAME] = [
+    "flux_30_60",
+    "flux_60_90",
+    "flux_90_130",
+    "flux_130_180",
+    "flux_180_250",
+    "flux_250_400",
+    "flux_400_700",
+    "flux_700_1200",
+    "flux_1200_2500",
+    "flux_2500_5000",
+    "flux_5000_10000",
+    "level_30_60",
+    "level_60_90",
+    "level_90_130",
+    "level_130_180",
+    "level_180_250",
+    "level_250_400",
+    "level_400_700",
+    "level_700_1200",
+    "level_1200_2500",
+    "level_2500_5000",
+    "level_5000_10000",
+    "low_flatness",
+    "low_peakiness",
+];
 
 /// The ensemble as exported by `scripts/kick_model/export_model.py`: flat node arrays,
 /// one root per tree. An internal node goes left when `x[feature] <= threshold`.
@@ -126,6 +157,8 @@ pub struct KickDetector {
     bands: [Band; N_BANDS],
     low_span: (usize, usize),
     history: [[f32; N_FRAME]; CONTEXT - 1],
+    /// The frame `process` computed for the latest hop (#4163's hop sidecar).
+    last_frame: [f32; N_FRAME],
 }
 
 impl KickDetector {
@@ -148,6 +181,7 @@ impl KickDetector {
             bands,
             low_span: (bin(LOW_SPAN_HZ.0, bin_l), bin(LOW_SPAN_HZ.1, bin_l)),
             history: [[0.0; N_FRAME]; CONTEXT - 1],
+            last_frame: [0.0; N_FRAME],
         }
     }
 
@@ -169,7 +203,13 @@ impl KickDetector {
         }
         self.history.rotate_right(1);
         self.history[0] = frame;
+        self.last_frame = frame;
         ensemble().probability(&x)
+    }
+
+    /// The frame the latest `process` call scored, in [`FRAME_NAMES`] order.
+    pub fn last_frame(&self) -> &[f32; N_FRAME] {
+        &self.last_frame
     }
 
     fn frame_features(
@@ -225,5 +265,25 @@ impl KickDetector {
         f[2 * N_BANDS] = (mean_log.exp() / mean_mag.max(1e-12)) as f32;
         f[2 * N_BANDS + 1] = (peak / mean_mag.max(1e-12)) as f32;
         f
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The header names follow the band edges, so renaming or moving a band shows up here
+    /// before a dump trained on the wrong column order does.
+    #[test]
+    fn frame_names_follow_the_band_edges() {
+        for i in 0..N_BANDS {
+            let (lo, hi) = (EDGES[i] as u32, EDGES[i + 1] as u32);
+            assert_eq!(FRAME_NAMES[i], format!("flux_{lo}_{hi}"));
+            assert_eq!(FRAME_NAMES[N_BANDS + i], format!("level_{lo}_{hi}"));
+        }
+        assert_eq!(
+            &FRAME_NAMES[2 * N_BANDS..],
+            ["low_flatness", "low_peakiness"]
+        );
     }
 }

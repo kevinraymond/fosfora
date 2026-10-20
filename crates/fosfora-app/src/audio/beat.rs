@@ -331,6 +331,9 @@ struct OnsetDetector {
     onset_history: CircularBuffer,
     long_term_history: CircularBuffer,
     silent_frames: u32,
+    /// This hop's SuperFlux: combined, then the low / mid / high partition means it is
+    /// the weighted sum of; zeros under silence. Read by the #4163 hop sidecar.
+    last_flux: [f64; 4],
 }
 
 impl OnsetDetector {
@@ -346,6 +349,7 @@ impl OnsetDetector {
             onset_history: CircularBuffer::new(history_size),
             long_term_history: CircularBuffer::new(long_term_size),
             silent_frames: 0,
+            last_flux: [0.0; 4],
         }
     }
 
@@ -397,6 +401,7 @@ impl OnsetDetector {
         // Unified perceptual silence gate (A10 #1461).
         if loud_silent {
             self.silent_frames += 1;
+            self.last_flux = [0.0; 4];
             return (false, 0.0, 0.0);
         }
         self.silent_frames = 0;
@@ -434,9 +439,11 @@ impl OnsetDetector {
 
         // Mean flux per partition, weighted into one onset value (weights sum to 1).
         let mean = |sum: f64, count: usize| if count > 0 { sum / count as f64 } else { 0.0 };
-        let combined_flux = ONSET_W_LOW * mean(part[0], self.partition_counts[0])
-            + ONSET_W_MID * mean(part[1], self.partition_counts[1])
-            + ONSET_W_HIGH * mean(part[2], self.partition_counts[2]);
+        let low = mean(part[0], self.partition_counts[0]);
+        let mid = mean(part[1], self.partition_counts[1]);
+        let high = mean(part[2], self.partition_counts[2]);
+        let combined_flux = ONSET_W_LOW * low + ONSET_W_MID * mid + ONSET_W_HIGH * high;
+        self.last_flux = [combined_flux, low, mid, high];
 
         self.onset_history.push(combined_flux);
         self.long_term_history.push(combined_flux);
@@ -2305,6 +2312,13 @@ impl BeatDetector {
             grid_n: self.beat_scheduler.grid_beat_count,
             events,
         }
+    }
+
+    /// This hop's SuperFlux onset flux as the onset detector computed it, before hold,
+    /// threshold and cooldown: combined, then the low / mid / high partition means
+    /// (#4163's hop sidecar).
+    pub fn raw_onset_flux(&self) -> [f64; 4] {
+        self.onset_detector.last_flux
     }
 
     /// Process one frame of audio data.
