@@ -888,6 +888,7 @@ mod tests {
 
     fn beat(onset: f32) -> BeatResult {
         BeatResult {
+            beat_activation: 0.0,
             onset_strength: onset,
             beat: 0.0,
             beat_phase: 0.0,

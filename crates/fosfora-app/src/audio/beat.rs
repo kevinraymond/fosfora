@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use super::beat_model::{BeatActivation, RawEvidence};
+use super::features::AudioFeatures;
+use super::kick_model::N_FRAME;
+
 // ---------------------------------------------------------------------------
 // A7 (#1458): tempo prior configuration + manual octave/tap overrides
 // ---------------------------------------------------------------------------
@@ -313,6 +317,9 @@ const ONSET_HIGH_HZ: f32 = 2000.0;
 const ONSET_W_LOW: f64 = 0.60;
 const ONSET_W_MID: f64 = 0.28;
 const ONSET_W_HIGH: f64 = 0.12;
+/// Column names of [`BeatDetector::raw_onset_flux`]: the SuperFlux value the tempo
+/// estimator reads, then the low / mid / high partition means it is the weighted sum of.
+pub const ONSET_FLUX_NAMES: [&str; 4] = ["combined", "low", "mid", "high"];
 
 struct OnsetDetector {
     sample_rate: f32,
@@ -2184,6 +2191,9 @@ impl BeatScheduler {
 /// Result from beat detection for one frame.
 pub struct BeatResult {
     pub onset_strength: f32,
+    /// #4163: P(a beat landed `BeatActivation::lag_hops()` hops ago), from the tree
+    /// ensemble over this hop's raw evidence. Evidence for the grid, not a beat.
+    pub beat_activation: f32,
     pub beat: f32,
     pub beat_phase: f32,
     pub bpm: f32,
@@ -2240,6 +2250,13 @@ pub struct BeatDetector {
     kick_now: f32,
     kick_armed: bool,
     last_kick_time: f64,
+
+    /// #4163: the beat activation and the hop's raw evidence it reads, set by
+    /// [`BeatDetector::set_hop_evidence`] before each [`BeatDetector::process`].
+    activation: BeatActivation,
+    hop_kick_frame: [f32; N_FRAME],
+    hop_kick_probability: f32,
+    hop_pre_norm: AudioFeatures,
 }
 
 impl BeatDetector {
@@ -2271,12 +2288,30 @@ impl BeatDetector {
             kick_now: 0.0,
             kick_armed: true,
             last_kick_time: f64::NEG_INFINITY,
+            activation: BeatActivation::new(),
+            hop_kick_frame: [0.0; N_FRAME],
+            hop_kick_probability: 0.0,
+            hop_pre_norm: AudioFeatures::default(),
         }
     }
 
     /// The kick model's envelope for the hop about to be processed (#4160).
     pub fn set_kick(&mut self, kick: f32) {
         self.kick_now = kick;
+    }
+
+    /// The raw evidence of the hop about to be processed, for the beat activation
+    /// (#4163): the kick model's frame and probability and the pre-normalization
+    /// snapshot. The onset flux and the silence flag come from `process` itself.
+    pub fn set_hop_evidence(
+        &mut self,
+        kick_frame: &[f32; N_FRAME],
+        kick_probability: f32,
+        pre_norm: &AudioFeatures,
+    ) {
+        self.hop_kick_frame = *kick_frame;
+        self.hop_kick_probability = kick_probability;
+        self.hop_pre_norm = *pre_norm;
     }
 
     /// Apply live tempo config (A7 #1458), snapshotted from the shared `TempoControl`.
@@ -2351,6 +2386,16 @@ impl BeatDetector {
             self.onset_detector
                 .process(bass_spectrum, mid_spectrum, high_spectrum, loud_silent);
 
+        // #4163: the beat activation over this hop's raw evidence, every hop (silent or
+        // not, so its history stays aligned).
+        let beat_activation = self.activation.process(&RawEvidence {
+            kick_frame: &self.hop_kick_frame,
+            kick_probability: self.hop_kick_probability,
+            onset_flux: self.onset_detector.last_flux,
+            pre_norm: &self.hop_pre_norm,
+            loud_silent,
+        });
+
         // Apply onset cooldown
         let mut onset_gated = is_onset;
         if is_onset && (timestamp - self.last_onset_time) < self.onset_cooldown {
@@ -2402,6 +2447,7 @@ impl BeatDetector {
 
         BeatResult {
             onset_strength: self.held_onset,
+            beat_activation,
             beat: if is_beat { 1.0 } else { 0.0 },
             beat_phase: phase,
             // Q2b (F3): the wire carries the held tempo, not the raw filter —

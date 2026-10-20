@@ -34,7 +34,8 @@ from pathlib import Path
 
 import numpy as np
 
-FORMAT_VERSION = 1
+# v1: the columns below; v2 adds `act`, the runtime's own beat activation per hop.
+SUPPORTED_VERSIONS = (1, 2)
 
 # `pn` slots that are the beat, downbeat, structure and key trackers' own outputs. In the
 # snapshot the first 15 carry the PREVIOUS hop's value (hop_sidecar.rs), on pseudo-labeled
@@ -67,6 +68,8 @@ class HopDump:
     pn: np.ndarray         # float32 [H, 85] pre-normalization AudioFeatures
     pn_names: list[str]
     beat_times: np.ndarray  # float64 [B] event times of the beats the grid fired
+    act: np.ndarray        # float32 [H]  the runtime's beat activation (v2; NaN for a v1 dump)
+    version: int = 2
 
     @property
     def hop_hz(self) -> float:
@@ -108,12 +111,13 @@ def read(path: str | Path) -> HopDump:
         header = json.loads(first)
         if header.get("k") != "h":
             raise ValueError(f"{path}: first line is not a header: {first[:80]!r}")
-        if header.get("v") != FORMAT_VERSION:
-            raise ValueError(f"{path}: format v{header.get('v')}, this reader is v{FORMAT_VERSION}")
+        version = header.get("v")
+        if version not in SUPPORTED_VERSIONS:
+            raise ValueError(f"{path}: format v{version}, this reader knows {SUPPORTED_VERSIONS}")
         kf_names, sf_names, pn_names = header["kf"], header["sf"], header["pn"]
         n_kf, n_sf, n_pn = len(kf_names), len(sf_names), len(pn_names)
 
-        idx, ts, silent, kp, beats = [], [], [], [], []
+        idx, ts, silent, kp, beats, act = [], [], [], [], [], []
         kf, sf, pn = [], [], []
         for n, line in enumerate(f):
             if not line.strip():
@@ -130,6 +134,8 @@ def read(path: str | Path) -> HopDump:
             kf.append(_floats(r["kf"], n_kf, "kf", n))
             sf.append(_floats(r["sf"], n_sf, "sf", n))
             pn.append(_floats(r["pn"], n_pn, "pn", n))
+            a = r.get("act")
+            act.append(np.nan if a is None else a)
             if r["bt"] is not None:
                 beats.append(r["bt"])
 
@@ -149,6 +155,8 @@ def read(path: str | Path) -> HopDump:
         pn=np.vstack(pn) if h else np.zeros((0, n_pn), np.float32),
         pn_names=list(pn_names),
         beat_times=np.asarray(beats, dtype=np.float64),
+        act=np.asarray(act, dtype=np.float32),
+        version=int(version),
     )
 
 
@@ -177,6 +185,7 @@ def summary(d: HopDump) -> str:
         f"  sr {d.sr:g} Hz, hop {d.hop} ({d.hop_hz:.4f} hops/s), {d.n_hops} hops = {d.duration:.1f} s",
         f"  silent hops {int(d.silent.sum())} ({100 * d.silent.mean():.1f} %)" if d.n_hops else "  no hops",
         f"  beats fired {len(d.beat_times)}",
+        f"  activation (v{d.version}) mean {np.nanmean(d.act):.3f}, >= .5 on {int((d.act >= 0.5).sum())} hops" if np.isfinite(d.act).any() else "  activation: not in this dump (v1)",
         f"  kick_prob mean {np.nanmean(d.kick_prob):.3f}, kick >= .5 on {int((kick >= 0.5).sum())} hops",
         f"  sf combined mean {np.nanmean(d.sf[:, 0]):.4f}, > 0 on {int((d.sf[:, 0] > 0).sum())} hops",
         f"  columns: kf {len(d.kf_names)}, sf {len(d.sf_names)}, pn {len(d.pn_names)} "

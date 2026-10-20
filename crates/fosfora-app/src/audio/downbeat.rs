@@ -404,6 +404,7 @@ mod tests {
 
     fn beat_result(bpm: f32) -> BeatResult {
         BeatResult {
+            beat_activation: 0.0,
             onset_strength: 0.0,
             beat: 1.0,
             beat_phase: 0.0,
@@ -422,6 +423,7 @@ mod tests {
     /// anchor, yet the audio clock keeps ticking underneath `bar_clock`.
     fn silent_beat(bpm: f32) -> BeatResult {
         BeatResult {
+            beat_activation: 0.0,
             onset_strength: 0.0,
             beat: 0.0,
             beat_phase: 0.0,

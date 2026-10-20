@@ -35,6 +35,7 @@ def test_header_and_shapes():
     assert d.n_hops == H
     assert d.kf.shape == (H, 24) and d.sf.shape == (H, 4) and d.pn.shape == (H, 85)
     assert d.kick_prob.shape == (H,) and d.silent.shape == (H,)
+    assert d.version == 2 and d.act.shape == (H,) and np.isfinite(d.act).all() and (0 <= d.act).all() and (d.act <= 1).all()
     assert list(d.idx) == list(range(H))
     assert np.allclose(d.ts, (d.idx + 1) * d.hop / d.sr, atol=1e-6)
     assert d.kf_names[0] == "flux_30_60" and d.kf_names[11] == "level_30_60"

@@ -92,6 +92,10 @@ pub struct HopOutput {
     /// `Copy` per hop either way).
     #[cfg_attr(not(feature = "analyze"), allow(dead_code))]
     pub pre_norm: AudioFeatures,
+    /// #4163: this hop's beat activation (`beat_model.rs`); read by the hop sidecar's
+    /// round-trip test, ignored by the live thread.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub beat_activation: f32,
 }
 
 /// Every stateful detector in the analysis chain, plus the fixed per-hop delta the
@@ -320,6 +324,12 @@ impl HopAnalyzer {
 
         // Beat detection (on raw magnitude spectra)
         self.beat_detector.set_kick(raw.kick);
+        // #4163: the beat activation's raw evidence for this hop.
+        self.beat_detector.set_hop_evidence(
+            self.analyzer.kick_frame(),
+            self.analyzer.kick_probability(),
+            &pre_norm,
+        );
         let beat_result = self.beat_detector.process(
             self.analyzer.bass_magnitude(),
             self.analyzer.mid_magnitude(),
@@ -342,6 +352,7 @@ impl HopAnalyzer {
                 kick_frame: self.analyzer.kick_frame(),
                 onset_flux: self.beat_detector.raw_onset_flux(),
                 pre_norm: &pre_norm,
+                beat_activation: beat_result.beat_activation,
                 beat_time: (beat_result.beat > 0.5).then_some(beat_result.beat_time),
             });
         }
@@ -431,6 +442,7 @@ impl HopAnalyzer {
             downbeat_fired,
             drop_fired,
             pre_norm,
+            beat_activation: beat_result.beat_activation,
         }
     }
 }
@@ -549,6 +561,7 @@ mod tests {
             kf: Vec<f32>,
             sf: Vec<f32>,
             pn: Vec<f32>,
+            act: f32,
             bt: Option<f64>,
         }
         struct Expect {
@@ -558,6 +571,7 @@ mod tests {
             kf: [f32; N_FRAME],
             sf: [f64; 4],
             pn: [f32; crate::audio::features::NUM_FEATURES],
+            act: f32,
             bt: Option<f64>,
         }
 
@@ -594,6 +608,7 @@ mod tests {
                 kf: *a.analyzer.kick_frame(),
                 sf: a.beat_detector.raw_onset_flux(),
                 pn: *out.pre_norm.as_slice(),
+                act: out.beat_activation,
                 bt: out.frame.beat_time,
             });
         }
@@ -603,7 +618,7 @@ mod tests {
         let mut lines = text.lines();
         let header = lines.next().unwrap();
         assert!(
-            header.starts_with("{\"k\":\"h\",\"v\":1,\"sr\":44100,\"hop\":512,\"kf\":["),
+            header.starts_with("{\"k\":\"h\",\"v\":2,\"sr\":44100,\"hop\":512,\"kf\":["),
             "{header}"
         );
         let recs: Vec<Rec> = lines
@@ -629,6 +644,7 @@ mod tests {
                 "hop {n}: onset flux"
             );
             assert_eq!(r.pn, e.pn.to_vec(), "hop {n}: pre_norm");
+            assert_eq!(r.act, e.act, "hop {n}: activation");
             match (r.bt, e.bt) {
                 (None, None) => {}
                 (Some(x), Some(y)) => assert!((x - y).abs() < 1e-6, "hop {n}: beat time"),

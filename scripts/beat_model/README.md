@@ -1,8 +1,10 @@
 # Beat model
 
 Tooling for the beat-likelihood model: a per-hop activation from Fosfora's own analysis
-chain, used as evidence by the beat grid's phase arbiter. It is built in phases; this
-directory grows with them.
+chain, used as evidence by the beat grid's phase arbiter. The runtime is
+`crates/fosfora-app/src/audio/beat_model.rs`, which evaluates the exported
+`beat_model.json` (flat trees plus the input map, the target lag and the picker) inside the
+beat detector every hop; `beat_model_tracks.md` beside it credits the CC BY training audio.
 
 ## The per-hop dump
 
@@ -41,6 +43,18 @@ bench TUNE halves and the 155 guard clips are evaluation only; the bench HOLDOUT
 are never read by anything here. `build_dataset.py --lag-check` shows where each raw
 column peaks relative to exact beat labels, which is how the target lag was chosen.
 
+After an export, embed and credit it:
+
+```sh
+cp $W/models/<name>.beat_model.json crates/fosfora-app/src/audio/beat_model.json
+uv run --script scripts/beat_model/credits.py --work $W --metadata <fma_metadata dir> \
+    --out crates/fosfora-app/src/audio/beat_model_tracks.md
+cargo build --release --features release,analyze
+python3 scripts/beat_model/fixtures/make_click_fixture.py              # dumps with the new activation
+uv run --script scripts/beat_model/make_golden.py --model crates/fosfora-app/src/audio/beat_model.json \
+    --dump scripts/beat_model/fixtures/click_200hops.jsonl --out scripts/beat_model/fixtures/click_200hops.golden.json
+```
+
 ## Tests
 
 ```sh
@@ -48,7 +62,12 @@ cargo test -p fosfora-app --lib -- audio::hop_sidecar audio::hop::tests::hop_sid
 uv run --script scripts/beat_model/test_hopdump.py
 ```
 
-The Rust test drives the analysis chain and reads every record back against the values the
-detectors held on that hop. The Python test reads `fixtures/click_50hops.jsonl`, a dump the
-real binary wrote (`fixtures/make_click_fixture.py` regenerates it), so the reader is
-checked against the writer's actual output.
+The Rust hop test drives the analysis chain and reads every record back against the values
+the detectors held on that hop. The Python test reads `fixtures/click_50hops.jsonl`, a dump
+the real binary wrote (`fixtures/make_click_fixture.py` regenerates both fixtures), so the
+reader is checked against the writer's actual output. The runtime's golden test replays
+`fixtures/click_200hops.jsonl` through `beat_model.rs` and compares every hop's activation
+with `click_200hops.golden.json`, the Python evaluation of the same model by
+`make_golden.py`, and with the activation the binary itself wrote into the dump.
+`cargo test --release -- cost_per_hop_vs_kick_model --ignored --nocapture` prints the per-hop
+cost of both models.

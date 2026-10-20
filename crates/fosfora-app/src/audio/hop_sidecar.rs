@@ -8,8 +8,9 @@
 //! `--signal-dump` emits is post-normalizer and post-smoother; a model that runs INSIDE
 //! the detector chain never sees that form, so it is trained on this instead.
 //!
-//! Format: the first line is a header (`"k":"h"`) that names every column in order, then
-//! one record (`"k":"r"`) per hop, `"i"` counting from 0. Numbers are the shortest
+//! Format (v2): the first line is a header (`"k":"h"`) that names every column in order,
+//! then one record (`"k":"r"`) per hop, `"i"` counting from 0; `act` is the runtime's own
+//! beat activation for the hop. Numbers are the shortest
 //! round-trip f32, timestamps six decimals, non-finite values `null`.
 //! `scripts/beat_model/hopdump.py` is the reader and must stay in step with this file.
 //!
@@ -27,13 +28,10 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
+use super::beat::ONSET_FLUX_NAMES;
 use super::features::AudioFeatures;
 use super::kick_model::{FRAME_NAMES, N_FRAME};
 use super::schema::FEATURES;
-
-/// Column names of the `sf` array: the SuperFlux value the tempo estimator reads, then the
-/// low / mid / high partition means it is the weighted sum of.
-pub const ONSET_FLUX_NAMES: [&str; 4] = ["combined", "low", "mid", "high"];
 
 /// What one hop's record carries. Everything is this hop's value as the detectors
 /// computed it, nothing smoothed or held.
@@ -50,6 +48,9 @@ pub struct HopEvidence<'a> {
     pub onset_flux: [f64; 4],
     /// The pre-normalization feature snapshot.
     pub pre_norm: &'a AudioFeatures,
+    /// The runtime's beat activation for this hop (`beat_model.rs`), so an offline pass
+    /// can check its own evaluation of the model against the app's.
+    pub beat_activation: f32,
     /// The event time of the beat the grid fired on this hop, if it fired one.
     pub beat_time: Option<f64>,
 }
@@ -111,7 +112,7 @@ impl HopSidecar {
         let mut line = String::with_capacity(2048);
         let _ = write!(
             line,
-            "{{\"k\":\"h\",\"v\":1,\"sr\":{},\"hop\":{},\"kf\":[",
+            "{{\"k\":\"h\",\"v\":2,\"sr\":{},\"hop\":{},\"kf\":[",
             self.sample_rate,
             super::ANALYSIS_HOP
         );
@@ -144,7 +145,9 @@ impl HopSidecar {
         push_list(&mut line, ev.onset_flux.iter().map(|&v| v as f32));
         line.push_str("],\"pn\":[");
         push_list(&mut line, ev.pre_norm.as_slice().iter().copied());
-        line.push_str("],\"bt\":");
+        line.push_str("],\"act\":");
+        push_num(&mut line, ev.beat_activation);
+        line.push_str(",\"bt\":");
         match ev.beat_time {
             Some(t) if t.is_finite() => {
                 let _ = write!(line, "{t:.6}");
@@ -192,6 +195,7 @@ mod tests {
             kick_frame: frame,
             onset_flux: [0.5, 0.75, 0.125, 0.0],
             pre_norm,
+            beat_activation: 0.5,
             beat_time,
         }
     }
@@ -224,7 +228,7 @@ mod tests {
 
         let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(header["k"], "h");
-        assert_eq!(header["v"], 1);
+        assert_eq!(header["v"], 2);
         assert_eq!(header["sr"], 44100);
         assert_eq!(header["hop"], 512);
         let names = |key: &str| -> Vec<String> {
@@ -256,7 +260,11 @@ mod tests {
             "{}",
             lines[1]
         );
-        assert!(lines[1].ends_with(",\"bt\":null}"), "{}", lines[1]);
+        assert!(
+            lines[1].ends_with("],\"act\":0.5,\"bt\":null}"),
+            "{}",
+            lines[1]
+        );
         let rec: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         let pn = rec["pn"].as_array().unwrap();
         assert_eq!(pn.len(), NUM_FEATURES);
