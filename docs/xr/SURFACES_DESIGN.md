@@ -244,7 +244,16 @@ row reads "Music: stop" meanwhile). After that the clip is kept, and a
 play resumes where the stop left it. `debug.fosfora.music 1` plays it
 at launch for the unworn checks. `file` and `loop` start on "Music:
 stop" as before, and nothing is saved. `music.rs` holds the row's words
-and where each state puts the analysis.
+and where each state puts the analysis. (Amended Oct 20, board #4191: a
+first-time wearer heard nothing and saw the synthetic beat until they
+found the row, so the clip now plays at launch unless the launch source
+is a microphone. `debug.fosfora.music` has three states: unset, it
+plays over `synth`, the default, and `file` and `loop` as before, and
+not over `mic`, `micxr` or `aaudio`, which are chosen to measure what
+the microphones hear; `1` plays it over any source; `0` over none,
+`file`'s and `loop`'s own clip included, so a quiet (no music) run sets
+`0`. The row, its stop and where the stop puts the analysis are
+unchanged; `music::plays_at_launch` holds the rule.)
 
 ## D2a as built (Oct 1, board #3488)
 

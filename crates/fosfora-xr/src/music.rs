@@ -38,11 +38,17 @@ impl Analysis {
     }
 }
 
-/// Whether the music plays at launch: `file` and `loop` start the clip as
-/// before, and the `debug.fosfora.music` knob (`knob`) starts it over any
-/// other source.
-pub fn plays_at_launch(audio_source: &str, knob: bool) -> bool {
-    knob || matches!(audio_source, "file" | "loop")
+/// Whether the clip is on the speakers at launch. The `debug.fosfora.music`
+/// knob (`knob`, `None` unset) decides when it is set: on over any source,
+/// off over every one, `file` and `loop` included. Unset, the clip plays
+/// unless the launch source is a microphone (`mic`, `micxr`, `aaudio`):
+/// `file` and `loop` are the clip, and `synth`, the default, is no real
+/// source; before board #4191 a first launch on it heard nothing and saw
+/// a synthetic beat until the wearer found the Music row. A microphone is
+/// chosen on purpose, to measure what it hears, and the clip on the
+/// speakers would be in it.
+pub fn plays_at_launch(audio_source: &str, knob: Option<bool>) -> bool {
+    knob.unwrap_or(!matches!(audio_source, "mic" | "micxr" | "aaudio"))
 }
 
 /// Whether the launch source keeps microphones open (what a stop goes back
@@ -120,13 +126,25 @@ mod tests {
     }
 
     #[test]
-    fn file_and_loop_start_playing_and_the_knob_starts_any_source() {
-        for source in ["file", "loop"] {
-            assert!(plays_at_launch(source, false), "{source}");
+    fn unset_the_clip_plays_at_launch_unless_a_microphone_was_chosen() {
+        // The clip sources, and synth (the default) or an unknown name,
+        // which run the synthetic groove: no real source to keep quiet for.
+        for source in ["file", "loop", "synth", "anything"] {
+            assert!(plays_at_launch(source, None), "{source}");
         }
-        for source in ["synth", "mic", "micxr", "aaudio", "anything"] {
-            assert!(!plays_at_launch(source, false), "{source}");
-            assert!(plays_at_launch(source, true), "{source}");
+        // A microphone is a measurement setup: the clip would be in it.
+        for source in ["mic", "micxr", "aaudio"] {
+            assert!(!plays_at_launch(source, None), "{source}");
+        }
+    }
+
+    #[test]
+    fn the_knob_set_decides_for_every_source() {
+        for source in [
+            "synth", "file", "loop", "mic", "micxr", "aaudio", "anything",
+        ] {
+            assert!(plays_at_launch(source, Some(true)), "{source}");
+            assert!(!plays_at_launch(source, Some(false)), "{source}");
         }
     }
 

@@ -120,8 +120,9 @@ pub struct Controls {
     /// (`room_edit::Cloud`).
     pub cloud: bool,
     /// The bundled clip plays, the analysis on its tap (the hand menu's
-    /// Music row; not saved, off at launch unless the launch source or
-    /// `debug.fosfora.music` plays it; `music.rs`).
+    /// Music row; not saved; on at launch unless the launch source is a
+    /// microphone or `debug.fosfora.music 0` forbids it, board #4191;
+    /// `music::plays_at_launch`).
     pub music: bool,
     /// The voice path listens (the hand menu's Voice toggle, saved in
     /// `hand_menu.json`; board #3751, V4): off, neither the left fist nor

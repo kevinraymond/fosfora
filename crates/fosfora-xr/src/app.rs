@@ -199,7 +199,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       so beats land on the sound; 0 = the S6 behavior that flashed 115 ms early)
     //   adb shell setprop debug.fosfora.music 0|1               (board #3472: the bundled clip playing at launch, as the hand menu's Music row
     //       plays it: on the speakers, the analysis on its tap; the row's stop puts the analysis back on the launch source, synth or
-    //       the microphones, and a play resumes where it stopped; default 0, file and loop play from launch anyway; not saved)
+    //       the microphones, and a play resumes where it stopped; board #4191: unset, it plays unless the source is mic, micxr or
+    //       aaudio (synth, the default, file and loop play); 1 plays it over any source, 0 over none, file's and loop's clip
+    //       included, so a quiet run needs 0; not saved)
     //   adb shell setprop debug.fosfora.quality low|medium|high|ultra|max
     //   adb shell setprop debug.fosfora.scene 1280x720
     //   adb shell setprop debug.fosfora.effect "Flux"            (mode quad; any effect)
@@ -642,11 +644,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         Mode::World => "world",
     };
     let world = mode == Mode::World;
-    let toggle = |name: &str, default: bool| match debug_prop(name).as_deref() {
-        Some("0") => false,
-        Some("1") => true,
-        _ => default,
+    // A 0|1 knob as set, `None` unset (or any other value), for a knob
+    // whose default is not a constant (`debug.fosfora.music`).
+    let switch = |name: &str| match debug_prop(name).as_deref() {
+        Some("0") => Some(false),
+        Some("1") => Some(true),
+        _ => None,
     };
+    let toggle = |name: &str, default: bool| switch(name).unwrap_or(default);
     // Board #3324: the live environment depth (`env_depth.rs`).
     let env_occlude = toggle("debug.fosfora.envdepth", mixed);
     let env_show = toggle("debug.fosfora.envdepthshow", false);
@@ -899,9 +904,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         start_frame: 0,
     };
     // Board #3472: the clip on the speakers, the `file` and `loop` sources'
-    // from launch, the hand menu's Music row's at runtime.
+    // from launch, the hand menu's Music row's at runtime. Board #4191: at
+    // launch unless the source is a microphone or `debug.fosfora.music 0`
+    // forbids it (`music::plays_at_launch`), which holds for `file` and
+    // `loop` too, so the knob's 0 means no clip whatever the source.
     let bundled_clip = dirs.assets.join("audio").join(crate::music::CLIP);
     let mut music = Music::new(bundled_clip.clone(), &audio_source, playback_options);
+    let music_at_launch =
+        crate::music::plays_at_launch(&audio_source, switch("debug.fosfora.music"));
     // Board #3264: the microphones open only with RECORD_AUDIO granted;
     // without it the synthetic groove runs (as with `synth`) and the frame
     // loop opens them, the same way, when the grant arrives.
@@ -915,14 +925,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
     }
     match audio_source.as_str() {
-        "loop" => {
+        "loop" if music_at_launch => {
             let clip = Clip::decode(&bundled_clip)?;
             let unused_tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
             let p = Playback::start(std::sync::Arc::new(clip), unused_tap, playback_options)
                 .context("starting playback")?;
             music.adopt(p, None, crate::music::CLIP.to_owned());
         }
-        "file" => {
+        "file" if music_at_launch => {
             let path = debug_prop("debug.fosfora.file")
                 .map_or_else(|| bundled_clip.clone(), std::path::PathBuf::from);
             let name = path
@@ -946,14 +956,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 .context("analysis over the playback tap")?;
             music.adopt(p, Some(analysis), name);
         }
+        "file" | "loop" => info!(
+            "music: debug.fosfora.music 0: {audio_source} starts without its clip, the analysis on {} (the Music row plays the bundled clip)",
+            crate::music::analysis(false, &audio_source).name()
+        ),
         _ => {}
     }
-    // `debug.fosfora.music 1`: the Music row's play at launch, over any
-    // source (the clip decodes in the background; the frame loop starts
-    // it).
-    if crate::music::plays_at_launch(&audio_source, toggle("debug.fosfora.music", false))
-        && !music.wanted()
-    {
+    // The Music row's play at launch over the sources that start no clip
+    // of their own, synth by default or any with `debug.fosfora.music 1`
+    // (the clip decodes in the background; the frame loop starts it).
+    if music_at_launch && !music.wanted() {
         music.set(true);
     }
     // The world effects the hand menu's effect row cycles through: every
