@@ -19,6 +19,28 @@ uv run --script scripts/beat_model/hopdump.py track.jsonl     # a summary
 
 Never set the variable on a live run: the writer does file I/O on the analysis thread.
 
+## The data pipeline
+
+All of it hangs off one work dir (`corpus.py` documents the layout; the bulk data lives
+on the T9, not in the repo):
+
+```sh
+W=/mnt/t9/fosfora-work/q4163
+uv run --script scripts/beat_model/fetch_negatives.py --out $W/data/negatives_train \
+    --metadata ~/ai/audio/kick-work/fma/fma_metadata --exclude <guard negatives.json>
+uv run --script scripts/beat_model/dump_corpus.py --work $W --bin <fosfora with analyze> --jobs 6
+uv run --script scripts/beat_model/build_dataset.py --work $W --lag 3     # targets, weights, splits
+uv run --script scripts/beat_model/train.py --work $W --name wide         # every column x offsets -6..0
+uv run --script scripts/beat_model/train.py --work $W --name narrow \
+    --select-from $W/models/wide.json --top-cols 16 --leaves 15 --max-depth 5 --trees 200 --export
+```
+
+Training audio is Creative Commons BY / CC0 (FMA) plus batida renders; labels are
+Fosfora's own confident beats, batida's exact ones, and beatless clips as negatives. The
+bench TUNE halves and the 155 guard clips are evaluation only; the bench HOLDOUT halves
+are never read by anything here. `build_dataset.py --lag-check` shows where each raw
+column peaks relative to exact beat labels, which is how the target lag was chosen.
+
 ## Tests
 
 ```sh
