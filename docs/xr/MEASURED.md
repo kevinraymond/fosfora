@@ -2969,3 +2969,27 @@ reboot alone restored 72 fps at 8.5 ms (the uptime drift noted at
 #3419). Yesterday's evening worn run at this temperature was 24 to
 34 ms per frame at 456 MHz. Worn adds the hands, the lit walls in view
 and the wearer's heat, which the worn batch measures.
+
+## Music at launch and the menu's Recenter row (board #4191, #4192)
+
+Oct 20, xr `93cda0a` over `0983c27` (and the main merge `2f57acb`), Quest 3
+right after a reboot, unworn on the desk, no knobs set (the defaults a
+wearer gets), 29 C. The config files were backed up before the install
+and read back byte-identical after.
+
+| Check | Result |
+|---|---|
+| First launch after the install, no knob | `music: playing ember_glow_excerpt.ogg (the analysis on its tap)` 8.2 s after the start intent, 30 ms after the session turned VISIBLE |
+| Relaunch with `debug.fosfora.music 0` | no decode and no play in 40 s |
+| The default menu (panel dump, `hudtest 1`, `hud 0`) | Embers 3/4 · Recenter the cloud \| Rescan the room · Agent: local · Pitcher \| Debug panel · Edit room \| status · Particles \| All: none · Music: stop \| Voice: on; 7 rows, 324 points |
+| Frame, floor only (the dark desk gave 0 anchors) | 72 fps, 0 stale, App GPU 5.2 ms |
+| The scene query | ran only on the relaunch (the first launch after the reboot stayed VISIBLE and never FOCUSED); all 6 retries returned 0 anchors unworn in the dark, so the retry after Space Setup stays a worn gate |
+
+**Cold start on the tip** (the same two launches, assets already
+unpacked): start intent to the process's first log line 0.2 to 0.5 s, to
+the session VISIBLE 8.2 s (the first launch after the install) and 6.7 s
+(the relaunch). The four world effects (Flux Cloud, Flux XR World Coarse,
+Embers, Flock) build one after another for 2.6 to 3.7 s of that, about
+0.9 s each; the passthrough layer is up at +2.9 s; whisper and the local
+model load on their threads. Building only the launch effect up front
+would take 2 to 3 s off (board #4194).

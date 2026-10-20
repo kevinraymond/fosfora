@@ -13,11 +13,12 @@
 #   scripts/xr/worn-ab.sh [--seconds 60] [--warmup 20] [--out DIR]
 #                         [--only "full,cloud0,..."] [--with "music=1;..."]
 #
-# --with sets extra knobs for every condition (music=1 plays the bundled
-# clip, which the room's emitters need: a quiet room emits nothing and the
-# cloud is empty, board #3783; gov=0 holds the thermal governor, board
-# #3789, which otherwise thins the cloud during a run that is over budget
-# and makes every condition read the same).
+# --with sets extra knobs for every condition (the bundled clip plays at
+# launch by default since board #4191, which the room's emitters need: a
+# quiet room emits nothing and the cloud is empty, board #3783; a quiet
+# pass needs music=0; gov=0 holds the thermal governor, board #3789, which
+# otherwise thins the cloud during a run that is over budget and makes
+# every condition read the same).
 #
 # Every knob is cleared afterwards. The surface knob writes the room file
 # (rooms/<id>.json under the config dir), so the room files are backed up
