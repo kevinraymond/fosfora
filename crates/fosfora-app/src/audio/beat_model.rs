@@ -346,8 +346,9 @@ mod tests {
 
     /// The whole runtime against the Python evaluation of the same model on the same
     /// dump: every hop's activation, from the first (zero history) on. The fixture dump
-    /// also carries the activation the binary wrote; it must be this code's, or the fixture
-    /// is stale against the embedded model and needs regenerating.
+    /// also carries the activation the binary wrote; it must be this code's (to the ulp
+    /// the platform's `exp` allows), or the fixture is stale against the embedded model
+    /// and needs regenerating.
     #[test]
     fn golden_activation_matches_python() {
         #[derive(Deserialize)]
@@ -397,9 +398,13 @@ mod tests {
                 "hop {n}: runtime {a} vs python {}",
                 golden.act[n]
             );
-            assert_eq!(
-                a, r.act,
-                "hop {n}: the fixture's activation is not this model's (regenerate it)"
+            // The binary's own value, within an ulp or two: f32::exp is the platform's libm,
+            // and macOS arm64 rounds it differently from Linux. A stale fixture against a
+            // re-embedded model differs by orders of magnitude more than this.
+            assert!(
+                (a - r.act).abs() < 1e-5,
+                "hop {n}: the fixture's activation {} is not this model's {a} (regenerate it)",
+                r.act
             );
             n += 1;
         }
