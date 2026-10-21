@@ -803,7 +803,11 @@ pub struct TempoDebug {
 struct TempoEstimator {
     bpm_range: (f32, f32),
 
+    /// The SuperFlux combined flux, one value per hop: what the seed gate reads.
     onset_history: CircularBuffer,
+    /// #4250: the beat activation, hop-aligned with `onset_history`. Once the flux has
+    /// seeded, the activation's autocorrelation chooses the period (see [`Self::update`]).
+    act_history: CircularBuffer,
     frame_rate: f64,
     frame_time: f64,
     frame_count: u32,
@@ -898,6 +902,7 @@ impl TempoEstimator {
         Self {
             bpm_range: (BPM_MIN as f32, BPM_MAX as f32),
             onset_history: CircularBuffer::new(history_size),
+            act_history: CircularBuffer::new(history_size),
             frame_rate,
             frame_time,
             frame_count: 0,
@@ -1057,14 +1062,24 @@ impl TempoEstimator {
         );
     }
 
-    /// Update tempo estimate. Returns (bpm, confidence, period_seconds).
+    /// Update the tempo estimate from the hop's combined flux (`onset_value`) and beat
+    /// activation (`act_value`). Returns (bpm, confidence, period_seconds).
+    ///
+    /// #4250: two autocorrelations, two jobs. The flux's ACF decides WHEN a tempo is
+    /// earned (the seed gate below; its path is unchanged from before the round, so
+    /// beatless audio seeds exactly as it did). Once seeded, the activation's ACF
+    /// decides WHAT period the measurement carries, with its own confidence, and the
+    /// flux's reading is the fallback whenever the activation has no in-range peak.
+    /// The activation alone must never seed: it is sparse on beatless material, and a
+    /// zero-lag-normalized ACF reads that sparse texture as periodic.
     ///
     /// A5 (#1456): the analysis hop is fixed (`ANALYSIS_HOP` samples), so `frame_rate` and
     /// `frame_time` are exact from construction — the old runtime re-estimation of frame
     /// timing from wall-clock `timestamp` deltas (a workaround for the jittery variable
     /// hop) is gone, and with it this stage's dependence on `timestamp`.
-    fn update(&mut self, onset_value: f64) -> (f64, f64, f64) {
+    fn update(&mut self, onset_value: f64, act_value: f64) -> (f64, f64, f64) {
         self.onset_history.push(onset_value);
+        self.act_history.push(act_value);
         self.frame_count += 1;
         self.ran_this_hop = false;
 
@@ -1121,6 +1136,20 @@ impl TempoEstimator {
             self.pending_seed = None;
             self.dbg_event("seed", f64::NAN);
         }
+
+        // #4250: the flux decided WHEN (the gate above); from here the activation's ACF
+        // decides WHAT period, with the flux's reading as the fallback when it has no
+        // in-range peak. The octave offset was already walked above, so it is applied
+        // here as a plain factor.
+        let (raw_bpm, confidence) = {
+            let (a_bpm, a_conf, _) = self.compute_tempo_activation();
+            let a_bpm = a_bpm * 2.0f64.powi(self.octave_offset);
+            if a_bpm >= self.bpm_range.0 as f64 && a_bpm <= self.bpm_range.1 as f64 {
+                (a_bpm, a_conf)
+            } else {
+                (raw_bpm, confidence)
+            }
+        };
 
         // Q2b metrical anchor: classify the winner against the anchor level.
         // Related-level winners (±octave, 3:2, 4:3) are folded onto the anchor
@@ -1390,9 +1419,24 @@ impl TempoEstimator {
     }
 
     fn compute_tempo_with(&mut self, acf: &mut AcfScratch) -> (f64, f64, f64) {
+        self.onset_history.copy_values_into(&mut acf.history);
+        self.compute_tempo_on(acf)
+    }
+
+    /// #4250: the same selection (peaks x ratios x comb x prior) over the activation
+    /// history.
+    fn compute_tempo_activation(&mut self) -> (f64, f64, f64) {
+        let mut acf = std::mem::take(&mut self.acf);
+        self.act_history.copy_values_into(&mut acf.history);
+        let result = self.compute_tempo_on(&mut acf);
+        self.acf = acf;
+        result
+    }
+
+    /// One ACF tempo estimate over whatever `acf.history` holds.
+    fn compute_tempo_on(&mut self, acf: &mut AcfScratch) -> (f64, f64, f64) {
         // #4153: an early return leaves the ACF fields at zero, not stale.
         self.last_debug = TempoDebug::default();
-        self.onset_history.copy_values_into(&mut acf.history);
         let history = &acf.history;
         let n = history.len();
 
@@ -2471,8 +2515,11 @@ impl BeatDetector {
             self.last_onset_time = timestamp;
         }
 
-        // Stage 2: Tempo estimation
-        let (bpm, confidence, period_s) = self.tempo_estimator.update(combined_flux);
+        // Stage 2: Tempo estimation. #4250: the flux seeds, the activation chooses the
+        // period (see `TempoEstimator::update`).
+        let (bpm, confidence, period_s) = self
+            .tempo_estimator
+            .update(combined_flux, f64::from(beat_activation));
 
         // #4160: a kick EVENT, by the `/stem/drums/onset` rule.
         if self.kick_now < 0.3 {
@@ -3386,13 +3433,14 @@ mod tests {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let v = (rng >> 32) as f64 / (1u64 << 32) as f64;
-            let (bpm, _conf, _period) = est.update(v);
+            let (bpm, _conf, _period) = est.update(v, v);
             assert_eq!(bpm, 0.0, "white-noise onsets must never seed a tempo");
         }
     }
 
     /// Drive a TempoEstimator with an impulse train at the given period (in
-    /// frames, fractional OK) for `secs`, returning the last published BPM.
+    /// frames, fractional OK) for `secs`, returning the last published BPM. The train
+    /// feeds both the flux and the activation (#4250).
     fn drive_estimator(est: &mut TempoEstimator, period_frames: f64, secs: f64) -> f64 {
         let mut bpm = 0.0;
         let mut next = period_frames;
@@ -3403,9 +3451,88 @@ mod tests {
             } else {
                 0.05
             };
-            bpm = est.update(v).0;
+            bpm = est.update(v, v).0;
         }
         bpm
+    }
+
+    /// #4250: drive the estimator with two impulse trains, `flux_period` frames on the
+    /// flux (the seed gate's input) and `act_period` on the beat activation; `None`
+    /// feeds zeros. Returns the last published BPM.
+    fn drive_estimator_split(
+        est: &mut TempoEstimator,
+        flux_period: Option<f64>,
+        act_period: Option<f64>,
+        secs: f64,
+    ) -> f64 {
+        let periods = [flux_period, act_period];
+        let mut next = periods.map(|p| p.unwrap_or(f64::INFINITY));
+        let mut bpm = 0.0;
+        for i in 0..(secs * 86.13) as usize {
+            let mut v = [0.0, 0.0];
+            for k in 0..2 {
+                if let Some(p) = periods[k] {
+                    v[k] = if i as f64 + 0.5 >= next[k] {
+                        next[k] += p;
+                        1.0
+                    } else {
+                        0.05
+                    };
+                }
+            }
+            bpm = est.update(v[0], v[1]).0;
+        }
+        bpm
+    }
+
+    /// #4250: once the flux has seeded, the activation's autocorrelation chooses the
+    /// period: a ~148 BPM flux train with a ~96 BPM activation train publishes 96.
+    #[test]
+    fn activation_chooses_the_period_once_the_flux_has_seeded() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        let bpm = drive_estimator_split(&mut est, Some(34.9), Some(53.83), 20.0);
+        assert!(
+            (bpm - 96.0).abs() / 96.0 < 0.04,
+            "the activation's period must win once seeded, got {bpm}"
+        );
+    }
+
+    /// #4250: with no activation peak, the flux's reading is the measurement.
+    #[test]
+    fn flux_reading_is_the_fallback_without_an_activation_peak() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        let bpm = drive_estimator_split(&mut est, Some(34.9), None, 20.0);
+        assert!(
+            (bpm - 148.0).abs() / 148.0 < 0.04,
+            "the flux fallback must publish ~148, got {bpm}"
+        );
+    }
+
+    /// #4250: the activation alone never seeds. A clean activation train over white-noise
+    /// flux stays unpublished, because the seed gate reads the flux only: the beatless
+    /// guard (sparse activation texture reads as periodic to a normalized ACF).
+    #[test]
+    fn activation_alone_never_seeds() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        let mut rng: u64 = 12345;
+        let mut next = 40.4;
+        for i in 0..(6.0 * 86.13) as usize {
+            rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let noise = (rng >> 32) as f64 / (1u64 << 32) as f64;
+            let act = if i as f64 + 0.5 >= next {
+                next += 40.4;
+                1.0
+            } else {
+                0.0
+            };
+            let (bpm, _, _) = est.update(noise, act);
+            assert_eq!(
+                bpm, 0.0,
+                "a periodic activation over noisy flux must never seed"
+            );
+        }
     }
 
     /// Q3 lock dynamics: a locked estimator rides out a brief burst of
@@ -3433,7 +3560,7 @@ mod tests {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let v = (rng >> 32) as f64 / (1u64 << 32) as f64;
-            let (b, _, _) = est.update(v);
+            let (b, _, _) = est.update(v, v);
             assert!(
                 (b - 128.0).abs() / 128.0 < 0.04,
                 "published BPM left the band during a brief wobble: {b}"
@@ -3576,14 +3703,15 @@ mod tests {
             rng = rng
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
-            est.update((rng >> 32) as f64 / (1u64 << 32) as f64);
+            let v = (rng >> 32) as f64 / (1u64 << 32) as f64;
+            est.update(v, v);
         }
         assert_eq!(est.published_bpm(), 0.0, "no lock ever -> wire silent");
         // Lock at ~128, then starve support with silence-grade input.
         drive_estimator(&mut est, 40.4, 20.0);
         assert!(est.locked);
         for _ in 0..(6.0 * 86.13) as usize {
-            est.update(0.0);
+            est.update(0.0, 0.0);
         }
         let published = est.published_bpm();
         assert!(
@@ -3757,7 +3885,7 @@ mod tests {
             } else {
                 0.0
             };
-            est.update(onset);
+            est.update(onset, onset);
         }
         est
     }
@@ -3790,7 +3918,7 @@ mod tests {
             } else {
                 0.0
             };
-            est.update(onset);
+            est.update(onset, onset);
         }
         assert!(
             est.current_bpm < 80.0,
@@ -3856,7 +3984,7 @@ mod tests {
             } else {
                 0.0
             };
-            est.update(onset);
+            est.update(onset, onset);
         }
         let end = est.prior_center_bpm();
         assert!(

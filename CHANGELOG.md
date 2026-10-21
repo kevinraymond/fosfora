@@ -7,6 +7,7 @@
 
 ### Fixed
 - **Beats still landed on the off-beat on some music after v2.6.0's kick-based fix.** The beat grid's phase check now weighs a learned per-frame beat witness together with the kick drum, so it can move the grid where the kick sits on the "and" or is missing. On the Harmonix pop/EDM set beat accuracy went from 0.65 to 0.68 and on Ballroom from 0.47 to 0.48, with 17 holdout tracks fixed and none broken; tempo, downbeat and section numbers are unchanged, and beatless audio gets no new beats. The witness is a small tree model trained on Creative Commons music, credited in the source tree.
+- **The tempo readout sat at half or a third of the real tempo on fast dance music such as Viennese waltz and quickstep, and the beat grid ran with it.** Once a tempo is found, the learned beat witness now chooses which metrical level it sits at. Ballroom tempo accuracy went from 0.62 to 0.69 and beat accuracy from 0.48 to 0.52, GiantSteps tempo from 0.70 to 0.74 and Harmonix beat accuracy from 0.68 to 0.72; the cost is slow pop at 70 to 110 BPM, now read at double tempo more often (Harmonix tempo accuracy 0.65 to 0.63), with beats landing on every beat and on the "and" between.
 
 ## v2.6.0 — 2026-10-20
 

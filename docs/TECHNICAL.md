@@ -365,7 +365,7 @@ Per-feature policy (`NormPolicy`) lives in the `FEATURES` table in `audio/schema
 
 **3-stage beat detection:**
 1. **OnsetDetector** — log-magnitude multi-band spectral flux with adaptive threshold
-2. **TempoEstimator** — FFT autocorrelation (Wiener-Khinchin), genre-aware log-Gaussian tempo prior (center 150 BPM), multi-ratio octave correction, cascading octave-up via local peak detection, Kalman filter in log2-BPM space
+2. **TempoEstimator** — FFT autocorrelation (Wiener-Khinchin), genre-aware log-Gaussian tempo prior (center 150 BPM), multi-ratio octave correction, cascading octave-up via local peak detection, Kalman filter in log2-BPM space. Two autocorrelations with two jobs: the flux's earns the first tempo (the seed gate, so beatless audio stays silent), and once seeded the beat activation's chooses the metrical level, with the flux's reading as the fallback
 3. **BeatScheduler** — predictive state machine with phase correction, outputs `beat` trigger and `beat_phase` sawtooth
 
 **Smoothing:** Asymmetric EMA (fast attack, slow release) on all features. `beat` and `beat_phase` are pass-through (no smoothing).

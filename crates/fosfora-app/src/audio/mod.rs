@@ -2022,6 +2022,8 @@ pub(crate) mod tests {
     /// the centroid's log-frequency axis; nothing else moves.
     /// Re-captured 2026-10-08 for #81: `tempo_confidence`/`beat_locked` (83–84) appended.
     /// The clip never locks, so only the late hop's confidence is non-zero.
+    /// Re-captured 2026-10-21 for #4250: once the flux has seeded, the beat activation's
+    /// autocorrelation chooses the tempo's period; feature 17 (`beat_phase`) moves at hop 340.
     // Captured verbatim at 7 decimal places; left exactly as the harness printed them so a
     // re-capture diffs cleanly against this block.
     #[allow(clippy::unreadable_literal, clippy::excessive_precision)]
@@ -2067,7 +2069,7 @@ pub(crate) mod tests {
             [
                 0.1530727, 0.1504618, 0.7956290, 0.1770404, 0.0049734, 0.3106367, 0.5809368,
                 0.0753485, 0.0532104, 0.3561241, 0.0057274, 0.0126783, 0.3949849, 0.2794965,
-                0.4611151, 0.1018582, 0.0000000, 0.6509761, 0.0000000, 0.0012428, 0.4574383,
+                0.4611151, 0.1018582, 0.0000000, 0.6459667, 0.0000000, 0.0012428, 0.4574383,
                 0.4586742, 0.5644628, 0.5217401, 0.4544856, 0.4380916, 0.5563499, 0.5298982,
                 0.4502431, 0.4356841, 0.4874638, 0.5473089, 0.4820564, 0.6562741, 0.5932279,
                 0.3684024, 0.2376923, 0.0745927, 0.1856951, 0.1463016, 0.0798915, 0.3004525,
