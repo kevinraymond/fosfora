@@ -591,6 +591,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 beat_fired: f.beat > 0.5,
                 downbeat_fired: false,
                 drop_fired: false,
+                beat_activation: 0.0,
                 pre_norm: f,
             };
             let wave = vec![0.0; crate::gpu::audio_textures::WAVEFORM_PEEK];
@@ -1652,6 +1653,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             beat_fired: f.beat > 0.5,
             downbeat_fired: false,
             drop_fired: false,
+            beat_activation: 0.0,
             pre_norm: f,
         }
     }
