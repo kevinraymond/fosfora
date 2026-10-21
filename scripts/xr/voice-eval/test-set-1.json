@@ -1,0 +1,431 @@
+{
+ "about": "First 40-sentence test set of the voice path's intent cascade, frozen before any model was trained on synthetic cases. Room: the replayed room (tables 0 3 6 12 14, shelves 1 4 9 11 13, walls 2 5 15 16, floor, window, ceiling; table 3 pointed; effects Flux Cloud, Embers, Flock). 25 grammar-shaped sentences (phrasings the hand-written grammar parses), 10 indirect sentences it misses, 5 non-requests. expect: null for a non-request, else a list of accepted alternatives {kind, target, value}; a list target/value means any of them. 'pointed' and 'table 3' are the same surface.",
+ "frozen": "2026-10-08",
+ "tests": [
+  {
+   "sentence": "Next effect.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "next_effect",
+     "target": null,
+     "value": null
+    }
+   ]
+  },
+  {
+   "sentence": "Previous effect.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "previous_effect",
+     "target": null,
+     "value": null
+    }
+   ]
+  },
+  {
+   "sentence": "Switch to embers.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "effect",
+     "target": null,
+     "value": "Embers"
+    }
+   ]
+  },
+  {
+   "sentence": "Show flock.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "effect",
+     "target": null,
+     "value": "Flock"
+    }
+   ]
+  },
+  {
+   "sentence": "Edit the room.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "edit_room",
+     "target": null,
+     "value": "on"
+    }
+   ]
+  },
+  {
+   "sentence": "Stop editing.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "edit_room",
+     "target": null,
+     "value": "off"
+    }
+   ]
+  },
+  {
+   "sentence": "Particles off.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "particles",
+     "target": null,
+     "value": "off"
+    }
+   ]
+  },
+  {
+   "sentence": "Pitcher on.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "pitcher",
+     "target": null,
+     "value": "on"
+    }
+   ]
+  },
+  {
+   "sentence": "Play the music.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "music",
+     "target": null,
+     "value": "on"
+    }
+   ]
+  },
+  {
+   "sentence": "Rescan the room.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "rescan",
+     "target": null,
+     "value": null
+    }
+   ]
+  },
+  {
+   "sentence": "Recenter the cloud.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "recenter",
+     "target": null,
+     "value": null
+    }
+   ]
+  },
+  {
+   "sentence": "Clear everything.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "all_none",
+     "target": null,
+     "value": null
+    }
+   ]
+  },
+  {
+   "sentence": "Every table streamlines.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "behavior",
+     "target": "all tables",
+     "value": "streamlines"
+    }
+   ]
+  },
+  {
+   "sentence": "Embers on table 12.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "behavior",
+     "target": "table 12",
+     "value": "embers"
+    }
+   ]
+  },
+  {
+   "sentence": "Rings on the floor.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "behavior",
+     "target": "floor",
+     "value": "rings"
+    }
+   ]
+  },
+  {
+   "sentence": "Aurora on wall 5.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "behavior",
+     "target": "wall 5",
+     "value": "aurora"
+    }
+   ]
+  },
+  {
+   "sentence": "Clear the ceiling.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "behavior",
+     "target": "ceiling",
+     "value": "none"
+    }
+   ]
+  },
+  {
+   "sentence": "Table 14 in amber.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "color",
+     "target": "table 14",
+     "value": "amber"
+    }
+   ]
+  },
+  {
+   "sentence": "Every wall in rose.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "color",
+     "target": "all walls",
+     "value": "rose"
+    }
+   ]
+  },
+  {
+   "sentence": "Make shelf 4 blue.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "color",
+     "target": "shelf 4",
+     "value": "blue"
+    }
+   ]
+  },
+  {
+   "sentence": "Wall 5 on the bass.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "band",
+     "target": "wall 5",
+     "value": "bass"
+    }
+   ]
+  },
+  {
+   "sentence": "The window follows the highs.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "band",
+     "target": "window",
+     "value": "high"
+    }
+   ]
+  },
+  {
+   "sentence": "Dimmer on table 0.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "strength",
+     "target": "table 0",
+     "value": "dimmer"
+    }
+   ]
+  },
+  {
+   "sentence": "The ceiling half.",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "strength",
+     "target": "ceiling",
+     "value": "half"
+    }
+   ]
+  },
+  {
+   "sentence": "What is this?",
+   "group": "grammar",
+   "expect": [
+    {
+     "kind": "describe",
+     "target": "pointed",
+     "value": null
+    }
+   ]
+  },
+  {
+   "sentence": "Something like a campfire on the desk.",
+   "group": "miss",
+   "expect": [
+    {
+     "kind": "behavior",
+     "target": "pointed",
+     "value": "embers"
+    }
+   ]
+  },
+  {
+   "sentence": "Make the walls calmer.",
+   "group": "miss",
+   "expect": [
+    {
+     "kind": "strength",
+     "target": "all walls",
+     "value": [
+      "dimmer",
+      "off"
+     ]
+    },
+    {
+     "kind": "behavior",
+     "target": "all walls",
+     "value": "none"
+    }
+   ]
+  },
+  {
+   "sentence": "The walls look too cold.",
+   "group": "miss",
+   "expect": [
+    {
+     "kind": "color",
+     "target": "all walls",
+     "value": [
+      "amber",
+      "rose",
+      "warm white"
+     ]
+    }
+   ]
+  },
+  {
+   "sentence": "I'm bored of this one, show me something different.",
+   "group": "miss",
+   "expect": [
+    {
+     "kind": "next_effect",
+     "target": null,
+     "value": null
+    }
+   ]
+  },
+  {
+   "sentence": "Get rid of the dots floating around.",
+   "group": "miss",
+   "expect": [
+    {
+     "kind": "particles",
+     "target": null,
+     "value": "off"
+    }
+   ]
+  },
+  {
+   "sentence": "Kill the music.",
+   "group": "miss",
+   "expect": [
+    {
+     "kind": "music",
+     "target": null,
+     "value": "off"
+    }
+   ]
+  },
+  {
+   "sentence": "Make the floor pump with the kick drum.",
+   "group": "miss",
+   "expect": [
+    {
+     "kind": "band",
+     "target": "floor",
+     "value": "bass"
+    }
+   ]
+  },
+  {
+   "sentence": "Turn the brightness way up on the ceiling.",
+   "group": "miss",
+   "expect": [
+    {
+     "kind": "strength",
+     "target": "ceiling",
+     "value": [
+      "brighter",
+      "full"
+     ]
+    }
+   ]
+  },
+  {
+   "sentence": "What's showing on the window right now?",
+   "group": "miss",
+   "expect": [
+    {
+     "kind": "describe",
+     "target": "window",
+     "value": null
+    }
+   ]
+  },
+  {
+   "sentence": "Start over with a blank room.",
+   "group": "miss",
+   "expect": [
+    {
+     "kind": "all_none",
+     "target": null,
+     "value": null
+    }
+   ]
+  },
+  {
+   "sentence": "What time is it?",
+   "group": "none",
+   "expect": null
+  },
+  {
+   "sentence": "Hello.",
+   "group": "none",
+   "expect": null
+  },
+  {
+   "sentence": "This song is amazing.",
+   "group": "none",
+   "expect": null
+  },
+  {
+   "sentence": "I need to take a break soon.",
+   "group": "none",
+   "expect": null
+  },
+  {
+   "sentence": "How long does the battery last?",
+   "group": "none",
+   "expect": null
+  }
+ ]
+}

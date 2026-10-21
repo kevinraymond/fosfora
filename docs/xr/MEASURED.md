@@ -2338,7 +2338,17 @@ memory of the System One 17M path, so the plan stands: train our own 17M
 from the Ettin base with the Bekko toolkit. Both device benches abort at
 teardown while the runtime library unloads (every number prints first);
 the same cause, to fix once before anything ships. The spike is kept under
-`fosfora-xr-kit/spikes/decima/`.
+`fosfora-xr-kit/spikes/decima/`; the two 40-sentence test sets, the cascade
+and a driver for Decima's Python API are in `scripts/xr/voice-eval/`; the
+driver reproduces the rows above, and on the second set (never looked at
+during development) `decima-small` is 5 of 40 as well: kind 13 of 35,
+target 4 of 19, value 15 of 26.
+
+Decima's author, on PR #252 (Oct 20): `decima-base-clean` is trained without
+non-commercial data, and `decima-agent` 2.3 and `decima-guard` are trained as
+allow/ask/deny gates, which `decima-small` never was. Both are 321M, 2.6 times
+the small model, so on the headset they would land near 0.7 to 1 s per
+sentence even with the option encodings cached. Not measured here.
 
 ## Our own System One 17M, trained (board #3766)
 
