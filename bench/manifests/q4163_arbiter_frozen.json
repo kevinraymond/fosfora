@@ -1,0 +1,871 @@
+{
+ "schema": "fosfora-bench-q-arbiter-evidence-frozen/v1",
+ "_policy": "Pre-registered targets for the #4163 round that feeds the beat activation into the phase arbiter (board #4215), frozen 2026-10-20 BEFORE any arm was scored, in the shape of q4160_phase_frozen.json: numbers move or the change reverts. Arm selection reads the TUNE halves, the batida renders and the 155 beatless clips only; the holdout halves are scored once, at round end, on the chosen arm. Every arm is measured alone and a rejected one is recorded with its evidence.",
+ "issue": "The #4160 arbiter moves an off-beat grid onto the kick model's kicks. Kicks are the beat only on some music: the arbiter abstains when the kick does not mark the beat, and on 7 of 374 Harmonix tracks it flipped a correct grid onto the off-beat because syncopated kicks really sit on the 'and' (#4167). The beat activation (beat_model.rs, #4163 phases A-C) is per-hop beat evidence that reads SuperFlux, the kick model, spectral contrast, stereo and timbre together: AUC .828 / .853 on the Harmonix / Ballroom tune halves, quiet on beatless audio (30 fires/min vs the onset function's 110).",
+ "mechanism_evidence": "On the tune halves the activation's own peak-picked events reach beat F .637 on Harmonix (the kick model's events are the arbiter's only evidence today) and .591 on Ballroom, where the grid itself reaches .494 because it fails to lock, not because it is off-beat. #4167: the wrong flips are full windows of real syncopated kicks; evidence that knows the backbeat is the way to outvote them. #4162: of the gap to lastBeatStanding, 30% is off-beat with the tempo right and 18% unstable phase: both are arbiter territory.",
+ "design_constraint": "The arbiter's rule, windows, ratio, streak and guard stay as #4160 selected them; the round changes only WHICH EVENTS fill its window. Arms: kicks (shipped), activation (the picker's events, placed lag_hops back), union (both streams in one window; an instant where both fire counts twice). The activation's event threshold is the second variable: the training's picker threshold (.45, F-optimal for a standalone picker) and a stricter .60 (fewer, surer events for a vote). Nothing else moves; a candidate that needs a retune of the arbiter is a different round.",
+ "arms": {
+  "base": {
+   "FOSFORA_ARB_EVIDENCE": "kicks",
+   "binary": "fosfora-base-a3b887c (main a3b887c, no knob code)"
+  },
+  "act45": {
+   "FOSFORA_ARB_EVIDENCE": "activation",
+   "FOSFORA_ARB_ACT_THR": "0.45"
+  },
+  "act60": {
+   "FOSFORA_ARB_EVIDENCE": "activation",
+   "FOSFORA_ARB_ACT_THR": "0.60"
+  },
+  "uni45": {
+   "FOSFORA_ARB_EVIDENCE": "union",
+   "FOSFORA_ARB_ACT_THR": "0.45"
+  },
+  "uni60": {
+   "FOSFORA_ARB_EVIDENCE": "union",
+   "FOSFORA_ARB_ACT_THR": "0.60"
+  },
+  "_knob_binary": "the same analyze build with the knobs read once at BeatDetector::new; with the knobs unset its dumps are byte-identical to the base binary's (checked on a Harmonix, a Ballroom and a batida track before any arm ran)",
+  "_selection": "the arm with the highest Harmonix TUNE beat_f that passes every tune-side guard (G1-G6 read on tune / batida / negatives); ties within 0.005 go to the fewer flips lost (G4) and then to the simpler arm (activation before union, .60 before .45)",
+  "act70": {
+   "FOSFORA_ARB_EVIDENCE": "activation",
+   "FOSFORA_ARB_ACT_THR": "0.70",
+   "_added": "2026-10-20T14:30:07Z"
+  },
+  "act75": {
+   "FOSFORA_ARB_EVIDENCE": "activation",
+   "FOSFORA_ARB_ACT_THR": "0.75",
+   "_added": "2026-10-20T14:30:07Z"
+  },
+  "uni70": {
+   "FOSFORA_ARB_EVIDENCE": "union",
+   "FOSFORA_ARB_ACT_THR": "0.70",
+   "_added": "2026-10-20T14:37:36Z"
+  },
+  "uni75": {
+   "FOSFORA_ARB_EVIDENCE": "union",
+   "FOSFORA_ARB_ACT_THR": "0.75",
+   "_added": "2026-10-20T14:37:36Z"
+  }
+ },
+ "split": {
+  "rule": "sha256(track_id) parity, even -> tune, odd -> holdout, on ballroom, harmonix and giantsteps_tempo",
+  "selection_reads": [
+   "ballroom tune",
+   "harmonix tune",
+   "giantsteps_tempo tune",
+   "the 80 batida renders (7 templates x seeds 1-10, ambient 1-20)",
+   "the 155 beatless FMA clips"
+  ],
+  "scored_once_at_end": [
+   "ballroom holdout",
+   "harmonix holdout",
+   "giantsteps_tempo holdout"
+  ]
+ },
+ "tools": {
+  "arm": "bench/q4163_arm.sh <arm> <binary> [VAR=value ...]: run_bench on the three datasets into /mnt/t9/fosfora-work/q4163/bench/<arm>, --analyze on the batida renders scored by batida's score_fosfora.py, --signal-dump --feat-bus on the 155 clips",
+  "report": "bench/q4163_report.py <root> --half tune|holdout --against <base root>: split metrics, phase, Harmonix structure/drop, batida, negatives, flips lost vs gained",
+  "verdict": "bench/q4163_verdict.py <arm root> (reads the holdout once, checks every target below)",
+  "negative_result": "a whole-track fold of events against the base grid (sim_votes.py, /mnt/t9/fosfora-work/q4163) is NOT a proxy for the arbiter: the base grid is the kick rule's own equilibrium, so the shipped rule 'fixes 0' and act@.60 'fixes 1' while the real act60 arm gained 21 Harmonix tracks; arms are measured live only"
+ },
+ "baseline": {
+  "_root": "/mnt/t9/fosfora-work/q4163/bench/base",
+  "_binary": "/mnt/t9/fosfora-work/q4163/bin/fosfora-base-a3b887c",
+  "_binary_sha256": "d0ec733cae3b722f95473d0e77001c98594b316d61e01f4374c122d0d82bc507",
+  "_provenance": "main a3b887c (v2.6.0 + #4163 A-C: the activation is computed but unread), analyze build, run_bench defaults; bench/q4163_arm.sh base",
+  "datasets": {
+   "ballroom": {
+    "tune": {
+     "n": 344,
+     "no_est": 28,
+     "acc1": 0.5378,
+     "acc2": 0.8547,
+     "beat_f": 0.4942,
+     "cmlt": 0.3157,
+     "amlt": 0.5404,
+     "downbeat_f": 0.1521
+    },
+    "holdout": {
+     "n": 341,
+     "no_est": 45,
+     "acc1": 0.5718,
+     "acc2": 0.8065,
+     "beat_f": 0.4365,
+     "cmlt": 0.2992,
+     "amlt": 0.4867,
+     "downbeat_f": 0.1341
+    },
+    "all": {
+     "n": 685,
+     "no_est": 73,
+     "acc1": 0.5547,
+     "acc2": 0.8307,
+     "beat_f": 0.4655,
+     "cmlt": 0.3075,
+     "amlt": 0.5137,
+     "downbeat_f": 0.1431
+    }
+   },
+   "harmonix": {
+    "tune": {
+     "n": 180,
+     "no_est": 0,
+     "acc1": 0.6833,
+     "acc2": 0.9111,
+     "beat_f": 0.6892,
+     "cmlt": 0.5413,
+     "amlt": 0.7334,
+     "downbeat_f": 0.2247
+    },
+    "holdout": {
+     "n": 194,
+     "no_est": 1,
+     "acc1": 0.6134,
+     "acc2": 0.8814,
+     "beat_f": 0.6195,
+     "cmlt": 0.4646,
+     "amlt": 0.6681,
+     "downbeat_f": 0.2164
+    },
+    "all": {
+     "n": 374,
+     "no_est": 1,
+     "acc1": 0.6471,
+     "acc2": 0.8957,
+     "beat_f": 0.653,
+     "cmlt": 0.5015,
+     "amlt": 0.6995,
+     "downbeat_f": 0.2204
+    }
+   },
+   "giantsteps_tempo": {
+    "tune": {
+     "n": 311,
+     "no_est": 1,
+     "acc1": 0.7138,
+     "acc2": 0.8232
+    },
+    "holdout": {
+     "n": 350,
+     "no_est": 2,
+     "acc1": 0.6857,
+     "acc2": 0.8
+    },
+    "all": {
+     "n": 661,
+     "no_est": 3,
+     "acc1": 0.6989,
+     "acc2": 0.8109
+    }
+   }
+  },
+  "phase": {
+   "tune": {
+    "ballroom": {
+     "tune": {
+      "tracks": 344,
+      "beat_f": 0.49422007739978197,
+      "on": 0.5917385057471264,
+      "anti": 0.22435344827586207,
+      "quarter": 0.1839080459770115,
+      "anti_locked": 72,
+      "no_beats": 17
+     },
+     "all": {
+      "tracks": 344,
+      "beat_f": 0.49422007739978197,
+      "on": 0.5917385057471264,
+      "anti": 0.22435344827586207,
+      "quarter": 0.1839080459770115,
+      "anti_locked": 72,
+      "no_beats": 17
+     }
+    },
+    "harmonix": {
+     "tune": {
+      "tracks": 180,
+      "beat_f": 0.6891783019677352,
+      "on": 0.6601009525978215,
+      "anti": 0.1988690272875631,
+      "quarter": 0.14103002011461535,
+      "anti_locked": 32,
+      "no_beats": 0
+     },
+     "all": {
+      "tracks": 180,
+      "beat_f": 0.6891783019677352,
+      "on": 0.6601009525978215,
+      "anti": 0.1988690272875631,
+      "quarter": 0.14103002011461535,
+      "anti_locked": 32,
+      "no_beats": 0
+     }
+    }
+   },
+   "holdout": {
+    "ballroom": {
+     "holdout": {
+      "tracks": 341,
+      "beat_f": 0.4365459484208385,
+      "on": 0.5684931506849316,
+      "anti": 0.21224912392481682,
+      "quarter": 0.21925772539025168,
+      "anti_locked": 75,
+      "no_beats": 33
+     },
+     "all": {
+      "tracks": 341,
+      "beat_f": 0.4365459484208385,
+      "on": 0.5684931506849316,
+      "anti": 0.21224912392481682,
+      "quarter": 0.21925772539025168,
+      "anti_locked": 75,
+      "no_beats": 33
+     }
+    },
+    "harmonix": {
+     "holdout": {
+      "tracks": 194,
+      "beat_f": 0.6194927329288096,
+      "on": 0.6030681776773676,
+      "anti": 0.23007688663775827,
+      "quarter": 0.1668549356848741,
+      "anti_locked": 40,
+      "no_beats": 0
+     },
+     "all": {
+      "tracks": 194,
+      "beat_f": 0.6194927329288096,
+      "on": 0.6030681776773676,
+      "anti": 0.23007688663775827,
+      "quarter": 0.1668549356848741,
+      "anti_locked": 40,
+      "no_beats": 0
+     }
+    }
+   }
+  },
+  "harmonix_all": {
+   "drop_hit_rate": 0.1064,
+   "false_drops_per_min": 0.415,
+   "predict_drop_false_alarms_per_min": 2.2666,
+   "predict_drop_coverage_0_5": 0.461,
+   "predict_drop_coverage_0_8": 0.3475,
+   "boundary_3_0s_f": 0.1622
+  },
+  "batida": {
+   "ambient": {
+    "n": 20,
+    "beat_f_mean": 0.21615,
+    "beat_f": [
+     0.183,
+     0.197,
+     0.303,
+     0.291,
+     0.179,
+     0.256,
+     0.2,
+     0.176,
+     0.183,
+     0.271,
+     0.247,
+     0.179,
+     0.221,
+     0.242,
+     0.19,
+     0.218,
+     0.217,
+     0.222,
+     0.191,
+     0.157
+    ],
+    "bpm_ratio": [
+     1.675,
+     1.675,
+     1.677,
+     1.675,
+     1.682,
+     1.673,
+     1.675,
+     1.677,
+     1.675,
+     1.675,
+     1.7,
+     1.713,
+     1.676,
+     1.726,
+     1.68,
+     1.674,
+     1.678,
+     1.678,
+     1.677,
+     1.67
+    ],
+    "beat_lag_ms": [
+     -42,
+     11,
+     -37,
+     10,
+     -23,
+     23,
+     22,
+     -20,
+     -20,
+     18,
+     18,
+     21,
+     24,
+     23,
+     -9,
+     18,
+     -12,
+     -2,
+     -1,
+     -9
+    ],
+    "beats_est": [
+     374,
+     379,
+     340,
+     393,
+     437,
+     393,
+     369,
+     401,
+     397,
+     383,
+     384,
+     389,
+     334,
+     364,
+     331,
+     418,
+     348,
+     351,
+     379,
+     410
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19,
+     20
+    ]
+   },
+   "chiptune": {
+    "n": 10,
+    "beat_f_mean": 0.9914,
+    "beat_f": [
+     0.992,
+     0.992,
+     0.991,
+     0.993,
+     0.99,
+     0.991,
+     0.992,
+     0.99,
+     0.993,
+     0.99
+    ],
+    "bpm_ratio": [
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999
+    ],
+    "beat_lag_ms": [
+     12,
+     5,
+     4,
+     4,
+     8,
+     4,
+     7,
+     5,
+     6,
+     11
+    ],
+    "beats_est": [
+     596,
+     596,
+     595,
+     598,
+     594,
+     595,
+     596,
+     594,
+     598,
+     594
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   },
+   "house": {
+    "n": 10,
+    "beat_f_mean": 0.9089,
+    "beat_f": [
+     0.868,
+     0.897,
+     0.933,
+     0.927,
+     0.93,
+     0.857,
+     0.921,
+     0.94,
+     0.897,
+     0.919
+    ],
+    "bpm_ratio": [
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ],
+    "beat_lag_ms": [
+     25,
+     24,
+     19,
+     19,
+     20,
+     24,
+     18,
+     18,
+     16,
+     19
+    ],
+    "beats_est": [
+     470,
+     460,
+     468,
+     474,
+     467,
+     459,
+     476,
+     480,
+     477,
+     472
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   },
+   "lofi": {
+    "n": 10,
+    "beat_f_mean": 0.756,
+    "beat_f": [
+     0.775,
+     0.828,
+     0.882,
+     0.802,
+     0.733,
+     0.429,
+     0.721,
+     0.725,
+     0.784,
+     0.881
+    ],
+    "bpm_ratio": [
+     0.0,
+     1.0,
+     1.0,
+     0.0,
+     1.001,
+     0.0,
+     1.0,
+     1.0,
+     0.0,
+     0.0
+    ],
+    "beat_lag_ms": [
+     13,
+     12,
+     13,
+     11,
+     10,
+     14,
+     17,
+     10,
+     12,
+     12
+    ],
+    "beats_est": [
+     255,
+     278,
+     264,
+     263,
+     245,
+     194,
+     277,
+     246,
+     251,
+     269
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   },
+   "rock": {
+    "n": 10,
+    "beat_f_mean": 0.48329999999999995,
+    "beat_f": [
+     0.0,
+     0.967,
+     0.0,
+     0.942,
+     0.0,
+     0.977,
+     0.976,
+     0.0,
+     0.0,
+     0.971
+    ],
+    "bpm_ratio": [
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     0.999,
+     0.999,
+     1.0
+    ],
+    "beat_lag_ms": [
+     -228,
+     25,
+     -226,
+     26,
+     -229,
+     23,
+     25,
+     -226,
+     -226,
+     25
+    ],
+    "beats_est": [
+     471,
+     463,
+     471,
+     464,
+     471,
+     461,
+     469,
+     471,
+     470,
+     467
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   },
+   "techno": {
+    "n": 10,
+    "beat_f_mean": 0.7107,
+    "beat_f": [
+     0.737,
+     0.711,
+     0.716,
+     0.671,
+     0.719,
+     0.698,
+     0.723,
+     0.727,
+     0.673,
+     0.732
+    ],
+    "bpm_ratio": [
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.001,
+     1.0,
+     1.0,
+     1.0,
+     1.001
+    ],
+    "beat_lag_ms": [
+     25,
+     29,
+     20,
+     32,
+     31,
+     21,
+     25,
+     17,
+     29,
+     26
+    ],
+    "beats_est": [
+     490,
+     490,
+     493,
+     492,
+     495,
+     497,
+     497,
+     486,
+     489,
+     494
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   },
+   "waltz": {
+    "n": 10,
+    "beat_f_mean": 0.9651,
+    "beat_f": [
+     0.971,
+     0.958,
+     0.967,
+     0.968,
+     0.968,
+     0.96,
+     0.96,
+     0.967,
+     0.964,
+     0.968
+    ],
+    "bpm_ratio": [
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999
+    ],
+    "beat_lag_ms": [
+     32,
+     34,
+     28,
+     28,
+     25,
+     30,
+     33,
+     26,
+     30,
+     30
+    ],
+    "beats_est": [
+     370,
+     361,
+     367,
+     368,
+     368,
+     368,
+     362,
+     367,
+     363,
+     368
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   }
+  },
+  "negatives": {
+   "n": 155,
+   "publish": 53,
+   "locked_mean": 0.1391510811502794,
+   "beats_per_min": 28.175052909020053,
+   "pulse_low_n": 51,
+   "pulse_low_beats_per_min": 8.406779598186205
+  }
+ },
+ "targets": {
+  "P1_headline": "harmonix holdout beat_f >= baseline + 0.02 (the #4160 bar; the arbiter's evidence is the only change)",
+  "P2_wrong_flips": "harmonix holdout anti_locked <= baseline - 3 AND the tracks that LOSE more than 0.1 beat_f number fewer than those that GAIN more than 0.1 (the motivating defect is correct grids flipped onto the off-beat, #4164/#4167)",
+  "P3_ballroom": "ballroom holdout beat_f >= baseline - 0.005; a gain is reported, not required (the grid's Ballroom problem is lock failure, which this round does not touch)",
+  "G1_ballroom": "holdout acc1, acc2, cmlt, amlt, downbeat_f each >= baseline - 0.005; no_est <= baseline",
+  "G2_giantsteps_tempo": "holdout acc1, acc2 each >= baseline - 0.005; no_est <= baseline",
+  "G3_harmonix": "holdout acc1, acc2, cmlt, amlt, downbeat_f each >= baseline - 0.005; no_est <= baseline",
+  "G4_distribution": "per-genre ballroom beat_f, no genre down by more than 0.02; tracks whose beat_f drops by more than 0.1 listed next to those that rise by more than 0.1 on both datasets, and the round must not lose more than it gains on either (count tolerance: the binomial noise of edge flips, memory count-metric-tolerance-from-binomial-noise, so a 1-2 track difference on 180-350 tracks is noise, a 5+ difference is a mechanism)",
+  "G5_negatives": "155 beatless FMA clips: beats/min <= baseline + 1.0, pulse-low third <= baseline + 1.0, publish <= baseline. Activation events can only move an existing grid; they must not add beats where there is no beat",
+  "G6_batida": "techno and house: no seed worse than baseline beat F by more than 0.02 and no seed newly off-beat locked (beat F < 0.7 where baseline >= 0.7); every other template: beat F and bpm_ratio not worse by more than 0.01 on any seed; ambient: beats fired not above baseline",
+  "G7_structure_drop": "harmonix all: drop hit_rate >= baseline - 0.01, false_drops_per_min <= baseline + 0.02, predict_drop false_alarms_per_min <= baseline + 0.05 and coverage at 0.5 / 0.8 each >= baseline - 0.01, boundary_3_0s f >= baseline - 0.005 (bar and phrase positions follow the grid)",
+  "G8_fixture": "bench/check_fixture.py passes on the shipped binary",
+  "G9_build": "cargo test (default and analyze), the CI clippy sets (--all-targets for default, analyze and release), and clippy -p fosfora-app --lib --no-default-features (XR); the beat_model golden test passes with the embedded model",
+  "G10_owner": "Kevin listens to click-track A/B renders (same 24 s twice, base clicks then candidate clicks) of the tracks the verdict moved both ways, before the commit"
+ },
+ "on_miss": "a missed guard reverts that arm, or is stated with its numbers and explicitly accepted by Kevin; never silently",
+ "frozen_at": "2026-10-20T13:51:42Z",
+ "amendments": [
+  {
+   "at": "2026-10-20T14:30:07Z",
+   "what": "arms act70 and act75 added (the activation's event threshold is the round's declared second variable; targets, baseline and split untouched)",
+   "why": "act45 missed P1-P3 (Harmonix -.0095, Ballroom -.024); act60 passed P1/P2 on tune (Harmonix +.030, lost 11 / gained 21) and missed P3 by .008 (Ballroom -.013, Latin genres); sidecar reruns show the activation's events grow purer on the beat with the threshold (0785: on .49/anti .41 at .45, .59/.39 at .60, .81/.19 at .75) while growing sparser on the tracks it gains, so the trade-off along the threshold is the open question before any rule change; uni45 missed P1 (+.011) and P3 (-.010)",
+   "tune_numbers_read_before_adding": {
+    "act45": {
+     "harmonix_beat_f": 0.6797,
+     "ballroom_beat_f": 0.4705
+    },
+    "act60": {
+     "harmonix_beat_f": 0.7194,
+     "ballroom_beat_f": 0.4811
+    },
+    "uni45": {
+     "harmonix_beat_f": 0.7001,
+     "ballroom_beat_f": 0.484
+    }
+   }
+  },
+  {
+   "at": "2026-10-20T14:37:36Z",
+   "what": "arms uni70 and uni75 added (same declared threshold variable, union mode)",
+   "why": "uni60 passed 119/120 tune checks (Harmonix +.031, lost 7 / gained 19, anti_locked 32 -> 24; Ballroom +.0005, lost 11 / gained 15); its one miss is G4 Samba -.028 (n=44) against the -.02 guard; a higher threshold thins the activation's events on syncopated Latin material, so the union grid is completed at .70 and .75 before selection",
+   "tune_numbers_read_before_adding": {
+    "uni60": {
+     "harmonix_beat_f": 0.7201,
+     "ballroom_beat_f": 0.4947,
+     "samba_delta": -0.0281
+    }
+   }
+  }
+ ],
+ "selection": {
+  "at": "2026-10-20T15:05:43Z",
+  "chosen": "uni70",
+  "rule": "highest Harmonix TUNE beat_f among arms passing every tune-side guard",
+  "tune": {
+   "base": {
+    "harmonix": 0.6892,
+    "ballroom": 0.4942,
+    "anti_locked": 32
+   },
+   "act45": {
+    "harmonix": 0.6797,
+    "ballroom": 0.4705,
+    "checks": "103/120"
+   },
+   "act60": {
+    "harmonix": 0.7194,
+    "ballroom": 0.4811,
+    "checks": "112/120 (P3, G1 cmlt/downbeat, G4)"
+   },
+   "act70": {
+    "harmonix": 0.7187,
+    "ballroom": 0.491,
+    "checks": "115/120 (G1 amlt/downbeat, G4)"
+   },
+   "act75": {
+    "harmonix": 0.6926,
+    "ballroom": 0.4832,
+    "checks": "109/120"
+   },
+   "uni45": {
+    "harmonix": 0.7001,
+    "ballroom": 0.484,
+    "checks": "110/120"
+   },
+   "uni60": {
+    "harmonix": 0.7201,
+    "ballroom": 0.4947,
+    "checks": "119/120 (G4 Samba -.028)"
+   },
+   "uni70": {
+    "harmonix": 0.717,
+    "ballroom": 0.5059,
+    "anti_locked": 21,
+    "flips": "harmonix lost 3 / gained 12, ballroom lost 6 / gained 14",
+    "checks": "120/120"
+   },
+   "uni75": {
+    "harmonix": 0.7051,
+    "ballroom": 0.5073,
+    "checks": "119/120 (P1 +.016)"
+   }
+  },
+  "note": "uni60 reads .003 higher on Harmonix but fails G4 Samba; uni70 is the only arm passing every tune guard. Holdout read once, next, on uni70."
+ }
+}

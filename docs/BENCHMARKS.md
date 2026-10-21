@@ -17,10 +17,10 @@ headline beat numbers adopt the literature's 5 s trim.
 
 | Dataset | Expected | Scored | Not scored | Dump failures | Binary |
 |---|---|---|---|---|---|
-| ballroom | 698 | 685 | 13 | 0 | `b4eb3ab0f2f02215` |
-| giantsteps_key | 604 | 604 | 0 | 0 | `b4eb3ab0f2f02215` |
-| giantsteps_tempo | 664 | 661 | 3 | 0 | `b4eb3ab0f2f02215` |
-| harmonix | 912 | 374 | 538 | 0 | `b4eb3ab0f2f02215` |
+| ballroom | 698 | 685 | 13 | 0 | `1e216e3b4f870f7c` |
+| giantsteps_key | 604 | 604 | 0 | 0 | `1e216e3b4f870f7c` |
+| giantsteps_tempo | 664 | 661 | 3 | 0 | `1e216e3b4f870f7c` |
+| harmonix | 912 | 374 | 538 | 0 | `1e216e3b4f870f7c` |
 
 ## Ballroom (698 x 30 s, dance genres)
 
@@ -28,7 +28,7 @@ Context: an out-of-genre stress test for an EDM-tuned causal engine — 30 s cli
 
 | System | Mode | Beat F | CMLt | AMLt | Downbeat F |
 |---|---|---|---|---|---|
-| **Fosfora** | **causal (streaming)** | **0.466** | **0.307** | **0.514** | **0.143** |
+| **Fosfora** | **causal (streaming)** | **0.524** | **0.369** | **0.591** | **0.178** |
 | Böck 2016 joint RNN (madmom) ([bock2016joint](#references) — 8-fold CV; 685 files after the same Sturm dedup we apply) | offline | 0.938 | — | — | 0.863 |
 | Beat This! ([foscarin2024beatthis](#references) — 8-fold CV) | offline | 0.975 | — | — | 0.953 |
 | SpecTNT (Hung et al.) ([foscarin2024beatthis](#references) — as reported in the Beat This! comparison) | offline | 0.962 | — | — | 0.937 |
@@ -36,11 +36,11 @@ Context: an out-of-genre stress test for an EDM-tuned causal engine — 30 s cli
 
 | System | Mode | Acc1 | Acc2 |
 |---|---|---|---|
-| **Fosfora** | **causal (streaming)** | **0.621** | **0.930** |
+| **Fosfora** | **causal (streaming)** | **0.689** | **0.964** |
 | Schreiber CNN ([schreiber2018cnn](#references) — Ballroom row of Table 1) | offline | 0.920 | 0.984 |
 | Böck 2015 (madmom tempo) ([schreiber2018cnn](#references) — as reported in the Schreiber CNN comparison) | offline | 0.840 | 0.987 |
 
-Causal extras: mean lock time 12.3 s (earliest instant after which every later estimate stays within 4%), mean locked fraction 0.562. Offline systems have no equivalent — they see the whole file.
+Causal extras: mean lock time 11.3 s (earliest instant after which every later estimate stays within 4%), mean locked fraction 0.626. Offline systems have no equivalent — they see the whole file.
 
 ## GiantSteps Key (604 EDM previews)
 
@@ -61,11 +61,11 @@ Context: the in-genre test — EDM, 2-minute previews. Ground truth is the crowd
 
 | System | Mode | Acc1 | Acc2 |
 |---|---|---|---|
-| **Fosfora** | **causal (streaming)** | **0.702** | **0.815** |
+| **Fosfora** | **causal (streaming)** | **0.739** | **0.861** |
 | Schreiber CNN ([schreiber2018cnn](#references) — GiantSteps row of Table 1, corrected annotations) | offline | 0.730 | 0.893 |
 | Böck 2015 (madmom tempo) ([schreiber2018cnn](#references) — as reported in the Schreiber CNN comparison) | offline | 0.589 | 0.864 |
 
-Causal extras: mean lock time 26.9 s (earliest instant after which every later estimate stays within 4%), mean locked fraction 0.667. Offline systems have no equivalent — they see the whole file.
+Causal extras: mean lock time 18.5 s (earliest instant after which every later estimate stays within 4%), mean locked fraction 0.710. Offline systems have no equivalent — they see the whole file.
 
 ## Harmonix Set (pop/EDM, YouTube-sourced audio)
 
@@ -73,16 +73,16 @@ Context: audio is re-fetched from YouTube and admitted only by the alignment gat
 
 | System | Mode | Beat F | CMLt | AMLt | Downbeat F |
 |---|---|---|---|---|---|
-| **Fosfora** | **causal (streaming)** | **0.653** | **0.501** | **0.700** | **0.220** |
+| **Fosfora** | **causal (streaming)** | **0.723** | **0.539** | **0.806** | **0.274** |
 | All-In-One ([kim2023allinone](#references) — 8-fold CV on the full 912) | offline | 0.958 | 0.913 | 0.964 | 0.915 |
 | SpecTNT-TCN ([kim2023allinone](#references)) | offline | 0.953 | — | — | 0.908 |
 | TCN-Large (Böck TCN repro) ([kim2023allinone](#references)) | offline | 0.953 | — | — | 0.901 |
 
 | System | Mode | Acc1 | Acc2 |
 |---|---|---|---|
-| **Fosfora** | **causal (streaming)** | **0.649** | **0.898** |
+| **Fosfora** | **causal (streaming)** | **0.626** | **0.965** |
 
-Causal extras: mean lock time 28.3 s (earliest instant after which every later estimate stays within 4%), mean locked fraction 0.627. Offline systems have no equivalent — they see the whole file.
+Causal extras: mean lock time 27.1 s (earliest instant after which every later estimate stays within 4%), mean locked fraction 0.615. Offline systems have no equivalent — they see the whole file.
 
 ### Section boundaries (`/fosfora/v1/section/boundary`)
 
@@ -90,12 +90,12 @@ No published causal baseline exists for this task, and the offline structure sys
 
 | Stream | Window | F | P | R |
 |---|---|---|---|---|
-| **`/section/boundary`, back-dated by the reported age** | **3.0 s** | **0.490** | **0.519** | **0.491** |
-| `/section/boundary`, back-dated | 0.5 s | 0.248 | — | — |
+| **`/section/boundary`, back-dated by the reported age** | **3.0 s** | **0.500** | **0.521** | **0.508** |
+| `/section/boundary`, back-dated | 0.5 s | 0.257 | — | — |
 | `/section/boundary`, taken at the moment announced | 3.0 s | 0.201 | — | — |
-| `/section` label changes (all this stream carried before) | 3.0 s | 0.145 | 0.294 | 0.111 |
+| `/section` label changes (all this stream carried before) | 3.0 s | 0.167 | 0.312 | 0.133 |
 
-Estimated 12.3 segments per track against 12.3 annotated.
+Estimated 12.6 segments per track against 12.3 annotated.
 
 The first two rows subtract each event's own reported age — a fixed property of the detector (a centered novelty kernel plus a peak confirmation delay), published on the wire precisely so a consumer can do this. The third row is what a consumer sees if it ignores that argument and treats every cue as happening now; the gap between them is the honest price of hearing the song once, in order. Neither is the lag-compensated variant the results files carry and this card omits — that one shifts by a constant the *scorer* picked, where these use a latency the detector states about itself.
 
@@ -105,10 +105,10 @@ Truth tier: **chorus-onset proxies** on the Dance/Electronic subset (Harmonix ha
 
 | Tier | Coverage | Median lead (beats) | p25–p75 lead |
 |---|---|---|---|
-| ≥ 0.5 | 0.411 | 16.9 | 5.2–27.6 |
-| ≥ 0.8 | 0.241 | 12.2 | 4.2–25.7 |
+| ≥ 0.5 | 0.496 | 19.7 | 6.7–28.0 |
+| ≥ 0.8 | 0.355 | 15.4 | 5.9–24.0 |
 
-False alarms 2.03/min pooled over all 374 tracks. `/drop` detection event: hit rate 0.092 vs the same proxies, 0.41 false/min. It fires on loudness+sub-bass impact and these proxies are chorus onsets, so most of what it finds is not annotated here and most of what is annotated is not a drop — the hit rate is a floor and the false rate a ceiling, both against the wrong target.
+False alarms 2.48/min pooled over all 374 tracks. `/drop` detection event: hit rate 0.106 vs the same proxies, 0.41 false/min. It fires on loudness+sub-bass impact and these proxies are chorus onsets, so most of what it finds is not annotated here and most of what is annotated is not a drop — the hit rate is a floor and the false rate a ceiling, both against the wrong target.
 
 ## Exclusions
 

@@ -16,6 +16,7 @@ use super::analyzer::FftAnalyzer;
 use super::beat::{BeatDetector, TempoCommand, TempoConfig};
 use super::beat_sidecar::BeatSidecar;
 use super::downbeat::DownbeatTracker;
+use super::hop_sidecar::{HopEvidence, HopSidecar};
 use super::hpss::HpssAnalyzer;
 use super::key::KeyDetector;
 use super::key_sidecar::KeySidecar;
@@ -91,6 +92,10 @@ pub struct HopOutput {
     /// `Copy` per hop either way).
     #[cfg_attr(not(feature = "analyze"), allow(dead_code))]
     pub pre_norm: AudioFeatures,
+    /// #4163: this hop's beat activation (`beat_model.rs`); read by the hop sidecar's
+    /// round-trip test, ignored by the live thread.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub beat_activation: f32,
 }
 
 /// Every stateful detector in the analysis chain, plus the fixed per-hop delta the
@@ -121,6 +126,9 @@ pub struct HopAnalyzer {
     structure_sidecar: Option<StructureSidecar>,
     /// Dev-only beat-path instrumentation, active iff `FOSFORA_BEAT_SIDECAR` is set (#4153).
     beat_sidecar: Option<BeatSidecar>,
+    /// Dev-only per-hop evidence dump for the beat model, active iff `FOSFORA_HOP_SIDECAR`
+    /// is set (#4163).
+    hop_sidecar: Option<HopSidecar>,
     /// `ANALYSIS_HOP / sample_rate` — the attack/release EMAs and the onset decay are
     /// expressed as time constants, so they need the hop duration, not the hop length.
     dt: f32,
@@ -150,6 +158,7 @@ impl HopAnalyzer {
             key_sidecar: KeySidecar::from_env(),
             structure_sidecar: StructureSidecar::from_env(),
             beat_sidecar: BeatSidecar::from_env(),
+            hop_sidecar: HopSidecar::from_env(sample_rate),
             dt: ANALYSIS_HOP as f32 / sample_rate,
         }
     }
@@ -315,6 +324,12 @@ impl HopAnalyzer {
 
         // Beat detection (on raw magnitude spectra)
         self.beat_detector.set_kick(raw.kick);
+        // #4163: the beat activation's raw evidence for this hop.
+        self.beat_detector.set_hop_evidence(
+            self.analyzer.kick_frame(),
+            self.analyzer.kick_probability(),
+            &pre_norm,
+        );
         let beat_result = self.beat_detector.process(
             self.analyzer.bass_magnitude(),
             self.analyzer.mid_magnitude(),
@@ -325,6 +340,21 @@ impl HopAnalyzer {
         // Dev-only (#4153): dump the beat path's internals for offline reading.
         if let Some(sidecar) = &mut self.beat_sidecar {
             sidecar.record(timestamp, self.beat_detector.debug_state());
+        }
+        // Dev-only (#4163): the raw evidence this hop's detectors read, for the beat
+        // model's training dump. After the beat detector, so the onset flux and the fired
+        // beat are this hop's.
+        if let Some(sidecar) = &mut self.hop_sidecar {
+            sidecar.record(&HopEvidence {
+                timestamp,
+                loud_silent,
+                kick_probability: self.analyzer.kick_probability(),
+                kick_frame: self.analyzer.kick_frame(),
+                onset_flux: self.beat_detector.raw_onset_flux(),
+                pre_norm: &pre_norm,
+                beat_activation: beat_result.beat_activation,
+                beat_time: (beat_result.beat > 0.5).then_some(beat_result.beat_time),
+            });
         }
         raw.onset = beat_result.onset_strength;
         raw.beat = beat_result.beat;
@@ -412,6 +442,7 @@ impl HopAnalyzer {
             downbeat_fired,
             drop_fired,
             pre_norm,
+            beat_activation: beat_result.beat_activation,
         }
     }
 }
@@ -510,5 +541,121 @@ mod tests {
                 "{name}: {a} clean vs {b} with a DC offset"
             );
         }
+    }
+
+    /// #4163: every record the hop sidecar writes carries THIS hop's raw evidence, read
+    /// back exactly: the kick model's frame and probability, the onset detector's flux,
+    /// the silence flag, the pre-normalization snapshot and the beat the grid fired.
+    #[test]
+    fn hop_sidecar_carries_this_hops_evidence() {
+        use crate::audio::hop_sidecar::HopSidecar;
+        use crate::audio::kick_model::N_FRAME;
+
+        #[derive(serde::Deserialize)]
+        struct Rec {
+            k: String,
+            i: u64,
+            ts: f64,
+            sil: u8,
+            kp: f32,
+            kf: Vec<f32>,
+            sf: Vec<f32>,
+            pn: Vec<f32>,
+            act: f32,
+            bt: Option<f64>,
+        }
+        struct Expect {
+            ts: f64,
+            silent: bool,
+            kp: f32,
+            kf: [f32; N_FRAME],
+            sf: [f64; 4],
+            pn: [f32; crate::audio::features::NUM_FEATURES],
+            act: f32,
+            bt: Option<f64>,
+        }
+
+        const SR: f32 = 44100.0;
+        let path = std::env::temp_dir().join(format!("hop_evidence_{}.jsonl", std::process::id()));
+        let mut a = HopAnalyzer::new(SR, BandScale::Db, TempoConfig::default());
+        a.hop_sidecar = Some(HopSidecar::new(
+            std::fs::File::create(&path).unwrap(),
+            path.display().to_string(),
+            SR,
+        ));
+        let tau = std::f32::consts::TAU;
+        // Half a second of silence, then a 120 BPM kick: the first hops exercise the gate.
+        let kick = |t: f32| {
+            if t < 0.5 {
+                return 0.0;
+            }
+            let tb = t % 0.5;
+            (tau * (50.0 + 100.0 * (-tb * 40.0).exp()) * tb).sin() * (-tb * 10.0).exp() * 0.7
+        };
+        let mut expect = Vec::new();
+        for h in 0..(12.0 * SR) as usize / ANALYSIS_HOP {
+            let mono: Vec<f32> = (0..ANALYSIS_HOP)
+                .map(|i| kick((h * ANALYSIS_HOP + i) as f32 / SR))
+                .collect();
+            let stereo: Vec<f32> = mono.iter().flat_map(|&x| [x, x]).collect();
+            let ts = ((h + 1) * ANALYSIS_HOP) as f64 / f64::from(SR);
+            let cfg = (StructureConfig::default(), TempoConfig::default());
+            let out = a.process_hop(&mono, &stereo, ts, cfg.0, cfg.1, Vec::new());
+            expect.push(Expect {
+                ts,
+                silent: out.frame.phase_frozen,
+                kp: a.analyzer.kick_probability(),
+                kf: *a.analyzer.kick_frame(),
+                sf: a.beat_detector.raw_onset_flux(),
+                pn: *out.pre_norm.as_slice(),
+                act: out.beat_activation,
+                bt: out.frame.beat_time,
+            });
+        }
+        drop(a);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let mut lines = text.lines();
+        let header = lines.next().unwrap();
+        assert!(
+            header.starts_with("{\"k\":\"h\",\"v\":2,\"sr\":44100,\"hop\":512,\"kf\":["),
+            "{header}"
+        );
+        let recs: Vec<Rec> = lines
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+            .collect();
+        assert_eq!(recs.len(), expect.len(), "one record per hop");
+        let (mut silent_hops, mut beats, mut flux_hops) = (0, 0, 0);
+        for (n, (r, e)) in recs.iter().zip(&expect).enumerate() {
+            assert_eq!(r.k, "r");
+            assert_eq!(r.i as usize, n);
+            assert!(
+                (r.ts - e.ts).abs() < 1e-6,
+                "hop {n}: ts {} vs {}",
+                r.ts,
+                e.ts
+            );
+            assert_eq!(r.sil, u8::from(e.silent), "hop {n}: silence flag");
+            assert_eq!(r.kp, e.kp, "hop {n}: kick probability");
+            assert_eq!(r.kf, e.kf.to_vec(), "hop {n}: kick frame");
+            assert_eq!(
+                r.sf,
+                e.sf.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+                "hop {n}: onset flux"
+            );
+            assert_eq!(r.pn, e.pn.to_vec(), "hop {n}: pre_norm");
+            assert_eq!(r.act, e.act, "hop {n}: activation");
+            match (r.bt, e.bt) {
+                (None, None) => {}
+                (Some(x), Some(y)) => assert!((x - y).abs() < 1e-6, "hop {n}: beat time"),
+                (x, y) => panic!("hop {n}: bt {x:?} vs fired {y:?}"),
+            }
+            silent_hops += usize::from(e.silent);
+            beats += usize::from(r.bt.is_some());
+            flux_hops += usize::from(r.sf[0] > 0.0);
+        }
+        assert!(silent_hops > 0, "the silent lead-in never read as silent");
+        assert!(flux_hops > 0, "the onset detector never saw the kick");
+        assert!(beats > 0, "no beat fired in 12 s of a 120 BPM kick");
     }
 }
