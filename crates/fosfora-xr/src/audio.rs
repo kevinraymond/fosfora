@@ -267,6 +267,9 @@ impl LiveAudio {
             beat_fired,
             downbeat_fired: f.downbeat > 0.5,
             drop_fired: false,
+            // The hop is rebuilt from the system's accessors, which expose no beat
+            // activation; only the desktop hop sidecar reads it.
+            beat_activation: 0.0,
             pre_norm: f,
         }
     }

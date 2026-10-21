@@ -787,6 +787,7 @@ pub fn synth_hop(frame: u32, fps: u32, ts: f64) -> HopOutput {
         beat_fired: f.beat > 0.5,
         downbeat_fired: f.downbeat > 0.5,
         drop_fired: false,
+        beat_activation: 0.0,
         pre_norm: f,
     }
 }
