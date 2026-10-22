@@ -133,7 +133,7 @@ impl SignalEmitter {
         if f.downbeat > 0.5 {
             self.bar_total += 1;
             sink.emit(
-                beat_ts,
+                frame.downbeat_time.unwrap_or(beat_ts),
                 schema::DOWNBEAT,
                 &[OscType::Int(self.bar_total as i32)],
             );
@@ -383,6 +383,7 @@ mod tests {
             phase_frozen: false,
             bar_duration: 2.0,
             beat_time: None,
+            downbeat_time: None,
             section_boundary: None,
         }
     }

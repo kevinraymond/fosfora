@@ -1697,6 +1697,19 @@ const PLL_CAPTURE_PERIOD_FRAC: f64 = 0.25;
 const PLL_BID_PROXIMITY_SIGMA_SECS: f64 = 0.06;
 /// Bids below this onset strength are flux ripples, not evidence.
 const PLL_MIN_BID_STRENGTH: f32 = 0.05;
+/// A locked grid's beat is emitted this far BEFORE its instant (#4474). The grid
+/// phase-locks onto onset evidence the hop chain sees late (hop quantization plus the
+/// onset detector's own delay), so its instants sit late even on synthetic renders with
+/// exact labels (batida house +20 ms, rock +25, techno +19, waltz +29 before this; +3 to
+/// +14 after) and ~15-19 ms late against the Harmonix annotations, while a consumer
+/// inside TouchDesigner adds up to a 60 fps frame on top. Measured as a pre-registered
+/// round (bench/manifests/q4474_lead_frozen.json): 10 ms gives Harmonix beat F .753 ->
+/// .758 on tune and .711 -> .717 on the holdout with no track lost, Ballroom flat (its
+/// annotations sit earlier; 15 ms gained no more on Harmonix and traded Ballroom tracks
+/// at the 70 ms window edge both ways). Only the emission moves: the instant itself
+/// settles where it did (support, trim, mute, the arbiter's fold, the per-beat trackers),
+/// and an emission ahead of its settle reads the mute state of the last settled instant.
+const BEAT_LEAD_SECS: f64 = 0.010;
 
 /// Two-gain PI correction (Ellis-style): phase pulls the upcoming beat, the
 /// trim nudges the grid rate between tempo updates.
@@ -1880,6 +1893,14 @@ struct BeatScheduler {
     period_trim: f64,
     /// Time of the most recently fired (or silently passed) grid beat.
     last_beat_time: f64,
+    /// #4473: the grid instant whose beat was already emitted `BEAT_LEAD_SECS` ahead of
+    /// its settle, and whether it was emitted (muted instants pass silently).
+    lead_emitted: Option<(f64, bool)>,
+    /// #4473: `Some(emitted beat time)` on the hop an emitted beat's instant settles (a
+    /// locked instant passing, or an acquisition / anchor fire, which settles as it fires).
+    /// The per-beat trackers (downbeat, structure) key on this rather than on the early
+    /// emission, so their evidence windows end where they did before the lead.
+    settled: Option<f64>,
     /// Time of the last EMITTED beat (grid or acquisition).
     last_fired_time: f64,
     /// Was any in-window onset seen since the last grid beat?
@@ -1910,6 +1931,9 @@ struct BeatScheduler {
     /// Event times within the arbiter's longest window (kicks, activation peaks or
     /// both, per `arb_evidence`), kept in time order.
     arb_kicks: VecDeque<f64>,
+    /// #4474: the lead a locked beat is emitted with; [`BEAT_LEAD_SECS`], 0 in the tests
+    /// that place beats on their instants.
+    beat_lead: f64,
     /// Consecutive grid instants that voted to move the grid, and by which offset; a vote
     /// for another offset restarts it.
     arb_streak: u32,
@@ -1941,6 +1965,8 @@ impl BeatScheduler {
             period: 0.0,
             tempo_confidence: 0.0,
             next_beat_time: None,
+            lead_emitted: None,
+            settled: None,
             period_trim: 0.0,
             last_beat_time: 0.0,
             last_fired_time: 0.0,
@@ -1955,6 +1981,7 @@ impl BeatScheduler {
             arb_evidence: ArbEvidence::Kicks,
             act_event: None,
             arb_kicks: VecDeque::new(),
+            beat_lead: BEAT_LEAD_SECS,
             arb_streak: 0,
             arb_streak_offset: None,
             kick_event: false,
@@ -2147,7 +2174,8 @@ impl BeatScheduler {
     }
 
     /// Main beat decision. Returns (is_beat, beat_time, beat_phase, bpm) —
-    /// `beat_time` is the beat's true instant, at or before `timestamp`.
+    /// `beat_time` is the beat's emitted instant (the grid instant less
+    /// [`BEAT_LEAD_SECS`] while locked), at or before `timestamp`.
     fn process(
         &mut self,
         is_onset: bool,
@@ -2159,8 +2187,10 @@ impl BeatScheduler {
         // fresh instead of trusting a phase that free-ran through the gap.
         let kick_event = std::mem::take(&mut self.kick_event);
         let act_event = self.act_event.take();
+        self.settled = None;
         if is_silence {
             self.next_beat_time = None;
+            self.lead_emitted = None;
             self.period_trim = 0.0;
             self.beat_support = 0.0;
             self.muted = false;
@@ -2205,6 +2235,7 @@ impl BeatScheduler {
             if is_onset {
                 self.next_beat_time = Some(self.anchor(onset_strength, timestamp, period));
                 self.dbg_event("first_anchor", f64::NAN);
+                self.settled = Some(timestamp);
                 return (true, timestamp, 0.0, self.bpm);
             }
             return (false, 0.0, 0.0, self.bpm);
@@ -2224,6 +2255,7 @@ impl BeatScheduler {
     /// Returns the new grid's next instant.
     fn anchor(&mut self, onset_strength: f32, timestamp: f64, period: f64) -> f64 {
         self.beat_strength = f64::from(onset_strength);
+        self.lead_emitted = None;
         self.last_beat_time = timestamp;
         self.last_fired_time = timestamp;
         self.dbg_grid_instant(timestamp, self.onset_support_pending);
@@ -2297,16 +2329,38 @@ impl BeatScheduler {
                     self.closing_slot = None;
                 }
             }
-            // Grid instants due this hop fire (or pass silently while muted).
+            // Degenerate transitional slot: around a mode flip, a pending
+            // negative correction can leave the next grid instant at or
+            // before the beat just emitted (measured once in 374 tracks:
+            // a −1.6 ms inversion after an acquisition fire). That instant
+            // IS the beat already fired — it passes silently below so
+            // /beat stays strictly monotonic.
+            // #4473: the beat is EMITTED `BEAT_LEAD_SECS` before its instant, once per
+            // instant, on the mute state of the last settled instant; the instant itself
+            // settles below exactly as before. Never twice within half a period, whatever
+            // moved the instant in between; an instant already emitted is not degenerate.
+            let already = self
+                .lead_emitted
+                .is_some_and(|(t, _)| (t - *next_beat_time).abs() < 0.5 * period);
+            let degenerate = !already && *next_beat_time <= self.last_fired_time + 0.3 * period;
+            let settles_now = *next_beat_time <= timestamp;
+            if !already
+                && !degenerate
+                && !settles_now
+                && *next_beat_time - self.beat_lead <= timestamp
+            {
+                self.lead_emitted = Some((*next_beat_time, !self.muted));
+                if !self.muted {
+                    fired = true;
+                    beat_time = *next_beat_time - self.beat_lead;
+                    self.last_fired_time = *next_beat_time;
+                }
+            }
+            // Grid instants due this hop settle (or pass silently while muted).
             if *next_beat_time <= timestamp {
-                // Degenerate transitional slot: around a mode flip, a pending
-                // negative correction can leave the next grid instant at or
-                // before the beat just emitted (measured once in 374 tracks:
-                // a −1.6 ms inversion after an acquisition fire). That instant
-                // IS the beat already fired — advance past it silently so
-                // /beat stays strictly monotonic.
-                if *next_beat_time <= self.last_fired_time + 0.3 * period {
+                if degenerate {
                     *next_beat_time += period;
+                    self.lead_emitted = None;
                     let phase = ((timestamp - self.last_beat_time) / period).rem_euclid(1.0);
                     return (false, 0.0, phase, self.bpm);
                 }
@@ -2339,13 +2393,27 @@ impl BeatScheduler {
                     self.muted = true;
                 }
 
-                beat_time = *next_beat_time;
-                self.last_beat_time = *next_beat_time;
+                let instant = *next_beat_time;
+                let emitted = match self.lead_emitted.take() {
+                    Some((t, e)) if (t - instant).abs() < 0.5 * period => e,
+                    _ => {
+                        // Not emitted ahead (no lead, or the lead window fell inside
+                        // this hop): emit now, on the mute state just settled, exactly
+                        // as before the lead.
+                        if !self.muted {
+                            fired = true;
+                            beat_time = instant - self.beat_lead;
+                            self.last_fired_time = instant;
+                        }
+                        !self.muted
+                    }
+                };
+                self.last_beat_time = instant;
                 *next_beat_time += period;
                 self.grid_beat_count += 1;
-                self.dbg_grid_instant(beat_time, supported);
+                self.dbg_grid_instant(instant, supported);
                 if let Some(cfg) = self.arbiter {
-                    if let Some(shift) = self.arbitrate(cfg, beat_time, period) {
+                    if let Some(shift) = self.arbitrate(cfg, instant, period) {
                         let shift = shift.periods();
                         // Move the grid LATER by the offset (a long gap reads
                         // better than a double beat): half a beat, or a quarter
@@ -2363,12 +2431,12 @@ impl BeatScheduler {
                 if !supported {
                     self.beat_strength = 0.5;
                 }
-                if !self.muted {
-                    fired = true;
-                    self.last_fired_time = beat_time;
+                if emitted {
+                    self.settled = Some(instant - self.beat_lead);
                 }
             }
         } else {
+            self.lead_emitted = None;
             // Acquisition: evidence-gated fires only — an in-window onset, far
             // enough from the previous fire. The onset is the better clock
             // while unlocked, so the beat carries the onset's own time.
@@ -2378,6 +2446,7 @@ impl BeatScheduler {
             {
                 fired = true;
                 beat_time = timestamp;
+                self.settled = Some(timestamp);
                 self.last_fired_time = timestamp;
                 self.last_beat_time = timestamp;
                 self.grid_beat_count += 1;
@@ -2396,6 +2465,7 @@ impl BeatScheduler {
                 // every candidate forever.
                 *next_beat_time = self.anchor(onset_strength, timestamp, period);
                 self.dbg_event("stale_reanchor", f64::from(onset_strength));
+                self.settled = Some(timestamp);
                 return (true, timestamp, 0.0, self.bpm);
             }
             // Advance the provisional grid past due instants (no emission —
@@ -2420,6 +2490,7 @@ impl BeatScheduler {
 // ---------------------------------------------------------------------------
 
 /// Result from beat detection for one frame.
+#[derive(Clone, Copy, Debug)]
 pub struct BeatResult {
     pub onset_strength: f32,
     /// #4163: P(a beat landed `BeatActivation::lag_hops()` hops ago), from the tree
@@ -2434,6 +2505,11 @@ pub struct BeatResult {
     /// instants, so this sits at or (by up to one hop + one correction step)
     /// before the hop timestamp that emits it.
     pub beat_time: f64,
+    /// #4473: `Some(that beat's emitted time)` on the hop a beat's instant settles — the
+    /// beat the scheduler emitted `BEAT_LEAD_SECS` earlier, or an acquisition fire on its
+    /// own hop. The per-beat trackers (downbeat, structure) key on this, not on `beat`,
+    /// so their evidence windows and bar clock end where they did before the lead.
+    pub settled_beat_time: Option<f64>,
     /// The scheduler's grid index of this beat — counts every grid instant,
     /// including MUTED ones, so bar rotation downstream stays phase-coherent
     /// through breakdown mutes and unlocked gaps. Meaningful when `beat > 0.5`.
@@ -2724,6 +2800,7 @@ impl BeatDetector {
         let phase = if loud_silent { 0.0 } else { beat_phase as f32 };
 
         BeatResult {
+            settled_beat_time: self.beat_scheduler.settled,
             onset_strength: self.held_onset,
             beat_activation,
             beat: if is_beat { 1.0 } else { 0.0 },
@@ -3131,6 +3208,41 @@ mod tests {
             }
         }
         beats
+    }
+
+    /// #4474: a locked grid's beats are emitted `BEAT_LEAD_SECS` before their instants:
+    /// each emitted time plus the lead sits on the grid, the same beats fire as with no
+    /// lead (which places them on the instants themselves), and the phase output, which
+    /// clocks off the instants, does not move.
+    #[test]
+    fn scheduler_emits_locked_beats_a_lead_before_their_instants() {
+        let drive = |lead: f64| {
+            let mut bs = BeatScheduler::new();
+            bs.beat_lead = lead;
+            bs.arbiter = None;
+            let beats = drive_locked(&mut bs, 1.0, 20.0, |t| near(t, 1.0), |_| false);
+            (beats, bs.last_beat_time)
+        };
+        let (led, last_led) = drive(BEAT_LEAD_SECS);
+        let (plain, last_plain) = drive(0.0);
+        assert_eq!(
+            led.len(),
+            plain.len(),
+            "the same beats fire with and without the lead"
+        );
+        assert!(led.len() >= 30, "{}", led.len());
+        for (a, b) in led.iter().zip(&plain).skip(2) {
+            assert!(
+                (a + BEAT_LEAD_SECS - b).abs() < 1e-9,
+                "emitted {a:.4} + lead should be the instant {b:.4}"
+            );
+            // The PLL's corrections leave a few ms of residual against the ideal grid.
+            assert!(off_grid_by(*b) < 0.02, "instant {b:.4} off the grid");
+        }
+        assert!(
+            (last_led - last_plain).abs() < 1e-9,
+            "the instants themselves do not move"
+        );
     }
 
     /// Is a hop at `t` (hop length dt) the one nearest an instant `offset + k*0.5`?

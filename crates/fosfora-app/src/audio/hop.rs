@@ -368,8 +368,18 @@ impl HopAnalyzer {
         // on the audio clock, integrates flux); heavy scoring gates on a fired beat. RMS is
         // the pre-normalization level (#60): the adaptive normalizer re-ranges `raw.rms`
         // per hop, which would distort the beat-to-beat loudness rise the tracker scores.
+        // #4473: the per-beat trackers run on the beat's SETTLED instant, not its early
+        // emission, so their evidence windows and bar clock are what they were.
+        let settled_view = super::beat::BeatResult {
+            beat: if beat_result.settled_beat_time.is_some() {
+                1.0
+            } else {
+                0.0
+            },
+            ..beat_result
+        };
         let db = self.downbeat_tracker.process(
-            &beat_result,
+            &settled_view,
             band_flux,
             pre_norm.rms,
             &pre_norm_chroma,
@@ -386,7 +396,7 @@ impl HopAnalyzer {
         // snapshot + the beat result; heavy work is decimated to ~10 Hz internally.
         let structure =
             self.structure_tracker
-                .process(struct_cfg, &pre_norm, &beat_result, timestamp);
+                .process(struct_cfg, &pre_norm, &settled_view, timestamp);
         raw.section_novelty = structure.section_novelty;
         raw.buildup = structure.buildup;
         raw.drop = structure.drop;
@@ -431,6 +441,9 @@ impl HopAnalyzer {
             // advances `bar_phase` on the same rate that produced the phase above.
             bar_duration: db.bar_duration,
             beat_time: beat_fired.then_some(beat_result.beat_time),
+            downbeat_time: downbeat_fired
+                .then_some(beat_result.settled_beat_time)
+                .flatten(),
             // Q4 (#2080): read off the pre-smoothing structure result, like the three pulses
             // above — smoothing a trigger would smear it across hops.
             section_boundary: (structure.boundary > 0.0).then_some(structure.boundary),

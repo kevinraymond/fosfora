@@ -1,0 +1,180 @@
+{
+ "schema": "fosfora-bench/round-manifest/v1",
+ "_policy": "Pre-registered before any arm's tune result is read. Tune halves + batida + negatives decide; holdout halves are read once at the end. Amendments are appended, never edited.",
+ "issue": "#4474 (board), from #4473: the TD head-to-head's remaining gap. Round A: a 15 ms beat lead. Round B (amendment, knob binary): an activation-only phase vote where the kicks are symmetric.",
+ "mechanism_evidence": {
+  "latency": "#4413/#4473: Fosfora's fired instants read +19 ms late vs the Harmonix holdout annotations (lastBeatStanding +4-6 ms); aligned F .700 vs raw .692. tools/bench_offset.py on the ship root's own dumps (main d7b175d, binary b50aa366): best constant lead Harmonix tune +15 ms (F .7528 -> .7599), Ballroom tune +10 ms (.5708 -> .5726, .5715 at 15); monotonic gains up to 20 ms on every half. The holdout curves were READ for this measurement before freezing (Harmonix holdout best +18 ms: .7114 -> .7185 at 15; Ballroom holdout +10: .5270 -> .5280 at 15) and are disclosed here; the holdout verdict below is still the single read of the arm's dumps.",
+  "cook": "at the next 60 fps frame (what a TouchDesigner consumer sees) the 15 ms lead forecasts Harmonix tune .7389 -> .7569, Ballroom tune .5682 -> .5729.",
+  "mechanism": "the locked grid's beat is EMITTED BEAT_LEAD_SECS = 0.015 before its instant on the mute state of the last settled instant; the instant settles (support, trim, mute, arbiter fold, sidecar) exactly as before. Checked on 4 holdout tracks: the beat sidecar is byte-identical to d7b175d, locked beats move by exactly -15 ms, acquisition fires by 0, beat counts identical except one beat at a mute transition on 2 of 4 tracks."
+ },
+ "arms": {
+  "lead15": {
+   "binary": "/mnt/t9/fosfora-work/q4163/bin/fosfora-lead15-q4474-02a469fa73ed2ad4 (worktree /mnt/t9/fosfora-work/qlead/src, branch q-lead on main d7b175d, BEAT_LEAD_SECS = 0.015 as a constant; the per-beat trackers key on the settled instant)",
+   "root": "/mnt/t9/fosfora-work/q4163/bench/q4474_lead15",
+   "launched": "2026-10-22T15:40:49Z"
+  }
+ },
+ "baseline": {
+  "_root": "/mnt/t9/fosfora-work/q4163/bench/q4402_ship",
+  "_provenance": "main d7b175d = the #4402 ship binary b50aa36653534368"
+ },
+ "split": {
+  "rule": "sha256(track_id) parity, even -> tune, odd -> holdout, on ballroom, harmonix and giantsteps_tempo",
+  "selection_reads": [
+   "ballroom tune",
+   "harmonix tune",
+   "giantsteps_tempo tune",
+   "the 80 batida renders",
+   "the 155 beatless FMA clips"
+  ],
+  "scored_once_at_end": [
+   "ballroom holdout",
+   "harmonix holdout",
+   "giantsteps_tempo holdout"
+  ]
+ },
+ "forecast_lead15": {
+  "harmonix_tune_beat_f": [
+   0.7528,
+   0.7599
+  ],
+  "ballroom_tune_beat_f": [
+   0.5708,
+   0.5715
+  ],
+  "harmonix_tune_cook60": [
+   0.7389,
+   0.7569
+  ],
+  "lost_tracks_gt_0.1": 0,
+  "_method": "every emitted beat moved 15 ms earlier; exact for locked fires, acquisition fires do not move (a few per track)"
+ },
+ "targets_lead15": {
+  "P1_harmonix": "harmonix tune beat_f >= baseline + 0.004 (half the forecast)",
+  "P2_ballroom": "ballroom tune beat_f >= baseline - 0.002",
+  "P3_flips": "tune: at most 1 track per dataset loses more than 0.1 beat_f (a pure shift loses none; mute-transition beats differ by one)",
+  "G1_tempo_identical": "acc1, acc2, no_est identical to baseline on all three datasets, both halves",
+  "G2_beatless": "negatives: publish count and locked fraction identical to baseline (no beat timing in those metrics)",
+  "G3_batida": "no render's beat F below baseline by more than 0.01 (exact labels; 15 ms is inside the 70 ms window)",
+  "G4_downbeat": "downbeat_f on tune within 0.01 of baseline on harmonix and ballroom (the bar tracker counts emitted beats)",
+  "G5_build": "fixture, cargo test (default + analyze), clippy (default / analyze / release), lib no-default-features",
+  "holdout": "read once: harmonix holdout beat_f >= baseline + 0.003 and ballroom holdout >= baseline - 0.002, downbeat_f within 0.01"
+ },
+ "selection_rule": "lead15 ships iff P1-P3 and G1-G5 hold on tune and the holdout read holds. Round B's arms (act-only vote, knob binary) are added by amendment with their own forecast and targets before their tune results are read.",
+ "on_miss": "a missed target is recorded here with its numbers; the constant is NOT re-tuned on the holdout.",
+ "frozen_at": "2026-10-22T15:31:45Z",
+ "amendments": [
+  {
+   "at": "2026-10-22T15:40:49Z",
+   "before_any_read": true,
+   "what": "The first lead binary (8a19ca6aa9611bac, launched 15:30:19Z) fed the downbeat and structure trackers the EARLY beat pulse: their per-beat evidence windows ended 1-2 hops short and the downbeat placement changed outright (0770: 125 of 126 downbeats elsewhere, bar_phase held at 0 after each beat). That arm was killed unread and its root deleted. The replacement (02a469fa73ed2ad4) carries BeatResult.settled_beat_time: the trackers run on the instant's settle as before, /downbeat is stamped with the beat's emitted time. Verified on 4 holdout tracks: beat sidecar byte-identical to d7b175d; 0770 and 0958 identical except every locked beat and downbeat at exactly -15 ms; 0005 and 0618 differ by one beat at a mute transition (the early emission reads the mute state of the last settled instant) and the bar counters after it. Unit test scheduler_beat_times_strictly_monotonic_through_mode_churn failed on the first binary (an acquisition fire within 0.3 period of an early emission after a lost lock); the emission now records last_fired_time."
+  },
+  {
+   "at": "2026-10-22T16:04:00Z",
+   "what": "lead10 arm added on the tune read above (no holdout read yet): the exact per-track shift forecast on tune reads 10 ms Harmonix +.0062 (0 lost / 2 gained), Ballroom +.0018 (4 lost / 4 gained) vs 15 ms +.0071 (1 / 6) and +.0007 (6 / 8). Arm: the knob binary 8fde52e60b115136 with FOSFORA_BEAT_LEAD_MS=10, root q4474_lead10. Selection between lead10 and lead15 on TUNE: the higher harmonix + ballroom beat_f sum, ties within .002 to the fewer tracks lost; the chosen one is read once on the holdout. The frozen P3 is kept as written and will read MISS for both; the flip guard a shift can meet is lost <= gained per dataset, recorded here as the reading, not as a replacement target."
+  }
+ ],
+ "round_B": {
+  "frozen_at": "2026-10-22T15:42:36Z",
+  "mechanism": "Where the half-beat and quarter tests abstain, an activation-only fold over the 32-beat window votes the half-beat when its half bin holds act_ratio x its on bin with at least act_min activation events AND the kicks of the same window are symmetric (|on - half| <= kick_sym x (on + half)). Same streak (3) and offset as the half-beat rule.",
+  "population": "tools/evidence_pop.py on the q4402 base sidecars (tune): Harmonix 8 T-level anti-phase grids, 4 with symmetric kicks of which the activation favors the beat on 2 (0599_boyfriend, 0954_timeaftertimevan); Ballroom 29 anti-phase, 11 symmetric, activation favors the beat on 4 (Media-100605, 103909, 105605, Latin_Jam4-01). Risk population (on-beat grids, symmetric kicks, activation favoring the half): 0 on both tune sets by the whole-track fold; the replica finds 2 Harmonix tracks (0673_feelsliketonight, 0558_allnightlong) whose events favor the off-beat in one section.",
+  "replica": "tools/replay_q.py (replay_n.py + half_long_min / act_ratio / act_min / kick_sym), validate on the base sidecars 524 tracks 101,693 votes 0 mismatches; forecasts against the shipped quarters rule (--shipped q24r3), approximation as #4402's (the recorded grid's PLL).",
+  "forecast": {
+   "act2s3 (act_ratio 2, act_min 6, kick_sym .3)": {
+    "ballroom_tune": "+.0098 (+8 / -1)",
+    "harmonix_tune": "-.0020 (+2 / -3)",
+    "sum": "+.0077"
+   },
+   "act3 (act_ratio 3, act_min 6, kick_sym .2)": {
+    "ballroom_tune": "+.0037 (+3 / -0)",
+    "harmonix_tune": "+.0004 (+1 / -1)",
+    "sum": "+.0041"
+   },
+   "half_long_min 12 / 16 / 24": "-.0125 / -.0250 / -.0558 (Ballroom -22 to -42 tracks): CLOSED, not an arm (as #4234's forecast)"
+  },
+  "arms": {
+   "act2s3": {
+    "knobs": "FOSFORA_BEAT_LEAD_MS=0 FOSFORA_ARB_ACT_RATIO=2 FOSFORA_ARB_ACT_MIN=6 FOSFORA_ARB_KICK_SYM=0.3",
+    "root": "/mnt/t9/fosfora-work/q4163/bench/q4474_act2s3"
+   },
+   "act3": {
+    "knobs": "FOSFORA_BEAT_LEAD_MS=0 FOSFORA_ARB_ACT_RATIO=3 FOSFORA_ARB_ACT_MIN=6 FOSFORA_ARB_KICK_SYM=0.2",
+    "root": "/mnt/t9/fosfora-work/q4163/bench/q4474_act3"
+   },
+   "lead15_act": {
+    "knobs": "the chosen act arm's knobs with the lead on (FOSFORA_BEAT_LEAD_MS unset = 15)",
+    "root": "/mnt/t9/fosfora-work/q4163/bench/q4474_lead15_<act arm>",
+    "_when": "only if an act arm passes on tune"
+   },
+   "_binary": "one knob binary from the q-lead worktree; with FOSFORA_BEAT_LEAD_MS=0 and the act knobs unset its dumps must be byte-identical to main d7b175d's (checked on 4 Harmonix tracks before any arm), and with the act knobs unset and the lead on, byte-identical to the lead15 arm binary's"
+  },
+  "targets": {
+   "P1_ballroom": "ballroom tune beat_f >= baseline + 0.005 (half the act2s3 forecast); for act3, >= baseline + 0.002",
+   "P2_harmonix": "harmonix tune beat_f >= baseline - 0.003",
+   "P3_flips": "tune: harmonix tracks lost by > 0.1 at most 3 and not more than gained + 1; ballroom lost at most 2",
+   "G1_tempo_identical": "acc1, acc2, no_est identical to baseline on all three datasets",
+   "G2_beatless": "negatives publish count and locked fraction identical to baseline",
+   "G3_batida": "no render's beat F below baseline by more than 0.01",
+   "G4_downbeat": "downbeat_f on tune within 0.01 of baseline",
+   "holdout": "read once on the chosen arm: ballroom holdout beat_f >= baseline + 0.003, harmonix holdout >= baseline - 0.003, lost by > .1 on harmonix at most 3"
+  },
+  "selection_rule": "among act arms passing P1-P3 and G1-G4 on tune, the higher ballroom + harmonix tune beat_f sum; ties within .002 to the fewer tracks lost. The chosen arm then runs combined with the lead (lead15_act) and the combined arm must pass the same tune targets against the lead15 arm as baseline before the holdout read.",
+  "on_miss": "recorded here with its numbers; no re-tuning on the holdout.",
+  "tune_results": {
+   "act2s3": {
+    "read_at": "2026-10-22T16:16:45Z",
+    "verdict": "MISS (P3 ballroom lost 3 > 2; G3 techno s8 -.026 (the verdict tool prints the seed LIST INDEX; index 7 = seed 8))",
+    "ballroom_tune": "beat_f .5708 -> .5780 (+.0072; forecast +.0098), cmlt .3979 -> .4035, downbeat_f .1927 -> .1978, anti_locked -3, lost 3 (Albums-Fire-07 .74 -> .17, Albums-Chrisanne1-04 .78 -> .48, Media-103606 .46 -> .26) / gained 8 (Media-103909 0 -> .78, 105605 0 -> .62, 100605 0 -> .54, 106005 .40 -> .92, 105717 .68 -> .93, 103405 .55 -> .78, 103715, Latino_Latino-03)",
+    "harmonix_tune": "beat_f .7528 -> .7546 (+.0018; forecast -.0020), cmlt .5787 -> .5797, anti_locked -3, lost 2 (0673_feelsliketonight .98 -> .51, 0558_allnightlong .98 -> .86: the replica's two) / gained 2 (0035_boyfriend .23 -> .57, 0164_low .32 -> .51)",
+    "guards": "G1 tempo identical PASS; G2 beatless identical PASS; G3 MISS techno s8 (index 7) -.026; s7 identical to baseline; G4 downbeat PASS"
+   },
+   "act3": {
+    "read_at": "2026-10-22T16:27:37Z",
+    "verdict": "MISS (G3 techno s8 -.026, the same render as act2s3: beats 505 -> 500, lag-corrected F .903 -> .877, a correct four-on-the-floor grid moved for a stretch)",
+    "ballroom_tune": "beat_f .5708 -> .5745 (+.0037; forecast +.0037), cmlt .3979 -> .4015, anti_locked -2, lost 0 / gained 3 (Media-103909 0 -> .78, 106005 .40 -> .79, 100605 0 -> .12)",
+    "harmonix_tune": "beat_f .7528 -> .7520 (-.0008; forecast +.0004), lost 1 (0673_feelsliketonight .98 -> .61) / gained 0",
+    "guards": "G1 PASS, G2 PASS, G3 MISS (techno s8), G4 PASS"
+   }
+  },
+  "selection": {
+   "at": "2026-10-22T16:27:37Z",
+   "chosen": null,
+   "reason": "No act arm passes the frozen set: both flip batida techno s8 (G3), act2s3 also loses 3 Ballroom tracks (P3). The combined lead+act arm therefore does not run and no holdout is read for round B. The activation-only vote is a recorded negative at these settings: on real music it trades Ballroom +.004-.007 against Harmonix flips (0673 .98 -> .51/.61), and on a synthetic exact-label techno render it moves a correct grid, which is the failure a visual rig would see. A later arm could raise act_min (12+) to keep breakdown-sparse windows from voting; not run in this round."
+  }
+ },
+ "tune_result_lead15": {
+  "read_at": "2026-10-22T16:04:00Z",
+  "verdict": "MISS (P3, G3)",
+  "harmonix_tune": "beat_f .7528 -> .7591 (+.0063; forecast +.0071), cmlt .5787 -> .5817, downbeat_f .2829 -> .2827, lost 1 (0803_lovestory .84 -> .74) / gained 6",
+  "ballroom_tune": "beat_f .5708 -> .5694 (-.0014; forecast +.0007), cmlt .3979 -> .3969, downbeat_f .1927 -> .1845, lost 4 / gained 6",
+  "guards": "G1 tempo identical PASS; G2 beatless identical PASS (publish 56, locked .154); G3 MISS: batida techno s7 .904 -> .882 (-.022), every other render within .01; G4 downbeat PASS",
+  "phase": "quarter class -.017 / -.019 (ballroom / harmonix), on +.014 / +.017",
+  "reading": "The live arm matches an exact per-track shift forecast (tools/shift_flips.py): Harmonix lost 1 / gained 6 at 15 ms = the forecast exactly; Ballroom forecast lost 6 / gained 8. The frozen P3 ('a pure shift loses none') was a false premise: a shift trades the tracks that sit at the 70 ms edge, both ways. Batida: the baseline's renders already read +17 to +29 ms LATE on synthetic exact-label kicks (house +20, lofi +18, rock +25, techno +19, waltz +29); the lead brings them to +3 to +14 and leaves their beat F flat, so the instants' lateness is the detector's, not an annotation convention."
+ },
+ "tune_result_lead10": {
+  "read_at": "2026-10-22T16:42:58Z",
+  "verdict": "MISS (P3 ballroom lost 3, G3 techno s7 -.013); P1 harmonix +.0055 (0 lost / 2 gained), P2 ballroom +.0001 (3 lost / 3 gained), G1 G2 G4 PASS, cmlt harmonix .5787 -> .5815, downbeat ballroom .1927 -> .1841"
+ },
+ "selection": {
+  "at": "2026-10-22T16:42:58Z",
+  "chosen": "lead10",
+  "rule": "harmonix + ballroom tune beat_f sum: lead10 +.0056 vs lead15 +.0049, within .002 -> the fewer tracks lost: lead10 3 vs lead15 5",
+  "binary": "the knob binary 8fde52e60b115136 with FOSFORA_BEAT_LEAD_MS=10; ships as BEAT_LEAD_SECS = 0.010 with the knobs and the round B code removed"
+ },
+ "holdout_result": {
+  "read_at": "2026-10-22T16:42:58Z",
+  "arm": "lead10",
+  "read_once": true,
+  "harmonix_holdout": "beat_f .7114 -> .7170 (+.0056; bar +.003 PASS), cmlt .5073 -> .5081, downbeat_f .2844 -> .2851, lost 0 / gained 1 (0247_scream .36 -> .64)",
+  "ballroom_holdout": "beat_f .5270 -> .5269 (-.0001; bar -.002 PASS), cmlt .3832 -> .3841, downbeat_f .1834 -> .1784 (within .01 PASS), lost 2 (Albums-Ballroom_Classics4-04 .145 -> .036, Media-100609 .235 -> .135) / gained 0, anti_locked +5 (the phase classifier's bins move with the shift: on +.012, quarter -.015)",
+  "guards": "G1 tempo identical PASS (harmonix acc1 .5876, ballroom .6334, giantsteps .7257); G2 beatless identical PASS; G3 techno s7 -.013 (edge, lag-corrected F unchanged) MISS as on tune; frozen P3 MISS (ballroom lost 2 > 1)",
+  "whole_set": "harmonix beat_f .7313 -> .7369, ballroom .5489 -> .5490"
+ },
+ "ship": {
+  "at": "2026-10-22T17:21:46Z",
+  "binary": "2a18053e6b2e1c2e (BEAT_LEAD_SECS = 0.010 as a constant, knobs and the round B code removed; branch q-lead on main d7b175d, knob history on q4474-knobs)",
+  "identity": "ship root /mnt/t9/fosfora-work/q4163/bench/q4474_ship: 1720 dumps byte-identical to the lead10 arm (ballroom, harmonix, giantsteps_tempo), batida 80 rows identical, 155 negatives identical; the beat sidecar byte-identical to d7b175d on every checked track; fixture 22/22; tests 1338 (analyze) / 1291 (workspace); clippy default / analyze / release clean; lib no-default-features builds",
+  "benchmarks_md": "harmonix beat F .731 -> .737, cmlt .542 -> .543, amlt .814 -> .819, downbeat .284 flat; ballroom beat F .549 flat, cmlt .391 -> .390, amlt .591 -> .593, downbeat .188 -> .181; section boundary F .165 -> .167, predict/drop coverage at 0.8 .369 -> .376, tempo identical",
+  "td_holdout": "194 Harmonix holdout WAVs (tools/run_dump.sh, score root holdout_score5, report holdout_report_q4474ship.json): Fosfora beat F .698 (d7b175d .692, c072aef .688), aligned .700, latency +10 ms (was +19), jitter IQR 28 ms, at the next 60 fps cook .692 (was .679); lastBeatStanding .784-.790 unchanged; tempo Acc1 .59 / Acc2 .96 unchanged"
+ }
+}

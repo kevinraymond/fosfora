@@ -90,6 +90,10 @@ pub struct AudioFrame {
     /// scheduler's beat may belong to an instant earlier than the hop that emitted it;
     /// the Signal emitter stamps `/beat` and `/downbeat` with this, not the hop time.
     pub beat_time: Option<f64>,
+    /// #4473: the downbeat's event time, `Some` only on the hop `features.downbeat` pulses:
+    /// the settled beat's emitted time, so `/downbeat` carries the same clock as `/beat`
+    /// while the bar tracker itself decides on the instant.
+    pub downbeat_time: Option<f64>,
     /// Q4 (#2080): confidence 0..1 on the hop a section boundary is confirmed, `None`
     /// otherwise. Carried here rather than in [`AudioFeatures`] because it is a trigger no
     /// shader wants and the uniform ABI is the expensive place to spend a slot; the bindable
