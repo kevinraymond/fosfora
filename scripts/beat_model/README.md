@@ -42,7 +42,11 @@ uv run --script scripts/beat_model/train.py --work $W --name narrow \
 ```
 
 Training audio is Creative Commons BY / CC0 (FMA) plus batida renders; labels are
-Fosfora's own confident beats, batida's exact ones, and beatless clips as negatives. The
+Fosfora's own confident beats, batida's exact ones, and beatless clips as negatives.
+`build_dataset.py --fma-oracle <dir>` labels the FMA tracks from an offline tracker's beats
+instead (`<dir>/<id>.json` with `beats` / `downbeats`; board #4288 used Beat This, decision
+#4414). That round did not ship: the relabeled activation scored better per hop but the
+pipeline did not carry it through (bench/manifests/q4288_labels_frozen.json). The
 bench TUNE halves and the 155 guard clips are evaluation only; the bench HOLDOUT halves
 are never read by anything here. `build_dataset.py --lag-check` shows where each raw
 column peaks relative to exact beat labels, which is how the target lag was chosen.
