@@ -1742,6 +1742,14 @@ const PLL_ACQ_STALE_PERIODS: f64 = 4.0;
 // the long-run evidence still backs, so a burst of misread events (chiptune
 // square-wave bass read as kicks) cannot flip it. The configuration and its
 // evidence are in bench/manifests/q4160_phase_frozen.json and board #4160.
+//
+// #4234 relaxed that guard. #4160 set it on kicks alone (2:1, at most .3 of the window
+// on the grid); with both streams in the window, grids that lock on the off-beat at
+// acquisition, most of them Ballroom, carry ~1.5-2:1 evidence for the beat there and
+// were never moved. At 1.5:1 with a 3-instant streak the arbiter gains on both Ballroom
+// halves (+.021 tune / +.016 holdout beat F); on Harmonix it trades syncopated grids,
+// where the 'and' outvotes the beat by that much, against off-beat ones it fixes (+.013 /
+// -.003). Manifest bench/manifests/q4234_guard_frozen.json.
 
 #[derive(Clone, Copy, Debug)]
 struct PhaseArbiterCfg {
@@ -1755,20 +1763,23 @@ struct PhaseArbiterCfg {
     /// Consecutive grid instants that must vote to move before the grid moves.
     streak: u32,
     /// Stability guard over this many beats (0 = off): the half-beat must also
-    /// win by `ratio` there, and the on-grid phase may hold at most
+    /// win by `long_ratio` there, and the on-grid phase may hold at most
     /// `long_share` of that window's kicks.
     long_beats: f64,
+    long_ratio: f64,
     long_share: f64,
 }
 
-/// The configuration the #4160 round selected.
+/// The windows the #4160 round selected, with the guard and streak #4234 relaxed (from
+/// 2.0, .3 and 4; at 1.5 the .4 share is implied by the ratio).
 const PHASE_ARBITER: PhaseArbiterCfg = PhaseArbiterCfg {
     win_beats: 8.0,
     min_kicks: 4,
     ratio: 2.0,
-    streak: 4,
+    streak: 3,
     long_beats: 32.0,
-    long_share: 0.3,
+    long_ratio: 1.5,
+    long_share: 0.4,
 };
 
 /// A kick counts toward a phase when it lies within this fraction of a period.
@@ -1986,7 +1997,7 @@ impl BeatScheduler {
         if vote && cfg.long_beats > 0.0 {
             let (on, half, total) = fold(cfg.long_beats);
             vote = on as f64 <= cfg.long_share * total as f64
-                && half as f64 >= cfg.ratio * on.max(1) as f64;
+                && half as f64 >= cfg.long_ratio * on.max(1) as f64;
         }
         let dbg_long = self.dbg.then(|| fold(cfg.long_beats));
         let shift = if vote {
@@ -3139,6 +3150,56 @@ mod tests {
         assert!(
             unguarded.phase_shifts >= 1,
             "without the guard the burst moves the grid (test is not vacuous)"
+        );
+    }
+
+    /// #4234, the Ballroom case (Cha-cha-cha, Media-103405): events on every beat and on
+    /// the 'and' of every other beat, on a grid locked to the off-beat. The beat leads 2:1,
+    /// but a third of the long window sits on the grid, which the #4160 guard (at most .3)
+    /// read as a grid the evidence still backs; the shipped guard moves it.
+    #[test]
+    fn arbiter_moves_a_grid_off_a_recurring_and() {
+        let events = |t: f64| {
+            let and = ((t - 1.25) / 0.5).round() as i64;
+            near(t, 1.0) || (near(t, 1.25) && and % 2 == 0)
+        };
+        let mut bs = BeatScheduler::new();
+        bs.arbiter = Some(PHASE_ARBITER);
+        let beats = drive_locked(
+            &mut bs,
+            1.25,
+            24.0,
+            |t| near(t, 1.0) || near(t, 1.25),
+            events,
+        );
+        assert_eq!(bs.phase_shifts, 1, "exactly one half-beat shift");
+        let late: Vec<f64> = beats.iter().copied().filter(|&b| b > 20.0).collect();
+        assert!(late.len() >= 6, "keeps firing after the shift");
+        for b in late {
+            assert!(
+                off_grid_by(b) < 0.05,
+                "beat at {b} is still {:.3} s off the beat",
+                off_grid_by(b)
+            );
+        }
+
+        let mut held = BeatScheduler::new();
+        held.arbiter = Some(PhaseArbiterCfg {
+            streak: 4,
+            long_ratio: 2.0,
+            long_share: 0.3,
+            ..PHASE_ARBITER
+        });
+        drive_locked(
+            &mut held,
+            1.25,
+            24.0,
+            |t| near(t, 1.0) || near(t, 1.25),
+            events,
+        );
+        assert_eq!(
+            held.phase_shifts, 0,
+            "the #4160 guard holds this grid (test is not vacuous)"
         );
     }
 
