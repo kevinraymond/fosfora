@@ -17,10 +17,10 @@ headline beat numbers adopt the literature's 5 s trim.
 
 | Dataset | Expected | Scored | Not scored | Dump failures | Binary |
 |---|---|---|---|---|---|
-| ballroom | 698 | 685 | 13 | 0 | `1e216e3b4f870f7c` |
-| giantsteps_key | 604 | 604 | 0 | 0 | `1e216e3b4f870f7c` |
-| giantsteps_tempo | 664 | 661 | 3 | 0 | `1e216e3b4f870f7c` |
-| harmonix | 912 | 374 | 538 | 0 | `1e216e3b4f870f7c` |
+| ballroom | 698 | 685 | 13 | 0 | `0c261d58189b0108` |
+| giantsteps_key | 604 | 604 | 0 | 0 | `0c261d58189b0108` |
+| giantsteps_tempo | 664 | 661 | 3 | 0 | `0c261d58189b0108` |
+| harmonix | 912 | 374 | 538 | 0 | `0c261d58189b0108` |
 
 ## Ballroom (698 x 30 s, dance genres)
 
@@ -28,7 +28,7 @@ Context: an out-of-genre stress test for an EDM-tuned causal engine — 30 s cli
 
 | System | Mode | Beat F | CMLt | AMLt | Downbeat F |
 |---|---|---|---|---|---|
-| **Fosfora** | **causal (streaming)** | **0.524** | **0.369** | **0.591** | **0.178** |
+| **Fosfora** | **causal (streaming)** | **0.543** | **0.385** | **0.587** | **0.184** |
 | Böck 2016 joint RNN (madmom) ([bock2016joint](#references) — 8-fold CV; 685 files after the same Sturm dedup we apply) | offline | 0.938 | — | — | 0.863 |
 | Beat This! ([foscarin2024beatthis](#references) — 8-fold CV) | offline | 0.975 | — | — | 0.953 |
 | SpecTNT (Hung et al.) ([foscarin2024beatthis](#references) — as reported in the Beat This! comparison) | offline | 0.962 | — | — | 0.937 |
@@ -73,7 +73,7 @@ Context: audio is re-fetched from YouTube and admitted only by the alignment gat
 
 | System | Mode | Beat F | CMLt | AMLt | Downbeat F |
 |---|---|---|---|---|---|
-| **Fosfora** | **causal (streaming)** | **0.723** | **0.539** | **0.806** | **0.274** |
+| **Fosfora** | **causal (streaming)** | **0.727** | **0.538** | **0.810** | **0.280** |
 | All-In-One ([kim2023allinone](#references) — 8-fold CV on the full 912) | offline | 0.958 | 0.913 | 0.964 | 0.915 |
 | SpecTNT-TCN ([kim2023allinone](#references)) | offline | 0.953 | — | — | 0.908 |
 | TCN-Large (Böck TCN repro) ([kim2023allinone](#references)) | offline | 0.953 | — | — | 0.901 |
@@ -93,7 +93,7 @@ No published causal baseline exists for this task, and the offline structure sys
 | **`/section/boundary`, back-dated by the reported age** | **3.0 s** | **0.500** | **0.521** | **0.508** |
 | `/section/boundary`, back-dated | 0.5 s | 0.257 | — | — |
 | `/section/boundary`, taken at the moment announced | 3.0 s | 0.201 | — | — |
-| `/section` label changes (all this stream carried before) | 3.0 s | 0.167 | 0.312 | 0.133 |
+| `/section` label changes (all this stream carried before) | 3.0 s | 0.165 | 0.310 | 0.131 |
 
 Estimated 12.6 segments per track against 12.3 annotated.
 
@@ -105,10 +105,10 @@ Truth tier: **chorus-onset proxies** on the Dance/Electronic subset (Harmonix ha
 
 | Tier | Coverage | Median lead (beats) | p25–p75 lead |
 |---|---|---|---|
-| ≥ 0.5 | 0.496 | 19.7 | 6.7–28.0 |
-| ≥ 0.8 | 0.355 | 15.4 | 5.9–24.0 |
+| ≥ 0.5 | 0.511 | 20.6 | 8.2–28.9 |
+| ≥ 0.8 | 0.369 | 16.0 | 5.7–25.3 |
 
-False alarms 2.48/min pooled over all 374 tracks. `/drop` detection event: hit rate 0.106 vs the same proxies, 0.41 false/min. It fires on loudness+sub-bass impact and these proxies are chorus onsets, so most of what it finds is not annotated here and most of what is annotated is not a drop — the hit rate is a floor and the false rate a ceiling, both against the wrong target.
+False alarms 2.49/min pooled over all 374 tracks. `/drop` detection event: hit rate 0.106 vs the same proxies, 0.41 false/min. It fires on loudness+sub-bass impact and these proxies are chorus onsets, so most of what it finds is not annotated here and most of what is annotated is not a drop — the hit rate is a floor and the false rate a ceiling, both against the wrong target.
 
 ## Exclusions
 
