@@ -1855,6 +1855,9 @@ struct BeatScheduler {
     dbg: bool,
     dbg_grid: VecDeque<(f64, bool)>,
     dbg_events: Vec<(&'static str, f64)>,
+    /// #4234 sidecar: the arbiter's window pushes and votes since the last drain.
+    dbg_arb_events: Vec<(&'static str, f64)>,
+    dbg_arb_votes: Vec<ArbVote>,
 }
 
 /// #4153: how many grid instants the sidecar's support fractions cover.
@@ -1888,6 +1891,8 @@ impl BeatScheduler {
             dbg: false,
             dbg_grid: VecDeque::new(),
             dbg_events: Vec::new(),
+            dbg_arb_events: Vec::new(),
+            dbg_arb_votes: Vec::new(),
         }
     }
 
@@ -1983,16 +1988,28 @@ impl BeatScheduler {
             vote = on as f64 <= cfg.long_share * total as f64
                 && half as f64 >= cfg.ratio * on.max(1) as f64;
         }
-        if !vote {
+        let dbg_long = self.dbg.then(|| fold(cfg.long_beats));
+        let shift = if vote {
+            self.arb_streak += 1;
+            self.arb_streak >= cfg.streak
+        } else {
+            false
+        };
+        if !vote || shift {
             self.arb_streak = 0;
-            return false;
         }
-        self.arb_streak += 1;
-        if self.arb_streak < cfg.streak {
-            return false;
+        if let Some(long) = dbg_long {
+            self.dbg_arb_votes.push(ArbVote {
+                now,
+                period,
+                short: (on, half, total),
+                long,
+                vote,
+                streak: self.arb_streak,
+                shift,
+            });
         }
-        self.arb_streak = 0;
-        true
+        shift
     }
 
     fn update_tempo(&mut self, bpm: f64, period: f64, confidence: f64, locked: bool) {
@@ -2050,6 +2067,9 @@ impl BeatScheduler {
         if self.arbiter.is_some() {
             if kick_event && self.arb_evidence != ArbEvidence::Activation {
                 self.arb_kicks.push_back(timestamp);
+                if self.dbg {
+                    self.dbg_arb_events.push(("kick", timestamp));
+                }
             }
             if let Some(t) = act_event.filter(|_| self.arb_evidence != ArbEvidence::Kicks) {
                 // Placed `lag` before this hop, so it may precede a kick pushed above
@@ -2060,6 +2080,9 @@ impl BeatScheduler {
                     .rposition(|&x| x <= t)
                     .map_or(0, |p| p + 1);
                 self.arb_kicks.insert(pos, t);
+                if self.dbg {
+                    self.dbg_arb_events.push(("act", t));
+                }
             }
         }
 
@@ -2308,6 +2331,21 @@ pub struct BeatResult {
     pub beat_locked: bool,
 }
 
+/// One phase arbiter vote at a grid instant, for the dev-only beat sidecar (#4234):
+/// the (on the grid, on the half-beat, all) event counts of both windows, whatever the
+/// vote read (the shipped rule only folds the long window once the short one votes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArbVote {
+    pub now: f64,
+    pub period: f64,
+    pub short: (usize, usize, usize),
+    pub long: (usize, usize, usize),
+    /// Whether this instant voted to move, the streak after it, and whether the grid moved.
+    pub vote: bool,
+    pub streak: u32,
+    pub shift: bool,
+}
+
 /// One hop's view of the detector's internals for the dev-only beat sidecar
 /// (#4153). `events` are the state transitions since the previous call, in
 /// processing order (estimator first, then scheduler), as (name, extra) where
@@ -2322,6 +2360,10 @@ pub struct BeatDebug {
     pub kick_sup: f64,
     pub grid_n: u64,
     pub events: Vec<(&'static str, f64)>,
+    /// #4234: the events pushed into the arbiter's window this hop ("kick" / "act", time),
+    /// and its votes.
+    pub arb_events: Vec<(&'static str, f64)>,
+    pub arb_votes: Vec<ArbVote>,
 }
 
 /// 3-stage beat detection pipeline.
@@ -2449,6 +2491,8 @@ impl BeatDetector {
             kick_sup: self.beat_scheduler.dbg_kick_support(),
             grid_n: self.beat_scheduler.grid_beat_count,
             events,
+            arb_events: std::mem::take(&mut self.beat_scheduler.dbg_arb_events),
+            arb_votes: std::mem::take(&mut self.beat_scheduler.dbg_arb_votes),
         }
     }
 

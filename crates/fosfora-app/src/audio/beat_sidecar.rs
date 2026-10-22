@@ -5,7 +5,11 @@
 //! evidence and harmonics, the folded measurement, the filter, lock, anchor and
 //! scheduler state) and one per state transition (`"k":"e"`: seed, lock, anchor and
 //! grid events), so an offline pass can see WHY the grid went where it went instead
-//! of inferring it from the beats alone.
+//! of inferring it from the beats alone. #4234 adds the phase arbiter: one `"k":"w"`
+//! record per event pushed into its window (`src` kick / act, `t` its time) and one
+//! `"k":"a"` per vote at a grid instant (both windows' on / half / total counts, the
+//! vote, the streak after it, and whether the grid moved), so a replay of the arbiter
+//! can be checked against what the scheduler counted.
 //!
 //! With the variable unset nothing is collected and the signal dump is byte-identical.
 //! Never set it in live use: the writer does file I/O on the analysis thread. The
@@ -81,6 +85,31 @@ impl BeatSidecar {
                 dbg.grid_n,
             );
         }
+        for (src, t) in &dbg.arb_events {
+            let _ = writeln!(
+                line,
+                "{{\"k\":\"w\",\"ts\":{timestamp:.4},\"src\":\"{src}\",\"t\":{t:.9}}}"
+            );
+        }
+        for v in &dbg.arb_votes {
+            let _ = writeln!(
+                line,
+                "{{\"k\":\"a\",\"ts\":{timestamp:.4},\"t\":{:.9},\"p\":{:.9},\"on\":{},\
+                 \"half\":{},\"n\":{},\"lon\":{},\"lhalf\":{},\"ln\":{},\"vote\":{},\
+                 \"streak\":{},\"shift\":{}}}",
+                v.now,
+                v.period,
+                v.short.0,
+                v.short.1,
+                v.short.2,
+                v.long.0,
+                v.long.1,
+                v.long.2,
+                u8::from(v.vote),
+                v.streak,
+                u8::from(v.shift),
+            );
+        }
         for (ev, extra) in &dbg.events {
             let _ = write!(line, "{{\"k\":\"e\",\"ts\":{timestamp:.4},\"ev\":\"{ev}\"");
             if extra.is_finite() {
@@ -116,7 +145,7 @@ impl Drop for BeatSidecar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::beat::TempoDebug;
+    use crate::audio::beat::{ArbVote, TempoDebug};
 
     fn sample(ran: bool, events: Vec<(&'static str, f64)>) -> BeatDebug {
         BeatDebug {
@@ -132,6 +161,8 @@ mod tests {
             kick_sup: 0.5,
             grid_n: 12,
             events,
+            arb_events: vec![],
+            arb_votes: vec![],
         }
     }
 
@@ -165,6 +196,45 @@ mod tests {
         assert_eq!(
             lines[2],
             "{\"k\":\"e\",\"ts\":1.0000,\"ev\":\"acq_fire\",\"str\":0.25000}"
+        );
+    }
+
+    /// #4234: one "w" line per window push and one "a" line per vote, before the events.
+    #[test]
+    fn arbiter_lines_carry_both_windows() {
+        let path =
+            std::env::temp_dir().join(format!("beat_sidecar_arb_{}.jsonl", std::process::id()));
+        {
+            let mut sc = BeatSidecar {
+                out: BufWriter::new(File::create(&path).unwrap()),
+                path: path.display().to_string(),
+            };
+            let mut d = sample(false, vec![("arb_shift", f64::NAN)]);
+            d.arb_events = vec![("kick", 2.5), ("act", 2.465)];
+            d.arb_votes = vec![ArbVote {
+                now: 3.0,
+                period: 0.5,
+                short: (1, 5, 7),
+                long: (3, 14, 20),
+                vote: true,
+                streak: 0,
+                shift: true,
+            }];
+            sc.record(3.0, d);
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "{\"k\":\"w\",\"ts\":3.0000,\"src\":\"kick\",\"t\":2.500000000}",
+                "{\"k\":\"w\",\"ts\":3.0000,\"src\":\"act\",\"t\":2.465000000}",
+                "{\"k\":\"a\",\"ts\":3.0000,\"t\":3.000000000,\"p\":0.500000000,\"on\":1,\"half\":5,\
+                 \"n\":7,\"lon\":3,\"lhalf\":14,\"ln\":20,\"vote\":1,\"streak\":0,\"shift\":1}",
+                "{\"k\":\"e\",\"ts\":3.0000,\"ev\":\"arb_shift\"}",
+            ],
+            "{text}"
         );
     }
 
