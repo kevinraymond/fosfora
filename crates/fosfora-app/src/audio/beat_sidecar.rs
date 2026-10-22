@@ -8,8 +8,9 @@
 //! of inferring it from the beats alone. #4234 adds the phase arbiter: one `"k":"w"`
 //! record per event pushed into its window (`src` kick / act, `t` its time) and one
 //! `"k":"a"` per vote at a grid instant (both windows' on / half / total counts, the
-//! vote, the streak after it, and whether the grid moved), so a replay of the arbiter
-//! can be checked against what the scheduler counted.
+//! quarter bins since #4402, the vote, the streak after it, and whether and how far the
+//! grid moved), so a replay of the arbiter can be checked against what the scheduler
+//! counted.
 //!
 //! With the variable unset nothing is collected and the signal dump is byte-identical.
 //! Never set it in live use: the writer does file I/O on the analysis thread. The
@@ -95,8 +96,8 @@ impl BeatSidecar {
             let _ = writeln!(
                 line,
                 "{{\"k\":\"a\",\"ts\":{timestamp:.4},\"t\":{:.9},\"p\":{:.9},\"on\":{},\
-                 \"half\":{},\"n\":{},\"lon\":{},\"lhalf\":{},\"ln\":{},\"vote\":{},\
-                 \"streak\":{},\"shift\":{}}}",
+                 \"half\":{},\"n\":{},\"lon\":{},\"lhalf\":{},\"ln\":{},\"q1\":{},\"q3\":{},\
+                 \"lq1\":{},\"lq3\":{},\"vote\":{},\"streak\":{},\"shift\":{},\"sk\":{}}}",
                 v.now,
                 v.period,
                 v.short.0,
@@ -105,9 +106,14 @@ impl BeatSidecar {
                 v.long.0,
                 v.long.1,
                 v.long.2,
+                v.quarter.0,
+                v.quarter.1,
+                v.lquarter.0,
+                v.lquarter.1,
                 u8::from(v.vote),
                 v.streak,
                 u8::from(v.shift),
+                v.offset,
             );
         }
         for (ev, extra) in &dbg.events {
@@ -216,9 +222,12 @@ mod tests {
                 period: 0.5,
                 short: (1, 5, 7),
                 long: (3, 14, 20),
+                quarter: (0, 1),
+                lquarter: (2, 1),
                 vote: true,
                 streak: 0,
                 shift: true,
+                offset: 0.5,
             }];
             sc.record(3.0, d);
         }
@@ -231,7 +240,8 @@ mod tests {
                 "{\"k\":\"w\",\"ts\":3.0000,\"src\":\"kick\",\"t\":2.500000000}",
                 "{\"k\":\"w\",\"ts\":3.0000,\"src\":\"act\",\"t\":2.465000000}",
                 "{\"k\":\"a\",\"ts\":3.0000,\"t\":3.000000000,\"p\":0.500000000,\"on\":1,\"half\":5,\
-                 \"n\":7,\"lon\":3,\"lhalf\":14,\"ln\":20,\"vote\":1,\"streak\":0,\"shift\":1}",
+                 \"n\":7,\"lon\":3,\"lhalf\":14,\"ln\":20,\"q1\":0,\"q3\":1,\"lq1\":2,\"lq3\":1,\
+                 \"vote\":1,\"streak\":0,\"shift\":1,\"sk\":0.5}",
                 "{\"k\":\"e\",\"ts\":3.0000,\"ev\":\"arb_shift\"}",
             ],
             "{text}"

@@ -3,6 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- **On some Latin dance tracks and synthetic techno the beat grid locked a quarter of a beat off and stayed there, so beat-bound visuals hit just before or after every beat.** The grid's phase check now also tests the quarter-beat positions and moves the grid when the music clearly sits there: Ballroom beat accuracy 0.543 to 0.549 with 10 tracks fixed and none broken, Harmonix 0.727 to 0.731 (4 fixed, 1 broken), and the synthetic techno renders that sat late for their first 30 seconds 0.81 to 0.90. Tempo, drop and section detection are unchanged.
+
 ## v2.7.0 — 2026-10-22
 
 Beats land on the beat on more music: a learned beat witness joins the kick drum in the grid's phase check and picks the tempo level on fast dance music, the grid now leaves an off-beat lock on clear evidence, and tagged MP3s with large cover art open in analysis builds.

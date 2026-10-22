@@ -1,0 +1,793 @@
+{
+ "schema": "fosfora-bench-q-arbiter-quarters-frozen/v1",
+ "_policy": "Pre-registered targets for the #4402 round (the phase arbiter's quarter-beat candidates), frozen BEFORE any arm was scored live, in the shape of q4234_guard_frozen.json: numbers below are read from the baseline root (the shipped behavior); arms are selected on the TUNE halves and the holdout is read once on the chosen arm.",
+ "issue": "The phase arbiter folds its events into an on-grid bin and a half-beat bin only (|f| <= 1/8, |f - 1/2| <= 1/8); events a quarter of a beat off count for neither, so a grid that locked a quarter late or early never moves. On today's grid (tune, T-level) that is 9 Ballroom tracks (summed 1-F 7.6 of 344), 1 Harmonix track, and every batida techno render (#3344: the grid sits ~.30 beat late for 30 s at the start and again mid-track, outside the PLL's +-25% capture, with ZERO events on its instants and every event in the 3/4 bin). Grids a third off (5 Ballroom tune tracks, swing 'and' at 2/3) stay out of reach: the beat leads the 'and' ~1.4:1 there and third-beat candidates flip right swing grids (tune forecast Ballroom -.012, batida waltz -.65, techno -.28).",
+ "mechanism_evidence": "finding to be filed: replay_n.py (replay.py generalized to N offsets) replays the shipped arbiter from the baseline beat sidecar EXACTLY (604 tracks incl. 80 batida, 129,963 votes, 0 mismatches); the knob binary (quarters on) matches the replica's quarter rule exactly on 35 tracks / 8,555 votes (bins, votes, streaks, shift offsets). Tune forecast (replica with a PLL-snap fidelity patch) of the arms: q16 Ballroom +.0072 (+9/-3), Harmonix +.0011 (+3/-3), techno +.089; q24 +.0063 (+9/-3) / +.0002 (+3/-3) / +.086; q24r3 +.0051 (+5/-2) / +.0009 (+2/-2) / +.084. Live knob binary vs forecast on the 35 most-moved tune tracks + techno: 25/35 within .1 beat F, 32/35 in the forecast's direction; live Ballroom summed gain +3.71 vs forecast +2.45 (the live PLL recovers most forecast losses), techno +1.01 vs +.89, Harmonix +.06 = +.06. The one large live loss is 0713_heartofgoldnow .99 -> .28 (an intro figure puts every event a quarter early for a bar while the grid is right). Without a long-window minimum every quarter rule loses on Harmonix (the first-bar-after-lock votes); act-only evidence is worse (Ballroom -.012 to -.022).",
+ "design_constraint": "The shipped half-beat rule runs first and unchanged (same bins, ratio, guard, streak); the quarter candidates (1/4, 3/4; tolerance 1/8, the shipped one) are consulted only at an instant where it abstains, so the arbiter is a strict superset of the shipped one (unit test: identical beats on the half-beat scenarios). A quarter vote needs the fuller quarter bin to beat the on-grid bin by q_ratio in the 8-beat window, the 32-beat window to agree (shipped 1.5:1 and .4 share) and to hold at least q_long_min events, and q_dom x the runner-up bin when set; a shift moves the grid LATER by the offset (never a double beat). Evidence streams, event threshold, PLL, estimator and scheduler stay as shipped; the arbiter does not feed the tempo estimator, so tempo metrics are identical by construction (G1) and the wire's published bpm cannot change (G5 publish).",
+ "arms": {
+  "base": {
+   "root": "/mnt/t9/fosfora-work/q4163/bench/q4234_g15s3",
+   "what": "the shipped behavior (v2.7.0)"
+  },
+  "q16": {
+   "knobs": {
+    "FOSFORA_ARB_QUARTERS": "1",
+    "FOSFORA_ARB_Q_DOM": "2",
+    "FOSFORA_ARB_Q_LONG_MIN": "16"
+   },
+   "what": "quarter candidates; 16 events in the long window; the challenger must double the runner-up bin"
+  },
+  "q24": {
+   "knobs": {
+    "FOSFORA_ARB_QUARTERS": "1",
+    "FOSFORA_ARB_Q_LONG_MIN": "24"
+   },
+   "what": "quarter candidates; 24 events in the long window"
+  },
+  "q24r3": {
+   "knobs": {
+    "FOSFORA_ARB_QUARTERS": "1",
+    "FOSFORA_ARB_Q_RATIO": "3",
+    "FOSFORA_ARB_Q_LONG_MIN": "24"
+   },
+   "what": "quarter candidates; 24 events; 3:1 over the on-grid bin (the forecast's low-loss point)"
+  },
+  "_binary": "/mnt/t9/fosfora-work/q4163/bin/fosfora-knob-q4402-8b46f0c62e0fbd64 (branch q4402-offsets; knobs unset: byte-identical to the baseline dumps on 0013_athingaboutyou and Media-104101)",
+  "_roots": "/mnt/t9/fosfora-work/q4163/bench/q4402_<arm>"
+ },
+ "split": {
+  "rule": "sha256(track_id) parity, even -> tune, odd -> holdout, on ballroom, harmonix and giantsteps_tempo",
+  "selection_reads": [
+   "ballroom tune",
+   "harmonix tune",
+   "giantsteps_tempo tune",
+   "the 80 batida renders",
+   "the 155 beatless FMA clips"
+  ],
+  "scored_once_at_end": [
+   "ballroom holdout",
+   "harmonix holdout",
+   "giantsteps_tempo holdout"
+  ]
+ },
+ "tools": {
+  "arm": "/mnt/t9/fosfora-work/q4402/tools/arm_seq.sh q4402_<arm> <binary> <knobs> (q4163_arm.sh, datasets one after another)",
+  "report": "bench/q4163_report.py <root> --half tune|holdout --against /mnt/t9/fosfora-work/q4163/bench/q4234_g15s3",
+  "verdict": "bench/q4402_verdict.py <root> [--half tune]",
+  "replica": "/mnt/t9/fosfora-work/q4402/tools/replay_n.py (validate | rules | trace); sidecar /mnt/t9/fosfora-work/q4402/side/base"
+ },
+ "baseline": {
+  "_root": "/mnt/t9/fosfora-work/q4163/bench/q4234_g15s3",
+  "_provenance": "main c072aef behavior = v2.7.0 (4790947); the #4234 round's chosen arm root; the q4402 baseline sidecar binary fosfora-base-q4402-62a28711c6ad1381 (main 4790947) is byte-identical to it on 5/5 Harmonix tune dumps",
+  "tune": {
+   "datasets": {
+    "ballroom": {
+     "n": 344,
+     "no_est": 20,
+     "acc1": 0.6337,
+     "acc2": 0.8983,
+     "beat_f": 0.5626,
+     "cmlt": 0.3915,
+     "amlt": 0.6062,
+     "downbeat_f": 0.1883
+    },
+    "harmonix": {
+     "n": 180,
+     "no_est": 0,
+     "acc1": 0.6667,
+     "acc2": 0.9611,
+     "beat_f": 0.7467,
+     "cmlt": 0.5741,
+     "amlt": 0.8153,
+     "downbeat_f": 0.2794
+    },
+    "giantsteps_tempo": {
+     "n": 311,
+     "no_est": 0,
+     "acc1": 0.7524,
+     "acc2": 0.8553
+    }
+   },
+   "phase": {
+    "ballroom": {
+     "tracks": 344,
+     "beat_f": 0.5625577384925844,
+     "on": 0.6229924458833238,
+     "anti": 0.19900971243572652,
+     "quarter": 0.17799784168094965,
+     "anti_locked": 61,
+     "no_beats": 17
+    },
+    "harmonix": {
+     "tracks": 180,
+     "beat_f": 0.7467445537159263,
+     "on": 0.6874516017584198,
+     "anti": 0.20483922848735392,
+     "quarter": 0.10770916975422629,
+     "anti_locked": 29,
+     "no_beats": 0
+    }
+   },
+   "quarter_locked": {
+    "ballroom": 48,
+    "harmonix": 15
+   }
+  },
+  "holdout": {
+   "datasets": {
+    "ballroom": {
+     "n": 341,
+     "no_est": 35,
+     "acc1": 0.6334,
+     "acc2": 0.8739,
+     "beat_f": 0.5227,
+     "cmlt": 0.379,
+     "amlt": 0.5667,
+     "downbeat_f": 0.1803
+    },
+    "harmonix": {
+     "n": 194,
+     "no_est": 0,
+     "acc1": 0.5876,
+     "acc2": 0.9691,
+     "beat_f": 0.7094,
+     "cmlt": 0.5053,
+     "amlt": 0.8055,
+     "downbeat_f": 0.2814
+    },
+    "giantsteps_tempo": {
+     "n": 350,
+     "no_est": 1,
+     "acc1": 0.7257,
+     "acc2": 0.8629
+    }
+   },
+   "phase": {
+    "ballroom": {
+     "tracks": 341,
+     "beat_f": 0.5226706062133973,
+     "on": 0.6349923536771862,
+     "anti": 0.1999165855693035,
+     "quarter": 0.16509106075351035,
+     "anti_locked": 55,
+     "no_beats": 33
+    },
+    "harmonix": {
+     "tracks": 194,
+     "beat_f": 0.7094227397637274,
+     "on": 0.6441896809870931,
+     "anti": 0.24039081540092458,
+     "quarter": 0.11541950361198239,
+     "anti_locked": 32,
+     "no_beats": 0
+    }
+   },
+   "quarter_locked": {
+    "ballroom": 49,
+    "harmonix": 16
+   }
+  },
+  "harmonix_all": {
+   "drop_hit_rate": 0.1064,
+   "false_drops_per_min": 0.415,
+   "predict_drop_false_alarms_per_min": 2.4906,
+   "predict_drop_coverage_0_5": 0.5106,
+   "predict_drop_coverage_0_8": 0.3688,
+   "boundary_3_0s_f": 0.1652
+  },
+  "batida": {
+   "ambient": {
+    "n": 20,
+    "beat_f_mean": 0.23389999999999994,
+    "beat_f": [
+     0.258,
+     0.207,
+     0.17,
+     0.144,
+     0.188,
+     0.274,
+     0.129,
+     0.359,
+     0.26,
+     0.153,
+     0.286,
+     0.167,
+     0.276,
+     0.429,
+     0.173,
+     0.221,
+     0.256,
+     0.263,
+     0.238,
+     0.227
+    ],
+    "bpm_ratio": [
+     1.001,
+     1.574,
+     1.89,
+     1.357,
+     1.211,
+     2.014,
+     0.993,
+     1.001,
+     0.998,
+     1.995,
+     2.001,
+     2.432,
+     1.509,
+     1.005,
+     1.907,
+     2.197,
+     3.042,
+     0.999,
+     2.633,
+     3.496
+    ],
+    "beat_lag_ms": [
+     -6,
+     -36,
+     20,
+     -105,
+     -3,
+     -11,
+     -94,
+     34,
+     18,
+     -63,
+     17,
+     37,
+     -8,
+     -43,
+     -11,
+     -37,
+     7,
+     -35,
+     -18,
+     -8
+    ],
+    "beats_est": [
+     364,
+     359,
+     354,
+     372,
+     401,
+     428,
+     307,
+     327,
+     320,
+     427,
+     427,
+     344,
+     335,
+     303,
+     333,
+     336,
+     354,
+     344,
+     351,
+     390
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19,
+     20
+    ]
+   },
+   "chiptune": {
+    "n": 10,
+    "beat_f_mean": 0.9919,
+    "beat_f": [
+     0.992,
+     0.992,
+     0.991,
+     0.993,
+     0.992,
+     0.991,
+     0.992,
+     0.991,
+     0.993,
+     0.992
+    ],
+    "bpm_ratio": [
+     0.999,
+     0.999,
+     1.0,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999
+    ],
+    "beat_lag_ms": [
+     11,
+     5,
+     4,
+     4,
+     7,
+     3,
+     7,
+     6,
+     6,
+     11
+    ],
+    "beats_est": [
+     596,
+     596,
+     595,
+     598,
+     597,
+     595,
+     596,
+     595,
+     598,
+     596
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   },
+   "house": {
+    "n": 10,
+    "beat_f_mean": 0.9168000000000001,
+    "beat_f": [
+     0.931,
+     0.894,
+     0.898,
+     0.841,
+     0.956,
+     0.896,
+     0.924,
+     0.927,
+     0.938,
+     0.963
+    ],
+    "bpm_ratio": [
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ],
+    "beat_lag_ms": [
+     23,
+     26,
+     21,
+     23,
+     18,
+     24,
+     17,
+     16,
+     16,
+     20
+    ],
+    "beats_est": [
+     481,
+     469,
+     472,
+     473,
+     474,
+     472,
+     477,
+     481,
+     478,
+     478
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   },
+   "lofi": {
+    "n": 10,
+    "beat_f_mean": 0.925,
+    "beat_f": [
+     0.922,
+     0.911,
+     0.914,
+     0.916,
+     0.95,
+     0.969,
+     0.958,
+     0.876,
+     0.892,
+     0.942
+    ],
+    "bpm_ratio": [
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ],
+    "beat_lag_ms": [
+     16,
+     18,
+     23,
+     20,
+     20,
+     15,
+     14,
+     13,
+     19,
+     18
+    ],
+    "beats_est": [
+     316,
+     311,
+     309,
+     318,
+     316,
+     318,
+     317,
+     318,
+     311,
+     313
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   },
+   "rock": {
+    "n": 10,
+    "beat_f_mean": 0.9689,
+    "beat_f": [
+     0.97,
+     0.967,
+     0.966,
+     0.958,
+     0.945,
+     0.971,
+     0.985,
+     0.975,
+     0.976,
+     0.976
+    ],
+    "bpm_ratio": [
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ],
+    "beat_lag_ms": [
+     24,
+     25,
+     24,
+     25,
+     24,
+     25,
+     25,
+     25,
+     24,
+     25
+    ],
+    "beats_est": [
+     470,
+     463,
+     470,
+     463,
+     470,
+     461,
+     468,
+     470,
+     469,
+     467
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   },
+   "techno": {
+    "n": 10,
+    "beat_f_mean": 0.8108000000000001,
+    "beat_f": [
+     0.81,
+     0.791,
+     0.819,
+     0.808,
+     0.821,
+     0.773,
+     0.809,
+     0.832,
+     0.822,
+     0.823
+    ],
+    "bpm_ratio": [
+     1.001,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.001,
+     1.0,
+     1.001
+    ],
+    "beat_lag_ms": [
+     19,
+     23,
+     18,
+     27,
+     26,
+     19,
+     21,
+     16,
+     17,
+     25
+    ],
+    "beats_est": [
+     500,
+     504,
+     506,
+     500,
+     501,
+     508,
+     504,
+     505,
+     510,
+     497
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   },
+   "waltz": {
+    "n": 10,
+    "beat_f_mean": 0.9535,
+    "beat_f": [
+     0.968,
+     0.967,
+     0.918,
+     0.968,
+     0.969,
+     0.955,
+     0.961,
+     0.948,
+     0.964,
+     0.917
+    ],
+    "bpm_ratio": [
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999,
+     0.999
+    ],
+    "beat_lag_ms": [
+     30,
+     33,
+     27,
+     26,
+     25,
+     31,
+     31,
+     26,
+     29,
+     30
+    ],
+    "beats_est": [
+     368,
+     365,
+     333,
+     368,
+     369,
+     366,
+     361,
+     352,
+     363,
+     331
+    ],
+    "seeds": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10
+    ]
+   }
+  },
+  "negatives": {
+   "n": 155,
+   "publish": 56,
+   "locked_mean": 0.15391296057222,
+   "beats_per_min": 29.557388522872856,
+   "pulse_low_n": 51,
+   "pulse_low_beats_per_min": 9.192152978678793
+  }
+ },
+ "targets": {
+  "P1_ballroom": "ballroom holdout beat_f >= baseline + 0.004 (half the top arm's tune forecast)",
+  "P2_harmonix": "harmonix holdout beat_f >= baseline - 0.003 (the forecast is ~0 on Harmonix, whose only quarter-off grid carries an accent on the grid; the round must not pay there)",
+  "P3_flips": "ballroom holdout: tracks that LOSE more than 0.1 beat_f number fewer than those that GAIN more than 0.1; harmonix holdout: at most 3 tracks lost by more than 0.1 (the tune forecast's count)",
+  "P4_techno": "batida techno: mean beat F >= baseline + 0.06 and no seed below its baseline (#3344's dead-zone grid; forecast +.084-.089, live +.10)",
+  "G1_tempo_identical": "acc1, acc2, no_est on all three datasets IDENTICAL to baseline (the arbiter does not feed the estimator; any difference is a bug, not a tolerance)",
+  "G2_continuity": "harmonix and ballroom holdout cmlt, amlt, downbeat_f each >= baseline - 0.005",
+  "G3_anti_locked": "harmonix and ballroom holdout anti_locked <= baseline (the half-beat rule is unchanged; the quarters must not create half-beat locks)",
+  "G3b_quarter_locked": "ballroom holdout quarter_locked (tracks whose beats sit mostly in neither the on nor the anti class) <= baseline - 2 (the defect this round targets); harmonix holdout <= baseline",
+  "G4_genres": "per-genre ballroom holdout beat_f: no genre down by more than 0.02",
+  "G5_negatives": "155 beatless clips: publish IDENTICAL (by construction, published on lock); beats/min <= baseline + 1.0; pulse-low third beats/min <= baseline + 1.0",
+  "G6_batida": "house: no seed worse than baseline beat F by more than 0.02 and none newly below 0.7; lofi, rock, chiptune, waltz: beat F not worse by more than 0.01 and bpm_ratio unchanged (+-0.01) on any seed; ambient: beats fired not above baseline",
+  "G7_structure_drop": "harmonix all: drop hit_rate >= baseline - 0.01, false_drops_per_min <= baseline + 0.02, predict_drop false_alarms_per_min <= baseline + 0.05, coverage at 0.5 / 0.8 each >= baseline - 0.01, boundary_3_0s f >= baseline - 0.005",
+  "G8_fixture": "bench/check_fixture.py passes on the final binary (knobs removed)",
+  "G9_build": "cargo test (default and analyze), the CI clippy sets (--all-targets for default, analyze and release) and clippy -p fosfora-app --lib --no-default-features (XR)",
+  "G10_owner": "Kevin listens to click-track A/B renders (bench/q4163_listen.py: same 24 s twice, base clicks then candidate clicks) of holdout tracks the verdict moved both ways, before the commit"
+ },
+ "selection_rule": "highest (harmonix + ballroom) TUNE beat_f sum among arms passing every tune-side reading of P1-P4 and G1-G7; within 0.002 of each other, the arm with fewer tracks lost by more than 0.1 (both sets summed)",
+ "on_miss": "a missed target or guard reverts that arm, or is stated with its numbers and explicitly accepted by Kevin; never silently",
+ "frozen_at": "2026-10-22T08:21:10Z",
+ "amendments": [],
+ "selection": {
+  "at": "2026-10-22T09:39:03Z",
+  "chosen_arm": "q24r3",
+  "rule_applied": "all three arms pass 114/114 tune-side; q16 leads the harmonix + ballroom tune sum by .0012 over q24r3, inside the .002 band, so the arm with fewer tracks lost by more than .1 is chosen: q24r3 lost 0, q16 and q24 lost 1 (0713_heartofgoldnow .99 -> .28)",
+  "tune_verdicts": {
+   "q16": "114/114; sum 1.3093 -> 1.3248 (+.0155), lost 1 (harmonix 0713), gained 4 + 9; techno .8108 -> .9105",
+   "q24": "114/114; sum +.0125, lost 1 (0713), gained 3 + 8; techno -> .8964",
+   "q24r3": "114/114; sum 1.3093 -> 1.3236 (+.0143), lost 0, gained 2 + 6; techno -> .8964"
+  },
+  "q24r3_tune_numbers": {
+   "harmonix": {
+    "beat_f": ".7467 -> .7528",
+    "cmlt": ".5741 -> .5787",
+    "amlt": ".8153 -> .8215",
+    "downbeat_f": ".2794 -> .2829",
+    "anti_locked": "29 -> 29",
+    "quarter_locked": "15 -> 14",
+    "flips": "lost 0 / gained 2 (0768_keepsgettinbetter .55 -> .90, 0798_lovelikethis .58 -> .87)"
+   },
+   "ballroom": {
+    "beat_f": ".5626 -> .5708",
+    "cmlt": ".3915 -> .3979",
+    "amlt": ".6062 -> .6120",
+    "downbeat_f": ".1883 -> .1927",
+    "anti_locked": "61 -> 60",
+    "quarter_locked": "48 -> 45",
+    "flips": "lost 0 / gained 6 (Pais_Tropical-15 .01 -> .95, Media-105108 .10 -> .65, Fire-07 .24 -> .74, Latin_Jam3-05 .30 -> .79, Ballroom_Classics4-06 .42 -> .60, Media-104116 .28 -> .39)",
+    "genres": "Jive +.054, Tango +.020, Samba +.013, Quickstep and VienneseWaltz within -.002, others 0"
+   },
+   "tempo": "acc1 / acc2 / no_est identical on all three datasets",
+   "negatives": "publish 56 -> 56, beats/min 29.6 -> 29.6, pulse-low 9.2 -> 9.2",
+   "batida": "techno mean .8108 -> .8964, every seed up (worst +.075); house s2 +.019, s3 +.030, s4 +.080; waltz s3 +.036, s8 +.010, s10 +.038; lofi s4 +.011, s8 +.009; rock s4 +.001, s5 +.005; ambient and chiptune unchanged; no seed down",
+   "structure_drop": "drop hit_rate and false drops identical; predict_drop false alarms 2.4906 -> 2.4899, coverage identical; boundary F .1652 -> .1648",
+   "forecast_vs_live": "replica forecast (tune) ballroom +.0051, harmonix +.0009, techno +.084; live +.0082, +.0061, +.0856. Live beats the forecast on both music sets, as the 35-track knob calibration found: the forecast moves the recorded grid by the shift alone, the live scheduler's PLL then re-locks onto the events it has just been moved onto"
+  },
+  "provenance": "the three arms ran one after another through /mnt/t9/fosfora-work/q4402/tools/run_arms.sh -> arm_seq.sh (8 jobs total), knob binary fosfora-knob-q4402-8b46f0c62e0fbd64; verdicts /mnt/t9/fosfora-work/q4402/side/verdict_tune_<arm>.txt"
+ },
+ "holdout_result": {
+  "at": "2026-10-22T09:41:19Z",
+  "arm": "q24r3",
+  "verdict": "114/114 (read once; /mnt/t9/fosfora-work/q4402/side/verdict_holdout_q24r3.txt)",
+  "numbers": {
+   "ballroom": {
+    "beat_f": ".5227 -> .5270 (P1 PASS, bar .5267)",
+    "cmlt": ".3790 -> .3832",
+    "amlt": ".5667 -> .5700",
+    "downbeat_f": ".1803 -> .1834",
+    "anti_locked": "55 -> 54",
+    "quarter_locked": "49 -> 45 (G3b PASS, bar 47)",
+    "flips": "lost 0 / gained 4 (Media-103718 .10 -> .54, Media-103919 .10 -> .54, Media-103719 .40 -> .74, Latin_Jam5-04 .53 -> .73)",
+    "genres": "Jive +.048, every other genre exactly 0"
+   },
+   "harmonix": {
+    "beat_f": ".7094 -> .7114 (P2 PASS)",
+    "cmlt": ".5053 -> .5073",
+    "amlt": ".8055 -> .8067",
+    "downbeat_f": ".2814 -> .2844",
+    "anti_locked": "32 -> 32",
+    "quarter_locked": "16 -> 16",
+    "flips": "lost 1 / gained 2 (lost 0972_whatchasay .41 -> .10; gained 0685_forgottolaugh .52 -> .66, 0639_dieinyourarms .53 -> .64)"
+   },
+   "tempo": "identical on all three datasets",
+   "negatives": "identical (publish 56, beats/min 29.6, pulse-low 9.2)",
+   "batida": "as tune (the renders are not split): techno .8108 -> .8964, no seed down anywhere",
+   "structure_drop": "as tune (pass)",
+   "holdout_sum": "harmonix + ballroom beat_f 1.2321 -> 1.2384 (+.0063)"
+  },
+  "misses": "none",
+  "reading": "the tune gains replicate in direction and roughly in size (tune +.0082 / +.0061, holdout +.0043 / +.0020); Ballroom gains on both halves with no track lost on either; Harmonix 4 gained / 1 lost across both halves"
+ },
+ "ship": {
+  "at": "2026-10-22T10:18:08Z",
+  "config": "PHASE_ARBITER quarters true, q_ratio 3.0, q_long_min 24; the quarter bins use the half-beat rule's tolerance (.125), long ratio (1.5), long share (.4) and streak (3); the dev knobs (arbiter_knobs, FOSFORA_ARB_*) and the unused q_tol / q_dom / q_long_ratio / q_long_share / q_on_share / q_streak fields removed",
+  "binary": "/mnt/t9/fosfora-work/q4163/bin/fosfora-ship-q4402-b50aa36653534368 (release + analyze, worktree q4402-offsets)",
+  "verification": "full arm pipeline + giantsteps_key re-run with the ship binary into /mnt/t9/fosfora-work/q4163/bench/q4402_ship: 1720 of 1720 music dumps byte-identical to q4402_q24r3 (ballroom 685, harmonix 374, giantsteps_tempo 661), batida.jsonl identical (80 rows), 155 of 155 beatless dumps identical; giantsteps_key 604 scored, numbers unchanged",
+  "G8": "check_fixture: all 22 assertions passed (ship binary)",
+  "G9": "cargo test --workspace 1290 + 5 + 4 passed; --features analyze 1337 + 5 passed; clippy --all-targets -D warnings clean for default, analyze and release features; -p fosfora-app --lib --no-default-features builds (/mnt/t9/fosfora-work/q4402/side/ship_checks.log)",
+  "benchmarks_md": "regenerated from the ship results (bench/report.py): Ballroom beat F .543 -> .549, CMLt .385 -> .391, AMLt .587 -> .591, downbeat F .184 -> .188; Harmonix beat F .727 -> .731, CMLt .538 -> .542, AMLt .810 -> .814, downbeat F .280 -> .284; tempo and key rows unchanged; predict_drop p75 lead 25.3 -> 24.3 beats, section-label P .310 -> .309",
+  "G10": {
+   "at": "2026-10-22T10:45:57Z",
+   "by": "Kevin ('Listened, all nine sound right - commit and push.')",
+   "clips": "/mnt/t9/fosfora-work/q4402/listen (README.txt): the 7 holdout tracks moved by more than .1, including the loss 0972_whatchasay, and batida techno-1 / techno-7"
+  },
+  "commit": "approved by Kevin with G10; committed on branch q4402-offsets and fast-forwarded to main"
+ }
+}

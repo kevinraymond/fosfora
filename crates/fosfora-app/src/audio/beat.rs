@@ -1750,6 +1750,18 @@ const PLL_ACQ_STALE_PERIODS: f64 = 4.0;
 // halves (+.021 tune / +.016 holdout beat F); on Harmonix it trades syncopated grids,
 // where the 'and' outvotes the beat by that much, against off-beat ones it fixes (+.013 /
 // -.003). Manifest bench/manifests/q4234_guard_frozen.json.
+//
+// #4402 added the quarter-beats as candidates. A grid a quarter of a beat off (Latin
+// grids that lock on an accent cluster, synthetic techno whose kicks sit .3 of a beat
+// from the grid's instants) is outside the PLL's capture window, and the half-beat fold
+// reads its events as neither phase, so nothing ever moved it. Where the half-beat rule
+// abstains, the fuller quarter bin may move the grid a quarter or three quarters of a
+// beat later, under a stricter test than the half-beat's: 3:1 over the on-grid bin in
+// the short window and at least 24 events in the 32-beat window, so the first bar after
+// lock, where a settling grid reads as a quarter off, cannot vote. Ballroom +.008 /
+// +.004 beat F (tune / holdout) with no track lost, Harmonix +.006 / +.002 (4 gained,
+// 1 lost: a PLL half-period drag the rule read as a quarter-off grid), the batida techno
+// renders .81 -> .90. Manifest bench/manifests/q4402_quarters_frozen.json.
 
 #[derive(Clone, Copy, Debug)]
 struct PhaseArbiterCfg {
@@ -1768,10 +1780,23 @@ struct PhaseArbiterCfg {
     long_beats: f64,
     long_ratio: f64,
     long_share: f64,
+    /// #4402: also test the quarter-beats (1/4 and 3/4 of a period), consulted only at an
+    /// instant where the half-beat rule abstains; `false` is the #4234 arbiter. A grid a
+    /// quarter of a beat off sits outside the PLL's capture window with nothing on its
+    /// instants, and the half-beat fold reads its events as neither phase.
+    quarters: bool,
+    /// The fuller quarter bin must hold this many times the on-grid events in the short
+    /// window (stricter than `ratio`: an accent cluster a quarter after the beat is common,
+    /// a grid a quarter off rare), and the long window must hold at least `q_long_min`
+    /// events, so the first bar after lock cannot vote the grid away. The long window's
+    /// ratio and share, the streak and the bins' tolerance are the half-beat rule's.
+    q_ratio: f64,
+    q_long_min: usize,
 }
 
 /// The windows the #4160 round selected, with the guard and streak #4234 relaxed (from
-/// 2.0, .3 and 4; at 1.5 the .4 share is implied by the ratio).
+/// 2.0, .3 and 4; at 1.5 the .4 share is implied by the ratio) and the quarter candidates
+/// #4402 added (3:1 and 24 events: of its three arms, the one that lost no track).
 const PHASE_ARBITER: PhaseArbiterCfg = PhaseArbiterCfg {
     win_beats: 8.0,
     min_kicks: 4,
@@ -1780,7 +1805,39 @@ const PHASE_ARBITER: PhaseArbiterCfg = PhaseArbiterCfg {
     long_beats: 32.0,
     long_ratio: 1.5,
     long_share: 0.4,
+    quarters: true,
+    q_ratio: 3.0,
+    q_long_min: 24,
 };
+
+/// Where the arbiter may move the grid, as a fraction of a period LATER.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArbOffset {
+    Half,
+    Quarter,
+    ThreeQuarter,
+}
+
+impl ArbOffset {
+    fn periods(self) -> f64 {
+        match self {
+            Self::Half => 0.5,
+            Self::Quarter => 0.25,
+            Self::ThreeQuarter => 0.75,
+        }
+    }
+}
+
+/// One window's fold onto the grid: events on the grid, on the half-beat, on the
+/// quarter-beats (1/4, 3/4), and all of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ArbFold {
+    on: usize,
+    half: usize,
+    q1: usize,
+    q3: usize,
+    total: usize,
+}
 
 /// A kick counts toward a phase when it lies within this fraction of a period.
 const ARB_PHASE_TOLERANCE: f64 = 0.125;
@@ -1853,8 +1910,10 @@ struct BeatScheduler {
     /// Event times within the arbiter's longest window (kicks, activation peaks or
     /// both, per `arb_evidence`), kept in time order.
     arb_kicks: VecDeque<f64>,
-    /// Consecutive grid instants that voted to move half a beat.
+    /// Consecutive grid instants that voted to move the grid, and by which offset; a vote
+    /// for another offset restarts it.
     arb_streak: u32,
+    arb_streak_offset: Option<ArbOffset>,
     /// Set by [`BeatDetector::process`] for the hop being processed.
     kick_event: bool,
     /// Grid phase shifts the arbiter made (diagnostics).
@@ -1897,6 +1956,7 @@ impl BeatScheduler {
             act_event: None,
             arb_kicks: VecDeque::new(),
             arb_streak: 0,
+            arb_streak_offset: None,
             kick_event: false,
             phase_shifts: 0,
             dbg: false,
@@ -1964,60 +2024,101 @@ impl BeatScheduler {
         }
     }
 
-    /// #4160: fold the kicks of the window ending at the grid instant `now`
-    /// onto the grid. True once the half-beat has won `streak` instants in a
-    /// row (and the stability guard agrees): the caller moves the grid.
-    fn arbitrate(&mut self, cfg: PhaseArbiterCfg, now: f64, period: f64) -> bool {
+    /// #4160: fold the events of the window ending at the grid instant `now` onto the
+    /// grid. Returns the offset the grid moves LATER by (`None` = stays): half a beat once
+    /// the half-beat has won `streak` instants in a row (and the stability guard agrees);
+    /// with `quarters`, a quarter or three quarters once a quarter-beat has won `streak`
+    /// instants where the half-beat rule abstained (#4402).
+    fn arbitrate(&mut self, cfg: PhaseArbiterCfg, now: f64, period: f64) -> Option<ArbOffset> {
         let keep = cfg.win_beats.max(cfg.long_beats) * period;
         while self.arb_kicks.front().is_some_and(|&t| t < now - keep) {
             self.arb_kicks.pop_front();
         }
-        // (on the grid, on the half-beat, all) kicks of the last `beats` periods.
         let fold = |beats: f64| {
-            let (mut on, mut half, mut total) = (0usize, 0usize, 0usize);
+            let mut f = ArbFold::default();
             for &t in self
                 .arb_kicks
                 .iter()
                 .filter(|&&t| t >= now - beats * period)
             {
-                total += 1;
-                let f = ((t - now) / period).rem_euclid(1.0);
-                if f.min(1.0 - f) <= ARB_PHASE_TOLERANCE {
-                    on += 1;
+                f.total += 1;
+                let x = ((t - now) / period).rem_euclid(1.0);
+                if x.min(1.0 - x) <= ARB_PHASE_TOLERANCE {
+                    f.on += 1;
                 }
-                if (f - 0.5).abs() <= ARB_PHASE_TOLERANCE {
-                    half += 1;
+                if (x - 0.5).abs() <= ARB_PHASE_TOLERANCE {
+                    f.half += 1;
+                }
+                if cfg.quarters {
+                    if (x - 0.25).abs() <= ARB_PHASE_TOLERANCE {
+                        f.q1 += 1;
+                    }
+                    if (x - 0.75).abs() <= ARB_PHASE_TOLERANCE {
+                        f.q3 += 1;
+                    }
                 }
             }
-            (on, half, total)
+            f
         };
-        let (on, half, total) = fold(cfg.win_beats);
-        let mut vote =
-            half > on && total >= cfg.min_kicks && half as f64 >= cfg.ratio * on.max(1) as f64;
+        let s = fold(cfg.win_beats);
+        let l = fold(cfg.long_beats);
+        // The shipped half-beat rule, unchanged.
+        let mut offset = ArbOffset::Half;
+        let mut vote = s.half > s.on
+            && s.total >= cfg.min_kicks
+            && s.half as f64 >= cfg.ratio * s.on.max(1) as f64;
         if vote && cfg.long_beats > 0.0 {
-            let (on, half, total) = fold(cfg.long_beats);
-            vote = on as f64 <= cfg.long_share * total as f64
-                && half as f64 >= cfg.long_ratio * on.max(1) as f64;
+            vote = l.on as f64 <= cfg.long_share * l.total as f64
+                && l.half as f64 >= cfg.long_ratio * l.on.max(1) as f64;
         }
-        let dbg_long = self.dbg.then(|| fold(cfg.long_beats));
-        let shift = if vote {
-            self.arb_streak += 1;
-            self.arb_streak >= cfg.streak
-        } else {
-            false
-        };
-        if !vote || shift {
+        // #4402: where it abstains, the fuller quarter bin challenges (ties to 1/4).
+        if !vote && cfg.quarters {
+            let (k, sq, lq) = if s.q3 > s.q1 {
+                (ArbOffset::ThreeQuarter, s.q3, l.q3)
+            } else {
+                (ArbOffset::Quarter, s.q1, l.q1)
+            };
+            let mut v = sq > s.on
+                && s.total >= cfg.min_kicks
+                && sq as f64 >= cfg.q_ratio * s.on.max(1) as f64;
+            if v && cfg.long_beats > 0.0 {
+                v = l.on as f64 <= cfg.long_share * l.total as f64
+                    && lq as f64 >= cfg.long_ratio * l.on.max(1) as f64
+                    && l.total >= cfg.q_long_min;
+            }
+            if v {
+                vote = true;
+                offset = k;
+            }
+        }
+        let mut shift = None;
+        if vote {
+            self.arb_streak = if self.arb_streak_offset == Some(offset) {
+                self.arb_streak + 1
+            } else {
+                1
+            };
+            self.arb_streak_offset = Some(offset);
+            if self.arb_streak >= cfg.streak {
+                shift = Some(offset);
+            }
+        }
+        if !vote || shift.is_some() {
             self.arb_streak = 0;
+            self.arb_streak_offset = None;
         }
-        if let Some(long) = dbg_long {
+        if self.dbg {
             self.dbg_arb_votes.push(ArbVote {
                 now,
                 period,
-                short: (on, half, total),
-                long,
+                short: (s.on, s.half, s.total),
+                long: (l.on, l.half, l.total),
+                quarter: (s.q1, s.q3),
+                lquarter: (l.q1, l.q3),
                 vote,
                 streak: self.arb_streak,
-                shift,
+                shift: shift.is_some(),
+                offset: shift.map_or(0.0, ArbOffset::periods),
             });
         }
         shift
@@ -2067,6 +2168,7 @@ impl BeatScheduler {
             self.closing_slot = None;
             self.arb_kicks.clear();
             self.arb_streak = 0;
+            self.arb_streak_offset = None;
             return (false, 0.0, 0.0, self.bpm);
         }
 
@@ -2243,17 +2345,19 @@ impl BeatScheduler {
                 self.grid_beat_count += 1;
                 self.dbg_grid_instant(beat_time, supported);
                 if let Some(cfg) = self.arbiter {
-                    if self.arbitrate(cfg, beat_time, period) {
-                        // Move the grid half a beat LATER (a long gap reads
-                        // better than a double beat); the PLL's pending bids
-                        // and trim belong to the old phase.
-                        *next_beat_time += 0.5 * period;
+                    if let Some(shift) = self.arbitrate(cfg, beat_time, period) {
+                        let shift = shift.periods();
+                        // Move the grid LATER by the offset (a long gap reads
+                        // better than a double beat): half a beat, or a quarter
+                        // / three quarters with #4402's candidates; the PLL's
+                        // pending bids and trim belong to the old phase.
+                        *next_beat_time += shift * period;
                         self.period_trim = 0.0;
                         self.closing_slot = None;
                         self.slot_early_best = None;
                         self.onset_support_pending = false;
                         self.phase_shifts += 1;
-                        self.dbg_event("arb_shift", f64::NAN);
+                        self.dbg_event("arb_shift", shift);
                     }
                 }
                 if !supported {
@@ -2351,10 +2455,15 @@ pub struct ArbVote {
     pub period: f64,
     pub short: (usize, usize, usize),
     pub long: (usize, usize, usize),
-    /// Whether this instant voted to move, the streak after it, and whether the grid moved.
+    /// #4402: the (1/4, 3/4) bins of both windows (zero unless the quarters are on).
+    pub quarter: (usize, usize),
+    pub lquarter: (usize, usize),
+    /// Whether this instant voted to move, the streak after it, whether the grid moved and
+    /// by how many periods (0.0 when it did not).
     pub vote: bool,
     pub streak: u32,
     pub shift: bool,
+    pub offset: f64,
 }
 
 /// One hop's view of the detector's internals for the dev-only beat sidecar
@@ -2427,6 +2536,7 @@ impl BeatDetector {
         let mut beat_scheduler = BeatScheduler::new();
         beat_scheduler.dbg = dbg;
         beat_scheduler.arb_evidence = ARB_EVIDENCE;
+        beat_scheduler.arbiter = Some(PHASE_ARBITER);
         let picker = BeatActivation::picker();
 
         Self {
@@ -3224,6 +3334,113 @@ mod tests {
         assert_eq!(window(ArbEvidence::Kicks), vec![1.5]);
         assert_eq!(window(ArbEvidence::Activation), vec![1.5 - 0.035]);
         assert_eq!(window(ArbEvidence::Union), vec![1.5 - 0.035, 1.5]);
+    }
+
+    /// #4402, the batida techno case (#3344): a grid .3 of a beat late sits outside the
+    /// PLL's capture window with nothing on its instants, and every event lands in the
+    /// 3/4 bin. With the quarter candidates it moves three quarters of a beat LATER onto
+    /// the events (and the half-beat rule, which reads those events as neither phase,
+    /// leaves it there: the test is not vacuous). The 24-event minimum in the 32-beat
+    /// window holds the move until that window has filled (a bar or two after lock).
+    #[test]
+    fn arbiter_quarters_move_a_quarter_late_grid_onto_the_events() {
+        let late = 1.15; // beats at 1.0 + k * 0.5; the grid anchors .3 period late
+        let drive = |quarters: bool| {
+            let mut bs = BeatScheduler::new();
+            bs.arbiter = Some(PhaseArbiterCfg {
+                quarters,
+                ..PHASE_ARBITER
+            });
+            // Onsets on the beats (outside capture from this grid) and on the grid's own
+            // instants (hi-hat-like support, so the grid keeps firing); kicks on the beats.
+            let beats = drive_locked(
+                &mut bs,
+                late,
+                32.0,
+                |t| near(t, 1.0) || near(t, late),
+                |t| near(t, 1.0),
+            );
+            (bs.phase_shifts, beats)
+        };
+        let (shifts, beats) = drive(true);
+        assert_eq!(shifts, 1, "exactly one quarter shift");
+        let after: Vec<f64> = beats.iter().copied().filter(|&b| b > 26.0).collect();
+        assert!(after.len() >= 8, "keeps firing after the shift: {after:?}");
+        for b in &after {
+            assert!(
+                off_grid_by(*b) < 0.05,
+                "beat at {b} is still {:.3} s off the beat",
+                off_grid_by(*b)
+            );
+        }
+        let (shifts, beats) = drive(false);
+        assert_eq!(shifts, 0, "the half-beat rule never votes here");
+        let after: Vec<f64> = beats.iter().copied().filter(|&b| b > 26.0).collect();
+        assert!(
+            after.iter().all(|&b| off_grid_by(b) > 0.1),
+            "without the quarters the grid stays late: {after:?}"
+        );
+    }
+
+    /// #4402: a grid on the beat with kicks on every beat and on the 'e' (a quarter after)
+    /// of every beat is never moved, and the quarter candidates change nothing against the
+    /// half-beat-only arbiter (#4234) on the half-beat scenarios of the tests above (a
+    /// strict superset: they are consulted only where the half-beat rule abstains).
+    #[test]
+    fn arbiter_quarters_leave_right_and_half_beat_grids_to_the_shipped_rule() {
+        let without = PhaseArbiterCfg {
+            quarters: false,
+            ..PHASE_ARBITER
+        };
+        let mut bs = BeatScheduler::new();
+        bs.arbiter = Some(PHASE_ARBITER);
+        let beats = drive_locked(
+            &mut bs,
+            1.0,
+            16.0,
+            |t| near(t, 1.0) || near(t, 1.125),
+            |t| near(t, 1.0) || near(t, 1.125),
+        );
+        assert_eq!(bs.phase_shifts, 0, "beats match the 'e' accents: no move");
+        assert!(beats.iter().all(|&b| off_grid_by(b) < 0.05));
+
+        // The half-beat scenarios: an off-beat grid moved by the kicks, a recurring 'and',
+        // and the Latin case where a quarter accent outnumbers the beats while the grid
+        // sits on the half-beat (the half-beat rule votes first and wins).
+        type Scenario = (f64, f64, fn(f64) -> bool, fn(f64) -> bool);
+        let scenarios: [Scenario; 3] = [
+            (
+                1.25,
+                16.0,
+                |t| near(t, 1.0) || near(t, 1.25),
+                |t| near(t, 1.0),
+            ),
+            (
+                1.25,
+                24.0,
+                |t| near(t, 1.0) || near(t, 1.25),
+                |t| {
+                    let and = ((t - 1.25) / 0.5).round() as i64;
+                    near(t, 1.0) || (near(t, 1.25) && and % 2 == 0)
+                },
+            ),
+            (
+                1.25,
+                16.0,
+                |t| near(t, 1.0) || near(t, 1.25),
+                |t| near(t, 1.0) || near(t, 1.125),
+            ),
+        ];
+        for (anchor, secs, onsets, kicks) in scenarios {
+            let mut a = BeatScheduler::new();
+            a.arbiter = Some(without);
+            let mut b = BeatScheduler::new();
+            b.arbiter = Some(PHASE_ARBITER);
+            let ba = drive_locked(&mut a, anchor, secs, onsets, kicks);
+            let bb = drive_locked(&mut b, anchor, secs, onsets, kicks);
+            assert_eq!(a.phase_shifts, 1, "the half-beat rule moves this grid once");
+            assert_eq!(ba, bb, "identical beats with the quarters on");
+        }
     }
 
     #[test]
