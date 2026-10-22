@@ -25,6 +25,12 @@ Label rules:
                    with no lock / unlock / arbiter shift / anchor event / seed and no
                    published-tempo change > TEMPO_CHANGE, in a run of >= MIN_RUN such beats;
                    everything else weight 0
+                   With --fma-oracle DIR (#4288): an offline tracker's beats and downbeats
+                   instead (DIR/<id>.json, Beat This), over the whole track: weight 1 from half
+                   a beat before its first beat to half a beat after its last, cut where it
+                   skips (an interval over ORACLE_GAP x the local median); a track with fewer
+                   than ORACLE_MIN_BEATS beats or under ORACLE_STABLE of its intervals within
+                   +-ORACLE_TOL of the local median is left unlabeled (weight 0)
   negatives_*      all hops negative, weight 1
   harmonix, ballroom  bench reference beats (TUNE halves; eval only)
 
@@ -52,6 +58,11 @@ TEMPO_CHANGE = 0.02
 SPLIT_EVENTS = {"lock", "unlock", "arb_shift", "anchor_displaced", "anchor_abandoned",
                 "stale_reanchor", "seed", "first_anchor"}
 MODE_LOCKED = 3  # dump_track.MODES.index("locked")
+ORACLE_MIN_BEATS = 32
+ORACLE_GAP = 1.8
+ORACLE_TOL = 0.15
+ORACLE_STABLE = 0.8
+ORACLE_MED_WIN = 9
 
 
 def label_hop(times, hop_hz):
@@ -116,6 +127,28 @@ def confident_passages(z):
     return np.array(passages).reshape(-1, 2), np.array(kept), stats
 
 
+def oracle_passages(beats):
+    """#4288: labeled spans for an offline tracker's beats, and why a track is left out."""
+    beats = np.asarray(beats, np.float64)
+    if len(beats) < ORACLE_MIN_BEATS:
+        return np.zeros((0, 2)), f"{len(beats)} beats < {ORACLE_MIN_BEATS}"
+    ibi = np.diff(beats)
+    h = ORACLE_MED_WIN // 2
+    med = np.array([np.median(ibi[max(0, i - h):i + h + 1]) for i in range(len(ibi))])
+    stable = float(np.mean(np.abs(ibi / med - 1.0) <= ORACLE_TOL))
+    if stable < ORACLE_STABLE:
+        return np.zeros((0, 2)), f"stable intervals {stable:.2f} < {ORACLE_STABLE}"
+    passages, start = [], 0
+    for i, (x, m) in enumerate(zip(ibi, med)):
+        if x > ORACLE_GAP * m:
+            if i > start:
+                passages.append([beats[start] - 0.5 * med[start], beats[i] + 0.5 * m])
+            start = i + 1
+    if start < len(beats) - 1:
+        passages.append([beats[start] - 0.5 * med[min(start, len(med) - 1)], beats[-1] + 0.5 * med[-1]])
+    return np.array(passages).reshape(-1, 2), None
+
+
 def write_track(out, z, label_beats, label_downbeats, weight, passages, split, lag, sigma, extra):
     n = z["ts"].shape[0]
     raw_meta = json.loads(str(z["meta"]))
@@ -139,7 +172,7 @@ def write_track(out, z, label_beats, label_downbeats, weight, passages, split, l
     return meta
 
 
-def build(work: Path, lag: int, sigma: float, only):
+def build(work: Path, lag: int, sigma: float, only, fma_oracle=None):
     rows = Counter()
     labeled_min = Counter()
     per_source = {}
@@ -161,6 +194,21 @@ def build(work: Path, lag: int, sigma: float, only):
             m = write_track(out, z, beats, downs, np.ones(n), whole, split, lag, sigma,
                             dict(source=source, template=template, seed=int(seed), tempo_bpm=lab["tempo_bpm"],
                                  label_rule="exact render labels; ambient all-negative"))
+        elif source == "fma" and fma_oracle is not None:
+            r = fma.get(tid, {})
+            o = json.loads((fma_oracle / f"{tid}.json").read_text())
+            passages, why = oracle_passages(o["beats"])
+            passages[:, 0] = np.maximum(passages[:, 0], 0.0)
+            weight = np.zeros(n)
+            for t0, t1 in passages:
+                weight[int(np.floor(t0 * hop_hz)):int(np.ceil(t1 * hop_hz)) + 1] = 1.0
+            beats = np.asarray(o["beats"]) if why is None else np.zeros(0)
+            downs = np.asarray(o["downbeats"]) if why is None else np.zeros(0)
+            m = write_track(out, z, beats, downs, weight, passages, split, lag, sigma,
+                            dict(source=source, fma_id=int(tid), license=r.get("lic"), artist=r.get("artist"),
+                                 genre=r.get("sgenre") or "untagged", oracle_excluded=why,
+                                 label_rule="Beat This (final0, no DBN) beats + downbeats over the track, "
+                                            f"cut at gaps > {ORACLE_GAP}x the local median interval"))
         elif source == "fma":
             r = fma.get(tid, {})
             passages, kept, stats = confident_passages(z)
@@ -238,12 +286,13 @@ def main() -> int:
     ap.add_argument("--sigma", type=float, default=1.0)
     ap.add_argument("--only", help="comma-separated sources")
     ap.add_argument("--lag-check", action="store_true", help="print the peak-offset table and exit")
+    ap.add_argument("--fma-oracle", type=Path, help="label FMA tracks with <dir>/<id>.json beats (#4288)")
     a = ap.parse_args()
     if a.lag_check:
         lag_check(a.work)
         return 0
     only = set(a.only.split(",")) if a.only else None
-    rows, labeled_min, per_source = build(a.work, a.lag, a.sigma, only)
+    rows, labeled_min, per_source = build(a.work, a.lag, a.sigma, only, a.fma_oracle)
     first_raw = next(iter(corpus.dumped(a.work)), None)
     raw_meta = json.loads(str(np.load(corpus.raw_path(a.work, *first_raw))["meta"])) if first_raw else {}
     try:
@@ -261,7 +310,9 @@ def main() -> int:
         split=dict(rule="last digit of batida seed / track id in {8, 9} -> pick, else train; bench TUNE halves "
                         "and the guard clips -> eval; bench HOLDOUT never read here", pick_digits=sorted(corpus.PICK_DIGITS)),
         fma_rule=dict(min_support=MIN_SUPPORT, min_run_beats=MIN_RUN, tempo_change_frac=TEMPO_CHANGE,
-                      split_events=sorted(SPLIT_EVENTS)),
+                      split_events=sorted(SPLIT_EVENTS)) if a.fma_oracle is None else
+                 dict(oracle=str(a.fma_oracle), tracker="Beat This final0, no DBN", min_beats=ORACLE_MIN_BEATS,
+                      gap=ORACLE_GAP, tol=ORACLE_TOL, stable=ORACLE_STABLE, median_window=ORACLE_MED_WIN),
         lag_check=lag_check(a.work),
     )
     manifest["counts"] = {f"{s}/{sp}": dict(tracks=n, labeled_minutes=round(labeled_min[(s, sp)], 1))

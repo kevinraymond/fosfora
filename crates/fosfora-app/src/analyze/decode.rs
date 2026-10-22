@@ -175,3 +175,72 @@ fn append_stereo(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One silent MPEG-1 Layer III frame: 128 kbps, 44.1 kHz, mono, no CRC, no padding
+    /// (144 * 128000 / 44100 = 417 bytes). All-zero side info and main data decode to silence.
+    fn silent_mp3_frame() -> Vec<u8> {
+        let mut f = vec![0u8; 417];
+        f[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0xC0]);
+        f
+    }
+
+    /// An ID3v2.4 tag holding one APIC (cover art) frame of `art` bytes, the way tagged
+    /// downloads carry their artwork in front of the audio.
+    fn id3v2_with_art(art: usize) -> Vec<u8> {
+        let syncsafe = |n: usize| {
+            [
+                (n >> 21) & 0x7F,
+                (n >> 14) & 0x7F,
+                (n >> 7) & 0x7F,
+                n & 0x7F,
+            ]
+            .map(|b| b as u8)
+        };
+        // encoding, MIME "image/jpeg\0", picture type 3 (front cover), empty description.
+        let mut body = vec![0u8];
+        body.extend_from_slice(b"image/jpeg\0");
+        body.extend_from_slice(&[3, 0]);
+        body.resize(body.len() + art, 0);
+        let mut frame = b"APIC".to_vec();
+        frame.extend_from_slice(&syncsafe(body.len()));
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&body);
+        let mut tag = b"ID3\x04\x00\x00".to_vec();
+        tag.extend_from_slice(&syncsafe(frame.len()));
+        tag.extend_from_slice(&frame);
+        tag
+    }
+
+    fn decode_bytes(name: &str, bytes: &[u8]) -> Result<DecodedAudio> {
+        let path = std::env::temp_dir().join(format!("fosfora_{}_{name}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let out = decode_file(&path);
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    /// #4416: an MP3 whose tag (cover art) runs past the probe's 1 MB scan still decodes. The
+    /// probe can only skip a leading tag when the ID3v2 reader is compiled in; without it the
+    /// probe scans the tag byte by byte for an MP3 frame and gives up at 1 MB ("reached probe
+    /// limit"), which ~5% of the beat model's FMA corpus hit.
+    #[test]
+    fn an_mp3_behind_a_large_id3v2_tag_decodes() {
+        let frames = 200;
+        let mut bytes = id3v2_with_art(1_500_000);
+        for _ in 0..frames {
+            bytes.extend_from_slice(&silent_mp3_frame());
+        }
+        let audio = decode_bytes("big_tag.mp3", &bytes).expect("a tagged MP3 decodes");
+        assert_eq!(audio.source_channels, 1);
+        let want = (frames * 1152) as f64 / 44100.0;
+        assert!(
+            (audio.duration_secs() - want).abs() < 0.1,
+            "decoded {:.3} s, want ~{want:.3} s",
+            audio.duration_secs()
+        );
+    }
+}

@@ -123,6 +123,10 @@ symphonia = { version = "0.6", default-features = false, features = [
     "ogg",
     "isomp4",
     "aac",
+    # Metadata readers let the probe skip an MP3's tags instead of scanning them byte by byte
+    # for a frame: a tag over 1 MB (embedded cover art) used to fail to open (#4416).
+    "id3v2",
+    "id3v1",
 ], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

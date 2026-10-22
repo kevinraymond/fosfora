@@ -81,7 +81,7 @@ def read_beat_sidecar(path: Path):
                     for k in U_KEYS:
                         v = d.get(k)
                         sc[k].append(np.nan if v is None else float(v))
-                else:
+                elif d["k"] == "e":  # "w" / "a" are the arbiter's window and votes (#4234)
                     ev_ts.append(d["ts"])
                     ev_name.append(d["ev"])
                     ev_str.append(float(d.get("str", np.nan)))

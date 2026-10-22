@@ -1,0 +1,234 @@
+{
+ "schema": "fosfora-bench-q-beat-labels-frozen/v1",
+ "_policy": "Pre-registered targets for the #4288 labels round, frozen BEFORE any arm was scored on the bench, in the shape of q4250_tempo_input_frozen.json: baseline = the shipped behavior's root; arms selected on the TUNE halves; the holdout read once on the chosen arm.",
+ "issue": "The #4250 round shipped with one accepted cost: slow pop read at double tempo (Harmonix holdout acc1 .613 -> .588, below 100 BPM 12 of 79 right). The beat activation chooses the tempo level once the flux has seeded, and it was trained on 398 FMA tracks that are all electronic, with Fosfora's own grid as the label, which a reference tracker puts at a different metrical level on ~40% of them (finding #4257). Head-to-head #4413: half/double is 26% of the remaining gap to lastBeatStanding.",
+ "design_constraint": "Only the embedded beat model changes: same 168 inputs (the shipped n24_o6 list verbatim), 200 trees, 15 leaves, depth 5, lr .08, min leaf 200, lag 3, sigma 1; the round's pipeline reproduces the shipped model byte for byte from the shipped labels (control). The arbiter's activation threshold (.70), the estimator, the scheduler and every other constant stay as shipped. Beat This (final0, no DBN) is used only offline as the labeler (decision #4414).",
+ "arms": {
+  "relabel": {
+   "what": "the shipped corpus (398 electronic FMA tracks + batida + beatless clips), FMA labels from Beat This instead of Fosfora's own confident beats",
+   "model": "/mnt/t9/fosfora-work/q4288/relabel/models/relabel.beat_model.json",
+   "model_sha256": "a2694d8adb8bc1fd",
+   "knobs": {
+    "FOSFORA_BEAT_MODEL": "/mnt/t9/fosfora-work/q4288/relabel/models/relabel.beat_model.json"
+   },
+   "root": "/mnt/t9/fosfora-work/q4163/bench/q4288_relabel"
+  },
+  "wide": {
+   "what": "relabel + 422 openly licensed non-electronic FMA tracks (Rock 132, Hip-Hop 118, Pop 116, Country 28, Soul-RnB 17, Blues 11), all FMA labels from Beat This",
+   "model": "/mnt/t9/fosfora-work/q4288/wide/models/wide.beat_model.json",
+   "model_sha256": "1cd489eb7ead413f",
+   "knobs": {
+    "FOSFORA_BEAT_MODEL": "/mnt/t9/fosfora-work/q4288/wide/models/wide.beat_model.json"
+   },
+   "root": "/mnt/t9/fosfora-work/q4163/bench/q4288_wide"
+  },
+  "wide_own": {
+   "what": "the wide corpus with Fosfora's own confident beats as FMA labels (separates the corpus from the labels)",
+   "model": "/mnt/t9/fosfora-work/q4288/wide_own/models/wide_own.beat_model.json",
+   "model_sha256": "7f9bc648a4a752df",
+   "knobs": {
+    "FOSFORA_BEAT_MODEL": "/mnt/t9/fosfora-work/q4288/wide_own/models/wide_own.beat_model.json"
+   },
+   "root": "/mnt/t9/fosfora-work/q4163/bench/q4288_wide_own"
+  }
+ },
+ "arms_binary": "/mnt/t9/fosfora-work/q4163/bin/fosfora-knob-q4288-3d4e71890233672c (branch q4288-labels: FOSFORA_BEAT_MODEL loads a model JSON; unset, and pointed at the shipped beat_model.json, byte-identical to the shipped binary on 0005 and 0864)",
+ "split": {
+  "rule": "sha256(track_id) parity, even -> tune, odd -> holdout, on ballroom, harmonix and giantsteps_tempo",
+  "selection_reads": [
+   "ballroom tune",
+   "harmonix tune",
+   "giantsteps_tempo tune",
+   "the 80 batida renders",
+   "the 155 beatless FMA clips",
+   "train.py's offline report on the tune halves"
+  ],
+  "scored_once_at_end": [
+   "ballroom holdout",
+   "harmonix holdout",
+   "giantsteps_tempo holdout"
+  ]
+ },
+ "tools": {
+  "arm": "/mnt/t9/fosfora-work/q4234/tools/arm_seq.sh q4288_<arm> <binary> FOSFORA_BEAT_MODEL=<model> (bench/q4163_arm.sh with the datasets one at a time, 8 jobs total)",
+  "verdict": "bench/q4288_verdict.py <root> [--half tune]",
+  "tempo bands": "/mnt/t9/fosfora-work/q4288/tools/tempo_split.py"
+ },
+ "baseline": {
+  "_root": "/mnt/t9/fosfora-work/q4163/bench/q4234_g15s3",
+  "_provenance": "main c072aef behavior (#4234's chosen arm; final binary byte-identical)",
+  "tempo_tune": {
+   "harmonix": {
+    "n": 180,
+    "acc1": 0.6666666666666666,
+    "acc1_ref_0_100": "15/68",
+    "acc1_ref_100_130": "71/77",
+    "acc1_ref_130_999": "34/35",
+    "levels": {
+     "T": 120,
+     "2T": 52,
+     "4T/3": 5,
+     "T/2": 1,
+     "2T/3": 1,
+     "other": 1
+    },
+    "doublings": {
+     "0069_digginmedown": "2T",
+     "0376_earthquake": "2T",
+     "0415_illbewaiting": "2T",
+     "0454_myohmy": "2T",
+     "0734_iftodaywasyourlastday": "2T",
+     "0756_istillmissyou": "2T",
+     "0763_iwasafool": "2T",
+     "0908_sober": "2T"
+    }
+   },
+   "ballroom": {
+    "n": 344,
+    "acc1": 0.6337209302325582,
+    "acc1_ref_0_100": "18/72",
+    "acc1_ref_100_130": "123/159",
+    "acc1_ref_130_999": "77/113",
+    "levels": {
+     "T": 218,
+     "2T": 64,
+     "T/2": 23,
+     "none": 20,
+     "other": 9,
+     "T/3": 4,
+     "4T/3": 3,
+     "2T/3": 2,
+     "3T/2": 1
+    }
+   },
+   "giantsteps_tempo": {
+    "n": 311,
+    "acc1": 0.752411575562701,
+    "acc1_ref_0_100": "1/25",
+    "acc1_ref_100_130": "72/87",
+    "acc1_ref_130_999": "161/199",
+    "levels": {
+     "T": 234,
+     "4T/3": 25,
+     "2T": 21,
+     "2T/3": 16,
+     "T/2": 11,
+     "3T/4": 2,
+     "other": 2
+    }
+   }
+  },
+  "tempo_holdout": {
+   "harmonix": {
+    "n": 194,
+    "acc1": 0.5876288659793815,
+    "acc1_ref_0_100": "12/79",
+    "acc1_ref_100_130": "61/72",
+    "acc1_ref_130_999": "41/43",
+    "levels": {
+     "T": 114,
+     "2T": 72,
+     "4T/3": 6,
+     "T/2": 2
+    }
+   },
+   "ballroom": {
+    "n": 341,
+    "acc1": 0.6334310850439883,
+    "acc1_ref_0_100": "17/89",
+    "acc1_ref_100_130": "112/138",
+    "acc1_ref_130_999": "87/114",
+    "levels": {
+     "T": 216,
+     "2T": 59,
+     "none": 35,
+     "T/2": 18,
+     "other": 6,
+     "T/3": 5,
+     "4T/3": 2
+    }
+   },
+   "giantsteps_tempo": {
+    "n": 350,
+    "acc1": 0.7257142857142858,
+    "acc1_ref_0_100": "5/35",
+    "acc1_ref_100_130": "75/98",
+    "acc1_ref_130_999": "174/217",
+    "levels": {
+     "T": 254,
+     "2T": 29,
+     "4T/3": 20,
+     "T/2": 19,
+     "2T/3": 18,
+     "other": 8,
+     "none": 1,
+     "3T/2": 1
+    }
+   }
+  }
+ },
+ "targets": {
+  "P1_slow_pop": "harmonix holdout acc1 >= baseline + 0.015 (3 tracks of 194) AND tracks right below 100 BPM >= baseline + 3 (baseline 12 of 79)",
+  "P2_doubling": "harmonix holdout tracks read at 2T <= baseline - 5 (baseline 72 of 194); on tune, the eight named doublings (0069 0376 0415 0454 0734 0756 0763 0908, all 2T at baseline) are reported",
+  "P3_beats": "harmonix holdout beat_f >= baseline - 0.005 (a gain is reported, not required)",
+  "G1_keep_4250": "ballroom holdout acc1 >= baseline - 0.02 and beat_f >= baseline - 0.01; giantsteps_tempo holdout acc1 >= baseline - 0.02 (#4250's gains on fast dance music must hold)",
+  "G2_continuity": "harmonix and ballroom holdout cmlt and downbeat_f >= baseline - 0.02",
+  "G3_phase": "harmonix holdout anti_locked <= baseline + 3; ballroom <= baseline + 5",
+  "G4_batida": "every batida template's mean beat_f >= baseline - 0.01; ambient: beats fired on the 20 renders not above baseline",
+  "G5_beatless": "the 155 clips: publish <= baseline + 3 (binomial sd ~6 at 56 of 155), beats_per_min <= baseline + 2, locked_mean <= baseline + 0.02, pulse-low third beats_per_min <= baseline + 2",
+  "G6_structure_drop": "harmonix all: drop hit_rate >= baseline - 0.01, false_drops_per_min <= baseline + 0.02, boundary_3_0s f >= baseline - 0.01",
+  "G7_build": "the chosen model embedded (beat_model.json + credits for every new CC BY track), golden vector re-captured, bench/check_fixture.py, cargo test default + analyze, the CI clippy sets incl. the XR lib set",
+  "G8_owner": "Kevin listens to click-track A/B renders of holdout tracks the verdict moved both ways, before the commit"
+ },
+ "selection_rule": "highest (harmonix + ballroom + giantsteps_tempo) TUNE acc1 sum among arms passing every tune-side check of P1-P3 and G1-G6; within .005, the higher harmonix tune beat_f",
+ "on_miss": "a missed target or guard reverts that arm, or is stated with its numbers and explicitly accepted by Kevin; never silently",
+ "frozen_at": "2026-10-22T03:02:28Z",
+ "amendments": [],
+ "selection": {
+  "at": "2026-10-22T04:11:45Z",
+  "chosen_arm": "relabel",
+  "rule_applied": "NO arm passed every tune-side check, so the frozen rule selects nothing; Kevin chose relabel for the single holdout read (AskUserQuestion, from: read relabel / read wide / stop the round), accepting its three tune misses with the numbers below",
+  "tune_verdicts": {
+   "relabel": "24/27 (MISS P1 below-100-BPM +2 vs +3, P2 2T 52 -> 49 vs -5, G4 batida house .917 -> .900 = seed 6 .896 -> .605 off-beat lock); acc1 sum 2.0528 -> 2.1273",
+   "wide": "23/27 (MISS P1 below-100 +2, P2 52 -> 51, G3 ballroom anti_locked 61 -> 70, G5 beatless publish 56 -> 61); acc1 sum -> 2.1149, harmonix beat_f .7807",
+   "wide_own": "24/27 (MISS P2 52 -> 52, G4 house .917 -> .886, G5 publish 56 -> 66); acc1 sum -> 2.0691"
+  },
+  "relabel_tune_numbers": {
+   "harmonix": "acc1 .6667 -> .6944, beat_f .7467 -> .7587, cmlt .5741 -> .5922, anti 29 -> 27, flips +13/-6",
+   "ballroom": "acc1 .6337 -> .6483, beat_f .5626 -> .5759, cmlt .3915 -> .4118, anti 61 -> 63, flips +49/-21",
+   "giantsteps_tempo": "acc1 .7524 -> .7846",
+   "beatless": "publish 56 -> 59, beats/min 29.6 -> 29.5, locked .154 -> .144"
+  },
+  "reading": "the slow-pop doubling is not the labels: all 8 named doublings stay at 2T in relabel and wide; #4251's estimator prior (150 BPM) is the mechanism, a separate round"
+ },
+ "holdout_result": {
+  "at": "2026-10-22T04:15:21Z",
+  "arm": "relabel",
+  "verdict": "21/27",
+  "misses": {
+   "P1 harmonix acc1": ".5876 -> .5825 (bar .6026)",
+   "P1 below 100 BPM": "12 -> 12 of 79 (bar 15)",
+   "P2 2T": "72 -> 73 (bar 67)",
+   "G3 harmonix anti_locked": "32 -> 39 = T-level 9 -> 6 (better) + 2T coin flips 22 -> 29",
+   "G3 ballroom anti_locked": "55 -> 63 = T-level 33 -> 37 + 2T 15 -> 21",
+   "G4 batida house": ".917 -> .900 (seed 6 off-beat lock; batida is not split by half)"
+  },
+  "passes": {
+   "harmonix beat_f": ".7094 -> .7181",
+   "ballroom acc1": ".6334 -> .6481",
+   "ballroom beat_f": ".5227 -> .5202",
+   "giantsteps acc1": ".7257 -> .7429",
+   "cmlt/downbeat": "all within or up",
+   "beatless": "publish 59, beats/min 29.5, locked .144",
+   "flips": "harmonix +17/-14, ballroom +39/-33"
+  },
+  "reading": "the tune gains mostly did not replicate (harmonix acc1 +.028 on tune, -.005 on holdout); the headline doubling targets fail on both halves. The better per-hop activation (offline AUC +.046) does not carry through a pipeline whose estimator prior and arbiter threshold (.70) were tuned on the shipped activation's calibration (relabel's picker chose thr .65 vs .45)."
+ },
+ "outcome": {
+  "at": "2026-10-22T04:17:18Z",
+  "decision": "REVERTED: no model ships. Kevin chose the revert path after the holdout and a recommendation not to ship",
+  "kept": "the oracle label option (build_dataset.py --fma-oracle), the fourth FMA audio dir in dump_corpus.py, this manifest and bench/q4288_verdict.py; data on /mnt/t9/fosfora-work/q4288 (422 tracks, Beat This labels for 827, work dirs, models)",
+  "dropped": "the FOSFORA_BEAT_MODEL knob (patch at /mnt/t9/fosfora-work/q4288/knob.patch)",
+  "next": "the slow-pop doubling is the estimator's prior (#4251): its own round; a later activation retrain must re-tune the arbiter's event threshold in the same round"
+ }
+}

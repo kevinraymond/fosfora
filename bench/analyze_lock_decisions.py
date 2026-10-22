@@ -98,6 +98,8 @@ def episodes(lines: list[dict], ref_bpm: float | None, ref_beats: np.ndarray | N
             if open_lock is not None:
                 open_lock["n_updates"] += 1
             continue
+        if d["k"] != "e":  # the arbiter's window pushes and votes (#4234)
+            continue
         ev, ts = d["ev"], d["ts"]
         if ts < TRIM:
             continue

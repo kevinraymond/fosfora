@@ -11,7 +11,7 @@
 Sources, each under the work dir unless pointed elsewhere:
   batida            <work>/data/batida/renders/*.wav          exact synthetic labels
   fma               <work>/fma_on_disk.csv rows with cls BY or CC0/PD, audio under
-                    --fma-audio (audio/, audio2/, audio3/), a <work>/dumps/transcoded/<tid>.wav
+                    --fma-audio (audio/, audio2/, audio3/, audio4/: #4288's non-electronic tracks), a <work>/dumps/transcoded/<tid>.wav
                     standing in where one exists (mp3s the decoder refused)
   negatives_train   <work>/data/negatives_train/clips/*.mp3   beatless, BY / CC0, training
   negatives_guard   --guard-clips (the 155 #4154 clips)       beatless, evaluation only
@@ -63,7 +63,7 @@ def plan(work: Path, fma_audio: Path, guard_clips: Path | None, bench: Path, onl
                 if r["cls"] not in ("BY", "CC0/PD"):
                     continue
                 tid = f"{int(r['tid']):06d}"
-                cands = [transcoded / f"{tid}.wav"] + [fma_audio / d / f"{tid}.mp3" for d in ("audio", "audio2", "audio3")]
+                cands = [transcoded / f"{tid}.wav"] + [fma_audio / d / f"{tid}.mp3" for d in ("audio", "audio2", "audio3", "audio4")]
                 src = next((p for p in cands if p.exists()), None)
                 if src is not None:
                     jobs.append(("fma", tid, src))
