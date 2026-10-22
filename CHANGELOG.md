@@ -3,13 +3,15 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v2.7.0 — 2026-10-22
+
+Beats land on the beat on more music: a learned beat witness joins the kick drum in the grid's phase check and picks the tempo level on fast dance music, the grid now leaves an off-beat lock on clear evidence, and tagged MP3s with large cover art open in analysis builds.
 
 ### Fixed
-- **Beats still landed on the off-beat on some music after v2.6.0's kick-based fix.** The beat grid's phase check now weighs a learned per-frame beat witness together with the kick drum, so it can move the grid where the kick sits on the "and" or is missing. On the Harmonix pop/EDM set beat accuracy went from 0.65 to 0.68 and on Ballroom from 0.47 to 0.48, with 17 holdout tracks fixed and none broken; tempo, downbeat and section numbers are unchanged, and beatless audio gets no new beats. The witness is a small tree model trained on Creative Commons music, credited in the source tree.
-- **The tempo readout sat at half or a third of the real tempo on fast dance music such as Viennese waltz and quickstep, and the beat grid ran with it.** Once a tempo is found, the learned beat witness now chooses which metrical level it sits at. Ballroom tempo accuracy went from 0.62 to 0.69 and beat accuracy from 0.48 to 0.52, GiantSteps tempo from 0.70 to 0.74 and Harmonix beat accuracy from 0.68 to 0.72; the cost is slow pop at 70 to 110 BPM, now read at double tempo more often (Harmonix tempo accuracy 0.65 to 0.63), with beats landing on every beat and on the "and" between.
-- **On a lot of dance music the beat grid locked onto the off-beat from the start and never moved.** Its phase check wanted overwhelming evidence over the last 32 beats, and on Latin and ballroom music, where the "and" carries real hits, it rarely got it; it now moves on clear evidence. Ballroom beat accuracy went from 0.52 to 0.54 (cha-cha-cha the most) and Harmonix from 0.72 to 0.73. The trade is syncopated pop and hip-hop, where a kick on the "and" now pulls some correctly locked songs off the beat (13 Harmonix tracks, against 22 fixed). Tempo and beatless audio are unchanged.
-- **MP3 files with large embedded cover art failed to open in `--signal-dump`, `--analyze` and `--render-scene`** ("no suitable format reader found"). The decoder could not skip an ID3 tag, so a tag over 1 MB ended the search for the audio before it began; tagged MP3s now open in builds with the `analyze` feature, and files that opened before decode exactly as they did.
+- **Beats still landed on the off-beat on some music after v2.6.0's kick-based fix.** The grid's phase check now also weighs a learned beat witness (a small model trained on Creative Commons music, credited in the source tree), so it can move the grid where the kick sits on the "and": Harmonix beat accuracy 0.65 to 0.68, 17 tracks fixed and none broken.
+- **The tempo read half or a third of the real tempo on fast dance music such as Viennese waltz and quickstep.** The beat witness now picks the metrical level: Ballroom tempo accuracy 0.62 to 0.69, GiantSteps 0.70 to 0.74. Slow pop at 70 to 110 BPM is read at double tempo more often (Harmonix 0.65 to 0.63); the audio panel's ÷2 button or the Hip-hop tempo preset puts it back.
+- **On a lot of dance music the beat grid locked onto the off-beat and never moved.** It now leaves an off-beat lock on clear rather than overwhelming evidence: Ballroom beat accuracy 0.52 to 0.54, Harmonix 0.72 to 0.73. Syncopated pop and hip-hop pay for it, where a kick on the "and" can pull a correctly locked song off the beat (13 Harmonix tracks, against 22 fixed).
+- **MP3s with large embedded cover art failed to open in `--signal-dump`, `--analyze` and `--render-scene`** ("no suitable format reader found"). ID3 tags over 1 MB are now skipped; files that opened before decode exactly as they did.
 
 ## v2.6.0 — 2026-10-20
 
