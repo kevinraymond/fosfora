@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v2.7.1 — 2026-10-23
 
 ### Docs
 - **Architecture diagrams.** [docs/DIAGRAMS.md](docs/DIAGRAMS.md) draws the engine from four perspectives (what ships and what is dev-only, threads and channels, data in and out, builds) and one diagram per flow (the analysis hop, the beat path, a rendered frame, Signal, a bench round, model training, the offline modes), in light and dark; the technical reference embeds the ones it describes.
