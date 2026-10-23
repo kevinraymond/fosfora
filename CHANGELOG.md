@@ -5,6 +5,9 @@
 
 ## Unreleased
 
+### Docs
+- **Architecture diagrams.** [docs/DIAGRAMS.md](docs/DIAGRAMS.md) draws the engine from four perspectives (what ships and what is dev-only, threads and channels, data in and out, builds) and one diagram per flow (the analysis hop, the beat path, a rendered frame, Signal, a bench round, model training, the offline modes), in light and dark; the technical reference embeds the ones it describes.
+
 ### Fixed
 - **Beats reached beat-bound visuals and OSC receivers about 20 ms after the beat.** The grid locks onto onsets the analysis sees late, so even on synthetic renders with exact beat times its beats sat 17 to 29 ms behind. A locked beat now fires 10 ms before its grid instant: Harmonix beat accuracy 0.731 to 0.737 (3 tracks fixed, none broken), Ballroom unchanged, the synthetic renders within 3 to 14 ms, and a receiver reading beats at 60 fps sees them a frame earlier on most beats. Tempo detection is unchanged; Ballroom downbeat accuracy reads 0.188 to 0.181.
 - **On some Latin dance tracks and synthetic techno the beat grid locked a quarter of a beat off and stayed there, so beat-bound visuals hit just before or after every beat.** The grid's phase check now also tests the quarter-beat positions and moves the grid when the music clearly sits there: Ballroom beat accuracy 0.543 to 0.549 with 10 tracks fixed and none broken, Harmonix 0.727 to 0.731 (4 fixed, 1 broken), and the synthetic techno renders that sat late for their first 30 seconds 0.81 to 0.90. Tempo, drop and section detection are unchanged.

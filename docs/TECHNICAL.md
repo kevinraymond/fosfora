@@ -4,30 +4,22 @@ Developer and contributor reference for the Fosfora engine internals.
 
 ## Architecture
 
-Fosfora runs on multiple threads with no mutexes in the hot rendering path:
+Fosfora runs on multiple threads with no mutexes in the hot rendering path. Every edge below is a
+channel, drained in order each frame ([DIAGRAMS.md](DIAGRAMS.md) has this and ten more views).
 
-```
-Main Thread        winit event loop → drain channels → update uniforms
-                   → per-layer PassExecutor → Compositor → PostProcess → egui → present
-
-Audio Thread       cpal callback → ring buffer → multi-res FFT → adaptive normalize
-                   → beat detect → smooth → send AudioFeatures via crossbeam
-
-MIDI Thread        midir callback → parse 3-byte MIDI → send MidiMessage (bounded 64)
-
-OSC Thread         UdpSocket recv → rosc decode → send OscInMessage (bounded 64)
-
-Web Accept Thread  TcpListener → HTTP serve or WebSocket upgrade → spawn client thread
-
-Web Client Threads 50ms read timeout → parse JSON → WsInMessage (bounded 64)
-                   drain outbound broadcast channel
-
-File Watcher       notify → debounce 100ms → send changed shader paths
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/runtime-dark.svg">
+  <img src="images/runtime-light.svg" alt="Fosfora at runtime: MIDI, OSC, web, capture, file-watcher and depth threads feed the main thread through channels; it drains inputs, applies bindings, renders, composites, post-processes, draws egui and presents; readback feeds sink and recording threads." width="900">
+</picture>
 
 The main thread drains all input channels each frame in order: MIDI → OSC → Web (last-write-wins).
 
 ## Render Pipeline
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/frame-dark.svg">
+  <img src="images/frame-light.svg" alt="One frame: drain inputs, bindings to params, the per-layer loop of compute, effect passes and particle render, then compositor, post-process, egui overlay, present, and the window and sinks." width="900">
+</picture>
 
 ```
 For each enabled layer:
@@ -350,6 +342,11 @@ All fields with types and defaults:
 
 This section covers how the pipeline is built. For what each feature *means* and the papers behind it, see [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/hop-dark.svg">
+  <img src="images/hop-light.svg" alt="The per-hop chain: DC strip, multi-resolution FFT, loudness, stereo field, HPSS, pitch, contrast, timbre, kick envelope, key, snapshot, normalize, beat detector, downbeat, structure, smooth, frame; sidecars tap key, beat, hop evidence and structure." width="900">
+</picture>
+
 **Capture:** cpal grabs audio from the default input device. Samples flow through a lock-free ring buffer to a dedicated audio thread.
 
 **Multi-resolution FFT:** Three FFT sizes target different frequency ranges:
@@ -366,7 +363,12 @@ Per-feature policy (`NormPolicy`) lives in the `FEATURES` table in `audio/schema
 **3-stage beat detection:**
 1. **OnsetDetector** — log-magnitude multi-band spectral flux with adaptive threshold
 2. **TempoEstimator** — FFT autocorrelation (Wiener-Khinchin), genre-aware log-Gaussian tempo prior (center 150 BPM), multi-ratio octave correction, cascading octave-up via local peak detection, Kalman filter in log2-BPM space. Two autocorrelations with two jobs: the flux's earns the first tempo (the seed gate, so beatless audio stays silent), and once seeded the beat activation's chooses the metrical level, with the flux's reading as the fallback
-3. **BeatScheduler** — predictive state machine with phase correction, outputs `beat` trigger and `beat_phase` sawtooth
+3. **BeatScheduler** — a phase-locked grid: beats fire at predicted instants (10 ms early, so they reach the receiver on the beat), in-window onsets correct the phase, and a phase arbiter folds the kick and beat-witness events onto the grid and moves it by a half, quarter or three-quarter beat when three votes in a row say the music sits there. Outputs the `beat` trigger and the `beat_phase` sawtooth
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/beat-dark.svg">
+  <img src="images/beat-light.svg" alt="The beat path: the seed gate, the tempo estimator, the activation, and the grid's per-instant loop of emit, settle, PLL, fold and vote, with the arbiter's shift and the kick and activation events in its window." width="900">
+</picture>
 
 **Smoothing:** Asymmetric EMA (fast attack, slow release) on all features. `beat` and `beat_phase` are pass-through (no smoothing).
 
