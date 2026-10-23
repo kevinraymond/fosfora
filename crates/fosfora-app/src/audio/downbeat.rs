@@ -107,6 +107,37 @@ pub struct DownbeatTracker {
     bar_duration: f64,
     /// Held between beats (discrete per-beat value emitted every frame).
     cur_beat_in_bar: f32,
+    /// #4499 sidecar: collect a [`DownbeatDebug`] per beat. Off unless
+    /// [`Self::enable_debug`] is called, so the live path does no extra work.
+    dbg: bool,
+    dbg_beat: Option<DownbeatDebug>,
+    dbg_path: &'static str,
+    dbg_best: Option<(usize, usize, f32)>,
+}
+
+/// #4499: one beat's scoring inputs and the decision they produced, for the dev-only
+/// downbeat sidecar (`downbeat_sidecar.rs`). Enough to replay the tracker exactly: the
+/// cues it wrote into the ring, the grid index it pushed, and the lock state after.
+#[derive(Clone, Copy, Debug)]
+pub struct DownbeatDebug {
+    /// The grid index this beat was pushed with (`BeatEntry::global_idx`).
+    pub idx: u64,
+    /// The cues written into the PREVIOUS beat's entry (flux_low, chroma_change,
+    /// loud_rise); `None` on the first beat, when the ring is empty.
+    pub filled: Option<[f32; 3]>,
+    /// Which branch of `update_meter_phase` ran: `warm` (ring too short), `fb` (low
+    /// confidence fallback), `hold` (the lock won), `cand` (a challenger accrued), `sw`
+    /// (the challenger took the lock).
+    pub path: &'static str,
+    /// The top (meter, phase, contrast) this beat, when scoring ran.
+    pub best: Option<(usize, usize, f32)>,
+    /// The lock after this beat.
+    pub meter: usize,
+    pub phase: usize,
+    pub candidate: Option<(usize, usize)>,
+    pub candidate_count: u32,
+    /// Whether this beat fired the downbeat.
+    pub downbeat: bool,
 }
 
 impl DownbeatTracker {
@@ -126,7 +157,22 @@ impl DownbeatTracker {
             last_downbeat_time: 0.0,
             bar_duration: 0.0,
             cur_beat_in_bar: 0.0,
+            dbg: false,
+            dbg_beat: None,
+            dbg_path: "warm",
+            dbg_best: None,
         }
+    }
+
+    /// #4499: start collecting a [`DownbeatDebug`] per beat (dev sidecar only).
+    pub fn enable_debug(&mut self) {
+        self.dbg = true;
+    }
+
+    /// #4499: the debug record of the beat processed by the last [`Self::process`] call,
+    /// if a beat fired on it.
+    pub fn take_debug(&mut self) -> Option<DownbeatDebug> {
+        self.dbg_beat.take()
     }
 
     /// Called every audio frame. `band_flux` is `Analyzer::band_flux_3()` (low/mid/high),
@@ -229,11 +275,12 @@ impl DownbeatTracker {
         // put a beat's attack before its own fire and made forward attribution
         // accidentally correct; on time, forward attribution rotated every
         // fixture downbeat exactly one beat late.
-        if let Some(last) = self.ring.back_mut() {
+        let filled = self.ring.back_mut().map(|last| {
             last.flux_low = self.flux_accum[0];
             last.chroma_change = chroma_change;
             last.loud_rise = loud_rise;
-        }
+            [last.flux_low, last.chroma_change, last.loud_rise]
+        });
 
         // Reset per-beat accumulators / references for the next interval.
         self.flux_accum = [0.0; 3];
@@ -267,11 +314,26 @@ impl DownbeatTracker {
         }
 
         self.beat_idx += 1;
+        if self.dbg {
+            self.dbg_beat = Some(DownbeatDebug {
+                idx,
+                filled,
+                path: self.dbg_path,
+                best: self.dbg_best,
+                meter: self.meter,
+                phase: self.phase,
+                candidate: self.candidate,
+                candidate_count: self.candidate_count,
+                downbeat: is_downbeat,
+            });
+        }
         if is_downbeat { 1.0 } else { 0.0 }
     }
 
     /// Score every (meter, phase) by accent contrast and update the lock with hysteresis.
     fn update_meter_phase(&mut self) {
+        self.dbg_path = "warm";
+        self.dbg_best = None;
         if self.ring.len() < MIN_BEATS_FOR_LOCK {
             return;
         }
@@ -308,10 +370,12 @@ impl DownbeatTracker {
             }
         }
         let (best_m, best_p, best_score) = best;
+        self.dbg_best = Some(best);
 
         if best_score < CONFIDENCE_THRESHOLD {
             // Meter ambiguous: default to 4/4 aligned to the strongest recent beat so the
             // downbeat still lands somewhere musical.
+            self.dbg_path = "fb";
             self.meter = 4;
             self.phase = strongest_phase(&scored, 4);
             self.candidate = None;
@@ -320,17 +384,21 @@ impl DownbeatTracker {
         }
 
         if (best_m, best_p) == (self.meter, self.phase) {
+            self.dbg_path = "hold";
             self.candidate = None;
             self.candidate_count = 0;
         } else if self.candidate == Some((best_m, best_p)) {
+            self.dbg_path = "cand";
             self.candidate_count += 1;
             if self.candidate_count >= HYSTERESIS_BEATS {
+                self.dbg_path = "sw";
                 self.meter = best_m;
                 self.phase = best_p;
                 self.candidate = None;
                 self.candidate_count = 0;
             }
         } else {
+            self.dbg_path = "cand";
             self.candidate = Some((best_m, best_p));
             self.candidate_count = 1;
         }

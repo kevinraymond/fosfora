@@ -6,6 +6,7 @@ pub mod capture;
 pub mod chroma;
 pub mod decimate;
 pub mod downbeat;
+pub mod downbeat_sidecar;
 pub mod downmix;
 pub mod features;
 pub mod hop;

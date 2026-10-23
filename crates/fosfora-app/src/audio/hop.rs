@@ -16,6 +16,7 @@ use super::analyzer::FftAnalyzer;
 use super::beat::{BeatDetector, TempoCommand, TempoConfig};
 use super::beat_sidecar::BeatSidecar;
 use super::downbeat::DownbeatTracker;
+use super::downbeat_sidecar::DownbeatSidecar;
 use super::hop_sidecar::{HopEvidence, HopSidecar};
 use super::hpss::HpssAnalyzer;
 use super::key::KeyDetector;
@@ -129,6 +130,8 @@ pub struct HopAnalyzer {
     /// Dev-only per-hop evidence dump for the beat model, active iff `FOSFORA_HOP_SIDECAR`
     /// is set (#4163).
     hop_sidecar: Option<HopSidecar>,
+    /// Dev-only downbeat-tracker dump, active iff `FOSFORA_DOWNBEAT_SIDECAR` is set (#4499).
+    downbeat_sidecar: Option<DownbeatSidecar>,
     /// `ANALYSIS_HOP / sample_rate` — the attack/release EMAs and the onset decay are
     /// expressed as time constants, so they need the hop duration, not the hop length.
     dt: f32,
@@ -137,6 +140,11 @@ pub struct HopAnalyzer {
 impl HopAnalyzer {
     pub fn new(sample_rate: f32, band_scale: BandScale, tempo_cfg: TempoConfig) -> Self {
         let hop_rate = super::hop_rate(sample_rate);
+        let downbeat_sidecar = DownbeatSidecar::from_env();
+        let mut downbeat_tracker = DownbeatTracker::new();
+        if downbeat_sidecar.is_some() {
+            downbeat_tracker.enable_debug();
+        }
         Self {
             dc_mono: DcBlocker::new(sample_rate),
             dc_left: DcBlocker::new(sample_rate),
@@ -148,7 +156,7 @@ impl HopAnalyzer {
             beat_detector: BeatDetector::new(sample_rate, tempo_cfg),
             key_detector: KeyDetector::new(sample_rate),
             loudness_meter: LoudnessMeter::new(sample_rate),
-            downbeat_tracker: DownbeatTracker::new(),
+            downbeat_tracker,
             structure_tracker: StructureTracker::new(),
             smoother: FeatureSmoother::new(),
             stereo_analyzer: StereoAnalyzer::with_sample_rate(sample_rate),
@@ -159,6 +167,7 @@ impl HopAnalyzer {
             structure_sidecar: StructureSidecar::from_env(),
             beat_sidecar: BeatSidecar::from_env(),
             hop_sidecar: HopSidecar::from_env(sample_rate),
+            downbeat_sidecar,
             dt: ANALYSIS_HOP as f32 / sample_rate,
         }
     }
@@ -386,6 +395,18 @@ impl HopAnalyzer {
             timestamp,
             loud_silent,
         );
+        if let Some(sidecar) = &mut self.downbeat_sidecar {
+            if let Some(d) = self.downbeat_tracker.take_debug() {
+                sidecar.record(
+                    timestamp,
+                    beat_result.settled_beat_time,
+                    beat_result.beat_locked,
+                    loud_silent,
+                    beat_result.bpm,
+                    &d,
+                );
+            }
+        }
         raw.downbeat = db.downbeat;
         raw.bar_phase = db.bar_phase;
         raw.beat_in_bar = db.beat_in_bar;
