@@ -221,7 +221,7 @@ def tiers():
     iy = 375
     p.append(box(200, iy, "Hop sidecar", "FOSFORA_HOP_SIDECAR", w=150, dashed=True))
     p.append(box(360, iy, "Beat sidecar", "FOSFORA_BEAT_SIDECAR", w=150, dashed=True))
-    p.append(box(525, iy, "Key · structure", "FOSFORA_*_SIDECAR", w=150, dashed=True))
+    p.append(box(525, iy, "Key · bar · structure", "FOSFORA_*_SIDECAR", w=150, dashed=True))
     p.append(box(760, iy, "Frame log", "FOSFORA_FRAME_LOG", w=150, dashed=True))
     p.append(line("M300 173 V240 H200 V351", dashed=True))
     p.append(vline(360, 173, 351, dashed=True))
@@ -394,15 +394,16 @@ def hop():
     p.append(vline(835, 123, 195)); p.append(vline(85, 243, 315))
     p.append(box(235, 160, "Key sidecar", "FOSFORA_KEY_SIDECAR", w=W, h=38, dashed=True))
     p.append(box(400, 440, "Beat + hop sidecars", "FOSFORA_BEAT/HOP_SIDECAR", w=170, h=38, dashed=True))
-    p.append(box(640, 440, "Structure sidecar", "FOSFORA_STRUCTURE_SIDECAR", w=170, h=38, dashed=True))
+    p.append(box(640, 440, "Bar + structure sidecars", "FOSFORA_DOWNBEAT/STRUCTURE_SIDECAR", w=170, h=38, dashed=True))
     p.append(vline(235, 197, 181, dashed=True))
     p.append(line("M300 363 V400 H400 V419", dashed=True))
     p.append(line("M560 363 V400 H640 V419", dashed=True))
+    p.append(line("M420 363 V400 H640 V419", dashed=True))
     p.append(label(450, 480, "dashed: records for the bench and the model, only when the env var names a file", "middle", "note"))
     return p, 900, 500, ("The per-hop chain: DC strip, multi-resolution FFT, loudness and the silence flag, stereo field, "
                          "HPSS, pitch, contrast, timbre, kick envelope, key, a pre-normalization snapshot, normalize, "
                          "the beat detector, downbeat, structure, smoothing, and the frame of 85 features and events; "
-                         "sidecars tap key, beat, hop evidence and structure when an env var names a file.")
+                         "sidecars tap key, beat, hop evidence, downbeat and structure when an env var names a file.")
 
 
 def beat():

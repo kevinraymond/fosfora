@@ -66,7 +66,7 @@ features and events. The dashed taps are the sidecars.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/hop-dark.svg">
-  <img src="images/hop-light.svg" alt="The per-hop chain: DC strip, multi-resolution FFT, loudness, stereo field, HPSS, pitch, contrast, timbre, kick envelope, key, snapshot, normalize, beat detector, downbeat, structure, smooth, frame; sidecars tap key, beat, hop evidence and structure." width="900">
+  <img src="images/hop-light.svg" alt="The per-hop chain: DC strip, multi-resolution FFT, loudness, stereo field, HPSS, pitch, contrast, timbre, kick envelope, key, snapshot, normalize, beat detector, downbeat, structure, smooth, frame; sidecars tap key, beat, hop evidence, downbeat and structure." width="900">
 </picture>
 
 ### The beat path
