@@ -5,10 +5,11 @@
 
 ## v2.8.0 — 2026-10-23
 
-TouchDesigner gets a ready-made component and four example views for `fosfora --signal`, and the bar line stops jumping a beat or two several times a minute on steady dance music.
+Fosfora becomes the analysis brain for TouchDesigner. `fosfora --signal` runs headless on the CPU and broadcasts beats, bars, phrases, sections, key and energy; two new release assets turn that stream into channels you can wire and four views you can watch within minutes of downloading. The bar line also stops jumping a beat or two several times a minute on steady dance music.
 
 ### Added
-- **TouchDesigner examples and component.** Two new release assets: `fosfora_examples.tox` drives four ready-made views from `fosfora --signal` (a dashboard, a 3D grid, a light rig with DMX output, and a look at keeping time), and `fosfora_signal.tox` gives you the stream as CHOP channels for your own network, with drop-like moments marked experimental. Its Steady Bars option makes every bar finish even when Fosfora moves the downbeat. Setup in [docs/TOUCHDESIGNER.md](docs/TOUCHDESIGNER.md); needs TouchDesigner 2025, Non-Commercial is enough.
+- **TouchDesigner examples.** Drag `fosfora_examples.tox` into a network and four views come alive with the music: a dashboard of every channel, a 3D grid of 640 boxes marching in eighth notes with a ripple for every kick, a rig of eight moving lights whose look follows the section (with an Art-Net DMX output, off until you turn it on), and Keeping time, which compares bars as they arrive with Steady Bars and TouchDesigner's own clock. Show all four or one at full size, and open any of them to see how it is wired.
+- **TouchDesigner component.** `fosfora_signal.tox` turns `fosfora --signal` into CHOP channels you wire like any other: one-frame pulses for beats, downbeats, kicks and onsets, a bar phase that moves every frame, BPM, phrase position, levels, and section and key, with drop-like moments marked experimental. Steady Bars makes every bar finish even when Fosfora moves the downbeat. Setup in [docs/TOUCHDESIGNER.md](docs/TOUCHDESIGNER.md); needs TouchDesigner 2025, and the free Non-Commercial license is enough.
 
 ### Fixed
 - **On steady dance music the bar line jumped a beat or two several times a minute, often straight back, so bars came out like [1 2] [1 2 3 4].** When the downbeat evidence turned ambiguous the tracker re-placed the bar on every beat; now another position must win clearly for two bars running. On the Harmonix set the bar line moves 2.5 times a locked minute instead of 7.8 and downbeat accuracy rises 0.28 to 0.31; beats and tempo are unchanged. The drop-like warning's 0.8 tier now catches 23 of 34 hand-labeled drops (was 19) but 42 of 141 Harmonix chorus onsets (was 53).
