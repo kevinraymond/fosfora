@@ -27,6 +27,13 @@ if ! scripts/audit_pfx_rates.py --check >/dev/null; then
     exit 1
 fi
 
+# Guard the TouchDesigner example and component: the extension's behavior, and both
+# checked-in .tox files against their sources (a stale .tox would ship old behavior silently).
+if ! python3 integrations/touchdesigner/test_fosfora_signal_ext.py >/dev/null; then
+    echo "ERROR: TouchDesigner component check failed. Run integrations/touchdesigner/test_fosfora_signal_ext.py."
+    exit 1
+fi
+
 # Check cargo fmt
 if ! cargo fmt --all -- --check 2>/dev/null; then
     echo "ERROR: cargo fmt check failed. Run 'cargo fmt --all' to fix."

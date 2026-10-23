@@ -173,7 +173,8 @@ message to bind it, or address things directly:
 
 **Signal** — run `fosfora --signal` and the analysis engine broadcasts beats, bars, sections,
 key, phrase position and drop prediction over OSC with no window at all — Fosfora as the
-analysis brain of a TouchDesigner/Resolume/lighting rig. [The schema →](docs/SIGNAL.md)
+analysis brain of a TouchDesigner/Resolume/lighting rig. [The schema →](docs/SIGNAL.md), and a
+ready-made TouchDesigner component and examples with a five-minute setup: [TouchDesigner →](docs/TOUCHDESIGNER.md)
 
 **Your phone** — enable the web surface, switch on **Other devices** under Setup ▸ Control, and
 scan the QR code it shows (or open the network address beside it) on any phone or tablet on the
@@ -189,6 +190,7 @@ holding the old one. Multiple people can connect at once.
 | [**Tutorials**](docs/TUTORIALS.md) | The full guide — effects, audio, layers, scenes, MIDI, OSC |
 | [**Quick reference**](docs/QUICK-REFERENCE.md) | Shortcuts, blend modes, OSC addresses, config files |
 | [**Signal**](docs/SIGNAL.md) | The headless analysis broadcast — `--signal` and the `/fosfora/v1/` OSC schema |
+| [**TouchDesigner**](docs/TOUCHDESIGNER.md) | Quick start for the TouchDesigner examples and the `fosfora_signal` component: beats, phases, sections and key as CHOP channels |
 | [**Audio features**](docs/AUDIO-FEATURES.md) | All 85 features in plain English, and the research behind them |
 | [**Technical**](docs/TECHNICAL.md) | Architecture, shader authoring, the `.pfx` format |
 | [**Credits**](docs/CREDITS.md) | The libraries and papers this is built on |

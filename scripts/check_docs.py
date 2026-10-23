@@ -57,7 +57,11 @@ def slug(text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"[`*_~]", "", text).strip().lower()
     text = re.sub(r"[^\w\s-]", "", text)
-    return re.sub(r"\s+", "-", text)
+    # One hyphen per space, not per run: GitHub does not collapse. A heading like
+    # "Address reference — `/fosfora/v1/`" loses the dash and keeps both spaces, so its
+    # real anchor is `address-reference--fosforav1`; collapsing here passed the single-
+    # hyphen spelling that 404s on GitHub and failed the one that works.
+    return re.sub(r"\s", "-", text)
 
 
 def anchors(path: Path) -> set[str]:

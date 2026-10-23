@@ -42,7 +42,7 @@ process cannot, so treat more than ~3 s of status silence as offline.
 |---|---|---|
 | `/fosfora/v1/beat` | int count | A beat fired |
 | `/fosfora/v1/downbeat` | int count | A bar started (the "one") |
-| `/fosfora/v1/drop` | int count | Drop detected (armed by a sustained build, fired on the loudness jump + sub-bass return) |
+| `/fosfora/v1/drop` | int count | A drop-like moment, **experimental** (armed by a sustained build, fired on the loudness jump + sub-bass return); see the honesty notes |
 | `/fosfora/v1/onset` | float strength | Note/hit onset (derived rising edge of the onset envelope) |
 | `/fosfora/v1/stem/drums/onset` | float strength | Kick-band onset (30–120 Hz flux crossing, hysteresis) |
 | `/fosfora/v1/section/boundary` | float conf, float age_s | A section boundary was confirmed `age_s` **ago** — see below |
@@ -62,14 +62,14 @@ process cannot, so treat more than ~3 s of status silence as offline.
 | `/fosfora/v1/stem/melody/energy` | float 0..1 | Harmonic (sustained/pitched) energy — **proxy** |
 | `/fosfora/v1/phrase/bar` | int | Bar within the phrase, 1-based |
 | `/fosfora/v1/phrase/beats_left` | int | Whole beats until the next phrase boundary (4/4 assumption) |
-| `/fosfora/v1/predict/drop` | float 0..1 | Drop likelihood, designed to rise **before** the drop lands — lead time, not detection |
+| `/fosfora/v1/predict/drop` | float 0..1 | Likelihood of a drop-like moment, **experimental**, designed to rise **before** it lands — lead time, not detection |
 
 `predict/drop` has three calibrated regimes: **below 0.5** is tension telemetry
 (no committed build — never treat it as a warning); **0.5 and above** means a
-build has sustained long enough to commit, with a drop-scale landing expected
+build has sustained long enough to commit, with a drop-like landing expected
 within roughly 8 bars; **0.8 and above** adds imminence evidence (sub-bass
 withdrawal, kick gap, phrase boundary) and is the tier to act on. The value is
-monotone within a build and collapses when the drop fires or the build fails.
+monotone within a build and collapses when the drop-like moment fires or the build fails.
 It is likelihood-*ordered*, not a calibrated probability — measured per-tier
 precision lives in `docs/BENCHMARKS.md`, and it is genre-calibrated against
 EDM-style arrangements: on other material the 0.5 tier fires on chorus-scale
@@ -79,7 +79,7 @@ dynamics too.
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/fosfora/v1/section` | string, float conf | `intro` \| `build` \| `drop` \| `break` \| `outro` \| `steady` |
+| `/fosfora/v1/section` | string, float conf | `intro` \| `build` \| `drop` \| `break` \| `outro` \| `steady` (`drop` is drop-like, experimental) |
 | `/fosfora/v1/key` | string, float conf | `"Am"`, `"F#"`, … (only announced above 0.3 confidence) |
 | `/fosfora/v1/phrase/len` | int, float conf | Inferred phrase length: 8, 16 or 32 bars |
 
@@ -124,6 +124,11 @@ addresses are stable: if real separation lands later (ONNX), values improve in p
 with no schema change. `stem/bass/onset` and `stem/melody/onset` are **reserved but
 not emitted** — no honest causal proxy exists today.
 
+**`drop`, `predict/drop` and the `drop` section are experimental, and mean drop-like.** The
+detector misses some real drops and fires on moments that feel like one without being one.
+On a continuous stream (a radio station, a DJ mix) a committed build can carry across a
+song change and fire in the next track. Treat them as cues, not ground truth.
+
 **The live path never emits `outro`.** Causally, an outro is indistinguishable from a
 break or a quiet steady until the song has already ended. The label stays in the
 schema (offline labeling may use it); a live guess would only teach you to distrust
@@ -135,7 +140,7 @@ beat lock (ambient), musical time falls back to a 2 s/bar equivalent. The confid
 argument is not decoration — gate on it.
 
 **`section/boundary` is a separate stream from `section`, and the two disagree on
-purpose.** `section` announces what the music *is* (intro, build, drop, break, steady) and
+purpose.** `section` announces what the music *is* (intro, build, drop-like, break, steady) and
 only speaks when that label changes; a chorus following a verse is not a label change, so
 it is silent there. `section/boundary` announces *that the material changed*, from a peak
 in the self-similarity novelty, whether or not the label moved. If you want cues, patch
@@ -154,7 +159,7 @@ confidence are right about 66% of the time against 38% for the bottom third; gat
 keeps under a third of the events and takes precision from 0.51 to 0.66. Take everything for
 a busy, responsive patch; gate high when a false cue is expensive.
 
-**`phrase/*` assumes 4/4** and infers 8/16/32-bar grids from how drops, section
+**`phrase/*` assumes 4/4** and infers 8/16/32-bar grids from how drop-like moments, section
 boundaries and build onsets align. Off-grid material keeps a position
 under the best hypothesis with low confidence.
 
@@ -194,9 +199,12 @@ using the OSC type tag: `i` (int32), `f` (float32), `s` (string).
 
 ## Receiver quick-notes
 
-- **TouchDesigner**: OSC In CHOP (port 9010) turns the continuous group into
-  channels; use an OSC In DAT for the string-typed `/section` and `/key` (multi-arg
-  messages arrive as one row).
+- **TouchDesigner**: the `fosfora_signal` component turns the whole stream into CHOP
+  channels (pulses, phases, section and key as indices and text), and `fosfora_examples`
+  shows it driving four views the moment you drag it in; setup and reference in
+  [TOUCHDESIGNER.md](TOUCHDESIGNER.md). Without it, an OSC In CHOP (port 9010) turns the
+  continuous group into channels but ignores string arguments; use an OSC In DAT for the
+  string-typed `/section` and `/key` (multi-arg messages arrive as one row).
 - **QLC+**: add an OSC input plugin on port 9010 and map addresses in an input
   profile; the event counts work well as triggers because every change is a new value.
 - **Anything**: `oscdump 9010` (liblo) prints the full stream for a first look.

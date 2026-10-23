@@ -3,6 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Added
+- **TouchDesigner examples and component.** Two new release assets: `fosfora_examples.tox` drives four ready-made views from `fosfora --signal` (a dashboard, a 3D grid, a light rig with DMX output, and a look at keeping time), and `fosfora_signal.tox` gives you the stream as CHOP channels for your own network, with drop-like moments marked experimental. Its Steady Bars option makes every bar finish even when Fosfora moves the downbeat. Setup in [docs/TOUCHDESIGNER.md](docs/TOUCHDESIGNER.md); needs TouchDesigner 2025, Non-Commercial is enough.
+
 ## v2.7.1 — 2026-10-23
 
 ### Docs

@@ -52,3 +52,5 @@ jobs:
         run: scripts/audit_pfx_rates.py --check
       - name: scenelib unit tests
         run: scripts/test_scenelib.py
+      - name: TouchDesigner example and component (extension tests, .tox files in step with their sources)
+        run: python3 integrations/touchdesigner/test_fosfora_signal_ext.py

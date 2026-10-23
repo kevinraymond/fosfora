@@ -284,6 +284,14 @@ jobs:
           name: fosfora-x86_64-pc-windows-msvc
           path: artifacts/windows
 
+      # The TouchDesigner example and component ship as their own assets: a TD user wants
+      # the .tox, not an app archive to dig it out of. Repo checks keep both in step with
+      # their sources.
+      - name: Stage the TouchDesigner example and component
+        run: |
+          mkdir -p artifacts/touchdesigner
+          cp integrations/touchdesigner/fosfora_examples.tox integrations/touchdesigner/fosfora_signal.tox artifacts/touchdesigner/
+
       - name: List artifacts
         run: find artifacts -type f
 

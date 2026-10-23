@@ -9,6 +9,8 @@ five minutes. Everything below goes deeper.
 | **[TUTORIALS.md](TUTORIALS.md)** | The full user manual — 17 chapters, effects and layers through trama node chains to OSC | …are learning the app and want to be walked through it |
 | **[QUICK-REFERENCE.md](QUICK-REFERENCE.md)** | Panel map, shortcuts, blend modes, MIDI/OSC address tables, config files | …already know the app and just need the number |
 | **[AUDIO-FEATURES.md](AUDIO-FEATURES.md)** | All 85 audio features in plain English, with the research behind each | …are building bindings and want to pick the *right* feature |
+| **[SIGNAL.md](SIGNAL.md)** | The headless analysis broadcast: `--signal`, the `/fosfora/v1/` OSC schema, emission semantics, what each address does and does not claim | …are feeding Fosfora's analysis into TouchDesigner, Resolume, a lighting desk or your own code |
+| **[TOUCHDESIGNER.md](TOUCHDESIGNER.md)** | Quick start for the TouchDesigner examples and the `fosfora_signal` component, its channels and parameters, latency, troubleshooting | …want beats, phases, sections and key as CHOP channels in five minutes |
 | **[BENCHMARKS.md](BENCHMARKS.md)** | Measured accuracy of the causal analysis engine vs published systems, per dataset | …want to know how far to trust the beat/tempo/key/section telemetry |
 | **[TECHNICAL.md](TECHNICAL.md)** | Architecture, render pipeline, shader authoring guide, `.pfx` format | …are writing an effect or hacking on the engine |
 | **[DIAGRAMS.md](DIAGRAMS.md)** | The system drawn from four perspectives (tiers, runtime, data flow, builds) and one diagram per flow | …want the shape of the engine before reading TECHNICAL.md |
