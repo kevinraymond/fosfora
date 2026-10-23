@@ -1,0 +1,68 @@
+{
+ "schema": "fosfora-bench/round-manifest/v1",
+ "_policy": "Pre-registered after the tune-half selection reads of Ballroom and Harmonix and BEFORE any candidate is read on GiantSteps, batida, the negatives, the marks recordings or any holdout half. Amendments are appended, never edited.",
+ "issue": "#4499 (board): the bar line (downbeat) flip-flops. 40 bar_phase jumps in a 268 s EDM station recording, 37 while the tempo is locked, a third undone within 10 s.",
+ "mechanism_evidence": {
+  "instrument": "FOSFORA_DOWNBEAT_SIDECAR (dev-only, audio/downbeat_sidecar.rs): one record per scored beat with the three accent cues the beat wrote into the ring (raw f32 bits), the grid index, the tempo-lock flag, the branch update_meter_phase took (warm / fb / hold / cand / sw), the top (meter, phase, contrast) and the lock after it. Binary fosfora-instr-q4499-acd626d6435480fa = main d9a6e42 (v2.7.1) plus the sidecar; with the sidecar ON its signal dumps are byte-identical to q4474_ship's on all 1720 Ballroom / Harmonix / GiantSteps tracks.",
+  "replica": "tools/dbrep.py (/mnt/t9/fosfora-work/q4499/tools): rebuilds the ring, scores it in float32 in the Rust evaluation order, replays the decision rule. 0 decision mismatches over 1959 tracks (Ballroom 685, Harmonix 374, GiantSteps 661, negatives 155, batida 80, 4 marks recordings), 426,325 beats; its downbeat times equal the wire's /downbeat on every track and its per-track downbeat F equals the bench's on all 1059 Ballroom + Harmonix tracks and score_fosfora.py's down_f on all 80 batida renders. The tracker feeds nothing back into the beat path, so a forecast of its outputs is exact, not an approximation.",
+  "move_definition": "a bar-line move = a fired downbeat whose alignment (meter, grid index mod meter) differs from the previous fired downbeat's (kind 'align'), or, alignment unchanged, whose grid-index distance disagrees with the elapsed time by > 0.4 beat (kind 'grid', the beat grid itself moved). Counted while bpm/locked; per minute of locked beat time (sum of inter-beat gaps, each capped at 2 s); 'reverted' = the pre-move alignment returns within 10 s.",
+  "classification_tune_shipped_rule": {
+   "predicate_fb": "update_meter_phase: best_score < CONFIDENCE_THRESHOLD (.08) -> meter = 4, phase = strongest_phase(scored, 4), candidate cleared. Runs on every such beat, no hysteresis.",
+   "predicate_sw": "a challenger (meter, phase) that tops the contrast ranking HYSTERESIS_BEATS (8) consecutive beats takes the lock.",
+   "harmonix_tune": "4864 locked moves in 625.5 min = 7.78/min; fallback 3003 (62%), hysteresis switch 1465 (30%, of which meter 3/4 flips 455), grid 381 (8%); 1862 revert within 10 s",
+   "ballroom_tune": "1131 in 111.2 min = 10.17/min; fallback 434 (38%), switch 354 (31%), grid 340 (30%); 229 revert",
+   "giantsteps_tempo_tune": "4947 in 541.2 min = 9.14/min; fallback 3041 (61%), switch 1280 (26%), grid 611 (12%); 1859 revert",
+   "batida_80": "1013 in 237.6 min = 4.26/min; fallback 495 (49%), switch 357, grid 157",
+   "marks_4_recordings": "770 in 80.0 min = 9.63/min; fallback 582 (76%), switch 136, grid 52; 352 revert",
+   "negatives_155": "146 in 10.7 min; fallback 64, switch 30, grid 51",
+   "edm_20261023_111937_td": "v2.7.1 replay: 42 moves, 36 locked = fallback 23, switch 9 (3 meter), grid 4; 11 revert within 10 s. (The q_crosssong reference dump was made by a pre-v2.7.1 binary, beats 10 ms later; wire_moves.py reads 36 / 34 locked there and 41 / 35 on the v2.7.1 replay.)"
+  }
+ },
+ "baseline": {
+  "binary": "fosfora-instr-q4499-acd626d6435480fa (main d9a6e42 v2.7.1 + sidecar; dumps byte-identical to q4474_ship 2a18053e6b2e1c2e)",
+  "bench_root": "/mnt/t9/fosfora-work/q4163/bench/q4474_ship",
+  "sidecars": "/mnt/t9/fosfora-work/q4499/side_base"
+ },
+ "split": {
+  "rule": "sha256(track_id) parity, even -> tune, odd -> holdout, on ballroom, harmonix and giantsteps_tempo",
+  "selection_reads": ["ballroom tune", "harmonix tune", "giantsteps_tempo tune", "the 80 batida renders", "the 155 beatless clips", "the 4 marks recordings"],
+  "scored_once_at_end": ["ballroom holdout", "harmonix holdout", "giantsteps_tempo holdout"]
+ },
+ "candidates": {
+  "A_fbh8": "the low-confidence fallback no longer moves the bar line by itself: its choice (4/4 on the strongest phase) becomes a challenger like any other and must win HYSTERESIS_BEATS (8) consecutive beats. No new constant.",
+  "B_fbh8_mg10_mfb": "A, plus a challenger (from either branch) accrues a beat only while its contrast exceeds the current lock's own contrast by 0.10; otherwise the streak resets. One new constant.",
+  "C_fbh8_mg10": "A, plus the 0.10 margin on the confident branch only."
+ },
+ "forecast_tune": {
+  "_method": "exact replica (tools/forecast.py), tune halves; downbeat F delta vs the shipped rule, tracks lost / gained by > .1, locked moves per minute, reverted within 10 s",
+  "ship": {"ballroom": "F .1841, 10.17/min, rev 229", "harmonix": "F .2830, 7.78/min, rev 1862"},
+  "A_fbh8": {"ballroom": "-.0008 (SE .0049) lost 32 / gained 31, 7.15/min, rev 51", "harmonix": "+.0123 (SE .0040) 3 / 11, 4.03/min, rev 406"},
+  "B_fbh8_mg10_mfb": {"ballroom": "-.0022 (SE .0076) 54 / 46, 5.73/min, rev 15", "harmonix": "+.0252 (SE .0083) 16 / 32, 2.27/min, rev 75"},
+  "C_fbh8_mg10": {"ballroom": "+.0017 (SE .0071) 49 / 47, 5.96/min, rev 19", "harmonix": "+.0201 (SE .0074) 11 / 30, 2.59/min, rev 117"}
+ },
+ "rejected_on_tune_forecast": {
+  "longer_switch_hysteresis": "h12 / h16 / h24 with the shipped fallback: harmonix -.0051 / -.0054 / -.0140, ballroom -.0074 / -.0103 / -.0115; with fbh8, h12 harmonix +.0101 (below A) ballroom -.0076. Slower correction of a wrong lock costs more than the noise it filters.",
+  "fallback_hold": "fbhold (low confidence keeps the lock once a confident one exists): harmonix +.0159 but ballroom -.0039; with h16 harmonix +.0340 / ballroom -.0175 (63 lost / 39 gained); with h24/h32 ballroom -.018 / -.023. Ballroom's 30 s clips need the fallback to be able to relocate.",
+  "meter_hysteresis": "a longer streak for a meter change (hm12 / hm16) adds harmonix +.004 / +.005 over A but costs the waltzes: Ballroom VienneseWaltz -.016 / -.049, Waltz -.019 / -.021.",
+  "confidence_threshold": "conf .04 / .06 / .12 with the shipped fallback: harmonix +.0083 / +.0003 / +.0033 with ballroom -.0030 / +.0013 / +.0063 and moves 4.77 / 6.17 / 10.17 per min; with fbh8, conf .04 / .06 / .12 read within .004 of A on both sets. Not the lever.",
+  "fallback_free_until_lock": "fbh8_free (reassign on the spot until a confident lock): ballroom -.0047, harmonix +.0114, both below A.",
+  "larger_margins": "fbh8 with margin .15 / .20 / .30: harmonix +.0364 / +.0273 / +.0202 (non-monotonic), ballroom -.0030 / -.0113 / -.0090 with lost growing (64/52, 75/51, 88/57). Past .12 the bar line holds wrong locks on the short clips."
+ },
+ "targets": {
+  "P1_moves": "locked moves per minute: harmonix <= 0.6 x baseline, giantsteps_tempo <= 0.6 x baseline, ballroom <= 0.85 x baseline (its 30% grid class is out of this tracker's reach); edm_20261023_111937_td locked moves <= 0.6 x 36 = 21",
+  "P2_flipflop": "harmonix moves reverted within 10 s <= 0.4 x baseline",
+  "G1_harmonix_downbeat": "harmonix downbeat_f >= baseline (no loss)",
+  "G2_ballroom_downbeat": "ballroom downbeat_f >= baseline - 0.005 (about one paired SE on 30 s clips)",
+  "G3_flips": "per labeled dataset: tracks lost by > .1 <= gained + 2 x sqrt(lost + gained) (2 sigma of a no-change binomial)",
+  "G4_batida": "mean down_f over the 80 renders >= baseline - 0.01, and the waltz template's mean >= baseline - 0.02",
+  "G5_beats_identical": "the /beat event list identical to baseline on every bench track (the tracker feeds nothing back): beat F, CMLt, acc1, acc2 identical",
+  "G6_negatives": "locked moves on the 155 beatless clips <= baseline",
+  "G7_marks": "total locked moves over the 4 marks recordings <= 0.6 x baseline",
+  "G8_structure": "harmonix (all): drop hit rate, false drops per min and boundary_events F identical; label-derived boundary_3_0s F within 0.01 (section dwell counts bars)",
+  "G9_build": "cargo test (default + analyze), clippy as CI runs it, fixture check; a unit test pins the fix and fails on the shipped rule",
+  "holdout": "read once on the chosen arm: G1, G2, G3 on the holdout halves, P1 on harmonix / giantsteps / ballroom holdout"
+ },
+ "selection_rule": "among candidates passing P1, P2, G1-G4, G6, G7 on the tune / guard forecast, the lowest harmonix tune locked moves per minute; if two are within 10% of each other, the one with fewer new constants (A has none). The chosen rule is then built, its own sidecars must replay at 0 mismatches under the new rule, its tune numbers must equal the forecast, and the holdout is read once.",
+ "on_miss": "a missed target is recorded here with its numbers; constants are not re-tuned on the holdout.",
+ "frozen_at": "2026-10-23T13:50:00Z"
+}
