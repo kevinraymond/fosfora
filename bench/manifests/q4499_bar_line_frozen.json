@@ -25,8 +25,19 @@
  },
  "split": {
   "rule": "sha256(track_id) parity, even -> tune, odd -> holdout, on ballroom, harmonix and giantsteps_tempo",
-  "selection_reads": ["ballroom tune", "harmonix tune", "giantsteps_tempo tune", "the 80 batida renders", "the 155 beatless clips", "the 4 marks recordings"],
-  "scored_once_at_end": ["ballroom holdout", "harmonix holdout", "giantsteps_tempo holdout"]
+  "selection_reads": [
+   "ballroom tune",
+   "harmonix tune",
+   "giantsteps_tempo tune",
+   "the 80 batida renders",
+   "the 155 beatless clips",
+   "the 4 marks recordings"
+  ],
+  "scored_once_at_end": [
+   "ballroom holdout",
+   "harmonix holdout",
+   "giantsteps_tempo holdout"
+  ]
  },
  "candidates": {
   "A_fbh8": "the low-confidence fallback no longer moves the bar line by itself: its choice (4/4 on the strongest phase) becomes a challenger like any other and must win HYSTERESIS_BEATS (8) consecutive beats. No new constant.",
@@ -35,10 +46,22 @@
  },
  "forecast_tune": {
   "_method": "exact replica (tools/forecast.py), tune halves; downbeat F delta vs the shipped rule, tracks lost / gained by > .1, locked moves per minute, reverted within 10 s",
-  "ship": {"ballroom": "F .1841, 10.17/min, rev 229", "harmonix": "F .2830, 7.78/min, rev 1862"},
-  "A_fbh8": {"ballroom": "-.0008 (SE .0049) lost 32 / gained 31, 7.15/min, rev 51", "harmonix": "+.0123 (SE .0040) 3 / 11, 4.03/min, rev 406"},
-  "B_fbh8_mg10_mfb": {"ballroom": "-.0022 (SE .0076) 54 / 46, 5.73/min, rev 15", "harmonix": "+.0252 (SE .0083) 16 / 32, 2.27/min, rev 75"},
-  "C_fbh8_mg10": {"ballroom": "+.0017 (SE .0071) 49 / 47, 5.96/min, rev 19", "harmonix": "+.0201 (SE .0074) 11 / 30, 2.59/min, rev 117"}
+  "ship": {
+   "ballroom": "F .1841, 10.17/min, rev 229",
+   "harmonix": "F .2830, 7.78/min, rev 1862"
+  },
+  "A_fbh8": {
+   "ballroom": "-.0008 (SE .0049) lost 32 / gained 31, 7.15/min, rev 51",
+   "harmonix": "+.0123 (SE .0040) 3 / 11, 4.03/min, rev 406"
+  },
+  "B_fbh8_mg10_mfb": {
+   "ballroom": "-.0022 (SE .0076) 54 / 46, 5.73/min, rev 15",
+   "harmonix": "+.0252 (SE .0083) 16 / 32, 2.27/min, rev 75"
+  },
+  "C_fbh8_mg10": {
+   "ballroom": "+.0017 (SE .0071) 49 / 47, 5.96/min, rev 19",
+   "harmonix": "+.0201 (SE .0074) 11 / 30, 2.59/min, rev 117"
+  }
  },
  "rejected_on_tune_forecast": {
   "longer_switch_hysteresis": "h12 / h16 / h24 with the shipped fallback: harmonix -.0051 / -.0054 / -.0140, ballroom -.0074 / -.0103 / -.0115; with fbh8, h12 harmonix +.0101 (below A) ballroom -.0076. Slower correction of a wrong lock costs more than the noise it filters.",
@@ -64,5 +87,115 @@
  },
  "selection_rule": "among candidates passing P1, P2, G1-G4, G6, G7 on the tune / guard forecast, the lowest harmonix tune locked moves per minute; if two are within 10% of each other, the one with fewer new constants (A has none). The chosen rule is then built, its own sidecars must replay at 0 mismatches under the new rule, its tune numbers must equal the forecast, and the holdout is read once.",
  "on_miss": "a missed target is recorded here with its numbers; constants are not re-tuned on the holdout.",
- "frozen_at": "2026-10-23T13:50:00Z"
+ "frozen_at": "2026-10-23T13:50:00Z",
+ "amendments": [
+  {
+   "at": "2026-10-23T13:51:00Z",
+   "before_any_arm": true,
+   "what": "Guard forecasts read for A / B / C (tools/forecast.py, tune halves + guard sets): giantsteps_tempo tune locked moves/min 9.14 -> 4.76 / 3.03 / 3.38; batida down_f .4746 -> .4881 / .4964 / .4966 (waltz template +.000 / +.004 / +.004; lost/gained > .1: 0/3, 2/8, 2/8); negatives locked moves 146 -> 90 / 79 / 82; marks 770 -> 344 / 173 / 231; edm_20261023_111937_td 36 -> 16 / 11 / 16. All three pass P1, P2, G1-G4, G6, G7 on the forecast."
+  },
+  {
+   "at": "2026-10-23T13:55:00Z",
+   "what": "Selection: B_fbh8_mg10_mfb (harmonix tune 2.27 locked moves/min against C 2.59 (+14%, outside the 10% tie band) and A 4.03). Implemented in downbeat.rs as SWITCH_MARGIN = 0.10 with the fallback's choice as an ordinary challenger; bench/replay_downbeat.py replays it ('current') and agrees with the forecast rule on every one of 426,325 baseline beats."
+  }
+ ],
+ "arm": {
+  "binary": "/mnt/t9/fosfora-work/q4499/bin/fosfora-arm-q4499-3b6f0106e4e5274a (branch q4499-downbeat on 3d912d4 + the fix with SWITCH_MARGIN = 0.10; never committed, round 2 replaced it)",
+  "bench_root": "/mnt/t9/fosfora-work/q4499/bench/arm_B",
+  "sidecars": "/mnt/t9/fosfora-work/q4499/side_arm",
+  "replica": "bench/replay_downbeat.py --rule current: 1959 tracks, 426,325 beats, 0 mismatches; the tracker's inputs are bit-identical to the baseline's on every track (it feeds nothing back)"
+ },
+ "tune_result": {
+  "read_at": "2026-10-23T14:20:00Z",
+  "verdict": "ALL PASS (bench/q4499_verdict.py; equal to the forecast to the last digit)",
+  "harmonix_tune": "downbeat_f .2830 -> .3082 (+.0252), lost 16 / gained 32; locked moves 7.80 -> 2.29 /min, reverted within 10 s 1862 -> 75, fallback-made moves 3018 -> 38",
+  "ballroom_tune": "downbeat_f .1841 -> .1819 (-.0022), lost 54 / gained 46; 10.31 -> 5.87 /min, reverted 229 -> 15",
+  "giantsteps_tempo_tune": "9.18 -> 3.07 /min, reverted 1859 -> 51",
+  "batida": "down_f .4746 -> .4964, waltz .8956 -> .8994; 4.32 -> 1.94 /min",
+  "negatives": "locked moves 153 -> 86",
+  "marks": "771 -> 176; edm_20261023_111937_td 36 -> 12 locked (reverted 11 -> 2); wire_moves.py on the dumps: 41 -> 13 moves, 35 -> 10 locked",
+  "beats": "/beat identical on all 835 tune bench dumps; beat F, CMLt, acc1, acc2 identical",
+  "G8": "drop hit rate and false drops identical; label boundary_3_0s F .1668 -> .1607 (within .01)"
+ },
+ "unregistered_observation_predict_drop": {
+  "what": "/predict/drop reads the bar clock (bar-in-progress withdrawal, phrase proximity, bar-denominated persistence). Not a pre-registered guard; q4163_report's harmonix_all aggregate (both halves, by its design) showed it in the tune verdict, and the per-half breakdown was printed while investigating, before the holdout verdict read.",
+  "harmonix_proxy_drops": "0.8 tier covered 53 -> 43 of 141 (12 lost on 10 tracks, 2 gained; tune 30 -> 26, holdout 23 -> 17); 0.8 crossings 1547 -> 1459; 0.5 tier 72 -> 73; false alarms 3455 -> 3450. These are proxy_chorus_onset drops (a chorus onset is not a drop).",
+  "local_hand_labeled": "bench/labels (the drop workstream's ground truth, 34 drops on 14 tracks): 0.8 tier 19 -> 23 (4 gained, 0 lost), 0.5 tier 32 -> 32, false alarms 173 -> 176; /drop unchanged (11 matched, 27 false).",
+  "mechanism": "not pinned. The lost proxy drops sat on the 0.8 edge (old peaks .80-.88, new mostly .78-.80); inside committed episodes the old bar line ran 1.7% fast (3.829 vs 3.894 beats per bar), too little to explain it alone; 7 of the 12 lost old crossings followed an old bar-line move within 4 s against a ~40% base rate.",
+  "decision": "not a reason to hold the fix: the headline set improves, the proxy set falls, the 0.5 tier and false alarms are flat. Stated in the CHANGELOG entry. The predictor's constants were calibrated on the flip-flopping bar clock; re-freezing them on the stable one is a follow-up round."
+ },
+ "holdout_read": {
+  "read_at": "2026-10-23T14:24:12Z",
+  "verdict": "ALL PASS",
+  "harmonix_holdout": "downbeat_f .2851 -> .3096 (+.0245), lost 13 / gained 31; 7.82 -> 2.21 /min, reverted 1976 -> 65",
+  "ballroom_holdout": "downbeat_f .1784 -> .1899 (+.0115), lost 45 / gained 46; 11.51 -> 6.20 /min, reverted 259 -> 13",
+  "giantsteps_tempo_holdout": "9.24 -> 3.06 /min, reverted 2095 -> 61",
+  "beats": "/beat identical on all 885 holdout bench dumps"
+ },
+ "verdict": {
+  "result": "MISS (G9): candidate B is NOT shipped",
+  "G9_fixture": "bench/check_fixture.py with the arm binary: metrics.downbeat.f_measure 0.0 against the >= 0.15 floor (baseline 0.1935). The fixture check belongs to G9 and was not run before the holdout read: a process error, recorded here. Every other target passed on tune and holdout (see tune_result / holdout_read).",
+  "mechanism": "on the 38.7 s fixture the lock sits on beat 4 from 22.7 s; the right alignment (beat 2) leads it by .089-.254 from 28.6 s, and margin .10 resets the streak on the .089 / .097 beats, so the bar never moves before the clip ends (v2.7.1 moved at 31.9 s). tools/fixture_margin.py.",
+  "all_tracks_B": "harmonix downbeat_f .2841 -> .3089, ballroom .1812 -> .1859; harmonix locked bar-line moves 7.81 -> 2.25 /min"
+ },
+ "round_2": {
+  "frozen_at": "2026-10-23T14:35:00Z",
+  "why": "Round 1's B failed only the CI fixture's downbeat floor, which the selection never saw because the fixture was not a forecast population. Round 2 adds it (side_base/fixture, exact replica, its annotations) and re-selects under the SAME targets and selection rule. B's holdout numbers are disclosed above; the round-2 choice is made on tune + guard forecasts only, never on them.",
+  "forecast_tune": {
+   "_method": "tools/forecast.py on tune halves + batida + fixture (fixture downbeat F, floor .15; v2.7.1 .1935)",
+   "A_fbh8": "fixture .1875; ballroom -.0008 (32/31), harmonix +.0123 (3/11), batida +.0135; harmonix 4.03 /min",
+   "fbh8_mg05_mfb": "fixture .1935; ballroom -.0030, harmonix +.0216, batida +.0187; 2.96 /min",
+   "fbh8_mg06_mfb": "fixture .1935; ballroom -.0013 (45/43), harmonix +.0253 (7/25), batida +.0231; 2.83 /min",
+   "fbh8_mg07_mfb": "fixture .1875; ballroom +.0024 (46/44), harmonix +.0250 (9/26), batida +.0221; 2.68 /min",
+   "fbh8_mg08_mfb": "fixture .1875; ballroom +.0009 (46/45), harmonix +.0275 (12/30), batida +.0249 (0/7); 2.56 /min",
+   "fbh8_mg09_mfb": "fixture 0.0 (fails G9)",
+   "B_fbh8_mg10_mfb": "fixture 0.0 (fails G9)",
+   "fbh8_mg08_mfb_wkeep (a margin miss holds the streak instead of resetting it)": "fixture .1875; ballroom +.0013, harmonix +.0283; 2.70 /min",
+   "fbh8_mg10_mfb_wkeep": "fixture .0645 (fails G9)"
+  },
+  "selection": "by the frozen rule (lowest harmonix tune locked moves among candidates passing every target, ties within 10% to fewer constants): fbh8_mg08_mfb, SWITCH_MARGIN = 0.08 (2.56 /min; mg07 2.68 and wkeep 2.70 are within 10% but carry the same one constant, so the frozen tie-break does not separate them and the lowest stands).",
+  "known_fragility": "the fixture passes at margin .08 with .009 to spare: the decisive streak's smallest lead is .089 (fails from .09). The fixture's downbeat evidence is weak by construction (v2.7.1 is right only from 31.9 s of 38.7 s).",
+  "targets": "round 1's P1, P2, G1-G9 unchanged, G9's fixture check now run on the arm binary before the holdout read",
+  "on_miss": "if the arm misses any target on tune, A_fbh8 (no new constant) is the next candidate under the same rule; the holdout is read once, for the arm that passes tune.",
+  "guard_forecast": {
+   "read_at": "2026-10-23T14:37:00Z",
+   "fbh8_mg08_mfb": "giantsteps_tempo tune 9.14 -> 3.33 /min; negatives locked moves 146 -> ~80 (7.46 /min); marks 770 -> 196 (2.45 /min); edm_20261023_111937_td 36 -> 13 locked. All within P1, G6, G7."
+  },
+  "arm": {
+   "binary": "/mnt/t9/fosfora-work/q4499/bin/fosfora-arm2-q4499-650ea7270f445199 (the committed fix, SWITCH_MARGIN = 0.08)",
+   "bench_root": "/mnt/t9/fosfora-work/q4499/bench/arm_M08",
+   "sidecars": "/mnt/t9/fosfora-work/q4499/side_arm2",
+   "replica": "bench/replay_downbeat.py --rule current: 1959 tracks, 426,325 beats, 0 mismatches; tracker inputs identical to the baseline's on every track"
+  },
+  "tune_result": {
+   "read_at": "2026-10-23T14:57:00Z",
+   "verdict": "ALL PASS, G9 included (fixture downbeat F .1875); every number equal to the forecast",
+   "harmonix_tune": "downbeat_f .2830 -> .3105 (+.0275), lost 12 / gained 30; locked moves 7.80 -> 2.59 /min, reverted within 10 s 1862 -> 107",
+   "ballroom_tune": "downbeat_f .1841 -> .1850 (+.0009), lost 46 / gained 45; 10.31 -> 6.18 /min, reverted 229 -> 20",
+   "giantsteps_tempo_tune": "9.18 -> 3.37 /min, reverted 1859 -> 84",
+   "batida": "down_f .4746 -> .4995 (waltz .8956 -> .8913); 4.32 -> 2.08 /min",
+   "negatives": "locked moves 153 -> 87",
+   "marks": "771 -> 200; edm_20261023_111937_td 36 -> 14 locked (reverted 11 -> 3); wire_moves.py on the dumps: 41 -> 15 moves, 35 -> 12 locked, undone within 10 s 10 -> 3",
+   "beats": "/beat identical on all 835 tune bench dumps; beat F, CMLt, acc1, acc2 identical",
+   "G8": "drop hit rate and false drops identical; label boundary_3_0s F .1668 -> .1612"
+  },
+  "predict_drop_observation": {
+   "harmonix_proxy_drops": "0.8 tier covered 53 -> 42 of 141 (14 lost on 12 tracks, 3 gained); 0.5 tier 72 -> 72; false alarms 3455 -> 3463",
+   "local_hand_labeled": "0.8 tier 19 -> 23 of 34, 0.5 tier 32 -> 32, false alarms 173 -> 178; /drop unchanged",
+   "decision": "as round 1: the drop workstream's ground-truth set gains, the chorus-onset proxy loses; stated in the CHANGELOG entry; re-freezing the predictor's bar-denominated constants on the stable bar clock is a follow-up round"
+  },
+  "holdout_read": {
+   "read_at": "2026-10-23T14:58:46Z",
+   "verdict": "ALL PASS",
+   "harmonix_holdout": "downbeat_f .2851 -> .3091 (+.0240), lost 9 / gained 31; 7.82 -> 2.48 /min, reverted 1976 -> 109",
+   "ballroom_holdout": "downbeat_f .1784 -> .1821 (+.0037), lost 45 / gained 39; 11.51 -> 6.44 /min, reverted 259 -> 14",
+   "giantsteps_tempo_holdout": "9.24 -> 3.33 /min, reverted 2095 -> 80",
+   "beats": "/beat identical on all 885 holdout bench dumps"
+  }
+ },
+ "final_verdict": {
+  "result": "SHIPS: round 2's fbh8_mg08_mfb (SWITCH_MARGIN = 0.08, the fallback's choice an ordinary challenger)",
+  "all_tracks": "harmonix downbeat_f .2841 -> .3098, ballroom .1812 -> .1835; beat F, CMLt, acc1, acc2 identical on every dataset; harmonix locked bar-line moves 7.81 -> 2.53 /min, reverted within 10 s 3838 -> 216; giantsteps 9.21 -> 3.35; ballroom 10.88 -> 6.30; batida down_f .4746 -> .4995",
+  "left_open": "the 'grid' class (the beat grid itself moving: arbiter shifts, re-anchors) is untouched and is now about 55% of Ballroom's remaining moves; on Harmonix the remaining moves land as often off the annotated downbeat as onto it (tools/move_quality.py), so more stability needs better downbeat evidence, not more hysteresis; /predict/drop's constants to be re-frozen on the stable bar clock; the CI fixture passes the margin with .009 to spare."
+ }
 }

@@ -156,7 +156,7 @@ Source: Ported from [EASEy-GLYPH](https://github.com/kevinraymond/easey-glyph) �
 
 Source: Ported from [EASEy-GLYPH](https://github.com/kevinraymond/easey-glyph) — the onset strength captured at the moment the beat fired.
 
-**`downbeat`** — the "one" of the bar. Like `beat`, it is 1 for a single frame, but only on the first beat of each bar, so you can save your biggest visual moves for it. Fosfora works out whether the music is in 3 or 4 and where the bar starts by noticing which beats are consistently more emphatic.
+**`downbeat`** — the "one" of the bar. Like `beat`, it is 1 for a single frame, but only on the first beat of each bar, so you can save your biggest visual moves for it. Fosfora works out whether the music is in 3 or 4 and where the bar starts by noticing which beats are consistently more emphatic. Once the bar is placed it stays put until another position wins clearly for about two bars, so ambiguous passages do not make it jump.
 
 Source: Fosfora-specific — no published algorithm; it scores candidate meters and bar positions by accent contrast over the last 16 beats, in [`audio/downbeat.rs`](../crates/fosfora-app/src/audio/downbeat.rs). Expect roughly 70–80% accuracy on straightforward 4/4 electronic music and less elsewhere.
 

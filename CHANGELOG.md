@@ -8,6 +8,9 @@
 ### Added
 - **TouchDesigner examples and component.** Two new release assets: `fosfora_examples.tox` drives four ready-made views from `fosfora --signal` (a dashboard, a 3D grid, a light rig with DMX output, and a look at keeping time), and `fosfora_signal.tox` gives you the stream as CHOP channels for your own network, with drop-like moments marked experimental. Its Steady Bars option makes every bar finish even when Fosfora moves the downbeat. Setup in [docs/TOUCHDESIGNER.md](docs/TOUCHDESIGNER.md); needs TouchDesigner 2025, Non-Commercial is enough.
 
+### Fixed
+- **On steady dance music the bar line jumped a beat or two several times a minute, often straight back, so bars came out like [1 2] [1 2 3 4].** When the downbeat evidence turned ambiguous the tracker re-placed the bar on every beat; now another position must win clearly for two bars running. On the Harmonix set the bar line moves 2.5 times a locked minute instead of 7.8 and downbeat accuracy rises 0.28 to 0.31; beats and tempo are unchanged. The drop-like warning's 0.8 tier now catches 23 of 34 hand-labeled drops (was 19) but 42 of 141 Harmonix chorus onsets (was 53).
+
 ## v2.7.1 — 2026-10-23
 
 ### Docs

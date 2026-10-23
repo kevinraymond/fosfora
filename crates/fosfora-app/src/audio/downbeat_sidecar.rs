@@ -4,8 +4,9 @@
 //! JSONL record per beat the downbeat tracker scores (`"k":"b"`): the hop timestamp, the
 //! settled beat's event time (what `/downbeat` carries when this beat is the "one"), the
 //! grid index, the tempo lock and silence flags, the three accent cues the beat wrote into
-//! the PREVIOUS beat's ring entry, the scoring branch it took, the top candidate, and the
-//! lock after it. The cues and the contrast travel as raw f32 bit patterns (`*_b`) beside a
+//! the PREVIOUS beat's ring entry, the scoring branch it took (and `fb`, whether the
+//! challenger was the low-confidence 4/4 fallback), the top candidate, and the lock after
+//! it. The cues and the contrast travel as raw f32 bit patterns (`*_b`) beside a
 //! readable value, so an offline replay of the tracker can be checked bit for bit.
 //!
 //! With the variable unset nothing is collected and the signal dump is byte-identical.
@@ -48,11 +49,12 @@ impl DownbeatSidecar {
         let _ = write!(
             line,
             "{{\"k\":\"b\",\"ts\":{timestamp},\"bt\":{bt},\"gi\":{},\"lk\":{},\"ls\":{},\
-             \"bpm\":{bpm},\"path\":\"{}\"",
+             \"bpm\":{bpm},\"path\":\"{}\",\"fb\":{}",
             d.idx,
             u8::from(beat_locked),
             u8::from(loud_silent),
             d.path,
+            u8::from(d.fallback),
         );
         if let Some([fl, cc, lr]) = d.filled {
             let _ = write!(
