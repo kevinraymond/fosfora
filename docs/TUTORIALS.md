@@ -643,6 +643,7 @@ Layer rows show a diamond and a node count for any layer with a chain. It is **f
 | **Mask** | Keeps an ellipse or rectangle of the picture and makes the rest transparent. Under Fluvid, put it over your mouth and only your mouth makes smoke; `invert` cuts a region out instead, like a ceiling fan in one corner | `center_x` / `center_y` 0–1 · `width` / `height` 0–1 · `softness` 0–0.5 · `rectangle` · `invert` |
 | **Levels** | Brightness, contrast, gamma and saturation: the grading node | `brightness` ±1 · `contrast` 0–4 · `gamma` 0.2–4 · `saturation` 0–3 |
 | **Blur** | Softens the picture. Partway on `amount` is a haze over a picture that keeps its detail | `radius` 0–48 px · `amount` 0–1 |
+| **Zoom Blur** | Streaks the picture toward and away from a point, the camera-rush look; the center stays sharp. Put **onset** or **bass** on `strength` to punch on the kick. `directional` makes it a motion blur along `angle` instead | `strength` 0–1 · `center_x` / `center_y` 0–1 · `angle` ±0.5 turns · `directional` |
 | **Mirror** | Folds the picture about a line, so one half reflects over the other. Both axes gives quadrant symmetry | `horizontal` · `vertical` · `center_x` · `center_y` |
 | **Kaleidoscope** | Wraps the picture into mirrored wedges around the center | `segments` 2–24 · `spin` turns per second · `rotate` ±0.5 turns · `zoom` 0.25–4 |
 | **Pixelate** | Quantizes to a grid of cells. `gap` clears a transparent border inside each one, so the layers beneath show through the grout | `size` 2–256 cells · `gap` 0–0.5 |
