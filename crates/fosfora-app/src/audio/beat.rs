@@ -138,6 +138,17 @@ pub enum TempoCommand {
     Tap(f64),
 }
 
+/// Range of the user A/V sync offset, ms (#80). Positive fires the beat grid early; negative
+/// holds the whole analysis output back.
+pub const SYNC_OFFSET_MIN_MS: f32 = -250.0;
+pub const SYNC_OFFSET_MAX_MS: f32 = 200.0;
+
+/// The furthest ahead of its grid instant a locked beat is emitted, as a fraction of the
+/// period (#80). The scheduler only looks at instant N+1 once instant N has settled, so a
+/// lead approaching a whole period would emit late; under half a period also keeps every
+/// emission clear of the `lead_emitted` half-period match.
+const MAX_LEAD_PERIOD_FRAC: f64 = 0.45;
+
 /// Shared tempo state: live config plus a small command mailbox, both behind one mutex
 /// the audio thread locks once per hop (the #1510 pattern, extended with the mailbox the
 /// A7 note called for). Cloned into the audio thread and threaded through `switch_device`,
@@ -146,6 +157,10 @@ pub enum TempoCommand {
 pub struct TempoControl {
     pub config: TempoConfig,
     pending: Vec<TempoCommand>,
+    /// #80: the user A/V sync offset, ms. Kept beside `config` rather than in it: it is a
+    /// property of the rig, not of the tempo prior, and Ableton Link swaps `config` out and
+    /// back while it follows a session.
+    sync_offset_ms: f32,
 }
 
 impl TempoControl {
@@ -153,7 +168,29 @@ impl TempoControl {
         Self {
             config,
             pending: Vec::new(),
+            sync_offset_ms: 0.0,
         }
+    }
+
+    /// [`Self::new`] with the saved A/V sync offset (#80).
+    pub fn with_sync_offset(config: TempoConfig, sync_offset_ms: f32) -> Self {
+        let mut ctl = Self::new(config);
+        ctl.set_sync_offset_ms(sync_offset_ms);
+        ctl
+    }
+
+    /// Set the A/V sync offset (#80), clamped to
+    /// [`SYNC_OFFSET_MIN_MS`]..[`SYNC_OFFSET_MAX_MS`]; a non-finite value reads as 0.
+    pub fn set_sync_offset_ms(&mut self, ms: f32) {
+        self.sync_offset_ms = if ms.is_finite() {
+            ms.clamp(SYNC_OFFSET_MIN_MS, SYNC_OFFSET_MAX_MS)
+        } else {
+            0.0
+        };
+    }
+
+    pub fn sync_offset_ms(&self) -> f32 {
+        self.sync_offset_ms
     }
 
     /// Queue a command for the audio thread. Bounded so a stalled/absent audio thread
@@ -1934,6 +1971,9 @@ struct BeatScheduler {
     /// #4474: the lead a locked beat is emitted with; [`BEAT_LEAD_SECS`], 0 in the tests
     /// that place beats on their instants.
     beat_lead: f64,
+    /// #80: the user's sync lead on top of `beat_lead`, seconds (0 unless the sync offset is
+    /// positive); capped per period by [`Self::user_lead`].
+    user_lead: f64,
     /// Consecutive grid instants that voted to move the grid, and by which offset; a vote
     /// for another offset restarts it.
     arb_streak: u32,
@@ -1982,6 +2022,7 @@ impl BeatScheduler {
             act_event: None,
             arb_kicks: VecDeque::new(),
             beat_lead: BEAT_LEAD_SECS,
+            user_lead: 0.0,
             arb_streak: 0,
             arb_streak_offset: None,
             kick_event: false,
@@ -2169,6 +2210,14 @@ impl BeatScheduler {
             (self.period_trim + PLL_TRIM_GAIN * e / period).clamp(-PLL_TRIM_CLAMP, PLL_TRIM_CLAMP);
     }
 
+    /// #80: the user's sync lead at this period, capped so the whole emission lead stays
+    /// under [`MAX_LEAD_PERIOD_FRAC`] of a period.
+    fn user_lead(&self, period: f64) -> f64 {
+        self.user_lead
+            .min(MAX_LEAD_PERIOD_FRAC * period - self.beat_lead)
+            .max(0.0)
+    }
+
     fn window(&self) -> f64 {
         (self.grid_period() * PLL_WINDOW_PERIOD_FRAC).min(PLL_WINDOW_MAX_SECS)
     }
@@ -2319,6 +2368,8 @@ impl BeatScheduler {
         let mut beat_time = 0.0;
 
         if self.tempo_locked {
+            // #4474 / #80: how far ahead of its instant this grid's beat is emitted.
+            let lead = self.beat_lead + self.user_lead(period);
             // Settle an expired decision window: its closest attack corrects
             // the grid now, in time to shape the very next instant.
             if let Some((deadline, best)) = self.closing_slot {
@@ -2344,15 +2395,11 @@ impl BeatScheduler {
                 .is_some_and(|(t, _)| (t - *next_beat_time).abs() < 0.5 * period);
             let degenerate = !already && *next_beat_time <= self.last_fired_time + 0.3 * period;
             let settles_now = *next_beat_time <= timestamp;
-            if !already
-                && !degenerate
-                && !settles_now
-                && *next_beat_time - self.beat_lead <= timestamp
-            {
+            if !already && !degenerate && !settles_now && *next_beat_time - lead <= timestamp {
                 self.lead_emitted = Some((*next_beat_time, !self.muted));
                 if !self.muted {
                     fired = true;
-                    beat_time = *next_beat_time - self.beat_lead;
+                    beat_time = *next_beat_time - lead;
                     self.last_fired_time = *next_beat_time;
                 }
             }
@@ -2402,7 +2449,7 @@ impl BeatScheduler {
                         // as before the lead.
                         if !self.muted {
                             fired = true;
-                            beat_time = instant - self.beat_lead;
+                            beat_time = instant - lead;
                             self.last_fired_time = instant;
                         }
                         !self.muted
@@ -2432,7 +2479,7 @@ impl BeatScheduler {
                     self.beat_strength = 0.5;
                 }
                 if emitted {
-                    self.settled = Some(instant - self.beat_lead);
+                    self.settled = Some(instant - lead);
                 }
             }
         } else {
@@ -2667,6 +2714,26 @@ impl BeatDetector {
             TempoCommand::ShiftOctave(dir) => self.tempo_estimator.shift_octave(dir),
             TempoCommand::Tap(bpm) => self.tempo_estimator.tap(bpm),
         }
+    }
+
+    /// #80: emit locked beats this much earlier than the measured [`BEAT_LEAD_SECS`], seconds
+    /// (a positive A/V sync offset). Negative and non-finite values read as 0: holding the
+    /// output back is the caller's job, since everything is held, not just the grid.
+    pub fn set_sync_lead(&mut self, secs: f64) {
+        self.beat_scheduler.user_lead = if secs.is_finite() { secs.max(0.0) } else { 0.0 };
+    }
+
+    /// #80: the sync lead in effect and the beat period it applies to, both seconds — `None`
+    /// with no lead set or no grid to lead. `beat_phase` and `bar_phase` advance by this lead
+    /// so they wrap with the early beat.
+    pub fn sync_lead(&self) -> Option<(f64, f64)> {
+        let bs = &self.beat_scheduler;
+        if bs.next_beat_time.is_none() || bs.period <= 0.0 {
+            return None;
+        }
+        let period = bs.grid_period();
+        let lead = bs.user_lead(period);
+        (lead > 0.0).then_some((lead, period))
     }
 
     /// Prior centre in BPM — published back to the shared config in auto mode (A7 #1458).
@@ -3243,6 +3310,58 @@ mod tests {
             (last_led - last_plain).abs() < 1e-9,
             "the instants themselves do not move"
         );
+    }
+
+    /// #80: a user sync lead stacks on [`BEAT_LEAD_SECS`] without moving the grid, and the
+    /// whole lead is capped at [`MAX_LEAD_PERIOD_FRAC`] of a period.
+    #[test]
+    fn scheduler_user_lead_stacks_on_the_lead_and_is_capped() {
+        let drive = |user: f64| {
+            let mut bs = BeatScheduler::new();
+            bs.arbiter = None;
+            bs.user_lead = user;
+            let beats = drive_locked(&mut bs, 1.0, 20.0, |t| near(t, 1.0), |_| false);
+            (beats, bs.last_beat_time)
+        };
+        let (plain, last_plain) = drive(0.0);
+        assert!(plain.len() >= 30, "{}", plain.len());
+        // 120 BPM: the cap is 0.45 × 0.5 s, of which BEAT_LEAD_SECS is already spent. It
+        // scales with the trimmed grid period, which the PLL moves by a few hundredths of a
+        // percent, so the capped lead is matched to 0.1 ms.
+        let cap = MAX_LEAD_PERIOD_FRAC * 0.5 - BEAT_LEAD_SECS;
+        for (user, expect, tol) in [(0.08, 0.08, 1e-9), (10.0, cap, 1e-4)] {
+            let (led, last_led) = drive(user);
+            // A lead can bring the beat after the last one inside the run's window.
+            assert!(
+                led.len() == plain.len() || led.len() == plain.len() + 1,
+                "lead {user}: {} beats vs {}",
+                led.len(),
+                plain.len()
+            );
+            for (a, b) in led.iter().zip(&plain).skip(2) {
+                assert!(
+                    (a + expect - b).abs() < tol,
+                    "lead {user}: emitted {a:.6} should sit {expect} before {b:.6} (off {:.2e})",
+                    a + expect - b
+                );
+            }
+            assert!(
+                (last_led - last_plain).abs() < 1e-9,
+                "lead {user}: the instants themselves do not move"
+            );
+        }
+    }
+
+    #[test]
+    fn tempo_control_clamps_the_sync_offset() {
+        let mut ctl = TempoControl::with_sync_offset(TempoConfig::default(), 35.0);
+        assert_eq!(ctl.sync_offset_ms(), 35.0);
+        ctl.set_sync_offset_ms(1e6);
+        assert_eq!(ctl.sync_offset_ms(), SYNC_OFFSET_MAX_MS);
+        ctl.set_sync_offset_ms(-1e6);
+        assert_eq!(ctl.sync_offset_ms(), SYNC_OFFSET_MIN_MS);
+        ctl.set_sync_offset_ms(f32::NAN);
+        assert_eq!(ctl.sync_offset_ms(), 0.0);
     }
 
     /// Is a hop at `t` (hop length dt) the one nearest an instant `offset + k*0.5`?

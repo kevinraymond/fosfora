@@ -259,8 +259,9 @@ CHOP (0 up, 0.1 to 1.5 s down) before driving brightness or scale with them.
 - In the head-to-head described below, Fosfora's beats landed about 10 ms behind the
   annotations on average (lastBeatStanding 4 to 6 ms), with the analysis clocked from the
   audio and no network in the path. A locked beat is already sent 10 ms ahead of its grid
-  instant to make up for the analysis delay; if you need more lookahead, drive the visual
-  from `beat_phase` instead, which you can offset freely.
+  instant to make up for the analysis delay; for more lookahead, set **Sync offset** in the
+  app's Setup › Audio (Signal reads it from your saved settings), or drive the visual from
+  `beat_phase`, which you can offset freely.
 - Continuous values are at most one TX period old (33 ms at 30 Hz). Raise `--rate` to match
   your frame rate if that matters; the bus is small enough.
 

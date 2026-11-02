@@ -552,9 +552,12 @@ impl App {
             settings.audio_device.as_deref(),
             settings.band_scale,
             Arc::new(std::sync::Mutex::new(settings.structure_tuning)),
-            Arc::new(std::sync::Mutex::new(crate::audio::TempoControl::new(
-                settings.tempo,
-            ))),
+            Arc::new(std::sync::Mutex::new(
+                crate::audio::TempoControl::with_sync_offset(
+                    settings.tempo,
+                    settings.sync_offset_ms,
+                ),
+            )),
         )?;
         // A9 (#1460): a setter rather than a 5th `new_with_device` param — the audio thread
         // never sees this value, so threading it through construction would touch every

@@ -1636,6 +1636,16 @@ impl ApplicationHandler for FosforaApp {
                     app.settings.save();
                 }
 
+                // Persist the A/V sync offset (#80). The slider already set it live.
+                let set_sync_offset: Option<f32> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("set_sync_offset")));
+                if let Some(ms) = set_sync_offset {
+                    app.settings.sync_offset_ms = ms;
+                    app.settings.save();
+                }
+
                 // Handle auto-reconnect toggle from settings panel (A9 #1460)
                 let set_auto_reconnect: Option<bool> = app
                     .egui_overlay

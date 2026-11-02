@@ -33,6 +33,7 @@ pub mod smoother;
 pub mod stereo;
 pub mod structure;
 pub mod structure_sidecar;
+mod sync_delay;
 pub mod timbre;
 #[cfg(target_os = "windows")]
 pub mod wasapi_capture;
@@ -130,7 +131,9 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 
-pub use self::beat::{TempoCommand, TempoConfig, TempoControl, TempoPreset};
+pub use self::beat::{
+    SYNC_OFFSET_MAX_MS, SYNC_OFFSET_MIN_MS, TempoCommand, TempoConfig, TempoControl, TempoPreset,
+};
 use self::capture::{AudioCapture, RingBuffer};
 use self::hop::HopAnalyzer;
 use self::interp::FeatureInterpolator;
@@ -1520,7 +1523,12 @@ fn audio_thread(
     // #77: the latest snapshots of the shared config. Refreshed each hop when the lock is
     // free; while the UI holds it (it does for a whole panel draw) the hop reuses these
     // rather than waiting on the render thread.
-    let mut tempo_cfg = tempo.lock().unwrap_or_else(|e| e.into_inner()).config;
+    let (mut tempo_cfg, mut sync_offset_ms) = {
+        let t = tempo.lock().unwrap_or_else(|e| e.into_inner());
+        (t.config, t.sync_offset_ms())
+    };
+    // #80: hop outputs held back by a negative sync offset (a pass-through at 0 or above).
+    let mut delay = sync_delay::OutputDelay::new();
     let mut struct_cfg = *tuning.lock().unwrap_or_else(|e| e.into_inner());
     // #53: above 88.2 kHz the input is halved down to 44.1–88.2 kHz before analysis, so every
     // stage below runs at a rate it was tuned for. The recording mirror keeps the device rate.
@@ -1646,6 +1654,7 @@ fn audio_thread(
                         t.config.prior_center_bpm = hop_analyzer.prior_center_bpm();
                     }
                     tempo_cfg = t.config;
+                    sync_offset_ms = t.sync_offset_ms();
                     t.drain()
                 }
                 None => Vec::new(),
@@ -1656,24 +1665,31 @@ fn audio_thread(
                 struct_cfg = *cfg;
             }
 
+            // #80: a positive sync offset leads the beat grid; a negative one holds every
+            // output back, pulses included, until the audio clock has moved on that far.
+            let sync_secs = f64::from(sync_offset_ms) / 1000.0;
+            hop_analyzer.set_sync_lead(sync_secs.max(0.0));
             let out = hop_analyzer.process_hop(
                 hop, hop_stereo, timestamp, struct_cfg, tempo_cfg, tempo_cmds,
             );
+            delay.push(timestamp, out);
 
-            // Count the three 1-frame pulses in atomics so the consumer can't miss one when
-            // the channel overflows or it drains multiple frames at once (#1976).
-            if out.beat_fired {
-                beat_counter.fetch_add(1, Ordering::Relaxed);
-            }
-            if out.downbeat_fired {
-                downbeat_counter.fetch_add(1, Ordering::Relaxed);
-            }
-            if out.drop_fired {
-                drop_counter.fetch_add(1, Ordering::Relaxed);
-            }
+            while let Some(out) = delay.pop_due(timestamp, (-sync_secs).max(0.0)) {
+                // Count the three 1-frame pulses in atomics so the consumer can't miss one
+                // when the channel overflows or it drains multiple frames at once (#1976).
+                if out.beat_fired {
+                    beat_counter.fetch_add(1, Ordering::Relaxed);
+                }
+                if out.downbeat_fired {
+                    downbeat_counter.fetch_add(1, Ordering::Relaxed);
+                }
+                if out.drop_fired {
+                    drop_counter.fetch_add(1, Ordering::Relaxed);
+                }
 
-            // Non-blocking; if the main thread is behind, the oldest queued frame goes.
-            tx.send(out.frame);
+                // Non-blocking; if the main thread is behind, the oldest queued frame goes.
+                tx.send(out.frame);
+            }
         }
 
         // Drop the samples we consumed; keep the sub-hop remainder for next time.

@@ -245,6 +245,18 @@ impl DownbeatTracker {
         }
     }
 
+    /// #80: whether the beat at grid index `grid_idx` (0-based, as the scheduler counts its
+    /// instants) is the bar's "one" under the current meter/phase lock, or `None` before a
+    /// bar clock exists. Lets a beat emitted ahead of its instant carry its downbeat with it;
+    /// the tracker itself still decides at the settle, as it always has.
+    pub fn predicts_downbeat(&self, grid_idx: u64) -> Option<bool> {
+        if self.bar_duration <= 0.0 {
+            return None;
+        }
+        let pos = (grid_idx as i64 - self.phase as i64).rem_euclid(self.meter as i64);
+        Some(pos == 0)
+    }
+
     /// The bar clock at `timestamp`: the 0→1 sawtooth (0 at the last downbeat, wrapping every
     /// bar on the audio clock) and the bar length it is running on.
     ///

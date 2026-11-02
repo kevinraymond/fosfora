@@ -5,7 +5,7 @@ use egui::{RichText, Ui};
 
 use super::kit::{self, Status};
 use crate::audio::input_level::{TRIM_MAX_DB, TRIM_MIN_DB};
-use crate::audio::{AudioSystem, METER_FLOOR_DB};
+use crate::audio::{AudioSystem, METER_FLOOR_DB, SYNC_OFFSET_MAX_MS, SYNC_OFFSET_MIN_MS};
 use crate::settings::BandScale;
 use crate::ui::panels::audio_panel as ap;
 use crate::ui::shell::ShellState;
@@ -122,6 +122,7 @@ pub fn page(ui: &mut Ui, s: &mut ShellState<'_>) {
         ui.set_max_width(520.0);
         ap::draw_tempo_body(ui, s.audio, s.uniforms);
     });
+    sync_offset_row(ui, s.audio);
 
     ui.add_space(22.0);
     let id = ui.make_persistent_id("v2_setup_detection");
@@ -143,6 +144,39 @@ pub fn page(ui: &mut Ui, s: &mut ShellState<'_>) {
             ui.set_max_width(520.0);
             ap::draw_tuning_body(ui, s.audio);
         });
+}
+
+/// The A/V sync offset (#80). Live on the slider, persisted on release like the input trim.
+fn sync_offset_row(ui: &mut Ui, audio: &AudioSystem) {
+    kit::row(ui, "Sync offset", |ui| {
+        let mut ms = audio
+            .tempo()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sync_offset_ms();
+        let r = ui.add(
+            egui::Slider::new(&mut ms, SYNC_OFFSET_MIN_MS..=SYNC_OFFSET_MAX_MS)
+                .step_by(1.0)
+                .suffix(" ms"),
+        );
+        if r.changed() {
+            audio
+                .tempo()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_sync_offset_ms(ms);
+        }
+        if r.drag_stopped() || (r.changed() && !r.dragged()) {
+            kit::send(ui, "set_sync_offset", ms);
+        }
+    });
+    kit::row_help(
+        ui,
+        "When the picture trails the sound, raise this until beats land on time: beats, \
+         downbeats and the beat and bar phases fire that much early, up to just under half a \
+         beat. Levels can't be predicted and stay as they are. When the sound reaches the room \
+         after the picture (a long throw from the speakers), go negative: everything waits.",
+    );
 }
 
 /// Peak meter for the raw input with a clip light (#84).

@@ -363,7 +363,7 @@ Per-feature policy (`NormPolicy`) lives in the `FEATURES` table in `audio/schema
 **3-stage beat detection:**
 1. **OnsetDetector** — log-magnitude multi-band spectral flux with adaptive threshold
 2. **TempoEstimator** — FFT autocorrelation (Wiener-Khinchin), genre-aware log-Gaussian tempo prior (center 150 BPM), multi-ratio octave correction, cascading octave-up via local peak detection, Kalman filter in log2-BPM space. Two autocorrelations with two jobs: the flux's earns the first tempo (the seed gate, so beatless audio stays silent), and once seeded the beat activation's chooses the metrical level, with the flux's reading as the fallback
-3. **BeatScheduler** — a phase-locked grid: beats fire at predicted instants (10 ms early, so they reach the receiver on the beat), in-window onsets correct the phase, and a phase arbiter folds the kick and beat-witness events onto the grid and moves it by a half, quarter or three-quarter beat when three votes in a row say the music sits there. Outputs the `beat` trigger and the `beat_phase` sawtooth
+3. **BeatScheduler** — a phase-locked grid: beats fire at predicted instants (10 ms early, so they reach the receiver on the beat, plus any positive user sync offset; a negative one holds the whole hop output back on the audio thread), in-window onsets correct the phase, and a phase arbiter folds the kick and beat-witness events onto the grid and moves it by a half, quarter or three-quarter beat when three votes in a row say the music sits there. Outputs the `beat` trigger and the `beat_phase` sawtooth
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/beat-dark.svg">
