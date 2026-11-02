@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v2.8.1 — 2026-11-01
 
 ### Changed
 - **The output window fills a 4:3 CRT or a portrait monitor instead of letterboxing the workspace's 16:9 frame onto it.** While the window is open Fosfora renders at that display's size and shape, as full screen on it would, so a 4K projector costs what full screen there does. Every other output shows the same picture: NDI, Spout, Syphon and recordings set to Match Window take that size, and a fixed-size stream, virtual camera or recording, like the main window with the interface hidden, letterboxes it instead of stretching it.
