@@ -206,6 +206,10 @@ struct MeterState {
 /// How long `callback_count` may stay frozen before the watchdog calls it a stall.
 const STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// #73: the longest the analysis thread parks waiting for a capture push before it re-checks
+/// for shutdown. Samples wake it sooner; this only matters when none arrive.
+const SAMPLE_WAIT: Duration = Duration::from_millis(20);
+
 /// A9b (#1617): how often to ask `pactl` which sink is default. Each poll forks a subprocess,
 /// so this is a cadence rather than a per-frame check; it matches `list_devices`' rescan gap.
 #[cfg(target_os = "linux")]
@@ -1568,15 +1572,21 @@ fn audio_thread(
     let mut fifo_stereo: Vec<f32> = Vec::with_capacity((read_buf.len() + ANALYSIS_HOP) * 2);
     let mut samples_consumed: u64 = 0;
 
+    // #73: the capture callback's push wakes this thread, so a hop is analyzed as soon as its
+    // last sample lands rather than up to a 10 ms poll later.
+    ring.wake_on_push();
     loop {
         if shutdown.load(Ordering::Acquire) {
             log::info!("Audio thread shutting down");
             break;
         }
-        thread::sleep(Duration::from_millis(10));
 
         let available = ring.available();
         if available == 0 {
+            // A push between the check above and this park leaves the unpark token set, so
+            // the park returns at once. The timeout bounds how long a shutdown waits when no
+            // samples arrive (a stalled device, or one that never started).
+            thread::park_timeout(SAMPLE_WAIT);
             continue;
         }
 
