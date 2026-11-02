@@ -1930,6 +1930,10 @@ struct BeatScheduler {
     period_trim: f64,
     /// Time of the most recently fired (or silently passed) grid beat.
     last_beat_time: f64,
+    /// #293: the locked phase last published and the `last_beat_time` it was measured
+    /// from, so a correction that pushes the upcoming instant later cannot move the phase
+    /// back within that interval.
+    phase_floor: Option<(f64, f64)>,
     /// #4473: the grid instant whose beat was already emitted `BEAT_LEAD_SECS` ahead of
     /// its settle, and whether it was emitted (muted instants pass silently).
     lead_emitted: Option<(f64, bool)>,
@@ -2009,6 +2013,7 @@ impl BeatScheduler {
             settled: None,
             period_trim: 0.0,
             last_beat_time: 0.0,
+            phase_floor: None,
             last_fired_time: 0.0,
             onset_support_pending: false,
             slot_early_best: None,
@@ -2408,7 +2413,7 @@ impl BeatScheduler {
                 if degenerate {
                     *next_beat_time += period;
                     self.lead_emitted = None;
-                    let phase = ((timestamp - self.last_beat_time) / period).rem_euclid(1.0);
+                    let phase = self.locked_phase(timestamp, *next_beat_time);
                     return (false, 0.0, phase, self.bpm);
                 }
                 let supported = self.onset_support_pending;
@@ -2527,10 +2532,41 @@ impl BeatScheduler {
             self.onset_support_pending = is_onset && self.onset_support_pending;
         }
 
-        let phase = ((timestamp - self.last_beat_time) / period).rem_euclid(1.0);
+        let phase = if self.tempo_locked {
+            self.locked_phase(timestamp, *next_beat_time)
+        } else {
+            self.phase_floor = None;
+            ((timestamp - self.last_beat_time) / period).rem_euclid(1.0)
+        };
         (fired, beat_time, phase, self.bpm)
     }
+
+    /// #293: the locked beat phase, the fraction of the way from the last settled instant to
+    /// `next`, the upcoming one. It reaches 1 only as that instant settles — the hop the
+    /// downbeat tracker's `beat_index` steps — however far a correction or an arbiter shift
+    /// moved the instant from `last + period`; measured from the last instant alone, it
+    /// wrapped a hop early and `beat_index + beat_phase` dipped by a beat. Within one interval
+    /// it never moves back, even when a correction pushes `next` later.
+    fn locked_phase(&mut self, timestamp: f64, next: f64) -> f64 {
+        let last = self.last_beat_time;
+        let span = next - last;
+        let raw = if span > 0.0 {
+            (timestamp - last) / span
+        } else {
+            0.0
+        };
+        let floor = match self.phase_floor {
+            Some((from, p)) if from.to_bits() == last.to_bits() => p,
+            _ => 0.0,
+        };
+        let phase = raw.clamp(floor, PHASE_BELOW_ONE);
+        self.phase_floor = Some((last, phase));
+        phase
+    }
 }
+
+/// #293: the largest phase below 1 that survives the cast to `f32` (`1 - f32::EPSILON`).
+pub(super) const PHASE_BELOW_ONE: f64 = 1.0 - f32::EPSILON as f64;
 
 // ---------------------------------------------------------------------------
 // Main BeatDetector facade

@@ -855,21 +855,20 @@ mod tests {
                 h.ts
             );
         }
-        // The lead adds no discontinuity of its own. (The scheduler's phase can already wrap
-        // a hop before its instant settles when a correction pushed the instant late, a
-        // one-hop dip that the run without a lead shows on the same hop.)
+        // #293: once locked, `index + phase` never steps back and never skips, with or
+        // without a lead — the phases wrap on the hop their index steps, not a hop before.
+        // (The slack is f32 rounding of `index + phase` while a phase holds below 1.)
         for (name, clock) in [
             ("beat", (|h: &SyncHop| h.beat_clock) as fn(&SyncHop) -> f32),
             ("bar", |h: &SyncHop| h.bar_clock),
         ] {
-            let smooth = |w: &[SyncHop]| (-0.02..0.3).contains(&(clock(&w[1]) - clock(&w[0])));
-            for (wl, wp) in led.windows(2).zip(plain.windows(2)) {
-                if wl[0].ts > 10.0 && !smooth(wl) {
+            for (run, hops) in [("unled", &plain), ("led", &led)] {
+                for w in hops.windows(2).filter(|w| w[0].ts > 6.5) {
+                    let step = clock(&w[1]) - clock(&w[0]);
                     assert!(
-                        !smooth(wp),
-                        "{name} clock jumped {} at {:.3} where the unled one did not",
-                        clock(&wl[1]) - clock(&wl[0]),
-                        wl[1].ts
+                        (-1e-5..0.3).contains(&step),
+                        "{run} {name} clock stepped {step} at {:.3}",
+                        w[1].ts
                     );
                 }
             }
