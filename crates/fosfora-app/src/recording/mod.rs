@@ -290,7 +290,13 @@ impl RecordingSystem {
         }
 
         // Render composite to capture texture.
-        post_process.render_composite_to(device, encoder, source, &capture.view);
+        post_process.render_composite_to(
+            device,
+            encoder,
+            source,
+            &capture.view,
+            (capture.width, capture.height),
+        );
 
         // Copy to staging.
         capture.copy_to_staging(encoder);

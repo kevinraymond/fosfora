@@ -154,6 +154,12 @@ pub struct App {
     /// preview inside a panel, and lets a second window present the same frame,
     /// without either of them re-running the post chain.
     pub display: RenderTarget,
+    /// The size every render target is built at (GH #292): the main window's
+    /// until an output window opens, then that window's. A 4:3 display then
+    /// gets a 4:3 frame at its own resolution, the frame full screen on it
+    /// would render, instead of the main window's shape letterboxed onto it.
+    /// Changed only by [`App::sync_render_size`].
+    render_size: (u32, u32),
     /// The v2 layer rows' pictures (#3123): each layer alone, and the stack
     /// blended up to it. Tapped only while the workspace shell is on screen.
     pub layer_thumbs: crate::gpu::layer_thumbs::LayerThumbs,
@@ -677,6 +683,7 @@ impl App {
             master_postprocess: PostProcessDef::default(),
             master_postprocess_previous: None,
             master_postprocess_modulation: Default::default(),
+            render_size: (display.width, display.height),
             display,
             layer_thumbs,
             catalog_thumbs: crate::ui::catalog_thumbs::CatalogThumbs::shipped(),
@@ -736,8 +743,11 @@ impl App {
         if let Some(ow) = self.output_window.take() {
             log::info!("Output window closed ({})", ow.display_name);
         }
+        self.sync_render_size();
     }
 
+    /// The main window was resized: its surface and the interface follow at
+    /// once, the render only while no output window is open to set it.
     pub fn resize(&mut self, width: u32, height: u32) {
         // Windows delivers minimize as a 0x0 resize; zero-size render targets
         // are invalid (validation-error spam) and zero-size capture staging
@@ -745,20 +755,61 @@ impl App {
         if width == 0 || height == 0 {
             return;
         }
-        // A fade's pictures are the old size: the snapshot is reallocated
-        // below, and the outgoing stack would need a full resize for a second
-        // at most. End the fade. (A lost surface "resizes" to the same size;
-        // that keeps it.)
-        if (width, height)
-            != (
+        self.gpu.resize(width, height);
+        self.egui_overlay
+            .resize(width, height, self.window.scale_factor() as f32);
+        self.sync_render_size();
+    }
+
+    /// The size the render is built at; see the field.
+    pub fn render_size(&self) -> (u32, u32) {
+        self.render_size
+    }
+
+    /// The size the render should be: see [`crate::output_window::render_size`].
+    fn wanted_render_size(&self) -> (u32, u32) {
+        crate::output_window::render_size(
+            (
                 self.gpu.surface_config.width,
                 self.gpu.surface_config.height,
-            )
-        {
-            self.active_transition = None;
-            self.retiring = None;
+            ),
+            self.output_window.as_ref().map(|ow| ow.size()),
+        )
+    }
+
+    /// Bring the render to [`Self::wanted_render_size`] if it is not there.
+    /// Called after everything that can change it: the main window resizing,
+    /// and the output window opening, resizing or closing. A lost surface
+    /// "resizes" the main window to the size it already had, which leaves
+    /// the render, and everything the layers have simulated, as it was.
+    pub fn sync_render_size(&mut self) {
+        let (width, height) = self.wanted_render_size();
+        if (width, height) != self.render_size {
+            log::info!(
+                "Render size {width}×{height} (was {}×{}), following the {} window",
+                self.render_size.0,
+                self.render_size.1,
+                if self.output_window.is_some() {
+                    "output"
+                } else {
+                    "main"
+                }
+            );
+            self.resize_render(width, height);
         }
-        self.gpu.resize(width, height);
+    }
+
+    /// Rebuild every render target at `width`×`height`.
+    fn resize_render(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        // A fade's pictures are the old size: the snapshot is reallocated
+        // below, and the outgoing stack would need a full resize for a second
+        // at most. End the fade.
+        self.active_transition = None;
+        self.retiring = None;
+        self.render_size = (width, height);
         for layer in &mut self.layer_stack.layers {
             layer.resize(
                 &self.gpu.device,
@@ -798,8 +849,6 @@ impl App {
             .set_display_texture(&self.gpu.device, &display_view);
         self.trama.resize(width, height);
         self.chain_targets.resize(width, height);
-        self.egui_overlay
-            .resize(width, height, self.window.scale_factor() as f32);
         if let Some(ref mut tr) = self.transition_renderer {
             tr.resize(&self.gpu.device, width, height, GpuContext::hdr_format());
         }
@@ -807,7 +856,7 @@ impl App {
         self.ndi.resize(&self.gpu.device, width, height);
         // v4l2 deliberately does not resize (readers can't tolerate mid-stream
         // geometry changes); Spout and Syphon receivers adapt, so they follow
-        // the window.
+        // the render.
         #[cfg(all(target_os = "windows", feature = "spout"))]
         self.spout.resize(&self.gpu.device, width, height);
         #[cfg(all(target_os = "macos", feature = "syphon"))]
@@ -933,10 +982,7 @@ impl App {
         self.uniforms.time =
             crate::gpu::uniforms::shader_time(now.duration_since(self.start_time).as_secs_f64());
         self.uniforms.delta_time = dt;
-        self.uniforms.resolution = [
-            self.gpu.surface_config.width as f32,
-            self.gpu.surface_config.height as f32,
-        ];
+        self.uniforms.resolution = [self.render_size.0 as f32, self.render_size.1 as f32];
 
         // Feedback uniforms
         self.uniforms.feedback_decay = 0.88;
@@ -2034,8 +2080,8 @@ impl App {
                 device: &self.gpu.device,
                 queue: &self.gpu.queue,
                 pipeline_cache: self.gpu.pipeline_cache.as_ref(),
-                width: self.gpu.surface_config.width,
-                height: self.gpu.surface_config.height,
+                width: self.render_size.0,
+                height: self.render_size.1,
                 placeholder: &self.placeholder,
                 audio_textures: &self.audio_textures,
                 particle_quality: self.settings.particle_quality,
@@ -2088,8 +2134,8 @@ impl App {
                 device: &self.gpu.device,
                 queue: &self.gpu.queue,
                 pipeline_cache: self.gpu.pipeline_cache.as_ref(),
-                width: self.gpu.surface_config.width,
-                height: self.gpu.surface_config.height,
+                width: self.render_size.0,
+                height: self.render_size.1,
                 placeholder: &self.placeholder,
                 audio_textures: &self.audio_textures,
                 particle_quality: self.settings.particle_quality,
@@ -2182,8 +2228,8 @@ impl App {
                 device: &self.gpu.device,
                 queue: &self.gpu.queue,
                 pipeline_cache: self.gpu.pipeline_cache.as_ref(),
-                width: self.gpu.surface_config.width,
-                height: self.gpu.surface_config.height,
+                width: self.render_size.0,
+                height: self.render_size.1,
                 placeholder: &self.placeholder,
                 audio_textures: &self.audio_textures,
                 particle_quality: self.settings.particle_quality,
@@ -2351,8 +2397,8 @@ impl App {
             &self.gpu.device,
             &self.gpu.queue,
             hdr_format,
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
+            self.render_size.0,
+            self.render_size.1,
             source,
             path,
         );
@@ -2431,8 +2477,8 @@ impl App {
             &self.gpu.device,
             &self.gpu.queue,
             GpuContext::hdr_format(),
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
+            self.render_size.0,
+            self.render_size.1,
             crate::media::decoder::MediaSource::Live { width, height },
             std::path::PathBuf::from(device_name),
         );
@@ -2806,8 +2852,8 @@ impl App {
                     &self.gpu.device,
                     &self.gpu.queue,
                     hdr_format,
-                    self.gpu.surface_config.width,
-                    self.gpu.surface_config.height,
+                    self.render_size.0,
+                    self.render_size.1,
                     source,
                     path.clone(),
                 );
@@ -3206,10 +3252,7 @@ impl App {
                 .request_load(index, preset, media_jobs, name);
         }
         // Targets now, so the capture in render() needs only shared access.
-        let (w, h) = (
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
-        );
+        let (w, h) = (self.render_size.0, self.render_size.1);
         let tr = self.transition_renderer.get_or_insert_with(|| {
             TransitionRenderer::new(&self.gpu.device, GpuContext::hdr_format())
         });
@@ -3302,10 +3345,7 @@ impl App {
     /// leave an empty stack for the incoming preset to build fresh layers in
     /// (a reused layer could not be in both pictures).
     fn retire_live_stack(&mut self) {
-        let (w, h) = (
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
-        );
+        let (w, h) = (self.render_size.0, self.render_size.1);
         let compositor = self.retire_compositor.get_or_insert_with(|| {
             Compositor::new(&self.gpu.device, GpuContext::hdr_format(), w, h)
         });
@@ -4032,8 +4072,8 @@ impl App {
             &self.gpu.device,
             &self.gpu.queue,
             hdr_format,
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
+            self.render_size.0,
+            self.render_size.1,
             source,
             path.to_path_buf(),
         );
@@ -4316,7 +4356,9 @@ impl App {
     /// interface's own ground, and the composite reaches the eye only through
     /// the preview.
     ///
-    /// Hiding the interface (D) means full output.
+    /// Hiding the interface (D) means full output. While an output window
+    /// sets the render's shape (GH #292) that is no longer the window's, so
+    /// the frame is letterboxed onto it rather than stretched.
     ///
     /// A free function rather than a method: the frame holds
     /// `&mut self.compositor` across this point, and `&self` collides with it.
@@ -4328,11 +4370,23 @@ impl App {
         display: &RenderTarget,
         encoder: &mut wgpu::CommandEncoder,
         surface_view: &wgpu::TextureView,
+        surface_size: (u32, u32),
         output_fills_window: bool,
         ground: egui::Color32,
     ) {
         if output_fills_window {
-            post_process.blit_target(device, encoder, display, surface_view);
+            if (display.width, display.height) == surface_size {
+                post_process.blit_target(device, encoder, display, surface_view);
+            } else {
+                post_process.blit_target_letterboxed(
+                    device,
+                    encoder,
+                    display,
+                    surface_view,
+                    surface_size.0,
+                    surface_size.1,
+                );
+            }
             return;
         }
         let c = ground;
@@ -4546,6 +4600,10 @@ impl App {
                 &self.display,
                 scope.encoder(),
                 &surface_view,
+                (
+                    self.gpu.surface_config.width,
+                    self.gpu.surface_config.height,
+                ),
                 !self.egui_overlay.visible,
                 self.egui_overlay.palette.bg,
             );
@@ -4561,7 +4619,9 @@ impl App {
             }
             // Second output window: the same finished frame, full-window, with
             // no interface over it (#3122). Inside the `display-blit` scope so
-            // the profiler counts what the second present costs.
+            // the profiler counts what the second present costs. The render
+            // is this window's size (GH #292), which makes this a full-window
+            // copy; the letterbox is the guard for a size that disagrees.
             if let Some((ref frame, ref view)) = output_frame {
                 self.post_process.blit_target_letterboxed(
                     &self.gpu.device,

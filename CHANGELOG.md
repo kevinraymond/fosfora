@@ -3,6 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Changed
+- **The output window fills a 4:3 CRT or a portrait monitor instead of letterboxing the workspace's 16:9 frame onto it.** While the window is open Fosfora renders at that display's size and shape, as full screen on it would, so a 4K projector costs what full screen there does. Every other output shows the same picture: NDI, Spout, Syphon and recordings set to Match Window take that size, and a fixed-size stream, virtual camera or recording, like the main window with the interface hidden, letterboxes it instead of stretching it.
+
 ## v2.8.0 — 2026-10-23
 
 Fosfora becomes the analysis brain for TouchDesigner. `fosfora --signal` runs headless on the CPU and broadcasts beats, bars, phrases, sections, key and energy; two new release assets turn that stream into channels you can wire and four views you can watch within minutes of downloading. The bar line also stops jumping a beat or two several times a minute on steady dance music.
