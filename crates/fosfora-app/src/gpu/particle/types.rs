@@ -674,6 +674,115 @@ fn default_far_clip() -> f32 {
     10.0
 }
 
+/// How particles combine with what is under them: `blend` in a `.pfx`.
+///
+/// Deserializes leniently from its lowercase name: a value this build does not
+/// know logs a warning and falls back to [`Additive`](Self::Additive), which is
+/// what every render path did with an unrecognised string before this was an
+/// enum, so an existing `.pfx` with a typo still loads and looks the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", from = "String")]
+pub enum ParticleBlend {
+    #[default]
+    Additive,
+    Alpha,
+    /// Weighted blended order-independent transparency on the billboard path.
+    Wboit,
+    /// Weighted-average OIT resolve on the compute rasterizer: the splat
+    /// blend. Unlike `Wboit` it composes WITH render mode `Compute`.
+    Oit,
+}
+
+impl ParticleBlend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Additive => "additive",
+            Self::Alpha => "alpha",
+            Self::Wboit => "wboit",
+            Self::Oit => "oit",
+        }
+    }
+}
+
+impl From<String> for ParticleBlend {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "additive" => Self::Additive,
+            "alpha" => Self::Alpha,
+            "wboit" => Self::Wboit,
+            "oit" => Self::Oit,
+            other => {
+                log::warn!(
+                    "particles: unknown blend {other:?} (expected additive, alpha, wboit or oit); using additive"
+                );
+                Self::Additive
+            }
+        }
+    }
+}
+
+/// How particles are drawn: `render_mode` in a `.pfx`.
+///
+/// Lenient like [`ParticleBlend`]: an unknown value warns and falls back to
+/// [`Billboard`](Self::Billboard), as it always did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", from = "String")]
+pub enum ParticleRenderMode {
+    /// Instanced quads.
+    #[default]
+    Billboard,
+    /// The atomic-framebuffer compute rasterizer.
+    Compute,
+    /// Compute for large counts of small, plain particles; billboard otherwise.
+    Auto,
+}
+
+impl ParticleRenderMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Billboard => "billboard",
+            Self::Compute => "compute",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+impl From<String> for ParticleRenderMode {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "billboard" => Self::Billboard,
+            "compute" => Self::Compute,
+            "auto" => Self::Auto,
+            other => {
+                log::warn!(
+                    "particles: unknown render_mode {other:?} (expected billboard, compute or auto); using billboard"
+                );
+                Self::Billboard
+            }
+        }
+    }
+}
+
+/// Where a particle system's obstacle comes from. Runtime state only: presets
+/// record it through their own fields, never by this name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObstacleSource {
+    Image,
+    Video,
+    Webcam,
+    /// A depth map estimated from the webcam.
+    Depth,
+    /// A 3D model, re-rastered to depth every frame (#1851).
+    Model,
+}
+
+impl ObstacleSource {
+    /// Follows a live camera feed: the webcam itself or depth estimated from it.
+    pub fn is_camera(self) -> bool {
+        matches!(self, Self::Webcam | Self::Depth)
+    }
+}
+
 /// .pfx particle definition (JSON).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParticleDef {
@@ -717,11 +826,9 @@ pub struct ParticleDef {
     /// Pose and shading for a `model:` source, if the emitter names one (#1993).
     #[serde(default)]
     pub model_sample: Option<ModelSampleDef>,
-    /// Blend mode: "additive" (default), "alpha", "wboit", or "oit"
-    /// ("oit" = weighted-average OIT resolve on the compute rasterizer — the
-    /// splat blend; unlike "wboit" it composes WITH render_mode "compute")
-    #[serde(default = "default_blend")]
-    pub blend: String,
+    /// Blend mode: "additive" (default), "alpha", "wboit", or "oit".
+    #[serde(default)]
+    pub blend: ParticleBlend,
     /// Enable 3D curl noise flow field (opt-in)
     #[serde(default)]
     pub flow_field: bool,
@@ -851,8 +958,8 @@ pub struct ParticleDef {
     pub helix: Option<crate::gpu::helix::HelixDef>,
 
     /// Render mode: "billboard" (default), "compute" (atomic framebuffer), or "auto"
-    #[serde(default = "default_render_mode")]
-    pub render_mode: String,
+    #[serde(default)]
+    pub render_mode: ParticleRenderMode,
 
     /// Accumulate a per-pixel particle-velocity field in the compute rasterizer
     /// (#1482 Chronoflow), exposed to fragment passes as `@particles.velocity`.
@@ -968,10 +1075,6 @@ pub fn frame_gain(gain60: f32, keep60: f32, delta_time: f32) -> f32 {
     gain60 * (1.0 - k.powf(n)) / d
 }
 
-fn default_blend() -> String {
-    "additive".to_string()
-}
-
 fn default_max_count() -> u32 {
     10000
 }
@@ -1017,10 +1120,6 @@ fn default_noise_persistence() -> f32 {
 fn default_noise_speed() -> f32 {
     0.5
 }
-fn default_render_mode() -> String {
-    "billboard".to_string()
-}
-
 /// Parse a hex color string to packed RGBA u32.
 /// Supports "#RRGGBB" (alpha defaults to 0xFF) and "#RRGGBBAA".
 pub fn parse_hex_color(s: &str) -> u32 {
@@ -1049,6 +1148,44 @@ pub fn parse_hex_color(s: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn particle_modes_round_trip_their_pfx_names() {
+        for b in [
+            ParticleBlend::Additive,
+            ParticleBlend::Alpha,
+            ParticleBlend::Wboit,
+            ParticleBlend::Oit,
+        ] {
+            let json = serde_json::to_string(&b).unwrap();
+            assert_eq!(json, format!("\"{}\"", b.as_str()));
+            assert_eq!(serde_json::from_str::<ParticleBlend>(&json).unwrap(), b);
+        }
+        for m in [
+            ParticleRenderMode::Billboard,
+            ParticleRenderMode::Compute,
+            ParticleRenderMode::Auto,
+        ] {
+            let json = serde_json::to_string(&m).unwrap();
+            assert_eq!(json, format!("\"{}\"", m.as_str()));
+            assert_eq!(
+                serde_json::from_str::<ParticleRenderMode>(&json).unwrap(),
+                m
+            );
+        }
+    }
+
+    /// A misspelled mode in a user's `.pfx` must still load, rendering as
+    /// it did when these were strings: unknown blend is additive, unknown
+    /// render mode is billboard.
+    #[test]
+    fn unknown_particle_modes_fall_back_instead_of_failing_the_effect() {
+        let def: ParticleDef =
+            serde_json::from_str(r#"{"emitter": {}, "blend": "Alpha", "render_mode": "gpu"}"#)
+                .unwrap();
+        assert_eq!(def.blend, ParticleBlend::Additive);
+        assert_eq!(def.render_mode, ParticleRenderMode::Billboard);
+    }
 
     #[test]
     fn particle_size_64() {
@@ -1092,7 +1229,7 @@ mod tests {
         assert!((def.initial_size - 0.02).abs() < 1e-6);
         assert!((def.drag - 0.98).abs() < 1e-6);
         assert!((def.emit_rate - 100.0).abs() < 1e-6);
-        assert_eq!(def.blend, "additive");
+        assert_eq!(def.blend, ParticleBlend::Additive);
         assert!(def.sprite.is_none());
         assert!(def.image_sample.is_none());
         assert!(def.reaction_diffusion.is_none());
@@ -1114,7 +1251,7 @@ mod tests {
         assert!(def.color_gradient.is_empty());
         assert_eq!(def.spin_speed, 0.0);
         assert!(!def.depth_sort);
-        assert_eq!(def.render_mode, "billboard");
+        assert_eq!(def.render_mode, ParticleRenderMode::Billboard);
     }
 
     /// The renderer rotates quads by `pos_life.z`, but that slot is only a spin

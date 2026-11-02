@@ -1496,7 +1496,7 @@ mod tests {
             live_enabled: None,
             live_threshold: None,
             live_elasticity: None,
-            source: String::new(),
+            source: None,
             image_path: None,
             has_particles: true,
             webcam_available: false,

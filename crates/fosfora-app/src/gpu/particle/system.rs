@@ -15,8 +15,9 @@ use super::splat::{SplatDriver, SplatShRec, SplatStatic};
 use super::splat_source::SplatCloud;
 use super::sprite::SpriteAtlas;
 use super::types::{
-    ImageSampleDef, ModelSampleDef, ParticleAux, ParticleDef, ParticleRenderUniforms,
-    ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
+    ImageSampleDef, ModelSampleDef, ObstacleSource, ParticleAux, ParticleBlend, ParticleDef,
+    ParticleRenderMode, ParticleRenderUniforms, ParticleUniforms, RDUniforms, SourceTransition,
+    TrailFieldUniforms,
 };
 use super::world::{WorldCamera, WorldCameraUniforms, WorldRender, WorldTarget};
 use crate::gpu::helix::{HelixHistory, HelixParams, HelixSim};
@@ -132,8 +133,8 @@ pub struct ParticleSystem {
     sprite_bind_group: BindGroup,
     sprite_bgl: BindGroupLayout,
     pub sprite: Option<SpriteAtlas>,
-    /// Active blend mode: "additive", "alpha", or "wboit"
-    pub blend_mode: String,
+    /// Active blend mode.
+    pub blend_mode: ParticleBlend,
 
     /// World-space (XR) render state, built by the first `render_world` call.
     /// While `None`, nothing of the world path runs.
@@ -151,12 +152,12 @@ pub struct ParticleSystem {
     pub obstacle_fit: super::types::ObstacleFit,
     pub obstacle_threshold: f32,
     pub obstacle_elasticity: f32,
-    /// "image", "video", "webcam", "depth", "model", or "" (none)
-    pub obstacle_source: String,
+    /// Where the obstacle comes from; `None` while there is none.
+    pub obstacle_source: Option<ObstacleSource>,
     /// Path to obstacle image/video/model file (for preset save/load)
     pub obstacle_image_path: Option<String>,
     /// Loaded 3D-model obstacle (#1851); re-rasters its depth into `obstacle`
-    /// every frame while `obstacle_source == "model"`.
+    /// every frame while `obstacle_source` is `Some(ObstacleSource::Model)`.
     obstacle_model: Option<super::obstacle_model::ObstacleModel>,
 
     // Obstacle water accumulation (#1851): a virtual-pipes shallow-water sim
@@ -456,14 +457,14 @@ impl ParticleSystem {
         // #1800 validations: splat playback requires the compute rasterizer
         // (blend "oit" only exists there) and owns group 2, which trails use.
         let mut def_owned;
-        let def = if def.splat.is_some() || def.blend == "oit" {
+        let def = if def.splat.is_some() || def.blend == ParticleBlend::Oit {
             def_owned = def.clone();
-            if def_owned.splat.is_some() && def_owned.render_mode != "compute" {
+            if def_owned.splat.is_some() && def_owned.render_mode != ParticleRenderMode::Compute {
                 log::warn!(
                     "Splat effects require render_mode \"compute\" (got \"{}\") — forcing",
-                    def_owned.render_mode
+                    def_owned.render_mode.as_str()
                 );
-                def_owned.render_mode = "compute".to_string();
+                def_owned.render_mode = ParticleRenderMode::Compute;
             }
             if def_owned.splat.is_some() && def_owned.trail_length >= 2 {
                 log::warn!(
@@ -471,11 +472,13 @@ impl ParticleSystem {
                 );
                 def_owned.trail_length = 0;
             }
-            if def_owned.blend == "oit" && def_owned.render_mode != "compute" {
+            if def_owned.blend == ParticleBlend::Oit
+                && def_owned.render_mode != ParticleRenderMode::Compute
+            {
                 log::warn!(
                     "Blend \"oit\" is a compute-rasterizer resolve mode — forcing render_mode \"compute\""
                 );
-                def_owned.render_mode = "compute".to_string();
+                def_owned.render_mode = ParticleRenderMode::Compute;
             }
             &def_owned
         } else {
@@ -1159,7 +1162,7 @@ impl ParticleSystem {
                 cache: None,
             });
 
-        let blend_mode = def.blend.clone();
+        let blend_mode = def.blend;
 
         let render_bind_groups = create_render_bind_groups(
             device,
@@ -1217,9 +1220,9 @@ impl ParticleSystem {
         let splat_sorted = def.splat.as_ref().is_some_and(|s| s.sort);
 
         // --- Compute rasterizer (optional) ---
-        let use_compute_raster = match def.render_mode.as_str() {
-            "compute" => {
-                if def.blend == "wboit" {
+        let use_compute_raster = match def.render_mode {
+            ParticleRenderMode::Compute => {
+                if def.blend == ParticleBlend::Wboit {
                     log::warn!(
                         "Compute rasterizer is incompatible with WBOIT blend — falling back to billboard"
                     );
@@ -1228,14 +1231,14 @@ impl ParticleSystem {
                     true
                 }
             }
-            "auto" => {
+            ParticleRenderMode::Auto => {
                 max_particles >= 100_000
                     && def.sprite.is_none()
                     && def.trail_length < 2
                     && def.initial_size <= 0.005
-                    && def.blend != "wboit"
+                    && def.blend != ParticleBlend::Wboit
             }
-            _ => false, // "billboard" or unknown
+            ParticleRenderMode::Billboard => false,
         };
         // The sorted path owns rendering itself — don't also build the OIT raster.
         let use_compute_raster = use_compute_raster && !splat_sorted;
@@ -1255,7 +1258,7 @@ impl ParticleSystem {
                 &counter_buffer,
                 max_particles,
                 // Anisotropic conic footprints from flags.zw (#1800)
-                def.splat.is_some() && def.blend == "oit",
+                def.splat.is_some() && def.blend == ParticleBlend::Oit,
                 // Per-pixel velocity field for Chronoflow trails (#1482)
                 def.velocity_field,
             ))
@@ -1375,7 +1378,7 @@ impl ParticleSystem {
             wboit_composite_pipeline,
             wboit_composite_bind_group,
             wboit_composite_bgl,
-        ) = if def.blend == "wboit" && compute_raster.is_none() {
+        ) = if def.blend == ParticleBlend::Wboit && compute_raster.is_none() {
             let (at, av, rt, rv, rp, cp, cbg, cbgl) =
                 create_wboit_resources(device, hdr_format, 1920, 1080, &render_bgl, &sprite_bgl);
             (
@@ -1440,7 +1443,7 @@ impl ParticleSystem {
             obstacle_fit: super::types::ObstacleFit::Cover,
             obstacle_threshold: 0.5,
             obstacle_elasticity: 0.7,
-            obstacle_source: String::new(),
+            obstacle_source: None,
             obstacle_image_path: None,
             obstacle_model: None,
             obstacle_water_enabled: false,
@@ -2435,7 +2438,7 @@ impl ParticleSystem {
                 encoder,
                 queue,
                 target,
-                &self.blend_mode,
+                self.blend_mode,
                 self.render_uniforms.composite_gain,
             );
             return;
@@ -2554,7 +2557,7 @@ impl ParticleSystem {
             pass.draw_indirect(trail_indirect, 0);
         }
 
-        let pipeline = if self.blend_mode == "alpha" {
+        let pipeline = if self.blend_mode == ParticleBlend::Alpha {
             &self.render_pipeline_alpha
         } else {
             &self.render_pipeline_additive
@@ -2574,7 +2577,7 @@ impl ParticleSystem {
     /// and tested `Less` but never written, and one non-instanced
     /// `draw_indirect` of three vertices per alive particle, with arguments
     /// written on the GPU so no readback is needed. Blend follows the effect's
-    /// `blend` as in [`render`](Self::render): `"alpha"` is alpha, anything else
+    /// `blend` as in [`render`](Self::render): `Alpha` is alpha, anything else
     /// additive; rgb is scaled by the same `composite_gain`.
     ///
     /// Always draws what the last [`dispatch`](Self::dispatch) wrote, so it may
@@ -2615,7 +2618,7 @@ impl ParticleSystem {
         let key = (
             target.color_format,
             depth_format,
-            self.blend_mode == "alpha",
+            self.blend_mode == ParticleBlend::Alpha,
         );
         world.ensure_pipeline(device, key);
         let offset = world.write_camera(
@@ -3183,7 +3186,7 @@ impl ParticleSystem {
         self.render_uniforms.sprite_cols = 1;
         self.render_uniforms.sprite_rows = 1;
         self.render_uniforms.sprite_frames = 1;
-        self.blend_mode = "additive".to_string();
+        self.blend_mode = ParticleBlend::Additive;
 
         // Clear aux data
         self.upload_aux_data(device, queue, &[]);
@@ -3226,7 +3229,7 @@ impl ParticleSystem {
     ) {
         self.obstacle = ObstacleTexture::from_rgba(device, queue, data, w, h);
         self.obstacle_enabled = true;
-        self.obstacle_source = "image".to_string();
+        self.obstacle_source = Some(ObstacleSource::Image);
         self.obstacle_image_path = path;
         self.rebuild_flow_field_bind_group(device);
     }
@@ -3274,7 +3277,7 @@ impl ParticleSystem {
         self.obstacle_video_looping = true;
         self.obstacle_video_speed = 1.0;
         self.obstacle_enabled = true;
-        self.obstacle_source = "video".to_string();
+        self.obstacle_source = Some(ObstacleSource::Video);
         self.obstacle_image_path = Some(path);
     }
 
@@ -3344,7 +3347,7 @@ impl ParticleSystem {
         self.obstacle = super::obstacle_model::ObstacleModel::make_target(device);
         self.obstacle_model = Some(model);
         self.obstacle_enabled = true;
-        self.obstacle_source = "model".to_string();
+        self.obstacle_source = Some(ObstacleSource::Model);
         self.obstacle_image_path = Some(path.to_string_lossy().to_string());
         self.obstacle_video_frames.clear();
         self.obstacle_video_delays_ms.clear();
@@ -3448,7 +3451,7 @@ impl ParticleSystem {
     pub fn clear_obstacle(&mut self, device: &Device, queue: &Queue) {
         self.obstacle = ObstacleTexture::placeholder(device, queue);
         self.obstacle_enabled = false;
-        self.obstacle_source.clear();
+        self.obstacle_source = None;
         self.obstacle_image_path = None;
         self.obstacle_model = None;
         self.obstacle_video_frames.clear();

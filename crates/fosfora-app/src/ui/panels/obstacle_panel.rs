@@ -1,6 +1,6 @@
 use egui::{RichText, Ui};
 
-use crate::gpu::particle::{ObstacleFit, ObstacleMode};
+use crate::gpu::particle::{ObstacleFit, ObstacleMode, ObstacleSource};
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
 use crate::ui::widgets::rows::combo_row;
@@ -17,8 +17,7 @@ pub struct ObstacleInfo {
     pub live_enabled: Option<bool>,
     pub live_threshold: Option<f32>,
     pub live_elasticity: Option<f32>,
-    /// "image", "webcam", "depth", or "" (none)
-    pub source: String,
+    pub source: Option<ObstacleSource>,
     pub image_path: Option<String>,
     pub has_particles: bool,
     pub webcam_available: bool,
@@ -117,43 +116,24 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
 
     // Source info + controls
     ui.horizontal(|ui| {
-        let source_text = match info.source.as_str() {
-            "image" => {
-                if let Some(ref path) = info.image_path {
-                    let name = std::path::Path::new(path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "image".to_string());
-                    format!("Image: {}", name)
-                } else {
-                    "Image".to_string()
-                }
+        // A file-backed source shows its file name after the label.
+        let with_file = |label: &str, fallback: &str| match info.image_path {
+            Some(ref path) => {
+                let name = std::path::Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| fallback.to_string());
+                format!("{label}: {name}")
             }
-            "video" => {
-                if let Some(ref path) = info.image_path {
-                    let name = std::path::Path::new(path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "video".to_string());
-                    format!("Video: {}", name)
-                } else {
-                    "Video".to_string()
-                }
-            }
-            "webcam" => "Webcam".to_string(),
-            "depth" => "Depth (MiDaS)".to_string(),
-            "model" => {
-                if let Some(ref path) = info.image_path {
-                    let name = std::path::Path::new(path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "model".to_string());
-                    format!("Model: {}", name)
-                } else {
-                    "Model".to_string()
-                }
-            }
-            _ => "None".to_string(),
+            None => label.to_string(),
+        };
+        let source_text = match info.source {
+            Some(ObstacleSource::Image) => with_file("Image", "image"),
+            Some(ObstacleSource::Video) => with_file("Video", "video"),
+            Some(ObstacleSource::Webcam) => "Webcam".to_string(),
+            Some(ObstacleSource::Depth) => "Depth (MiDaS)".to_string(),
+            Some(ObstacleSource::Model) => with_file("Model", "model"),
+            None => "None".to_string(),
         };
         ui.label(
             RichText::new(source_text)
@@ -164,7 +144,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
 
     // Webcam device selector (when using webcam or depth source with multiple cameras)
     if info.webcam_available
-        && (info.source == "webcam" || info.source == "depth")
+        && info.source.is_some_and(ObstacleSource::is_camera)
         && info.webcam_devices.len() > 1
     {
         ui.horizontal(|ui| {
@@ -232,7 +212,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
             ui.add(btn)
         };
 
-        if tab_btn(ui, "Image", info.source == "image")
+        if tab_btn(ui, "Image", info.source == Some(ObstacleSource::Image))
             .on_hover_text("Load an image as obstacle shape")
             .clicked()
         {
@@ -240,7 +220,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
                 d.insert_temp(egui::Id::new("obstacle_cmd"), ObstacleCommand::LoadImage);
             });
         }
-        if tab_btn(ui, "Model", info.source == "model")
+        if tab_btn(ui, "Model", info.source == Some(ObstacleSource::Model))
             .on_hover_text("Load a 3D model (.glb/.gltf mesh or .ply/.splat cloud) — particles flow over its rotating surface")
             .clicked()
         {
@@ -249,7 +229,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
             });
         }
         if info.video_available {
-            if tab_btn(ui, "Video", info.source == "video")
+            if tab_btn(ui, "Video", info.source == Some(ObstacleSource::Video))
                 .on_hover_text("Load a video as animated obstacle")
                 .clicked()
             {
@@ -259,7 +239,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
             }
         }
         if info.webcam_available {
-            if tab_btn(ui, "Webcam", info.source == "webcam")
+            if tab_btn(ui, "Webcam", info.source == Some(ObstacleSource::Webcam))
                 .on_hover_text("Use live webcam feed as obstacle")
                 .clicked()
             {
@@ -270,7 +250,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
         }
         if info.depth_available && info.webcam_available {
             if info.depth_model_downloaded {
-                if tab_btn(ui, "Depth", info.source == "depth")
+                if tab_btn(ui, "Depth", info.source == Some(ObstacleSource::Depth))
                     .on_hover_text("Monocular depth estimation (MiDaS)")
                     .clicked()
                 {
@@ -295,7 +275,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
                 }
             }
         }
-        if !info.source.is_empty() {
+        if info.source.is_some() {
             if tab_btn(ui, "Clear", false)
                 .on_hover_text("Remove obstacle and stop capture")
                 .clicked()
@@ -319,7 +299,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
     ui.add_space(4.0);
 
     // Model spin (only for the 3D-model source): 0 = frozen front view.
-    if info.source == "model" {
+    if info.source == Some(ObstacleSource::Model) {
         let mut spin = info.model_spin;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;

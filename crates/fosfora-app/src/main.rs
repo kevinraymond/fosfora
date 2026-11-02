@@ -431,7 +431,7 @@ impl ApplicationHandler for FosforaApp {
                                 drag: ps.def.drag,
                                 live: ps.modulation,
                                 attraction_strength: ps.def.attraction_strength,
-                                blend_mode: ps.blend_mode.clone(),
+                                blend_mode: ps.blend_mode,
                                 has_flow_field: ps.def.flow_field,
                                 has_trails: ps.trail_length() >= 2,
                                 trail_length: ps.trail_length(),
@@ -697,7 +697,7 @@ impl ApplicationHandler for FosforaApp {
                                         live_enabled: ps.modulation.obstacle_enabled,
                                         live_threshold: ps.modulation.obstacle_threshold,
                                         live_elasticity: ps.modulation.obstacle_elasticity,
-                                        source: ps.obstacle_source.clone(),
+                                        source: ps.obstacle_source,
                                         image_path: ps.obstacle_image_path.clone(),
                                         has_particles,
                                         webcam_available,
@@ -738,7 +738,7 @@ impl ApplicationHandler for FosforaApp {
                                         live_enabled: None,
                                         live_threshold: None,
                                         live_elasticity: None,
-                                        source: String::new(),
+                                        source: None,
                                         image_path: None,
                                         has_particles,
                                         webcam_available,
@@ -2792,7 +2792,8 @@ impl ApplicationHandler for FosforaApp {
                                             {
                                                 obstacle_start_webcam = true;
                                                 ps.obstacle_enabled = true;
-                                                ps.obstacle_source = "webcam".to_string();
+                                                ps.obstacle_source =
+                                                    Some(gpu::particle::ObstacleSource::Webcam);
                                                 ps.obstacle_image_path = None;
                                             }
                                         }
@@ -2806,7 +2807,8 @@ impl ApplicationHandler for FosforaApp {
                                                 } else {
                                                     obstacle_start_depth = true;
                                                     ps.obstacle_enabled = true;
-                                                    ps.obstacle_source = "depth".to_string();
+                                                    ps.obstacle_source =
+                                                        Some(gpu::particle::ObstacleSource::Depth);
                                                     ps.obstacle_image_path = None;
                                                 }
                                             }

@@ -14,7 +14,7 @@ use crate::gpu::audio_textures::{AudioTextures, WAVEFORM_PEEK};
 use crate::gpu::compositor::Compositor;
 use crate::gpu::layer::{EffectLayer, Layer, LayerContent, LayerInfo, LayerStack};
 use crate::gpu::layer_builder::read_default_shader;
-use crate::gpu::particle::ParticleSystem;
+use crate::gpu::particle::{ObstacleSource, ParticleSystem};
 use crate::gpu::pass_executor::PassExecutor;
 use crate::gpu::placeholder::PlaceholderTexture;
 use crate::gpu::postprocess::PostProcessChain;
@@ -1550,7 +1550,9 @@ impl App {
                 for layer in &mut self.layer_stack.layers {
                     if let LayerContent::Effect(ref mut e) = layer.content {
                         if let Some(ref mut ps) = e.pass_executor.particle_system {
-                            if ps.obstacle_enabled && ps.obstacle_source == "depth" {
+                            if ps.obstacle_enabled
+                                && ps.obstacle_source == Some(ObstacleSource::Depth)
+                            {
                                 ps.update_obstacle_webcam(
                                     &self.gpu.device,
                                     &self.gpu.queue,
@@ -2653,7 +2655,7 @@ impl App {
                 .and_then(|e| e.pass_executor.particle_system.as_ref())
                 .map_or(false, |ps| {
                     (ps.source.is_webcam() && ps.webcam_device.is_none())
-                        || matches!(ps.obstacle_source.as_str(), "webcam" | "depth")
+                        || ps.obstacle_source.is_some_and(ObstacleSource::is_camera)
                 })
         })
     }
@@ -2804,7 +2806,8 @@ impl App {
                             continue;
                         }
                         // Feed obstacle with webcam frames
-                        if ps.obstacle_enabled && ps.obstacle_source == "webcam" {
+                        if ps.obstacle_enabled && ps.obstacle_source == Some(ObstacleSource::Webcam)
+                        {
                             ps.update_obstacle_webcam(
                                 &self.gpu.device,
                                 &self.gpu.queue,
@@ -2815,7 +2818,8 @@ impl App {
                         }
                         // Send webcam frame to depth thread for depth-based obstacle
                         #[cfg(feature = "depth")]
-                        if ps.obstacle_enabled && ps.obstacle_source == "depth" {
+                        if ps.obstacle_enabled && ps.obstacle_source == Some(ObstacleSource::Depth)
+                        {
                             if let Some(ref depth) = self.depth_thread {
                                 depth.send_frame(frame.data.clone(), frame.width, frame.height);
                             }
@@ -3037,10 +3041,14 @@ impl App {
                     .filter(|ps| ps.obstacle_enabled)
                     .map(|ps| ps.obstacle_elasticity);
                 let obstacle_depth = ps_ref
-                    .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "depth")
+                    .filter(|ps| {
+                        ps.obstacle_enabled && ps.obstacle_source == Some(ObstacleSource::Depth)
+                    })
                     .map(|_| true);
                 let obstacle_model = ps_ref
-                    .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "model")
+                    .filter(|ps| {
+                        ps.obstacle_enabled && ps.obstacle_source == Some(ObstacleSource::Model)
+                    })
                     .map(|_| true);
                 // Capture live Lattice / particle-sim panel edits so they
                 // round-trip through the preset instead of snapping back to
@@ -3907,7 +3915,7 @@ impl App {
                         if let Some(effect) = layer.as_effect_mut() {
                             if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
                                 ps.obstacle_enabled = true;
-                                ps.obstacle_source = "depth".to_string();
+                                ps.obstacle_source = Some(ObstacleSource::Depth);
                                 if let Some(mode) = lp.obstacle_mode {
                                     ps.obstacle_mode =
                                         crate::gpu::particle::ObstacleMode::from_u32(mode);
