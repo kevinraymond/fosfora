@@ -1,4 +1,6 @@
 use bytemuck::{Pod, Zeroable};
+
+use super::types::ParticleBlend;
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, BufferBindingType, ColorTargetState, CommandEncoder,
@@ -677,13 +679,13 @@ impl ComputeRasterizer {
         encoder: &mut CommandEncoder,
         queue: &Queue,
         target: &TextureView,
-        blend_mode: &str,
+        blend_mode: ParticleBlend,
         composite_gain: f32,
     ) {
         let mode = match blend_mode {
-            "alpha" => 1u32,
-            "oit" => 2, // weighted-average OIT: rgb/Σw + coverage (Splat #1800)
-            _ => 0,
+            ParticleBlend::Alpha => 1u32,
+            ParticleBlend::Oit => 2, // weighted-average OIT: rgb/Σw + coverage (Splat #1800)
+            ParticleBlend::Additive | ParticleBlend::Wboit => 0,
         };
         let uniforms = ResolveUniforms {
             width: self.width,
@@ -700,7 +702,7 @@ impl ComputeRasterizer {
         // OIT composites through the alpha pipeline: (SrcAlpha, 1−SrcAlpha)
         // color / (One, 1−SrcAlpha) alpha is exactly weighted-average
         // compositing over the background pass.
-        let pipeline = if blend_mode == "alpha" || blend_mode == "oit" {
+        let pipeline = if matches!(blend_mode, ParticleBlend::Alpha | ParticleBlend::Oit) {
             &self.resolve_pipeline_alpha
         } else {
             &self.resolve_pipeline_additive

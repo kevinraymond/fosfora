@@ -24,7 +24,7 @@ pub struct ParticleInfo {
     pub drag: f32,
     #[allow(dead_code)]
     pub attraction_strength: f32,
-    pub blend_mode: String,
+    pub blend_mode: crate::gpu::particle::ParticleBlend,
     pub has_flow_field: bool,
     pub has_trails: bool,
     pub trail_length: u32,
@@ -157,7 +157,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
         if info.splat_sorted {
             feature_badge(ui, "sorted", tc.accent);
         } else {
-            feature_badge(ui, &info.blend_mode, tc.text_secondary);
+            feature_badge(ui, info.blend_mode.as_str(), tc.text_secondary);
         }
         // View-dependent SH bands present in the capture (#1862) — absent for a
         // DC-only scene, which is the common case for .splat and older exports.
