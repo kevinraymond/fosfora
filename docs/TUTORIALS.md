@@ -648,6 +648,7 @@ Layer rows show a diamond and a node count for any layer with a chain. It is **f
 | **Kaleidoscope** | Wraps the picture into mirrored wedges around the center | `segments` 2–24 · `spin` turns per second · `rotate` ±0.5 turns · `zoom` 0.25–4 |
 | **Pixelate** | Quantizes to a grid of cells. `gap` clears a transparent border inside each one, so the layers beneath show through the grout | `size` 2–256 cells · `gap` 0–0.5 |
 | **Chromatic Aberration** | Splits red and blue either side of green, the lens-fringe look. `radial` splits outward from the center | `amount` 0–0.05 · `angle` ±0.5 turns · `radial` |
+| **Glitch** | Tears the picture into sliding strips and jumping blocks with the colors split apart. Put **onset** on `intensity` and it breaks up on every hit; at 0 it passes through untouched | `intensity` 0–1 · `blocks` 2–128 strips · `shift` 0–0.5 of the width · `rgb_split` 0–0.05 · `speed` new patterns per second |
 | **Scanlines** | Darkens the picture in horizontal bands, the CRT look | `count` 10–1080 lines · `depth` 0–1 · `scroll` lines per second · `sharpness` 0–1 |
 | **Edge** | A Sobel outline: bright where brightness changes. `fill` mixes the original back underneath | `strength` 0–4 · `thickness` 0.5–8 px · `fill` 0–1 |
 | **Palette Map** | Keeps only brightness and recolors it through a cosine palette. A white-on-black effect comes back in full color | `offset` 0–1 · `drift` turns per second · `spread` 0.25–4 · `blend` 0–1 |
