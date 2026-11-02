@@ -107,6 +107,9 @@ fn blend_subtract(bg: vec3f, fg: vec3f) -> vec3f {
 // The foreground contributes no color of its own. Unlike the blends above they
 // need `uv`, so they can't be expressed as blend_*(bg, fg) and are handled in a
 // separate branch of fs_main.
+//
+// The trama Displace node (assets/trama/effects/displace.wgsl) runs the same
+// three warps with copies of the constants below; change them together.
 
 // Largest UV offset a warp may produce, so `displace_amount` can stay a 0..1
 // control like opacity. Also the clamp that keeps HDR foregrounds honest —
