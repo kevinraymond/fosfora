@@ -8,6 +8,13 @@
 ### Added
 - **Sync offset.** When beat-bound visuals trail the sound in the room, Setup › Audio › Sync offset fires beats, downbeats and the beat and bar phases up to 200 ms early (capped just under half a beat); levels stay as they are. When the sound reaches the audience after the picture, a negative value of up to 250 ms holds every feature back. It also applies to `fosfora --signal`, and leaving it at 0 changes nothing.
 
+### Changed
+- **Audio analysis picks up each block of samples as it arrives instead of checking every 10 ms,** so features and beats reach the visuals up to 10 ms sooner, with that much less frame-to-frame jitter.
+- **Once warmed up, the audio analysis thread no longer allocates memory on any hop (it made six to nine allocations per hop), so it cannot stall waiting on the allocator.** For code embedding the library: `AudioFrame::spectrum` and `mel` are now fixed-size arrays rather than `Box<[f32]>`.
+
+### Fixed
+- **A clock built from `beat_index + beat_phase` or `bar_index + bar_phase` jumped back a whole beat or bar for one frame after the beat grid nudged its timing later.** The phase wrapped a hop before its index stepped; it now wraps on the same hop. On a steady 120 BPM test track the locked beat clock went from three backward jumps in 20 s to none.
+
 ## v2.8.1 — 2026-11-01
 
 ### Changed

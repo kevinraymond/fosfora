@@ -1,5 +1,6 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::thread::{self, Thread};
 
 use super::downmix::Downmix;
 use anyhow::Result;
@@ -105,6 +106,9 @@ pub struct RingBuffer {
     data: Box<[AtomicU32]>,
     write_pos: AtomicU32,
     read_pos: AtomicU32,
+    /// #73: the consumer thread each push unparks, once it has called
+    /// [`wake_on_push`](Self::wake_on_push).
+    reader: OnceLock<Thread>,
 }
 
 impl RingBuffer {
@@ -113,7 +117,15 @@ impl RingBuffer {
             data: (0..RING_SIZE).map(|_| AtomicU32::new(0)).collect(),
             write_pos: AtomicU32::new(0),
             read_pos: AtomicU32::new(0),
+            reader: OnceLock::new(),
         }
+    }
+
+    /// #73: have every push wake the calling thread, so it can block in
+    /// [`thread::park_timeout`] until samples arrive instead of polling on a fixed sleep.
+    /// The first thread to call this is the one woken (the ring has a single consumer).
+    pub fn wake_on_push(&self) {
+        let _ = self.reader.set(thread::current());
     }
 
     /// Push samples (called from the capture callback/thread).
@@ -134,6 +146,10 @@ impl RingBuffer {
             wp = wp.wrapping_add(1);
         }
         self.write_pos.store(wp, Ordering::Release);
+        // Lock-free: an atomic swap, plus a futex wake only when the reader is parked.
+        if let Some(reader) = self.reader.get() {
+            reader.unpark();
+        }
     }
 
     fn slot(&self, pos: u32) -> f32 {
@@ -538,5 +554,32 @@ mod tests {
         assert_eq!(dst[RING_SIZE - 1], (2 * RING_SIZE - 1) as f32);
         // Everything consumed
         assert_eq!(ring.available(), 0);
+    }
+
+    /// #73: a reader parked on the ring wakes on the producer's push, long before its timeout.
+    #[test]
+    fn push_wakes_a_parked_reader() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let ring = Arc::new(RingBuffer::new());
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let reader = {
+            let ring = ring.clone();
+            std::thread::spawn(move || {
+                ring.wake_on_push();
+                ready_tx.send(()).unwrap();
+                let start = Instant::now();
+                while ring.available() == 0 {
+                    assert!(start.elapsed() < Duration::from_secs(20), "never woken");
+                    std::thread::park_timeout(Duration::from_secs(10));
+                }
+                start.elapsed()
+            })
+        };
+        ready_rx.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        ring.push(&[1.0, 2.0]);
+        let waited = reader.join().unwrap();
+        assert!(waited < Duration::from_secs(5), "woke after {waited:?}");
     }
 }

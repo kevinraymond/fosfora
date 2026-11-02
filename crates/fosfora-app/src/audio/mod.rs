@@ -58,12 +58,12 @@ pub enum AudioError {
 /// the existing bounded crossbeam channel — no extra handoff.
 pub struct AudioFrame {
     pub features: AudioFeatures,
-    /// Log-frequency magnitude spectrum, [`analyzer::SPECTRUM_BINS`] bins in 0..1
-    /// (fills the `audio_spectrum` texture).
-    pub spectrum: Box<[f32]>,
-    /// One mel-spectrogram column, [`analyzer::SPECTROGRAM_MELS`] bands in 0..1
-    /// (scrolls into the `audio_spectrogram` texture).
-    pub mel: Box<[f32]>,
+    /// Log-frequency magnitude spectrum, bins in 0..1 (fills the `audio_spectrum` texture).
+    /// Inline rather than boxed, so producing a frame allocates nothing (#75).
+    pub spectrum: [f32; analyzer::SPECTRUM_BINS],
+    /// One mel-spectrogram column, bands in 0..1 (scrolls into the `audio_spectrogram`
+    /// texture).
+    pub mel: [f32; analyzer::SPECTROGRAM_MELS],
     /// A16 (#1467): the 13 delta-MFCC slopes for this hop, feeding the bindings-only
     /// `audio.dmfcc.N` sources. Carried alongside `mel` (not in [`AudioFeatures`] — bindings-only,
     /// to save the uniform budget).
@@ -206,6 +206,10 @@ struct MeterState {
 /// How long `callback_count` may stay frozen before the watchdog calls it a stall.
 const STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// #73: the longest the analysis thread parks waiting for a capture push before it re-checks
+/// for shutdown. Samples wake it sooner; this only matters when none arrive.
+const SAMPLE_WAIT: Duration = Duration::from_millis(20);
+
 /// A9b (#1617): how often to ask `pactl` which sink is default. Each poll forks a subprocess,
 /// so this is a cadence rather than a per-frame check; it matches `list_devices`' rescan gap.
 #[cfg(target_os = "linux")]
@@ -319,7 +323,7 @@ pub struct AudioSystem {
     latest_spectrum: Vec<f32>,
     /// Mel-spectrogram columns received since the last `latest_features` poll, oldest
     /// first (A17 `audio_spectrogram`, #1468). Drained by the render thread each frame.
-    pending_mel: Vec<Box<[f32]>>,
+    pending_mel: Vec<[f32; analyzer::SPECTROGRAM_MELS]>,
     /// Newest mel-spectrogram column received (A1b, #1512). Held between polls (like
     /// `latest_spectrum`) so the binding bus can expose `audio.mel.N` sources without
     /// stealing columns from the draining spectrogram-texture path (`pending_mel`).
@@ -1187,7 +1191,7 @@ impl AudioSystem {
     /// Take the mel-spectrogram columns accumulated since the last call (oldest first),
     /// leaving the pending buffer empty (A17 `audio_spectrogram`, #1468). The render
     /// thread scrolls these into the spectrogram texture.
-    pub fn take_mel_columns(&mut self) -> Vec<Box<[f32]>> {
+    pub fn take_mel_columns(&mut self) -> Vec<[f32; analyzer::SPECTROGRAM_MELS]> {
         std::mem::take(&mut self.pending_mel)
     }
 
@@ -1568,15 +1572,21 @@ fn audio_thread(
     let mut fifo_stereo: Vec<f32> = Vec::with_capacity((read_buf.len() + ANALYSIS_HOP) * 2);
     let mut samples_consumed: u64 = 0;
 
+    // #73: the capture callback's push wakes this thread, so a hop is analyzed as soon as its
+    // last sample lands rather than up to a 10 ms poll later.
+    ring.wake_on_push();
     loop {
         if shutdown.load(Ordering::Acquire) {
             log::info!("Audio thread shutting down");
             break;
         }
-        thread::sleep(Duration::from_millis(10));
 
         let available = ring.available();
         if available == 0 {
+            // A push between the check above and this park leaves the unpark token set, so
+            // the park returns at once. The timeout bounds how long a shutdown waits when no
+            // samples arrive (a stalled device, or one that never started).
+            thread::park_timeout(SAMPLE_WAIT);
             continue;
         }
 

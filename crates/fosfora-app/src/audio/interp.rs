@@ -81,7 +81,7 @@ struct TimedFrame {
 
 /// Render-side feature interpolator. Holds `AudioFeatures` only (244 B, `Copy`) — the
 /// spectrum/mel array streams keep their existing non-interpolated paths, so nothing here
-/// clones a `Box<[f32]>`.
+/// copies them.
 pub struct FeatureInterpolator {
     frames: VecDeque<TimedFrame>,
     /// Playhead on the audio sample clock, seconds. `None` until the first frame seeds it

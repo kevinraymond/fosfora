@@ -66,6 +66,8 @@ struct FftResolution {
     /// so a full-scale sine reads 1.0 (0 dB) at its peak bin (#54).
     scale: f32,
     fft_buffer: Vec<Complex<f32>>,
+    /// The transform's scratch, sized once: `Fft::process` would allocate it per call (#75).
+    fft_scratch: Vec<Complex<f32>>,
     magnitude: Vec<f32>,
     prev_magnitude: Vec<f32>,
     num_bins: usize,
@@ -86,12 +88,14 @@ impl FftResolution {
             .collect();
         let scale = 2.0 / window.iter().sum::<f32>();
 
+        let fft_scratch = vec![Complex::new(0.0, 0.0); fft.get_inplace_scratch_len()];
         Self {
             fft,
             size,
             window,
             scale,
             fft_buffer: vec![Complex::new(0.0, 0.0); size],
+            fft_scratch,
             magnitude: vec![0.0; num_bins],
             prev_magnitude: vec![0.0; num_bins],
             num_bins,
@@ -113,7 +117,8 @@ impl FftResolution {
             self.fft_buffer[i] = Complex::new(s * w, 0.0);
         }
 
-        self.fft.process(&mut self.fft_buffer);
+        self.fft
+            .process_with_scratch(&mut self.fft_buffer, &mut self.fft_scratch);
 
         // Save previous magnitude
         std::mem::swap(&mut self.magnitude, &mut self.prev_magnitude);
