@@ -92,6 +92,9 @@ pub struct DownbeatResult {
 
 pub struct DownbeatTracker {
     ring: VecDeque<BeatEntry>,
+    /// Each ring entry's (index, downbeat score), rebuilt on every beat into this one buffer
+    /// (#75).
+    scored: Vec<(u64, f32)>,
     /// Band flux accumulated across frames since the previous beat.
     flux_accum: [f32; 3],
     /// rms and chroma captured at the previous beat, for delta cues.
@@ -159,6 +162,7 @@ impl DownbeatTracker {
     pub fn new() -> Self {
         Self {
             ring: VecDeque::with_capacity(RING_LEN),
+            scored: Vec::with_capacity(RING_LEN),
             flux_accum: [0.0; 3],
             prev_rms: 0.0,
             prev_chroma: [0.0; 12],
@@ -390,22 +394,20 @@ impl DownbeatTracker {
             .map(|e| e.chroma_change)
             .fold(1e-6, f32::max);
         let max_loud = self.ring.iter().map(|e| e.loud_rise).fold(1e-6, f32::max);
-        let scored: Vec<(u64, f32)> = self
-            .ring
-            .iter()
-            .map(|e| {
-                let s = W_FLUX_LOW * (e.flux_low / max_flux)
-                    + W_CHROMA * (e.chroma_change / max_chroma)
-                    + W_LOUD * (e.loud_rise / max_loud);
-                (e.global_idx, s)
-            })
-            .collect();
+        self.scored.clear();
+        self.scored.extend(self.ring.iter().map(|e| {
+            let s = W_FLUX_LOW * (e.flux_low / max_flux)
+                + W_CHROMA * (e.chroma_change / max_chroma)
+                + W_LOUD * (e.loud_rise / max_loud);
+            (e.global_idx, s)
+        }));
+        let scored = &self.scored;
 
         // Best (meter, phase) by contrast = mean score at phase p minus mean score off it.
         let mut best = (self.meter, self.phase, f32::MIN);
         for &m in &[3usize, 4usize] {
             for p in 0..m {
-                if let Some(c) = contrast(&scored, m, p) {
+                if let Some(c) = contrast(scored, m, p) {
                     if c > best.2 {
                         best = (m, p, c);
                     }
@@ -422,7 +424,7 @@ impl DownbeatTracker {
         // hysteresis as any other challenger.
         self.dbg_fallback = best_score < CONFIDENCE_THRESHOLD;
         let challenger = if self.dbg_fallback {
-            (4, strongest_phase(&scored, 4))
+            (4, strongest_phase(scored, 4))
         } else {
             (best_m, best_p)
         };
@@ -436,8 +438,8 @@ impl DownbeatTracker {
         // lock on this ring, not merely tops the ranking: two near-equal alignments used to
         // trade the lock back and forth (#4499).
         let clear = match (
-            contrast(&scored, challenger.0, challenger.1),
-            contrast(&scored, self.meter, self.phase),
+            contrast(scored, challenger.0, challenger.1),
+            contrast(scored, self.meter, self.phase),
         ) {
             (Some(theirs), Some(own)) => theirs - own >= SWITCH_MARGIN,
             _ => true,

@@ -187,7 +187,7 @@ impl AudioTextures {
     /// Scroll new mel columns into the history and re-upload the spectrogram. Each column
     /// has [`SPECTROGRAM_MELS`] bands in 0..1; columns are applied oldest-first. A no-op
     /// upload is skipped when no columns arrived (the texture holds its last contents).
-    pub fn upload_spectrogram(&mut self, queue: &Queue, columns: &[Box<[f32]>]) {
+    pub fn upload_spectrogram(&mut self, queue: &Queue, columns: &[[f32; SPECTROGRAM_MELS]]) {
         if columns.is_empty() {
             return;
         }
@@ -198,7 +198,7 @@ impl AudioTextures {
             // Shift every mel row left by one (drop oldest) and append the smoothed sample
             // at the right edge, keeping the buffer in linear time order for raw-uv sampling.
             for m in 0..SPECTROGRAM_MELS {
-                let raw = col.get(m).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                let raw = col[m].clamp(0.0, 1.0);
                 self.mel_smoothed[m] += MEL_EMA_ALPHA * (raw - self.mel_smoothed[m]);
                 let row = &mut self.mel_history[m * HISTORY_FRAMES..(m + 1) * HISTORY_FRAMES];
                 row.copy_within(1.., 0);

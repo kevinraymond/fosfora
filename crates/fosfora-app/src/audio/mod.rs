@@ -58,12 +58,12 @@ pub enum AudioError {
 /// the existing bounded crossbeam channel — no extra handoff.
 pub struct AudioFrame {
     pub features: AudioFeatures,
-    /// Log-frequency magnitude spectrum, [`analyzer::SPECTRUM_BINS`] bins in 0..1
-    /// (fills the `audio_spectrum` texture).
-    pub spectrum: Box<[f32]>,
-    /// One mel-spectrogram column, [`analyzer::SPECTROGRAM_MELS`] bands in 0..1
-    /// (scrolls into the `audio_spectrogram` texture).
-    pub mel: Box<[f32]>,
+    /// Log-frequency magnitude spectrum, bins in 0..1 (fills the `audio_spectrum` texture).
+    /// Inline rather than boxed, so producing a frame allocates nothing (#75).
+    pub spectrum: [f32; analyzer::SPECTRUM_BINS],
+    /// One mel-spectrogram column, bands in 0..1 (scrolls into the `audio_spectrogram`
+    /// texture).
+    pub mel: [f32; analyzer::SPECTROGRAM_MELS],
     /// A16 (#1467): the 13 delta-MFCC slopes for this hop, feeding the bindings-only
     /// `audio.dmfcc.N` sources. Carried alongside `mel` (not in [`AudioFeatures`] — bindings-only,
     /// to save the uniform budget).
@@ -323,7 +323,7 @@ pub struct AudioSystem {
     latest_spectrum: Vec<f32>,
     /// Mel-spectrogram columns received since the last `latest_features` poll, oldest
     /// first (A17 `audio_spectrogram`, #1468). Drained by the render thread each frame.
-    pending_mel: Vec<Box<[f32]>>,
+    pending_mel: Vec<[f32; analyzer::SPECTROGRAM_MELS]>,
     /// Newest mel-spectrogram column received (A1b, #1512). Held between polls (like
     /// `latest_spectrum`) so the binding bus can expose `audio.mel.N` sources without
     /// stealing columns from the draining spectrogram-texture path (`pending_mel`).
@@ -1191,7 +1191,7 @@ impl AudioSystem {
     /// Take the mel-spectrogram columns accumulated since the last call (oldest first),
     /// leaving the pending buffer empty (A17 `audio_spectrogram`, #1468). The render
     /// thread scrolls these into the spectrogram texture.
-    pub fn take_mel_columns(&mut self) -> Vec<Box<[f32]>> {
+    pub fn take_mel_columns(&mut self) -> Vec<[f32; analyzer::SPECTROGRAM_MELS]> {
         std::mem::take(&mut self.pending_mel)
     }
 

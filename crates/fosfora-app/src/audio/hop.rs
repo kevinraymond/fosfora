@@ -494,8 +494,8 @@ impl HopAnalyzer {
         // fresh magnitude, so all three ride the same frame across the channel.
         let frame = AudioFrame {
             features: smoothed,
-            spectrum: Box::new(self.analyzer.log_spectrum_512()),
-            mel: Box::new(self.analyzer.spectrogram_column()),
+            spectrum: self.analyzer.log_spectrum_512(),
+            mel: self.analyzer.spectrogram_column(),
             // A16 (#1467): this hop's delta-MFCC slopes for the `audio.dmfcc.N` sources.
             dmfcc: timbre.dmfcc,
             timestamp,
@@ -753,6 +753,45 @@ mod tests {
         assert!(silent_hops > 0, "the silent lead-in never read as silent");
         assert!(flux_hops > 0, "the onset detector never saw the kick");
         assert!(beats > 0, "no beat fired in 12 s of a 120 BPM kick");
+    }
+
+    /// #75: once warm, a hop allocates nothing on the analysis thread — in the detectors or
+    /// for the frame it hands the render thread. (Rings and windows reach their high-water
+    /// marks in the first few seconds.)
+    #[test]
+    fn a_warm_hop_allocates_nothing() {
+        const SR: f32 = 44100.0;
+        let mut a = HopAnalyzer::new(SR, BandScale::Db, TempoConfig::default());
+        let tau = std::f32::consts::TAU;
+        // A 120 BPM kick under an A–C♯ dyad, so pitch, chroma and key all have work to do.
+        let sig = |t: f32| {
+            let tb = t % 0.5;
+            (tau * (50.0 + 100.0 * (-tb * 40.0).exp()) * tb).sin() * (-tb * 10.0).exp() * 0.6
+                + 0.1 * (tau * 220.0 * t).sin()
+                + 0.08 * (tau * 277.2 * t).sin()
+        };
+        let mut mono = vec![0.0f32; ANALYSIS_HOP];
+        let mut stereo = vec![0.0f32; ANALYSIS_HOP * 2];
+        let (mut warm_hops, mut allocs) = (0, 0);
+        for h in 0..(30.0 * SR) as usize / ANALYSIS_HOP {
+            for (i, m) in mono.iter_mut().enumerate() {
+                *m = sig((h * ANALYSIS_HOP + i) as f32 / SR);
+                stereo[2 * i] = *m;
+                stereo[2 * i + 1] = *m;
+            }
+            let ts = ((h + 1) * ANALYSIS_HOP) as f64 / f64::from(SR);
+            let cfg = (StructureConfig::default(), TempoConfig::default());
+            let (n, out) = crate::test_alloc::count_allocs(|| {
+                a.process_hop(&mono, &stereo, ts, cfg.0, cfg.1, Vec::new())
+            });
+            if ts > 15.0 {
+                warm_hops += 1;
+                allocs += n;
+                assert!(out.frame.features.beat_locked > 0.5, "lost lock at {ts:.2}");
+            }
+        }
+        assert!(warm_hops > 1000);
+        assert_eq!(allocs, 0, "{allocs} allocations over {warm_hops} warm hops");
     }
 
     /// One hop of [`run_sync`]: when it ran, what fired, and the clocks it published.

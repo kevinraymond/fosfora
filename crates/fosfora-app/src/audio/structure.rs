@@ -444,6 +444,8 @@ pub struct StructureTracker {
     tick_index: u64,
     /// Trailing `loudness_m` for the ceiling the dip test reads (see [`DROP_DIP_FLOOR`]).
     loud_ceiling_ring: VecDeque<f32>,
+    /// The ceiling ring sorted for its percentile, reused every tick (#75).
+    ceiling_scratch: Vec<f32>,
 
     last_frame_time: f64,
     /// When the next tick is due; see [`tick_due`].
@@ -506,6 +508,9 @@ impl StructureTracker {
             drop_trace: DropTrace::default(),
             tick_index: 0,
             loud_ceiling_ring: VecDeque::with_capacity(
+                (DROP_CEILING_SECONDS * TICK_HZ).round() as usize + 1,
+            ),
+            ceiling_scratch: Vec::with_capacity(
                 (DROP_CEILING_SECONDS * TICK_HZ).round() as usize + 1,
             ),
             last_frame_time: -1.0,
@@ -751,7 +756,9 @@ impl StructureTracker {
             self.loud_ceiling_ring.pop_front();
         }
         self.loud_ceiling_ring.push_back(pre_norm.loudness_m);
-        let mut sorted: Vec<f32> = self.loud_ceiling_ring.iter().copied().collect();
+        let sorted = &mut self.ceiling_scratch;
+        sorted.clear();
+        sorted.extend(self.loud_ceiling_ring.iter().copied());
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let ceiling = sorted[((sorted.len() - 1) as f32 * 0.9).round() as usize];
         let near_ceiling = pre_norm.loudness_m - ceiling >= DROP_DIP_FLOOR;

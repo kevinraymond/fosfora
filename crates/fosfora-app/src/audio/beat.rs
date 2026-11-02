@@ -1907,6 +1907,11 @@ enum ArbEvidence {
     Union,
 }
 
+/// #75: room for the arbiter's longest window (32 beats) of kicks and activation peaks,
+/// several per beat, so the window does not grow mid-track (it grew 64 → 128 events about
+/// half a minute into a steady 120 BPM kick).
+const ARB_EVENTS_CAPACITY: usize = 256;
+
 /// The arbiter's event streams, as the #4163 round selected them.
 const ARB_EVIDENCE: ArbEvidence = ArbEvidence::Union;
 
@@ -2025,7 +2030,7 @@ impl BeatScheduler {
             arbiter: Some(PHASE_ARBITER),
             arb_evidence: ArbEvidence::Kicks,
             act_event: None,
-            arb_kicks: VecDeque::new(),
+            arb_kicks: VecDeque::with_capacity(ARB_EVENTS_CAPACITY),
             beat_lead: BEAT_LEAD_SECS,
             user_lead: 0.0,
             arb_streak: 0,
