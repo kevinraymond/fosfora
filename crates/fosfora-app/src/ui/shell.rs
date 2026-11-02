@@ -928,7 +928,7 @@ fn blend_controls(ui: &mut egui::Ui, layer: &crate::gpu::layer::LayerInfo, i: us
                 .selected_text(layer.blend_mode.display_name())
                 .width(180.0)
                 .show_ui(ui, |ui| {
-                    for &mode in BlendMode::ALL {
+                    for &mode in BlendMode::MENU {
                         // The displacement family warps instead of coloring.
                         if mode == BlendMode::DISPLACEMENT[0] {
                             ui.separator();

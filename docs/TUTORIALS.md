@@ -552,13 +552,22 @@ Below the layer list:
 | **Normal** | Replaces background with foreground |
 | **Add** | Brightens: adds colors together (great for glow, fire) |
 | **Screen** | Lightens: like projecting two slides together |
+| **Lighten** | Keeps whichever is brighter, channel by channel |
 | **Color Dodge** | Intense brighten: burns through to white |
 | **Multiply** | Darkens: like stacking two transparencies |
+| **Darken** | Keeps whichever is darker, channel by channel |
+| **Subtract** | Darkens: removes foreground color from background |
 | **Overlay** | Contrast boost: darks darker, lights lighter |
+| **Soft Light** | Gentle contrast: a softer Overlay, like diffuse light |
 | **Hard Light** | Strong contrast: like Overlay from the other side |
 | **Difference** | Inverts where bright: psychedelic color shifts |
 | **Exclusion** | Softer Difference: grays out similar colors |
-| **Subtract** | Darkens: removes foreground color from background |
+| **Hue** | Recolors what's beneath with this layer's hue |
+| **Saturation** | Gives what's beneath this layer's saturation: a gray layer drains the color |
+| **Color** | Tints what's beneath with this layer's hue and saturation, keeping its brightness |
+| **Luminosity** | This layer's brightness with the colors beneath |
+
+Hue, Saturation and Color keep the brightness of what's beneath, so bloom under them stays bright; Luminosity keeps this layer's.
 
 ### Displacement Modes
 
@@ -598,7 +607,7 @@ You can load images, GIFs, and videos as layers:
 
 Media layers support:
 - Letterbox scaling (maintains aspect ratio, transparent outside)
-- All 13 blend modes + opacity
+- All 20 blend modes + opacity
 - Animated GIF/WebP playback with transport controls:
   - Play/pause, loop toggle
   - Speed control (0.1x–4.0x)
@@ -1150,7 +1159,7 @@ interfaces (0.0.0.0), and anything on the network can send.
 | `/fosfora/param/{name}` | float | Set parameter on active layer |
 | `/fosfora/layer/{n}/param/{name}` | float | Set parameter on layer N |
 | `/fosfora/layer/{n}/opacity` | float | Layer opacity (0–1) |
-| `/fosfora/layer/{n}/blend` | int | Blend mode (0–12) |
+| `/fosfora/layer/{n}/blend` | int | Blend mode (0–19, numbers in the Quick Reference) |
 | `/fosfora/layer/{n}/displace` | float | Warp strength for modes 10–12 |
 | `/fosfora/layer/{n}/enabled` | int | Layer on/off (0 or 1) |
 | `/fosfora/postprocess/enabled` | int | Post-processing toggle |

@@ -11,6 +11,7 @@
 - **Glitch node.** Tears the picture into sliding strips and jumping blocks with the colors pulled apart, drawing a new pattern up to 30 times a second. At `intensity` 0 the picture passes through untouched, so `onset` on `intensity` breaks it up on every hit and snaps back between them.
 - **Displace node.** Warps one picture by the brightness of another inside a chain, with the same three warps as the Displace, Refract and Lens blend modes: wire a Noise Field into its second input and the picture ripples through it. A negative `amount` pulls or pinches instead of pushing or bulging.
 - **Color Grade node.** Lift, gamma and gain, temperature and tint, hue and saturation in one node, with `shadows` and `highlights` colors that push the dark and bright ends toward a color. Temperature and tint keep brightness, so sweeping them from a binding only moves the color.
+- **Seven more blend modes: Lighten, Darken, Soft Light, Hue, Saturation, Color and Luminosity,** in the layer menus and the web remote, numbered 13–19 over OSC. A preset that says `SoftLight` used to load as Overlay and now gets the real, gentler Soft Light; set it to Overlay to keep the old look. A blend driven from the binding bus still sweeps only modes 0–9.
 
 ### Changed
 - **Audio analysis picks up each block of samples as it arrives instead of checking every 10 ms,** so features and beats reach the visuals up to 10 ms sooner, with that much less frame-to-frame jitter.

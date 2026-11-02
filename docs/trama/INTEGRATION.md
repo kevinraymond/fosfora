@@ -119,7 +119,7 @@ Every visual already renders to a `RenderTarget`, so all 58 `.pfx` effects are
 wrappable in principle via an embedded `PassExecutor` (a later node kind, not M0).
 Cheapest first wraps: **`aurora`** and **`tunnel`** — single-fragment, no particles,
 no feedback. `MediaLayer` is a ready-made image/GIF/video source node. The
-`Compositor` (13 blend modes incl. displacement) is a ready-made Mix. The 34
+`Compositor` (20 blend modes incl. displacement) is a ready-made Mix. The 34
 particle-backed effects each own large GPU buffers — defer past M4 except one
 showcase. The 7 overlay-family effects (`alpha: true`) are natural effect-side
 candidates since they already emit meaningful alpha.

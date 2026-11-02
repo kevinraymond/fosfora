@@ -530,9 +530,10 @@ body { display: flex; flex-direction: column; }
     layersContainer.innerHTML = '';
     layerSyncs = [];
 
-    // Must stay in lockstep with BlendMode in gpu/layer.rs (index == as_u32).
-    // The last three are the displacement family (#1478).
-    const blendNames = ['Normal','Add','Screen','Color Dodge','Multiply','Overlay','Hard Light','Difference','Exclusion','Subtract','Displace','Refract','Lens'];
+    // [wire number, name] in menu order: must match BlendMode::MENU in
+    // gpu/layer.rs (web_remote_blend_menu_matches checks this line). The last
+    // three are the displacement family (#1478), set apart in an optgroup.
+    const blendMenu = [[0,'Normal'],[1,'Add'],[2,'Screen'],[13,'Lighten'],[3,'Color Dodge'],[4,'Multiply'],[14,'Darken'],[9,'Subtract'],[5,'Overlay'],[15,'Soft Light'],[6,'Hard Light'],[7,'Difference'],[8,'Exclusion'],[16,'Hue'],[17,'Saturation'],[18,'Color'],[19,'Luminosity'],[10,'Displace'],[11,'Refract'],[12,'Lens']];
 
     layers.forEach(function(layer, i) {
       const card = document.createElement('div');
@@ -559,11 +560,21 @@ body { display: flex; flex-direction: column; }
       // Blend
       const sel = document.createElement('select');
       sel.className = 'blend-select';
-      blendNames.forEach(function(name, bi) {
+      let warps = null;
+      blendMenu.forEach(function(entry) {
         const opt = document.createElement('option');
-        opt.value = bi;
-        opt.textContent = name;
-        sel.appendChild(opt);
+        opt.value = entry[0];
+        opt.textContent = entry[1];
+        if (entry[0] >= 10 && entry[0] <= 12) {
+          if (!warps) {
+            warps = document.createElement('optgroup');
+            warps.label = 'Warp';
+            sel.appendChild(warps);
+          }
+          warps.appendChild(opt);
+        } else {
+          sel.appendChild(opt);
+        }
       });
       sel.addEventListener('change', function() {
         hold('blend_' + i, parseInt(sel.value));
