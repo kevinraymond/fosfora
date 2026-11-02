@@ -256,6 +256,7 @@ Fosfora auto-prepends a WGSL shader library to every effect. You can use these f
 - `fosfora_palette(t, a, b, c, d)`: IQ cosine palette
 - `fosfora_audio_palette(t, centroid, phase)`: Warm-to-cool audio palette
 - `fosfora_hue_shift(color, amount)`: Hue rotation
+- `fosfora_hsv_to_rgb(h, s, v)`: HSV to RGB, all 0–1; the hue wraps, so any value is a hue
 
 **SDF (Signed Distance Functions):**
 - `fosfora_sd_sphere(p, r)`, `fosfora_sd_box(p, b)`, `fosfora_sd_torus(p, t)`, `fosfora_sd_cylinder(p, h, r)`

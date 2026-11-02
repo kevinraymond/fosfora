@@ -34,6 +34,14 @@ fn fosfora_bioluminescent(t: f32, cent: f32) -> vec3f {
     return mix(warm, cool, cent);
 }
 
+// HSV to RGB, all three in 0..1. The hue wraps, so any value is a hue: 1.25
+// is the same as 0.25, and a hue drifting past 1 does not jump.
+fn fosfora_hsv_to_rgb(h: f32, s: f32, v: f32) -> vec3f {
+    let k = vec3f(1.0, 0.6666667, 0.3333333);
+    let p = abs(fract(vec3f(h) + k) * 6.0 - 3.0);
+    return v * mix(vec3f(1.0), clamp(p - 1.0, vec3f(0.0), vec3f(1.0)), s);
+}
+
 // Hue shift via Rodrigues rotation around (1,1,1) axis
 fn fosfora_hue_shift(c: vec3f, shift: f32) -> vec3f {
     let a = shift * 6.28318;

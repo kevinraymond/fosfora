@@ -9,12 +9,6 @@
 // camera_color. Injection uses frame_gain against the same retention as the decay,
 // so the ink's steady brightness does not move with frame rate.
 
-fn fluvid_hsv(h: f32, s: f32, v: f32) -> vec3f {
-    let k = vec3f(1.0, 0.6666667, 0.3333333);
-    let p = abs(fract(vec3f(h) + k) * 6.0 - 3.0);
-    return v * mix(vec3f(1.0), clamp(p - 1.0, vec3f(0.0), vec3f(1.0)), s);
-}
-
 // Non-finite guard. A layer below can hand this effect infinity or NaN (an
 // overflowing effect, an HDR source), and this pass feeds back on itself, so
 // one bad texel would never wash out and the effect would stay black. Tested
@@ -62,7 +56,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     if (gate > 1e-4) {
         turn = atan2(m.y, m.x) / 6.28318;
     }
-    let pal = fluvid_hsv(fract(hue0 + 0.12 * turn), 0.85, 1.0);
+    let pal = fosfora_hsv_to_rgb(fract(hue0 + 0.12 * turn), 0.85, 1.0);
 
     // The camera's color, saturation pushed so a skin tone reads as a color and
     // not as beige, and lifted so a dim room still gives visible ink.

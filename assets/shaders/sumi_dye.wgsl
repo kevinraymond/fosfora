@@ -6,12 +6,6 @@
 // a central drop tinted by the song's detected key. Runs at full resolution; the sim
 // fields are half-res, so velocity is converted using the sim grid's texel size.
 
-fn sumi_hsv2rgb(h: f32, s: f32, v: f32) -> vec3f {
-    let k = vec3f(1.0, 0.6666667, 0.3333333);
-    let p = abs(fract(vec3f(h) + k) * 6.0 - 3.0);
-    return v * mix(vec3f(1.0), clamp(p - 1.0, vec3f(0.0), vec3f(1.0)), s);
-}
-
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let dims = vec2f(textureDimensions(prev_frame));       // dye (full res)
@@ -60,14 +54,14 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         let d = (uv - site) * vec2f(aspect, 1.0);
         let g = exp(-dot(d, d) / (splat_rad * splat_rad));
         let hue = fifth / 12.0;
-        col += sumi_hsv2rgb(hue, sat, bright) * g * u.onset * chroma_val(i) * inject;
+        col += fosfora_hsv_to_rgb(hue, sat, bright) * g * u.onset * chroma_val(i) * inject;
     }
 
     // central drop tinted by the detected key (dominant_chroma = pitch class / 11)
     let dc = (uv - center) * vec2f(aspect, 1.0);
     let gd = exp(-dot(dc, dc) / (splat_rad * splat_rad * 2.5));
     let key_hue = fosfora_key_hue(u.dominant_chroma, 0.0);
-    col += sumi_hsv2rgb(key_hue, sat, bright) * gd * u.onset * inject * 0.6;
+    col += fosfora_hsv_to_rgb(key_hue, sat, bright) * gd * u.onset * inject * 0.6;
 
     col = min(col, vec3f(4.0)); // clamp to keep the feedback loop from blowing out
     return vec4f(col, 1.0);
