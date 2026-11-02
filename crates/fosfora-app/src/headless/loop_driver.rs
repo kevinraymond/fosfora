@@ -1151,7 +1151,7 @@ mod tests {
             // Same mechanism, ~a third the magnitude (+10% level, count flat).
             SimSite { effect: "Fosfora",      trail_param: T,    audio: N, mad: 1.60, witness: Some("fosfora_sim: frame-quantised emission phase") },
             // WATCHED. The u.onset/u.flux/u.zcr kicks are per-frame rates by
-            // reading (onset is a held, decayed LEVEL — beat.rs:1918 — not a
+            // reading (onset is a held, decayed LEVEL — audio/beat/mod.rs, BeatDetector — not a
             // one-frame pulse, so #2382 makes them rates). All four measure at or
             // under their own noise on both statistics, so nothing was changed.
             SimSite { effect: "Array",        trail_param: T,    audio: S, mad: 0.30, witness: Some("array_sim:206 u.onset kick") },

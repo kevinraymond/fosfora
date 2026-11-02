@@ -75,7 +75,7 @@ Render thread: AudioSystem::latest_features(dt) — drain-to-newest + FeatureInt
   `audio.key_hue`…), a third naming scheme; `--dump-schema` emits the real list.
 
 Detector notes: beat = 64-band SuperFlux → autocorrelation tempo (log-Gaussian prior,
-Kalman in log2-BPM) → scheduler on the sample clock (`audio/beat.rs`). Downbeat =
+Kalman in log2-BPM) → scheduler on the sample clock (`audio/beat/`). Downbeat =
 accent-contrast scoring over a 16-beat ring, meter ∈ {3,4}, hysteresis, ~70-80% on 4/4
 EDM (`audio/downbeat.rs`). Key = profile correlation (Faraldo "braw" profiles) over a
 ~20 s energy-weighted rolling mean of CQT chroma, with hysteresis (`audio/key.rs`).

@@ -170,13 +170,13 @@ Source: Fosfora-specific — the beat counter in [`audio/downbeat.rs`](../crates
 
 **`bar_index`** and **`beat_index`** — running counts of bars and beats since audio started, as plain whole numbers (0, 1, 2, …), **not** 0 to 1. Each steps up by one exactly when `bar_phase` or `beat_phase` wraps, so `bar_index + bar_phase` is a clock that never jumps backwards — use it for anything that should advance steadily over a whole set, like a slow rotation or a palette that walks forward every four bars (`floor(bar_index / 4)`). Shaders and bindings only.
 
-Source: Fosfora-specific — the bar and beat counters in [`audio/downbeat.rs`](../crates/fosfora-app/src/audio/downbeat.rs) and [`audio/beat.rs`](../crates/fosfora-app/src/audio/beat.rs).
+Source: Fosfora-specific — the bar and beat counters in [`audio/downbeat.rs`](../crates/fosfora-app/src/audio/downbeat.rs) and [`audio/beat/scheduler.rs`](../crates/fosfora-app/src/audio/beat/scheduler.rs).
 
 **`tempo_confidence`** — how much to trust `bpm` and the beat grid right now. It is the share of recent tempo measurements (over roughly the last 2.5 seconds) that agree with the tracked tempo, so a steady groove reads near 1, while a breakdown, a tempo change or beatless material drains it toward 0. It is not `beat_strength`, which says how hard a hit was.
 
 **`beat_locked`** — 1 while the tempo is locked and 0 otherwise. Lock engages once `tempo_confidence` climbs past about 0.6 and releases only when it falls below about 0.35, so it does not flicker on a single odd bar. Multiply a strobe or any grid-synced cue by it to keep it from firing on a beat grid the tracker has not confirmed. Also sent over OSC as `/audio/tempo_confidence` and `/audio/beat_locked`.
 
-Source: Fosfora-specific — the tempo estimator's lock support and hysteresis in [`audio/beat.rs`](../crates/fosfora-app/src/audio/beat.rs).
+Source: Fosfora-specific — the tempo estimator's lock support and hysteresis in [`audio/beat/tempo.rs`](../crates/fosfora-app/src/audio/beat/tempo.rs).
 
 **Lining the beat up with the room.** Analysis, the display and a projector each add delay, so beat-bound visuals can trail what the audience hears. **Sync offset** in Setup › Audio fixes that for the rhythm. A positive value (up to 200 ms) fires `beat` and `downbeat` that much early, and moves `beat_phase`, `bar_phase` and their counters forward with them; once the grid is locked it knows where the next beat falls. The lead stops just short of half a beat, so fast tempos get less of it. Levels and every other feature can't be predicted, so they stay as they are. A negative value (down to −250 ms) covers the opposite case, where the sound reaches the audience after the picture (a long throw from the speakers): every feature is held back by that much, pulses included. The offset also applies to `fosfora --signal`.
 
