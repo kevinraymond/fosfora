@@ -135,6 +135,10 @@ pub struct HopAnalyzer {
     /// `ANALYSIS_HOP / sample_rate` — the attack/release EMAs and the onset decay are
     /// expressed as time constants, so they need the hop duration, not the hop length.
     dt: f32,
+    /// #80: `Some(predicted)` while a beat emitted ahead of its instant (a positive sync
+    /// offset) awaits its settle: the downbeat went out with the beat, so the settle must
+    /// not fire it again. `None` when no prediction was made; the settle then decides.
+    prefired_downbeat: Option<bool>,
 }
 
 impl HopAnalyzer {
@@ -169,7 +173,14 @@ impl HopAnalyzer {
             hop_sidecar: HopSidecar::from_env(sample_rate),
             downbeat_sidecar,
             dt: ANALYSIS_HOP as f32 / sample_rate,
+            prefired_downbeat: None,
         }
+    }
+
+    /// #80: fire beats, downbeats and the beat/bar phase this much early, seconds — the
+    /// positive half of the user's A/V sync offset. Applies from the next hop.
+    pub fn set_sync_lead(&mut self, secs: f64) {
+        self.beat_detector.set_sync_lead(secs);
     }
 
     /// The tempo estimator's adapted prior centre. In auto mode the audio thread publishes
@@ -407,11 +418,49 @@ impl HopAnalyzer {
                 );
             }
         }
-        raw.downbeat = db.downbeat;
         raw.bar_phase = db.bar_phase;
         raw.beat_in_bar = db.beat_in_bar;
         raw.bar_index = db.bar_index;
         raw.beat_index = db.beat_index;
+
+        // #80: a positive sync offset. The scheduler already emitted this grid's beats early;
+        // the downbeat rides with its beat, predicted from the bar lock, and both phases move
+        // forward by the same lead so they wrap with it. The trackers above ran on the settle
+        // exactly as without a lead.
+        let mut downbeat_fired = db.downbeat > 0.5;
+        let mut downbeat_time = beat_result.settled_beat_time;
+        let beat_fired = beat_result.beat > 0.5;
+        if beat_result.settled_beat_time.is_some() {
+            if beat_fired {
+                // Emitted and settled on one hop: nothing went out ahead of it.
+                self.prefired_downbeat = None;
+            } else if self.prefired_downbeat.take().is_some() {
+                downbeat_fired = false;
+            }
+        }
+        let lead = self.beat_detector.sync_lead();
+        if lead.is_some() && beat_fired && beat_result.settled_beat_time.is_none() {
+            // Emitted ahead: this hop's `beat_index` is the coming instant's grid index.
+            let predicted = self
+                .downbeat_tracker
+                .predicts_downbeat(beat_result.beat_index);
+            self.prefired_downbeat = predicted;
+            if predicted == Some(true) {
+                downbeat_fired = true;
+                downbeat_time = Some(beat_result.beat_time);
+            }
+        }
+        if let (Some((lead, period)), false) = (lead, loud_silent) {
+            let (phase, carry) = lead_phase(raw.beat_phase, lead / period);
+            raw.beat_phase = phase;
+            raw.beat_index += carry;
+            if db.bar_duration > 0.0 {
+                let (phase, carry) = lead_phase(raw.bar_phase, lead / db.bar_duration);
+                raw.bar_phase = phase;
+                raw.bar_index += carry;
+            }
+        }
+        raw.downbeat = if downbeat_fired { 1.0 } else { 0.0 };
 
         // A18 (#1469): section novelty / build-up / drop. Reads the pre-normalization
         // snapshot + the beat result; heavy work is decimated to ~10 Hz internally.
@@ -423,8 +472,6 @@ impl HopAnalyzer {
         raw.drop = structure.drop;
 
         // The three counter-latched pulses, read before smoothing (see `HopOutput`).
-        let beat_fired = beat_result.beat > 0.5;
-        let downbeat_fired = db.downbeat > 0.5;
         let drop_fired = structure.drop > 0.5;
 
         // Smoothing (per-feature asymmetric EMA; beat/beat_phase pass through)
@@ -462,9 +509,7 @@ impl HopAnalyzer {
             // advances `bar_phase` on the same rate that produced the phase above.
             bar_duration: db.bar_duration,
             beat_time: beat_fired.then_some(beat_result.beat_time),
-            downbeat_time: downbeat_fired
-                .then_some(beat_result.settled_beat_time)
-                .flatten(),
+            downbeat_time: downbeat_time.filter(|_| downbeat_fired),
             // Q4 (#2080): read off the pre-smoothing structure result, like the three pulses
             // above — smoothing a trigger would smear it across hops.
             section_boundary: (structure.boundary > 0.0).then_some(structure.boundary),
@@ -481,9 +526,26 @@ impl HopAnalyzer {
     }
 }
 
+/// #80: advance a 0..1 sawtooth by `frac` of a cycle. Returns the new phase and 1.0 when the
+/// advance carried it past the wrap, so the paired index (`beat_index`, `bar_index`) steps with
+/// the phase rather than at the settle, keeping `index + phase` continuous.
+fn lead_phase(phase: f32, frac: f64) -> (f32, f32) {
+    let p = f64::from(phase) + frac.max(0.0);
+    let carry = p.floor();
+    ((p - carry) as f32, carry as f32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lead_phase_carries_past_the_wrap() {
+        assert_eq!(lead_phase(0.25, 0.5), (0.75, 0.0));
+        let (p, c) = lead_phase(0.75, 0.5);
+        assert!((p - 0.25).abs() < 1e-6 && c == 1.0, "{p} {c}");
+        assert_eq!(lead_phase(0.4, 0.0), (0.4, 0.0));
+    }
 
     /// Raw (pre-normalization) features after ~2.3 s of a 1 kHz tone riding on `offset`.
     fn settled_features(offset: f32) -> AudioFeatures {
@@ -691,5 +753,126 @@ mod tests {
         assert!(silent_hops > 0, "the silent lead-in never read as silent");
         assert!(flux_hops > 0, "the onset detector never saw the kick");
         assert!(beats > 0, "no beat fired in 12 s of a 120 BPM kick");
+    }
+
+    /// One hop of [`run_sync`]: when it ran, what fired, and the clocks it published.
+    struct SyncHop {
+        ts: f64,
+        beat: Option<f64>,
+        downbeat: Option<f64>,
+        beat_clock: f32,
+        bar_clock: f32,
+    }
+
+    /// The real chain over 24 s of a 120 BPM kick, accented on every fourth hit so the bar
+    /// has a "one", with a sync lead of `lead` seconds.
+    fn run_sync(lead: f64) -> Vec<SyncHop> {
+        const SR: f32 = 44100.0;
+        let mut a = HopAnalyzer::new(SR, BandScale::Db, TempoConfig::default());
+        a.set_sync_lead(lead);
+        let tau = std::f32::consts::TAU;
+        let kick = |t: f32| {
+            let tb = t % 0.5;
+            let gain = if ((t / 0.5) as u32).is_multiple_of(4) {
+                0.9
+            } else {
+                0.45
+            };
+            (tau * (50.0 + 100.0 * (-tb * 40.0).exp()) * tb).sin() * (-tb * 10.0).exp() * gain
+        };
+        let mut hops = Vec::new();
+        for h in 0..(24.0 * SR) as usize / ANALYSIS_HOP {
+            let mono: Vec<f32> = (0..ANALYSIS_HOP)
+                .map(|i| kick((h * ANALYSIS_HOP + i) as f32 / SR))
+                .collect();
+            let stereo: Vec<f32> = mono.iter().flat_map(|&x| [x, x]).collect();
+            let ts = ((h + 1) * ANALYSIS_HOP) as f64 / f64::from(SR);
+            let cfg = (StructureConfig::default(), TempoConfig::default());
+            let out = a.process_hop(&mono, &stereo, ts, cfg.0, cfg.1, Vec::new());
+            let f = &out.frame.features;
+            assert_eq!(out.beat_fired, out.frame.beat_time.is_some());
+            assert_eq!(out.downbeat_fired, out.frame.downbeat_time.is_some());
+            hops.push(SyncHop {
+                ts,
+                beat: out.frame.beat_time,
+                downbeat: out.frame.downbeat_time,
+                beat_clock: f.beat_index + f.beat_phase,
+                bar_clock: f.bar_index + f.bar_phase,
+            });
+        }
+        hops
+    }
+
+    /// #80: with a sync lead, the same beats and downbeats come out `lead` earlier, on hops
+    /// that much earlier (a downbeat up to a further hop and `BEAT_LEAD_SECS` sooner: it used
+    /// to wait for its beat's settle, and now goes out with the beat); `index + phase` stays continuous
+    /// for both clocks, so the phases wrap with the early beat rather than at the settle.
+    #[test]
+    fn sync_lead_fires_beats_downbeats_and_phases_early() {
+        const LEAD: f64 = 0.08;
+        // From well after the tempo and bar locks to a beat short of the end.
+        let window = |hops: &[SyncHop], pick: fn(&SyncHop) -> Option<f64>, shift: f64| {
+            hops.iter()
+                .filter_map(|h| pick(h).map(|t| (t + shift, h.ts + shift)))
+                .filter(|&(t, _)| (10.0..23.0).contains(&t))
+                .collect::<Vec<_>>()
+        };
+        let plain = run_sync(0.0);
+        let led = run_sync(LEAD);
+        for (name, pick) in [
+            (
+                "beat",
+                (|h: &SyncHop| h.beat) as fn(&SyncHop) -> Option<f64>,
+            ),
+            ("downbeat", |h: &SyncHop| h.downbeat),
+        ] {
+            let base = window(&plain, pick, 0.0);
+            let early = window(&led, pick, LEAD);
+            assert!(
+                base.len() >= if name == "beat" { 20 } else { 5 },
+                "{name}: {base:?}"
+            );
+            assert_eq!(base.len(), early.len(), "{name}: {base:?} vs {early:?}");
+            let hop = ANALYSIS_HOP as f64 / 44100.0;
+            let slack = if name == "beat" {
+                hop
+            } else {
+                2.0 * hop + 0.010
+            };
+            for ((t0, h0), (t1, h1)) in base.iter().zip(&early) {
+                assert!((t0 - t1).abs() < 1e-6, "{name} {t0:.4}: led stamp {t1:.4}");
+                assert!(
+                    (-hop - 1e-9..=slack).contains(&(h0 - h1)),
+                    "{name} {t0:.4}: hop {h0:.4} vs {h1:.4}"
+                );
+            }
+        }
+        // Every pre-fired downbeat rides its beat's hop.
+        for h in led.iter().filter(|h| h.ts > 10.0 && h.downbeat.is_some()) {
+            assert_eq!(
+                h.beat, h.downbeat,
+                "downbeat at {:.3} without its beat",
+                h.ts
+            );
+        }
+        // The lead adds no discontinuity of its own. (The scheduler's phase can already wrap
+        // a hop before its instant settles when a correction pushed the instant late, a
+        // one-hop dip that the run without a lead shows on the same hop.)
+        for (name, clock) in [
+            ("beat", (|h: &SyncHop| h.beat_clock) as fn(&SyncHop) -> f32),
+            ("bar", |h: &SyncHop| h.bar_clock),
+        ] {
+            let smooth = |w: &[SyncHop]| (-0.02..0.3).contains(&(clock(&w[1]) - clock(&w[0])));
+            for (wl, wp) in led.windows(2).zip(plain.windows(2)) {
+                if wl[0].ts > 10.0 && !smooth(wl) {
+                    assert!(
+                        !smooth(wp),
+                        "{name} clock jumped {} at {:.3} where the unled one did not",
+                        clock(&wl[1]) - clock(&wl[0]),
+                        wl[1].ts
+                    );
+                }
+            }
+        }
     }
 }

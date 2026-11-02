@@ -178,6 +178,8 @@ Source: Fosfora-specific — the bar and beat counters in [`audio/downbeat.rs`](
 
 Source: Fosfora-specific — the tempo estimator's lock support and hysteresis in [`audio/beat.rs`](../crates/fosfora-app/src/audio/beat.rs).
 
+**Lining the beat up with the room.** Analysis, the display and a projector each add delay, so beat-bound visuals can trail what the audience hears. **Sync offset** in Setup › Audio fixes that for the rhythm. A positive value (up to 200 ms) fires `beat` and `downbeat` that much early, and moves `beat_phase`, `bar_phase` and their counters forward with them; once the grid is locked it knows where the next beat falls. The lead stops just short of half a beat, so fast tempos get less of it. Levels and every other feature can't be predicted, so they stay as they are. A negative value (down to −250 ms) covers the opposite case, where the sound reaches the audience after the picture (a long throw from the speakers): every feature is held back by that much, pulses included. The offset also applies to `fosfora --signal`.
+
 ---
 
 ## Pitch and Harmony
