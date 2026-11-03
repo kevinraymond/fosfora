@@ -717,37 +717,28 @@ impl SceneRenderer {
         self.uniforms.scroll_phase = 0.0;
 
         // Bindings — the same dispatch the app runs, fed audio-only sources.
-        let outs =
-            self.binding_bus
-                .evaluate_offline(Some(&features), &out.frame.mel, &out.frame.dmfcc);
+        self.binding_bus
+            .evaluate_offline(Some(&features), &out.frame.mel, &out.frame.dmfcc);
         self.layer_stack.clear_modulation();
         self.master_postprocess_modulation = Default::default();
-        {
-            let mut ctx = crate::bindings::apply::BindingTargetCtx {
-                layer_stack: &mut self.layer_stack,
-                effects: &self.effect_loader.effects,
-                uniforms: &mut self.uniforms,
-                postprocess: &mut self.master_postprocess_modulation,
-                pending_triggers: &mut self.binding_bus.pending_triggers,
-            };
-            for o in &outs {
-                crate::bindings::apply::apply_binding_target(
-                    &mut ctx, &o.target, o.value, o.rising,
-                );
-            }
-        }
+        self.binding_bus.apply_outputs(
+            &mut self.layer_stack,
+            &self.effect_loader.effects,
+            &mut self.uniforms,
+            &mut self.master_postprocess_modulation,
+        );
 
         // Transport triggers a binding fired this hop — mirror of main.rs's drain.
-        let pending: Vec<String> = self.binding_bus.pending_triggers.drain(..).collect();
-        for trigger in &pending {
-            let event = match trigger.as_str() {
-                "scene.transport.go" => self.timeline.go_next(),
-                "scene.transport.prev" => self.timeline.go_prev(),
-                "scene.transport.stop" => {
+        let pending = std::mem::take(&mut self.binding_bus.pending_triggers);
+        for action in pending {
+            use crate::bindings::types::TransportAction;
+            let event = match action {
+                TransportAction::Go => self.timeline.go_next(),
+                TransportAction::Prev => self.timeline.go_prev(),
+                TransportAction::Stop => {
                     self.timeline.stop();
                     crate::scene::timeline::TimelineEvent::None
                 }
-                _ => crate::scene::timeline::TimelineEvent::None,
             };
             self.process_event(event);
         }
@@ -943,27 +934,17 @@ mod tests {
         // The sidecar's kick -> postfx.bloom_intensity binding, through the
         // offline bus and the SAME dispatch the app runs. Proves the whole
         // binding path works headless, not just that it loads.
-        let outs = sr
+        let fired = sr
             .binding_bus
-            .evaluate_offline(Some(&audio), &[], &[0.0; 13]);
-        assert_eq!(outs.len(), 1, "the sidecar binding should fire");
-        {
-            let mut ctx = crate::bindings::apply::BindingTargetCtx {
-                layer_stack: &mut sr.layer_stack,
-                effects: &sr.effect_loader.effects,
-                uniforms: &mut sr.uniforms,
-                postprocess: &mut sr.master_postprocess_modulation,
-                pending_triggers: &mut sr.binding_bus.pending_triggers,
-            };
-            for out in &outs {
-                crate::bindings::apply::apply_binding_target(
-                    &mut ctx,
-                    &out.target,
-                    out.value,
-                    out.rising,
-                );
-            }
-        }
+            .evaluate_offline(Some(&audio), &[], &[0.0; 13])
+            .len();
+        assert_eq!(fired, 1, "the sidecar binding should fire");
+        sr.binding_bus.apply_outputs(
+            &mut sr.layer_stack,
+            &sr.effect_loader.effects,
+            &mut sr.uniforms,
+            &mut sr.master_postprocess_modulation,
+        );
         let effective = sr
             .master_postprocess
             .with_modulation(&sr.master_postprocess_modulation);

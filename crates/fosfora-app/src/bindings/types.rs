@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub use super::target_fields::{ParticleField, PostFxField, TransportAction, UniformField};
+
 pub type BindingId = String;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -83,12 +85,13 @@ pub enum BindingTarget {
         layer: usize,
         field: LayerField,
     },
-    PostFx(String),
-    Particle(String),
-    Uniform(String),
-    SceneTransport(String),
+    PostFx(PostFxField),
+    Particle(ParticleField),
+    Uniform(UniformField),
+    SceneTransport(TransportAction),
     GlobalMasterOpacity,
-    /// Anything that does not parse, kept verbatim.
+    /// Anything that does not parse — including a known form with a leaf name
+    /// nothing handles, such as `uniform.kik` — kept verbatim.
     ///
     /// A hand-edited file or one written by a newer version round-trips instead
     /// of silently losing the binding — dropping a VJ's mapping because we did
@@ -239,33 +242,37 @@ fn parse_target(s: &str) -> BindingTarget {
     let parts: Vec<&str> = s.split('.').collect();
     // No shipped effect or param name contains a dot, so segment counts are
     // unambiguous — guarded by a test over every .pfx.
-    match parts.as_slice() {
+    let parsed = match parts.as_slice() {
         // The effect by its current name: a binding saved before the effect
         // was renamed would otherwise never match its layer again. The file
         // is rewritten with the new name on the next save.
-        ["param", idx, effect, param] => match idx.parse::<usize>() {
-            Ok(layer) => BindingTarget::Param {
+        ["param", idx, effect, param] => {
+            idx.parse::<usize>().ok().map(|layer| BindingTarget::Param {
                 layer,
                 effect: current_effect_name(effect).to_string(),
                 param: (*param).to_string(),
-            },
-            Err(_) => BindingTarget::Unknown(s.to_string()),
-        },
-        ["param", effect, param] => BindingTarget::LegacyParam {
+            })
+        }
+        ["param", effect, param] => Some(BindingTarget::LegacyParam {
             effect: current_effect_name(effect).to_string(),
             param: (*param).to_string(),
-        },
+        }),
         ["layer", idx, field] => match (idx.parse::<usize>(), LayerField::parse(field)) {
-            (Ok(layer), Some(field)) => BindingTarget::Layer { layer, field },
-            _ => BindingTarget::Unknown(s.to_string()),
+            (Ok(layer), Some(field)) => Some(BindingTarget::Layer { layer, field }),
+            _ => None,
         },
-        ["postfx", field] => BindingTarget::PostFx((*field).to_string()),
-        ["particle", field] => BindingTarget::Particle((*field).to_string()),
-        ["uniform", field] => BindingTarget::Uniform((*field).to_string()),
-        ["scene", "transport", action] => BindingTarget::SceneTransport((*action).to_string()),
-        ["global", "master_opacity"] => BindingTarget::GlobalMasterOpacity,
-        _ => BindingTarget::Unknown(s.to_string()),
-    }
+        // A leaf nothing handles is Unknown, not a variant carrying a dead
+        // name: the frame loop then never sees it, and the load warns (#150).
+        ["postfx", field] => PostFxField::parse(field).map(BindingTarget::PostFx),
+        ["particle", field] => ParticleField::parse(field).map(BindingTarget::Particle),
+        ["uniform", field] => UniformField::parse(field).map(BindingTarget::Uniform),
+        ["scene", "transport", action] => {
+            TransportAction::parse(action).map(BindingTarget::SceneTransport)
+        }
+        ["global", "master_opacity"] => Some(BindingTarget::GlobalMasterOpacity),
+        _ => None,
+    };
+    parsed.unwrap_or_else(|| BindingTarget::Unknown(s.to_string()))
 }
 
 /// Infallible by construction — an unrecognised string becomes
@@ -367,9 +374,13 @@ impl BindingRuntime {
 }
 
 /// One evaluated binding result for the app to apply this frame.
-#[derive(Debug, Clone)]
+///
+/// Names its binding by index into [`BindingBus::bindings`](super::bus::BindingBus)
+/// rather than carrying a clone of the target, which for a param target was two
+/// `String` allocations per binding per frame (#149).
+#[derive(Debug, Clone, Copy)]
 pub struct BindingOutput {
-    pub target: BindingTarget,
+    pub binding: usize,
     pub value: f32,
     /// True only on the frame `value` crossed above 0.5. Trigger-style
     /// targets (scene.transport.*) fire on this; continuous targets ignore
@@ -378,11 +389,36 @@ pub struct BindingOutput {
 }
 
 /// Original value before normalization (UI diagnostics only).
-#[derive(Debug, Clone)]
-pub struct SourceRaw {
-    pub display: String,
+///
+/// Was a `String` formatted for every source on every frame — several hundred
+/// allocations a frame for text only the binding matrix ever shows (#149). The
+/// value is kept as a number and formatted on demand through `Display`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SourceRaw {
+    /// A plain value, shown to three decimals.
+    Value(f32),
+    /// A MIDI continuous controller's raw 0–127 value.
+    MidiCc(u8),
+}
+
+impl SourceRaw {
+    /// The raw value as a number.
     #[allow(dead_code)]
-    pub numeric: f64,
+    pub fn numeric(self) -> f64 {
+        match self {
+            SourceRaw::Value(v) => f64::from(v),
+            SourceRaw::MidiCc(cc) => f64::from(cc),
+        }
+    }
+}
+
+impl std::fmt::Display for SourceRaw {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SourceRaw::Value(v) => write!(f, "{v:.3}"),
+            SourceRaw::MidiCc(cc) => write!(f, "CC {cc}/127"),
+        }
+    }
 }
 
 /// What the binding bus is currently learning.
@@ -537,6 +573,12 @@ mod target_tests {
             "layer.notanumber.opacity",
             "param.notanumber.Raster.warp",
             "layer.0.no_such_field",
+            // Known forms, unknown leaves (#150): a typo must not load as a
+            // target that silently drives nothing.
+            "uniform.kik",
+            "postfx.Vignette",
+            "particle.emit",
+            "scene.transport.next",
         ] {
             let parsed = BindingTarget::from(raw);
             assert!(matches!(parsed, BindingTarget::Unknown(_)), "{raw}");

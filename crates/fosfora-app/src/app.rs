@@ -1323,7 +1323,7 @@ impl App {
         for (source, jpeg) in self.web.preview_images.drain() {
             self.binding_bus.ws_preview_images.insert(source, jpeg);
         }
-        let bind_results = self.binding_bus.evaluate(
+        self.binding_bus.evaluate(
             self.latest_audio.as_ref(),
             self.audio.latest_mel(),
             self.audio.latest_dmfcc(),
@@ -1334,9 +1334,12 @@ impl App {
         // clean slate so a binding that is gone or quiet releases its target.
         self.layer_stack.clear_modulation();
         self.master_postprocess_modulation = Default::default();
-        for out in bind_results {
-            self.apply_binding_target(&out.target, out.value, out.rising);
-        }
+        self.binding_bus.apply_outputs(
+            &mut self.layer_stack,
+            &self.effect_loader.effects,
+            &mut self.uniforms,
+            &mut self.master_postprocess_modulation,
+        );
         self.binding_bus.save_if_dirty();
         // A preset-scoped binding edit persists only on explicit preset save, so
         // surface it as an unsaved change (mark_dirty no-ops with no preset loaded).
@@ -2932,31 +2935,6 @@ impl App {
             .pass_executor
             .particle_system
             .as_mut()
-    }
-
-    /// Apply a single binding bus result to its target.
-    /// Send one bus value to whatever it drives.
-    ///
-    /// Used to take a `&str` and re-parse the dotted form on every frame, for
-    /// every enabled binding. The shape is now decided once, at load, so this is
-    /// a match — and a new layer-bearing variant cannot be added without the
-    /// compiler pointing here.
-    /// Thin wrapper over [`crate::bindings::apply::apply_binding_target`] —
-    /// the dispatch itself lives there so the headless renderer shares it.
-    fn apply_binding_target(
-        &mut self,
-        target: &crate::bindings::types::BindingTarget,
-        value: f32,
-        rising: bool,
-    ) {
-        let mut ctx = crate::bindings::apply::BindingTargetCtx {
-            layer_stack: &mut self.layer_stack,
-            effects: &self.effect_loader.effects,
-            uniforms: &mut self.uniforms,
-            postprocess: &mut self.master_postprocess_modulation,
-            pending_triggers: &mut self.binding_bus.pending_triggers,
-        };
-        crate::bindings::apply::apply_binding_target(&mut ctx, target, value, rising);
     }
 
     pub fn save_preset(&mut self, name: &str) {

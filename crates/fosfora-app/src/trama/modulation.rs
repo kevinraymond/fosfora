@@ -365,16 +365,10 @@ fn advance_osc(osc: &Osc, state: &mut ModState, dt: f32, view: &AudioView) -> f3
     state.prev_phase = eff;
 
     match osc.shape {
-        OscShape::Sine => (eff * std::f32::consts::TAU).sin(),
-        OscShape::Saw => 2.0 * eff - 1.0,
-        OscShape::Square => {
-            if eff < 0.5 {
-                1.0
-            } else {
-                -1.0
-            }
-        }
-        OscShape::Triangle => 1.0 - 4.0 * (eff - 0.5).abs(),
+        OscShape::Sine => wave(Wave::Sine, eff),
+        OscShape::Saw => wave(Wave::Saw, eff),
+        OscShape::Square => wave(Wave::Square, eff),
+        OscShape::Triangle => wave(Wave::Triangle, eff),
         OscShape::SampleHold => {
             if wrapped {
                 state.held = rand_bipolar(&mut state.rng);
@@ -403,9 +397,36 @@ fn advance_osc(osc: &Osc, state: &mut ModState, dt: f32, view: &AudioView) -> f3
     }
 }
 
+/// The stateless periodic oscillator shapes. Shared with the binding bus's
+/// tempo-synced LFO sources (`bindings/lfo.rs`), so an LFO bound to a layer
+/// param and one modulating a trama node trace the same curve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Wave {
+    Sine,
+    Saw,
+    Square,
+    Triangle,
+}
+
+/// One sample of `shape` at phase `eff` (cycles, 0..1), bipolar in [-1, 1].
+pub(crate) fn wave(shape: Wave, eff: f32) -> f32 {
+    match shape {
+        Wave::Sine => (eff * std::f32::consts::TAU).sin(),
+        Wave::Saw => 2.0 * eff - 1.0,
+        Wave::Square => {
+            if eff < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        Wave::Triangle => 1.0 - 4.0 * (eff - 0.5).abs(),
+    }
+}
+
 /// House splitmix64 (see `gpu/particle/splat_source.rs`) — deterministic,
 /// no dependency.
-fn splitmix64(state: &mut u64) -> u64 {
+pub(crate) fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);

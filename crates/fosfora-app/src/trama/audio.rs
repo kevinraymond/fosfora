@@ -55,7 +55,7 @@ impl AudioView {
         self.features = *features;
         // beat_index steps by 1 exactly when beat_phase wraps, so the sum is
         // a continuous monotonic clock (features.rs overlay-clock contract).
-        self.beat_clock = features.beat_index + features.beat_phase;
+        self.beat_clock = features.beat_clock();
         self.tempo_locked = features.beat_period_secs().is_some();
 
         let have_mel = mel.len() >= BAND_COUNT * 2;

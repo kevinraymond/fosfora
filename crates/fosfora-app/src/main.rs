@@ -2473,21 +2473,21 @@ impl ApplicationHandler for FosforaApp {
                 }
 
                 // Drain scene transport triggers from binding bus
-                let pending: Vec<String> = app.binding_bus.pending_triggers.drain(..).collect();
-                for trigger in &pending {
-                    match trigger.as_str() {
-                        "scene.transport.go" => {
+                let pending = std::mem::take(&mut app.binding_bus.pending_triggers);
+                for action in pending {
+                    use fosfora_app::bindings::types::TransportAction;
+                    match action {
+                        TransportAction::Go => {
                             let event = app.timeline.go_next();
                             app.process_timeline_event(event);
                         }
-                        "scene.transport.prev" => {
+                        TransportAction::Prev => {
                             let event = app.timeline.go_prev();
                             app.process_timeline_event(event);
                         }
-                        "scene.transport.stop" => {
+                        TransportAction::Stop => {
                             app.timeline.stop();
                         }
-                        _ => {}
                     }
                 }
 

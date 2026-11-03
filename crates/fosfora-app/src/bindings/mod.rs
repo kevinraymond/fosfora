@@ -1,10 +1,12 @@
 pub mod apply;
 pub mod bus;
 pub mod catalog;
+pub mod lfo;
 #[cfg(feature = "desktop")]
 pub mod migration;
 pub mod persistence;
 pub mod sources;
+pub mod target_fields;
 pub mod templates;
 pub mod transforms;
 pub mod types;

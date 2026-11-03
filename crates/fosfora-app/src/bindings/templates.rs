@@ -573,6 +573,7 @@ mod tests {
             preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
+            outputs: Vec::new(),
             pending_triggers: Vec::new(),
         }
     }
@@ -852,16 +853,8 @@ mod tests {
     fn midi_faders_substitutes_live_device() {
         use crate::bindings::types::SourceRaw;
         let mut bus = test_bus();
-        bus.last_snapshot.insert(
-            "midi.MPD218.cc.0.1".to_string(),
-            (
-                0.5,
-                SourceRaw {
-                    display: "0.5".into(),
-                    numeric: 0.5,
-                },
-            ),
-        );
+        bus.last_snapshot
+            .insert("midi.MPD218.cc.0.1".into(), (0.5, SourceRaw::MidiCc(64)));
         let params: Vec<String> = (0..8).map(|i| format!("p{i}")).collect();
         bus.apply_template(&MIDI_FADERS, 0, "Fosfora", &params);
         assert_eq!(bus.bindings.len(), 8);
@@ -1024,9 +1017,18 @@ mod tests {
         let mut collected: std::collections::HashSet<String> =
             sources::collect_audio(&Default::default())
                 .into_keys()
+                .map(String::from)
                 .collect();
-        collected.extend(sources::collect_mel_bands(&[0.0; 64]).into_keys());
-        collected.extend(sources::collect_dmfcc_bands(&[0.0; 13]).into_keys());
+        collected.extend(
+            sources::collect_mel_bands(&[0.0; 64])
+                .into_keys()
+                .map(String::from),
+        );
+        collected.extend(
+            sources::collect_dmfcc_bands(&[0.0; 13])
+                .into_keys()
+                .map(String::from),
+        );
 
         for template in builtin_templates() {
             for entry in template.entries {
