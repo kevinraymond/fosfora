@@ -10,6 +10,7 @@ pub const AUDIO_COLOR: Color32 = Color32::from_rgb(0x50, 0xC0, 0x70); // green
 pub const MIDI_COLOR: Color32 = Color32::from_rgb(0xA0, 0x60, 0xD0); // purple
 pub const OSC_COLOR: Color32 = Color32::from_rgb(0x50, 0x90, 0xE0); // blue
 pub const WS_COLOR: Color32 = Color32::from_rgb(0xE0, 0x90, 0x40); // orange
+pub const LFO_COLOR: Color32 = Color32::from_rgb(0xD0, 0x60, 0x90); // pink
 
 /// Per-layer parameter info for binding targets.
 pub struct LayerParamInfo {
@@ -694,6 +695,31 @@ pub fn all_source_groups(snapshot: &SourceSnapshot) -> Vec<SourceGroup> {
         "audio_dmfcc",
     ));
 
+    // Tempo-synced LFOs (#129): the base set in picker order, then any bound
+    // phase-offset variant.
+    {
+        use crate::bindings::lfo;
+        let mut keys: Vec<String> = lfo::base_keys()
+            .filter(|k| snapshot.contains_key(*k))
+            .map(str::to_string)
+            .collect();
+        let mut offsets: Vec<String> = snapshot
+            .keys()
+            .filter(|k| lfo::parse(k).is_some_and(|spec| spec.degrees != 0))
+            .map(|k| k.to_string())
+            .collect();
+        offsets.sort();
+        keys.extend(offsets);
+        if !keys.is_empty() {
+            out.push(SourceGroup {
+                label: "LFO \u{00b7} Tempo".to_string(),
+                id: "lfo".to_string(),
+                color: LFO_COLOR,
+                keys,
+            });
+        }
+    }
+
     for (prefix, label, id, color) in [
         ("midi.", "MIDI", "midi", MIDI_COLOR),
         ("osc.", "OSC", "osc", OSC_COLOR),
@@ -796,6 +822,8 @@ pub fn source_color(source: &str) -> Color32 {
         OSC_COLOR
     } else if source.starts_with("ws.") {
         WS_COLOR
+    } else if source.starts_with(crate::bindings::lfo::PREFIX) {
+        LFO_COLOR
     } else {
         Color32::GRAY
     }
@@ -811,6 +839,8 @@ pub fn source_badge_info(source: &str) -> (&'static str, Color32) {
         ("OSC", OSC_COLOR)
     } else if source.starts_with("ws.") {
         ("WS", WS_COLOR)
+    } else if source.starts_with(crate::bindings::lfo::PREFIX) {
+        ("LFO", LFO_COLOR)
     } else {
         ("---", Color32::GRAY)
     }
@@ -924,6 +954,9 @@ pub fn friendly_source(source: &str) -> String {
     if source.starts_with("ws.") {
         let rest = source.strip_prefix("ws.").unwrap_or(source);
         return rest.rsplit('.').next().unwrap_or(rest).to_string();
+    }
+    if let Some(spec) = crate::bindings::lfo::parse(source) {
+        return format!("LFO {}", spec.label());
     }
     source.to_string()
 }
@@ -1241,6 +1274,8 @@ mod tests {
         snap.insert("osc./foo/bar".into(), (0.0, raw()));
         snap.insert("ws.mediapipe.left_thumb_y".into(), (0.0, raw()));
         snap.insert("ws.mediapipe.right_index_x".into(), (0.0, raw()));
+        snap.insert("lfo.sine.bar".into(), (0.0, raw()));
+        snap.insert("lfo.saw.beat.90".into(), (0.0, raw()));
         snap
     }
 
@@ -1250,6 +1285,19 @@ mod tests {
     /// drifted to 20 keys against 21, and both missed the same 28 features. Now
     /// both read `all_source_groups`, so the only way a source can go unlistable
     /// is if it falls through every group — which is what this asserts.
+    #[test]
+    fn lfo_sources_read_as_lfos() {
+        assert_eq!(friendly_source_label("lfo.sine.bar"), "LFO Sine 1 bar");
+        assert_eq!(
+            friendly_source_label("lfo.sh.16th.180"),
+            "LFO S&H 1/16 +180\u{00b0}"
+        );
+        assert_eq!(source_color("lfo.saw.beat"), LFO_COLOR);
+        let groups = all_source_groups(&full_snapshot());
+        let lfo = groups.iter().find(|g| g.id == "lfo").expect("an LFO group");
+        assert_eq!(lfo.keys, ["lfo.sine.bar", "lfo.saw.beat.90"]);
+    }
+
     #[test]
     fn every_snapshot_key_lands_in_exactly_one_group() {
         let snap = full_snapshot();

@@ -141,13 +141,13 @@ fn wire_name<T: Serialize + std::fmt::Debug>(value: &T) -> String {
         .to_string()
 }
 
-/// Every audio source key this build emits.
+/// Every audio and LFO source key this build emits.
 ///
 /// Calls the real collectors over zeroed inputs and takes their keys. The values
 /// are irrelevant — the point is that the key *set* comes from the code that
 /// produces it at runtime, so it cannot describe a source that does not exist.
 pub fn source_keys() -> Vec<String> {
-    use crate::bindings::sources;
+    use crate::bindings::sources::{self, SourceSnapshot};
 
     let features = AudioFeatures::zeroed();
     let mut keys: Vec<String> = sources::collect_audio(&features)
@@ -164,6 +164,12 @@ pub fn source_keys() -> Vec<String> {
             .into_keys()
             .map(String::from),
     );
+    // The base tempo-synced LFOs (#129). Phase-offset variants
+    // (`lfo.{shape}.{division}.{degrees}`) are open-ended, so the validator
+    // accepts any key `bindings::lfo::parse` does.
+    let mut lfo = SourceSnapshot::new();
+    crate::bindings::lfo::collect_into(&mut lfo, 0.0, &[]);
+    keys.extend(lfo.into_keys().map(String::from));
     keys.sort();
     keys.dedup();
     keys
@@ -289,6 +295,8 @@ mod tests {
             "audio.dmfcc.12",
             "audio.contrast_mean",
             "audio.key_hue",
+            "lfo.sine.bar",
+            "lfo.sh.16th",
         ] {
             assert!(
                 keys.iter().any(|k| k == expected),

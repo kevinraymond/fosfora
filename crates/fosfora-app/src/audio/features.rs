@@ -149,6 +149,13 @@ impl AudioFeatures {
         (period.is_finite() && period > 0.0).then_some(period)
     }
 
+    /// A continuous count of beats, `beat_index + beat_phase`: the index steps
+    /// by 1 exactly when the phase wraps, so this never jumps back. What
+    /// trama's BeatSync oscillators and the binding bus's LFOs run on.
+    pub fn beat_clock(&self) -> f32 {
+        self.beat_index + self.beat_phase
+    }
+
     pub fn as_slice_mut(&mut self) -> &mut [f32; NUM_FEATURES] {
         bytemuck::cast_mut(self)
     }

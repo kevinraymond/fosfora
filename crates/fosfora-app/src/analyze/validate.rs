@@ -340,7 +340,7 @@ fn check_bindings(
                  into a sidecar, so this one would not be applied with the preset",
             );
         }
-        if !sources.contains(&b.source) {
+        if !sources.contains(&b.source) && crate::bindings::lfo::parse(&b.source).is_none() {
             report.bad(
                 &where_,
                 format!(
@@ -771,6 +771,34 @@ mod tests {
         assert_eq!(report.presets_checked, 1);
         assert_eq!(report.bindings_checked, 1);
         assert_eq!(report.cues_checked, 1);
+    }
+
+    /// LFO sources (#129) pass, a phase-offset variant included, though only
+    /// the base set is in the dumped source list; a malformed one does not.
+    #[test]
+    fn lfo_sources_are_accepted_and_malformed_ones_are_not() {
+        let bindings = |source: &str| {
+            format!(
+                r#"{{"version":1,"bindings":[{{"id":"b_000","name":"x","enabled":true,
+                   "scope":"Preset","source":"{source}","target":"postfx.vignette",
+                   "transforms":[]}}]}}"#
+            )
+        };
+        for ok in ["lfo.sine.bar", "lfo.sh.16th.270"] {
+            let report = run_on(&[
+                ("P.json", &good_preset()),
+                ("P.bindings.json", &bindings(ok)),
+            ]);
+            let problems: Vec<String> = report.problems.iter().map(|p| p.to_string()).collect();
+            assert!(report.is_clean(), "{ok}: {problems:?}");
+        }
+        assert_flags(
+            &[
+                ("P.json", &good_preset()),
+                ("P.bindings.json", &bindings("lfo.sine.bar.360")),
+            ],
+            "never fires",
+        );
     }
 
     /// The headline case: a target that parses to Unknown and would load clean.

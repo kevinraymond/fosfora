@@ -1,6 +1,7 @@
 pub mod apply;
 pub mod bus;
 pub mod catalog;
+pub mod lfo;
 #[cfg(feature = "desktop")]
 pub mod migration;
 pub mod persistence;

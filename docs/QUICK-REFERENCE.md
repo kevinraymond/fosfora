@@ -175,6 +175,24 @@ Full glossary of all 85 audio features, in plain English: [AUDIO-FEATURES.md](AU
 
 ---
 
+## LFO Sources
+
+Tempo-synced LFOs bind like any audio feature (the **LFO · Tempo** group in the
+binding matrix), so any layer, effect or post-processing control can sway with
+the beat. Values run 0–1 and hold still while the tempo is not locked.
+
+| Part     | Values                                                    |
+|----------|-----------------------------------------------------------|
+| Shape    | `sine`, `triangle`, `saw`, `square`, `sh` (sample & hold) |
+| Division | `4bar`, `2bar`, `bar`, `half`, `beat`, `8th`, `16th`      |
+| Phase    | optional, whole degrees 0–359                             |
+
+Written `lfo.{shape}.{division}` or with a phase offset
+`lfo.{shape}.{division}.{degrees}`: `lfo.sine.bar`, `lfo.saw.beat.90`. Two LFOs
+a quarter-cycle apart (`.0` and `.90`) drive X and Y round a circle.
+
+---
+
 ## MIDI
 
 **Learn workflow**: Click **M** badge on any parameter or trigger > badge blinks orange > move a knob/press a button on your controller > mapping saved. Cancel with the **...** button.

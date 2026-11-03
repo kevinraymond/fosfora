@@ -127,6 +127,7 @@ impl BindingBus {
         let mut snapshot = self.take_snapshot_buffer();
         if let Some(features) = audio {
             sources::collect_audio_into(&mut snapshot, features);
+            super::lfo::collect_into(&mut snapshot, features.beat_clock(), &self.bindings);
         }
         sources::collect_mel_bands_into(&mut snapshot, mel);
         sources::collect_dmfcc_bands_into(&mut snapshot, dmfcc);
@@ -377,6 +378,8 @@ impl BindingBus {
 
         if let Some(features) = audio {
             sources::collect_audio_into(&mut snapshot, features);
+            // Tempo-synced LFOs (#129) run off the same beat clock.
+            super::lfo::collect_into(&mut snapshot, features.beat_clock(), &self.bindings);
         }
         // Mel bands (A1b `audio.mel.N`, #1512) — empty until the first audio frame arrives.
         sources::collect_mel_bands_into(&mut snapshot, mel);
@@ -638,6 +641,33 @@ impl BindingBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tempo-synced LFO source (#129) reaches a binding through the same
+    /// evaluation as an audio feature, phase offset included, and moves with
+    /// the beat clock.
+    #[test]
+    fn an_lfo_source_drives_a_binding_off_the_beat_clock() {
+        let mut bus = BindingBus::new_isolated();
+        bus.add_binding(
+            "lfo.saw.beat.90".into(),
+            "uniform.kick".into(),
+            BindingScope::Global,
+        );
+        let at = |beat_index: f32, beat_phase: f32| AudioFeatures {
+            beat_phase,
+            beat_index,
+            ..Default::default()
+        };
+        let out = bus.evaluate_offline(Some(&at(3.0, 0.5)), &[], &[0.0; 13]);
+        assert_eq!(out.len(), 1);
+        // Half way through the beat, plus a quarter cycle of offset.
+        assert!((out[0].value - 0.75).abs() < 1e-5, "{}", out[0].value);
+        let out = bus.evaluate_offline(Some(&at(4.0, 0.0)), &[], &[0.0; 13]);
+        assert!((out[0].value - 0.25).abs() < 1e-5, "{}", out[0].value);
+        // The bound offset variant has a meter like any other source.
+        assert!(bus.last_snapshot.contains_key("lfo.saw.beat.90"));
+        assert!(bus.last_snapshot.contains_key("lfo.sine.bar"));
+    }
 
     fn empty_bus() -> BindingBus {
         BindingBus {
