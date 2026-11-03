@@ -15,8 +15,11 @@ use super::render_target::RenderTarget;
 const BLOOM_EXTRACT_FS: &str =
     include_str!("../../../../assets/shaders/builtin/bloom_extract.wgsl");
 const BLOOM_BLUR_FS: &str = include_str!("../../../../assets/shaders/builtin/bloom_blur.wgsl");
-const POST_COMPOSITE_FS: &str =
-    include_str!("../../../../assets/shaders/builtin/post_composite.wgsl");
+/// The tonemap library rides in front: post_composite calls its ACES curve.
+const POST_COMPOSITE_FS: &str = concat!(
+    include_str!("../../../../assets/shaders/lib/tonemap.wgsl"),
+    include_str!("../../../../assets/shaders/builtin/post_composite.wgsl")
+);
 const BLIT_FS: &str = include_str!("../../../../assets/shaders/builtin/blit.wgsl");
 const FLASH_LIMIT_CS: &str = include_str!("../../../../assets/shaders/builtin/flash_limit.wgsl");
 

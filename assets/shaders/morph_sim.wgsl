@@ -48,20 +48,6 @@ fn read_target(idx: u32, tgt: u32) -> vec4f {
     return aux[idx * MORPH_STRIDE + tgt].home;
 }
 
-fn hsv2rgb(h: f32, s: f32, v: f32) -> vec3f {
-    let c = v * s;
-    let hp = h * 6.0;
-    let x = c * (1.0 - abs(hp % 2.0 - 1.0));
-    var rgb: vec3f;
-    if hp < 1.0 { rgb = vec3f(c, x, 0.0); }
-    else if hp < 2.0 { rgb = vec3f(x, c, 0.0); }
-    else if hp < 3.0 { rgb = vec3f(0.0, c, x); }
-    else if hp < 4.0 { rgb = vec3f(0.0, x, c); }
-    else if hp < 5.0 { rgb = vec3f(x, 0.0, c); }
-    else { rgb = vec3f(c, 0.0, x); }
-    return rgb + vec3f(v - c);
-}
-
 @compute @workgroup_size(256)
 fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let idx = gid.x;
@@ -285,7 +271,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let hue = atan2(vel.y, vel.x) / (2.0 * PI) + 0.5;
         let sat = smoothstep(0.0, 0.5, vel_speed);
         let base = mix(src_color, dst_color, eased_t);
-        let vel_color = vec4f(hsv2rgb(hue, sat * 0.7, 1.0), 1.0);
+        let vel_color = vec4f(fosfora_hsv_to_rgb(hue, sat * 0.7, 1.0), 1.0);
         color = mix(base, vel_color, sat * 0.5);
     }
 

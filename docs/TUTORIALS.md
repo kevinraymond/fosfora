@@ -256,6 +256,7 @@ Fosfora auto-prepends a WGSL shader library to every effect. You can use these f
 - `fosfora_palette(t, a, b, c, d)`: IQ cosine palette
 - `fosfora_audio_palette(t, centroid, phase)`: Warm-to-cool audio palette
 - `fosfora_hue_shift(color, amount)`: Hue rotation
+- `fosfora_hsv_to_rgb(h, s, v)`: HSV to RGB, all 0–1; the hue wraps, so any value is a hue
 
 **SDF (Signed Distance Functions):**
 - `fosfora_sd_sphere(p, r)`, `fosfora_sd_box(p, b)`, `fosfora_sd_torus(p, t)`, `fosfora_sd_cylinder(p, h, r)`
@@ -552,13 +553,22 @@ Below the layer list:
 | **Normal** | Replaces background with foreground |
 | **Add** | Brightens: adds colors together (great for glow, fire) |
 | **Screen** | Lightens: like projecting two slides together |
+| **Lighten** | Keeps whichever is brighter, channel by channel |
 | **Color Dodge** | Intense brighten: burns through to white |
 | **Multiply** | Darkens: like stacking two transparencies |
+| **Darken** | Keeps whichever is darker, channel by channel |
+| **Subtract** | Darkens: removes foreground color from background |
 | **Overlay** | Contrast boost: darks darker, lights lighter |
+| **Soft Light** | Gentle contrast: a softer Overlay, like diffuse light |
 | **Hard Light** | Strong contrast: like Overlay from the other side |
 | **Difference** | Inverts where bright: psychedelic color shifts |
 | **Exclusion** | Softer Difference: grays out similar colors |
-| **Subtract** | Darkens: removes foreground color from background |
+| **Hue** | Recolors what's beneath with this layer's hue |
+| **Saturation** | Gives what's beneath this layer's saturation: a gray layer drains the color |
+| **Color** | Tints what's beneath with this layer's hue and saturation, keeping its brightness |
+| **Luminosity** | This layer's brightness with the colors beneath |
+
+Hue, Saturation and Color keep the brightness of what's beneath, so bloom under them stays bright; Luminosity keeps this layer's.
 
 ### Displacement Modes
 
@@ -598,7 +608,7 @@ You can load images, GIFs, and videos as layers:
 
 Media layers support:
 - Letterbox scaling (maintains aspect ratio, transparent outside)
-- All 13 blend modes + opacity
+- All 20 blend modes + opacity
 - Animated GIF/WebP playback with transport controls:
   - Play/pause, loop toggle
   - Speed control (0.1x–4.0x)
@@ -638,10 +648,12 @@ Layer rows show a diamond and a node count for any layer with a chain. It is **f
 | **Transform** | Scale, rotate and slide the picture about the center. Pixels pulled from outside read transparent | `scale` 0.25–4 · `rotate` ±0.5 turns · `translate_x` / `translate_y` ±0.5 of the frame |
 | **Hue Drift** | Rotates hue, optionally drifting over time | `shift` 0–1 turns · `speed` turns per second |
 | **Mix** | Crossfades input 0 toward input 1 | `amount` 0–1 |
+| **Displace** | Warps input 0 by the brightness of input 1, the displacement blend modes as a node: wire a Noise Field or a feedback loop into input 1 and the picture ripples through it. `mode` 0 shoves along edges, 1 bends like glass with split color, 2 bulges; a negative `amount` pulls or pinches instead. With input 1 unwired it passes the picture through | `amount` ±1 · `mode` 0–2 |
 | **Key** | Turns dark into transparent, so a layer can sit on top of another one. `invert` keys out the bright end instead, making a matte | `threshold` 0–1 brightness · `softness` 0–1 ramp · `invert` |
 | **Color Key** | Keeps one family of colors and makes the rest transparent. Under Fluvid, it decides what Fluvid can see: a colored glove, a prop. `invert` drops that color instead | `hue` 0–1 (0 red, ⅓ green, ⅔ blue) · `hue_width` 0–0.5 · `min_saturation` 0–1 · `softness` 0–0.5 · `invert` |
 | **Mask** | Keeps an ellipse or rectangle of the picture and makes the rest transparent. Under Fluvid, put it over your mouth and only your mouth makes smoke; `invert` cuts a region out instead, like a ceiling fan in one corner | `center_x` / `center_y` 0–1 · `width` / `height` 0–1 · `softness` 0–0.5 · `rectangle` · `invert` |
 | **Levels** | Brightness, contrast, gamma and saturation: the grading node | `brightness` ±1 · `contrast` 0–4 · `gamma` 0.2–4 · `saturation` 0–3 |
+| **Color Grade** | Changes what color the picture is, where Levels changes how bright: lift, gamma and gain, white balance, hue and saturation. `shadows` and `highlights` push the dark and bright ends toward a color (white or gray is neutral), so a blue shadow and an amber highlight is one node | `lift` ±0.5 · `gamma` 0.2–4 · `gain` 0–4 · `temperature` / `tint` ±1 · `hue` ±0.5 turns · `saturation` 0–3 · `shadows` · `highlights` |
 | **Blur** | Softens the picture. Partway on `amount` is a haze over a picture that keeps its detail | `radius` 0–48 px · `amount` 0–1 |
 | **Zoom Blur** | Streaks the picture toward and away from a point, the camera-rush look; the center stays sharp. Put **onset** or **bass** on `strength` to punch on the kick. `directional` makes it a motion blur along `angle` instead | `strength` 0–1 · `center_x` / `center_y` 0–1 · `angle` ±0.5 turns · `directional` |
 | **Mirror** | Folds the picture about a line, so one half reflects over the other. Both axes gives quadrant symmetry | `horizontal` · `vertical` · `center_x` · `center_y` |
@@ -1148,7 +1160,7 @@ interfaces (0.0.0.0), and anything on the network can send.
 | `/fosfora/param/{name}` | float | Set parameter on active layer |
 | `/fosfora/layer/{n}/param/{name}` | float | Set parameter on layer N |
 | `/fosfora/layer/{n}/opacity` | float | Layer opacity (0–1) |
-| `/fosfora/layer/{n}/blend` | int | Blend mode (0–12) |
+| `/fosfora/layer/{n}/blend` | int | Blend mode (0–19, numbers in the Quick Reference) |
 | `/fosfora/layer/{n}/displace` | float | Warp strength for modes 10–12 |
 | `/fosfora/layer/{n}/enabled` | int | Layer on/off (0 or 1) |
 | `/fosfora/postprocess/enabled` | int | Post-processing toggle |

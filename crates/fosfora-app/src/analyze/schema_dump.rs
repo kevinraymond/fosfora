@@ -133,8 +133,7 @@ pub struct Encoding {
 
 /// Serialize an enum through serde and unquote it, so the dump carries the wire
 /// spelling rather than the Rust identifier. The two differ: `EffectType` is
-/// `rename_all = "lowercase"`, and `BlendMode::Overlay` carries a `SoftLight`
-/// read alias.
+/// `rename_all = "lowercase"`.
 fn wire_name<T: Serialize + std::fmt::Debug>(value: &T) -> String {
     serde_json::to_string(value)
         .unwrap_or_else(|e| panic!("{value:?} does not serialize: {e}"))
@@ -297,18 +296,17 @@ mod tests {
         );
     }
 
-    /// `BlendMode::Overlay` carries a `SoftLight` alias, so the Rust identifier
-    /// and the wire name are not interchangeable in general. Dump the wire name.
+    /// The blend list is in wire order, so a mode's position in the dump is
+    /// the number OSC and the web remote send for it.
     #[test]
-    fn blend_modes_are_wire_names() {
+    fn blend_modes_are_wire_names_in_wire_order() {
         let caps = build(&[]);
         assert_eq!(caps.enums.blend_modes.len(), BlendMode::ALL.len());
-        assert_eq!(caps.enums.blend_modes[0], "Normal");
-        assert!(caps.enums.blend_modes.iter().any(|m| m == "Overlay"));
-        assert!(
-            !caps.enums.blend_modes.iter().any(|m| m == "SoftLight"),
-            "SoftLight is a read alias, not the name to write"
-        );
+        for (i, name) in caps.enums.blend_modes.iter().enumerate() {
+            let mode: BlendMode = serde_json::from_str(&format!("\"{name}\"")).unwrap();
+            assert_eq!(mode.as_u32() as usize, i, "{name}");
+        }
+        assert!(caps.enums.blend_modes.iter().any(|m| m == "SoftLight"));
     }
 
     /// Every transform type named in the dump must actually deserialize into a

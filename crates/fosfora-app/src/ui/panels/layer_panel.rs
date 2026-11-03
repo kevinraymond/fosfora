@@ -668,7 +668,7 @@ pub fn draw_layer_panel(
                                             )
                                             .width(combo_width)
                                             .show_ui(ui, |ui| {
-                                                for &mode in BlendMode::ALL {
+                                                for &mode in BlendMode::MENU {
                                                     // The displacement family warps instead of
                                                     // coloring — set it apart from the blends.
                                                     if mode == BlendMode::DISPLACEMENT[0] {
@@ -728,7 +728,7 @@ pub fn draw_layer_panel(
                                                 .fixed_pos(help_btn.rect.right_bottom())
                                                 .show(ui.ctx(), |ui| {
                                                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                                        for &mode in BlendMode::ALL {
+                                                        for &mode in BlendMode::MENU {
                                                             ui.horizontal(|ui| {
                                                                 ui.label(
                                                                     RichText::new(
