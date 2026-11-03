@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod migration;
 pub mod persistence;
 pub mod sources;
+pub mod target_fields;
 pub mod templates;
 pub mod transforms;
 pub mod types;

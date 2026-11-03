@@ -376,28 +376,27 @@ fn check_target(
     effects: &EffectTable,
     report: &mut Report,
 ) {
-    let in_catalog = |leaf: &str, list: &[&str], kind: &str, report: &mut Report| {
-        if !list.contains(&leaf) {
-            report.bad(
+    match target {
+        // The whole reason this validator exists. A known prefix with a bad
+        // leaf (`uniform.kik`) lists what the leaf could have been.
+        BindingTarget::Unknown(raw) => match catalog::leaves_for(raw) {
+            Some((kind, leaves)) => report.bad(
                 where_,
                 format!(
-                    "{kind} target '{leaf}' is not handled by apply_binding_target — it parses, \
-                     loads, and does nothing. Valid: {}",
-                    list.join(", ")
+                    "{kind} target '{raw}' names nothing apply_binding_target handles — it \
+                     loads as Unknown and does nothing. Valid: {}",
+                    leaves.join(", ")
                 ),
-            );
-        }
-    };
-
-    match target {
-        // The whole reason this validator exists.
-        BindingTarget::Unknown(raw) => report.bad(
-            where_,
-            format!(
-                "target '{raw}' does not match any target form. parse_target is infallible, so \
-                 this loads as Unknown and is silently ignored rather than rejected"
             ),
-        ),
+            None => report.bad(
+                where_,
+                format!(
+                    "target '{raw}' does not match any target form. parse_target is \
+                     infallible, so this loads as Unknown and is silently ignored rather \
+                     than rejected"
+                ),
+            ),
+        },
         BindingTarget::Unset => report.bad(where_, "target is empty (a half-made binding)"),
 
         BindingTarget::Param {
@@ -474,20 +473,13 @@ fn check_target(
             debug_assert!(catalog::layer_fields().contains(&field.as_str()));
         }
 
-        BindingTarget::PostFx(leaf) => in_catalog(leaf, catalog::POSTFX_TARGETS, "postfx", report),
-        BindingTarget::Particle(leaf) => {
-            in_catalog(leaf, catalog::PARTICLE_TARGETS, "particle", report);
-        }
-        BindingTarget::Uniform(leaf) => {
-            in_catalog(leaf, catalog::UNIFORM_TARGETS, "uniform", report);
-        }
-        BindingTarget::SceneTransport(action) => in_catalog(
-            action,
-            catalog::SCENE_TRANSPORT_ACTIONS,
-            "scene.transport",
-            report,
-        ),
-        BindingTarget::GlobalMasterOpacity => {}
+        // Leaves are enums parsed at load: anything that reached one of these
+        // variants is handled by construction.
+        BindingTarget::PostFx(_)
+        | BindingTarget::Particle(_)
+        | BindingTarget::Uniform(_)
+        | BindingTarget::SceneTransport(_)
+        | BindingTarget::GlobalMasterOpacity => {}
     }
 }
 
@@ -810,7 +802,7 @@ mod tests {
                        "transforms":[]}]}"#,
                 ),
             ],
-            "is not handled by apply_binding_target",
+            "names nothing apply_binding_target handles",
         );
     }
 

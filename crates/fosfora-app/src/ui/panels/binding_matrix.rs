@@ -1771,7 +1771,7 @@ fn draw_binding_card(
             // the live snapshot (unplugged device, un-substituted template).
             if enabled
                 && !binding_source.is_empty()
-                && !bus.last_snapshot.contains_key(&binding_source)
+                && !bus.last_snapshot.contains_key(binding_source.as_str())
             {
                 ui.label(RichText::new("\u{26a0}").size(SMALL_SIZE).color(tc.warning))
                     .on_hover_text(
@@ -2160,7 +2160,7 @@ fn draw_expanded_content(
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("Raw").size(SMALL_SIZE).color(tc.text_dim));
                             ui.label(
-                                RichText::new(&raw.display)
+                                RichText::new(raw.to_string())
                                     .size(SMALL_SIZE)
                                     .color(tc.text_secondary),
                             );

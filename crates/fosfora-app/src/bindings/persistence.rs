@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::types::Binding;
+use super::types::{Binding, BindingTarget};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BindingsFile {
@@ -58,6 +58,7 @@ pub(crate) fn load_from_path(path: &PathBuf) -> Vec<Binding> {
                     file.bindings.len(),
                     path.display()
                 );
+                warn_unknown_targets(&file.bindings, path);
                 migrate_legacy_osc_sources(file.bindings)
             }
             Err(e) => {
@@ -66,6 +67,22 @@ pub(crate) fn load_from_path(path: &PathBuf) -> Vec<Binding> {
             }
         },
         Err(_) => Vec::new(),
+    }
+}
+
+/// Name each binding whose target nothing handles. Such a target is kept
+/// verbatim, so a file written by a newer version survives a round-trip, but it
+/// drives nothing — and a typo like `uniform.kik` used to load without a word
+/// (#150).
+fn warn_unknown_targets(bindings: &[Binding], path: &std::path::Path) {
+    for b in bindings {
+        if let BindingTarget::Unknown(raw) = &b.target {
+            log::warn!(
+                "Binding {} in {}: target '{raw}' is not a known target; it is kept but does nothing",
+                b.id,
+                path.display()
+            );
+        }
     }
 }
 

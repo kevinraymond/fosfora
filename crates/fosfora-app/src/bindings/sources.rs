@@ -1,4 +1,6 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use crate::audio::features::AudioFeatures;
 #[cfg(feature = "desktop")]
@@ -8,9 +10,41 @@ use crate::osc::OscSystem;
 
 use super::types::SourceRaw;
 
+/// A source ID (e.g. "audio.kick"). Borrowed from a static table for every
+/// audio source, so filling a frame's snapshot allocates no key strings; only
+/// the open-ended MIDI, OSC and WebSocket names are owned (#149).
+pub type SourceKey = Cow<'static, str>;
+
 /// A snapshot of all source values for one frame.
 /// Key: source ID (e.g. "audio.kick"), Value: (normalized 0-1, raw diagnostics).
-pub type SourceSnapshot = HashMap<String, (f32, SourceRaw)>;
+///
+/// The bus keeps one and refills it in place each frame, so its table is
+/// allocated once rather than per frame (#149).
+pub type SourceSnapshot = HashMap<SourceKey, (f32, SourceRaw)>;
+
+/// Keys for the indexed audio families, built once. Sized past the largest
+/// family each feeds (13 MFCC/delta-MFCC, 12 chroma, 64 mel); an index past the
+/// table still works, with an owned key.
+static MFCC_KEYS: LazyLock<Vec<String>> = LazyLock::new(|| indexed_keys("audio.mfcc.", 13));
+static CHROMA_KEYS: LazyLock<Vec<String>> = LazyLock::new(|| indexed_keys("audio.chroma.", 12));
+static MEL_KEYS: LazyLock<Vec<String>> = LazyLock::new(|| indexed_keys("audio.mel.", 128));
+static DMFCC_KEYS: LazyLock<Vec<String>> = LazyLock::new(|| indexed_keys("audio.dmfcc.", 13));
+
+fn indexed_keys(prefix: &str, n: usize) -> Vec<String> {
+    (0..n).map(|i| format!("{prefix}{i}")).collect()
+}
+
+fn indexed_key(table: &'static [String], prefix: &str, i: usize) -> SourceKey {
+    table.get(i).map_or_else(
+        || Cow::Owned(format!("{prefix}{i}")),
+        |k| Cow::Borrowed(k.as_str()),
+    )
+}
+
+/// Insert one plain-valued source.
+fn put(map: &mut SourceSnapshot, key: impl Into<SourceKey>, val: f32) {
+    map.insert(key.into(), (val, SourceRaw::Value(val)));
+}
 
 /// Circle-of-fifths key hue for the `audio.key_hue` derived source (Chromatica #1477).
 ///
@@ -27,15 +61,16 @@ fn key_hue(key_class: f32, is_minor: f32, key_confidence: f32) -> f32 {
     0.5 + (hue - 0.5) * conf
 }
 
-/// Collect audio features into source snapshot.
+/// Collect audio features into a fresh snapshot. The per-frame path uses
+/// [`collect_audio_into`] on the bus's reused one.
 pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
-    let mut map = HashMap::with_capacity(75);
+    let mut map = HashMap::with_capacity(96);
+    collect_audio_into(&mut map, features);
+    map
+}
 
-    let raw = |v: f32| SourceRaw {
-        display: format!("{:.3}", v),
-        numeric: v as f64,
-    };
-
+/// Collect audio features into `map`.
+pub fn collect_audio_into(map: &mut SourceSnapshot, features: &AudioFeatures) {
     // Frequency bands (indices 0-6)
     let bands = [
         ("audio.band.0", features.sub_bass),
@@ -47,7 +82,7 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
         ("audio.band.6", features.brilliance),
     ];
     for (key, val) in bands {
-        map.insert(key.to_string(), (val, raw(val)));
+        put(map, key, val);
     }
 
     // Aggregates + spectral + beat
@@ -67,24 +102,21 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
         ("audio.zcr", features.zcr),
     ];
     for (key, val) in scalars {
-        map.insert(key.to_string(), (val, raw(val)));
+        put(map, key, val);
     }
 
     // MFCC (13 coefficients)
     for (i, &val) in features.mfcc.iter().enumerate() {
-        map.insert(format!("audio.mfcc.{i}"), (val, raw(val)));
+        put(map, indexed_key(&MFCC_KEYS, "audio.mfcc.", i), val);
     }
 
     // Chroma (12 pitch classes)
     for (i, &val) in features.chroma.iter().enumerate() {
-        map.insert(format!("audio.chroma.{i}"), (val, raw(val)));
+        put(map, indexed_key(&CHROMA_KEYS, "audio.chroma.", i), val);
     }
 
     // Dominant chroma
-    map.insert(
-        "audio.dominant_chroma".to_string(),
-        (features.dominant_chroma, raw(features.dominant_chroma)),
-    );
+    put(map, "audio.dominant_chroma", features.dominant_chroma);
 
     // Derived: key-locked hue on the circle of fifths (Chromatica #1477). Lets any layer's
     // color param bind to the song's key. Mirrors fosfora_key_hue() in lib/palette.wgsl.
@@ -93,7 +125,7 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
         features.key_is_minor,
         features.key_confidence,
     );
-    map.insert("audio.key_hue".to_string(), (kh, raw(kh)));
+    put(map, "audio.key_hue", kh);
 
     // Audio features added by the batched ABI bumps #1505 ("v2") and #1629 ("v3").
     // Every detector below has landed; the "0.0 until each detector lands" note this
@@ -145,10 +177,8 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
         ("audio.beat_locked", features.beat_locked),
     ];
     for (key, val) in reserved {
-        map.insert(key.to_string(), (val, raw(val)));
+        put(map, key, val);
     }
-
-    map
 }
 
 /// Collect mel-spectrogram bands into source snapshot as `audio.mel.N` (A1b, #1512).
@@ -158,15 +188,16 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
 /// involvement (mel bands are not part of the `AudioFeatures` ABI). Empty slice yields no
 /// sources.
 pub fn collect_mel_bands(mel: &[f32]) -> SourceSnapshot {
-    let raw = |v: f32| SourceRaw {
-        display: format!("{:.3}", v),
-        numeric: v as f64,
-    };
     let mut map = HashMap::with_capacity(mel.len());
-    for (i, &val) in mel.iter().enumerate() {
-        map.insert(format!("audio.mel.{i}"), (val, raw(val)));
-    }
+    collect_mel_bands_into(&mut map, mel);
     map
+}
+
+/// [`collect_mel_bands`] into an existing snapshot.
+pub fn collect_mel_bands_into(map: &mut SourceSnapshot, mel: &[f32]) {
+    for (i, &val) in mel.iter().enumerate() {
+        put(map, indexed_key(&MEL_KEYS, "audio.mel.", i), val);
+    }
 }
 
 /// Collect delta-MFCC slopes into source snapshot as `audio.dmfcc.N` (A16 #1467).
@@ -175,83 +206,43 @@ pub fn collect_mel_bands(mel: &[f32]) -> SourceSnapshot {
 /// slopes, not part of the `AudioFeatures` ABI (bindings-only, to save the uniform budget), so the
 /// values drop straight in with no schema/normalizer involvement (the binding graph range-maps).
 pub fn collect_dmfcc_bands(dmfcc: &[f32; 13]) -> SourceSnapshot {
-    let raw = |v: f32| SourceRaw {
-        display: format!("{:.3}", v),
-        numeric: v as f64,
-    };
     let mut map = HashMap::with_capacity(dmfcc.len());
-    for (i, &val) in dmfcc.iter().enumerate() {
-        map.insert(format!("audio.dmfcc.{i}"), (val, raw(val)));
-    }
+    collect_dmfcc_bands_into(&mut map, dmfcc);
     map
+}
+
+/// [`collect_dmfcc_bands`] into an existing snapshot.
+pub fn collect_dmfcc_bands_into(map: &mut SourceSnapshot, dmfcc: &[f32; 13]) {
+    for (i, &val) in dmfcc.iter().enumerate() {
+        put(map, indexed_key(&DMFCC_KEYS, "audio.dmfcc.", i), val);
+    }
 }
 
 /// Collect MIDI CC values into source snapshot.
 #[cfg(feature = "desktop")]
-pub fn collect_midi(midi: &MidiSystem) -> SourceSnapshot {
-    let mut map = HashMap::with_capacity(midi.last_cc_values.len());
-
+pub fn collect_midi_into(map: &mut SourceSnapshot, midi: &MidiSystem) {
     for (&(cc, channel), &(raw_value, ref device_name)) in &midi.last_cc_values {
         // Sanitize device name for use as key segment
         let device = sanitize_device_name(device_name);
         let key = format!("midi.{device}.cc.{channel}.{cc}");
-        let normalized = raw_value as f32 / 127.0;
-        map.insert(
-            key,
-            (
-                normalized,
-                SourceRaw {
-                    display: format!("CC {raw_value}/127"),
-                    numeric: raw_value as f64,
-                },
-            ),
-        );
+        let normalized = f32::from(raw_value) / 127.0;
+        map.insert(key.into(), (normalized, SourceRaw::MidiCc(raw_value)));
     }
-
-    map
 }
 
 /// Collect OSC values into source snapshot.
 #[cfg(feature = "desktop")]
-pub fn collect_osc(osc: &OscSystem) -> SourceSnapshot {
-    let mut map = HashMap::with_capacity(osc.last_raw_values.len());
-
+pub fn collect_osc_into(map: &mut SourceSnapshot, osc: &OscSystem) {
     for (address, &value) in &osc.last_raw_values {
-        let key = format!("osc.{address}");
-        map.insert(
-            key,
-            (
-                value,
-                SourceRaw {
-                    display: format!("{:.3}", value),
-                    numeric: value as f64,
-                },
-            ),
-        );
+        put(map, format!("osc.{address}"), value);
     }
-
-    map
 }
 
 /// Collect WebSocket binding values into source snapshot.
-pub fn collect_websocket(ws_values: &HashMap<String, f32>) -> SourceSnapshot {
-    let mut map = HashMap::with_capacity(ws_values.len());
-
+pub fn collect_websocket_into(map: &mut SourceSnapshot, ws_values: &HashMap<String, f32>) {
     for (key, &value) in ws_values {
-        let source_key = format!("ws.{key}");
-        map.insert(
-            source_key,
-            (
-                value,
-                SourceRaw {
-                    display: format!("{:.3}", value),
-                    numeric: value as f64,
-                },
-            ),
-        );
+        put(map, format!("ws.{key}"), value);
     }
-
-    map
 }
 
 /// Sanitize device name: replace spaces and dots with underscores.
@@ -323,20 +314,24 @@ mod tests {
     fn test_collect_mel_bands() {
         // 64-band A17 column -> audio.mel.0..63 (A1b, #1512).
         let mel = [0.0f32; 64];
-        let snap = collect_mel_bands(&mel);
+        let mut snap = SourceSnapshot::new();
+        collect_mel_bands_into(&mut snap, &mel);
         assert_eq!(snap.len(), 64);
         assert!(snap.contains_key("audio.mel.0"));
         assert!(snap.contains_key("audio.mel.63"));
         assert!(!snap.contains_key("audio.mel.64"));
         // Empty column yields no sources (before the first audio frame arrives).
-        assert!(collect_mel_bands(&[]).is_empty());
+        let mut empty = SourceSnapshot::new();
+        collect_mel_bands_into(&mut empty, &[]);
+        assert!(empty.is_empty());
     }
 
     #[test]
     fn test_collect_dmfcc_bands() {
         // 13 delta-MFCC slopes -> audio.dmfcc.0..12 (A16, #1467), bindings-only.
         let dmfcc = [0.0f32; 13];
-        let snap = collect_dmfcc_bands(&dmfcc);
+        let mut snap = SourceSnapshot::new();
+        collect_dmfcc_bands_into(&mut snap, &dmfcc);
         assert_eq!(snap.len(), 13);
         assert!(snap.contains_key("audio.dmfcc.0"));
         assert!(snap.contains_key("audio.dmfcc.12"));
@@ -354,10 +349,38 @@ mod tests {
     fn test_collect_websocket() {
         let mut ws = HashMap::new();
         ws.insert("mediapipe.left_thumb_x".to_string(), 0.5);
-        let snap = collect_websocket(&ws);
+        let mut snap = SourceSnapshot::new();
+        collect_websocket_into(&mut snap, &ws);
         assert_eq!(snap.len(), 1);
         let (val, raw) = snap.get("ws.mediapipe.left_thumb_x").unwrap();
         assert!((*val - 0.5).abs() < 1e-5);
-        assert!((raw.numeric - 0.5).abs() < 1e-5);
+        assert!((raw.numeric() - 0.5).abs() < 1e-5);
+    }
+
+    /// Every audio-derived key is borrowed from a static table, so a frame's
+    /// snapshot allocates no key strings for them (#149).
+    #[test]
+    fn audio_keys_are_borrowed_not_allocated() {
+        let mut snap = SourceSnapshot::new();
+        collect_audio_into(&mut snap, &AudioFeatures::default());
+        collect_mel_bands_into(&mut snap, &[0.0; 64]);
+        collect_dmfcc_bands_into(&mut snap, &[0.0; 13]);
+        assert_eq!(snap.len(), 84 + 64 + 13);
+        for key in snap.keys() {
+            assert!(matches!(key, Cow::Borrowed(_)), "{key} was allocated");
+        }
+        // Refilling keeps the table: clear() retains capacity, and the same
+        // keys land in the same slots.
+        let cap = snap.capacity();
+        snap.clear();
+        collect_audio_into(&mut snap, &AudioFeatures::default());
+        assert_eq!(snap.capacity(), cap);
+    }
+
+    #[test]
+    fn raw_values_format_on_demand() {
+        assert_eq!(SourceRaw::Value(0.25).to_string(), "0.250");
+        assert_eq!(SourceRaw::MidiCc(64).to_string(), "CC 64/127");
+        assert!((SourceRaw::MidiCc(127).numeric() - 127.0).abs() < 1e-9);
     }
 }

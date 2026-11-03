@@ -117,63 +117,37 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
     }
 
     // PostFX targets
-    for (id, label) in [
-        ("bloom_threshold", "Bloom threshold"),
-        ("bloom_intensity", "Bloom intensity"),
-        ("vignette", "Vignette"),
-        ("ca_intensity", "Chromatic aberration"),
-        ("grain_intensity", "Film grain"),
-        ("grain_rate", "Film grain rate"),
-    ] {
+    for &field in PostFxField::ALL {
         targets.push(TargetOption {
-            id: BindingTarget::PostFx(id.into()),
-            label: label.into(),
+            id: BindingTarget::PostFx(field),
+            label: postfx_label(field).into(),
             group: "PostFX".into(),
         });
     }
 
     // Particle targets
-    for (id, label) in [
-        ("emit_rate", "Emit rate"),
-        ("burst_on_beat", "Burst on beat"),
-        ("lifetime", "Lifetime"),
-        ("speed", "Speed"),
-        ("size", "Size"),
-        ("drag", "Drag"),
-        ("turbulence", "Turbulence"),
-        ("gravity_x", "Gravity X"),
-        ("gravity_y", "Gravity Y"),
-        ("vortex_strength", "Vortex strength"),
-        ("obstacle_enabled", "Obstacle enabled"),
-        ("obstacle_mode", "Obstacle mode"),
-        ("obstacle_threshold", "Obstacle threshold"),
-        ("obstacle_elasticity", "Obstacle elasticity"),
-    ] {
+    for &field in ParticleField::ALL {
         targets.push(TargetOption {
-            id: BindingTarget::Particle(id.into()),
-            label: label.into(),
+            id: BindingTarget::Particle(field),
+            label: particle_label(field).into(),
             group: "Particles".into(),
         });
     }
 
     // Uniform targets (direct shader uniform override)
-    for (field, label) in UNIFORM_TARGETS {
+    for &field in UNIFORM_TARGETS {
         targets.push(TargetOption {
-            id: BindingTarget::Uniform((*field).to_string()),
-            label: (*label).to_string(),
+            id: BindingTarget::Uniform(field),
+            label: format!("u.{field}"),
             group: "Uniforms".into(),
         });
     }
 
     // Scene transport
-    for (id, label) in [
-        ("go", "Next cue"),
-        ("prev", "Previous cue"),
-        ("stop", "Stop scene"),
-    ] {
+    for &action in TransportAction::ALL {
         targets.push(TargetOption {
-            id: BindingTarget::SceneTransport(id.into()),
-            label: label.into(),
+            id: BindingTarget::SceneTransport(action),
+            label: transport_label(action).into(),
             group: "Scene".into(),
         });
     }
@@ -188,31 +162,72 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
     targets
 }
 
-/// Bindable shader uniform fields: (field_name, display_label).
-pub const UNIFORM_TARGETS: &[(&str, &str)] = &[
-    ("sub_bass", "u.sub_bass"),
-    ("bass", "u.bass"),
-    ("low_mid", "u.low_mid"),
-    ("mid", "u.mid"),
-    ("upper_mid", "u.upper_mid"),
-    ("presence", "u.presence"),
-    ("brilliance", "u.brilliance"),
-    ("rms", "u.rms"),
-    ("kick", "u.kick"),
-    ("centroid", "u.centroid"),
-    ("flux", "u.flux"),
-    ("flatness", "u.flatness"),
-    ("rolloff", "u.rolloff"),
-    ("bandwidth", "u.bandwidth"),
-    ("zcr", "u.zcr"),
-    ("onset", "u.onset"),
-    ("beat", "u.beat"),
-    ("beat_phase", "u.beat_phase"),
-    ("bpm", "u.bpm"),
-    ("beat_strength", "u.beat_strength"),
-    ("dominant_chroma", "u.dominant_chroma"),
-    ("feedback_decay", "u.feedback_decay"),
-    ("time", "u.time"),
+fn postfx_label(field: PostFxField) -> &'static str {
+    match field {
+        PostFxField::BloomThreshold => "Bloom threshold",
+        PostFxField::BloomIntensity => "Bloom intensity",
+        PostFxField::Vignette => "Vignette",
+        PostFxField::CaIntensity => "Chromatic aberration",
+        PostFxField::GrainIntensity => "Film grain",
+        PostFxField::GrainRate => "Film grain rate",
+    }
+}
+
+fn particle_label(field: ParticleField) -> &'static str {
+    match field {
+        ParticleField::EmitRate => "Emit rate",
+        ParticleField::BurstOnBeat => "Burst on beat",
+        ParticleField::Lifetime => "Lifetime",
+        ParticleField::Speed => "Speed",
+        ParticleField::Size => "Size",
+        ParticleField::Drag => "Drag",
+        ParticleField::Turbulence => "Turbulence",
+        ParticleField::GravityX => "Gravity X",
+        ParticleField::GravityY => "Gravity Y",
+        ParticleField::VortexStrength => "Vortex strength",
+        ParticleField::ObstacleEnabled => "Obstacle enabled",
+        ParticleField::ObstacleMode => "Obstacle mode",
+        ParticleField::ObstacleThreshold => "Obstacle threshold",
+        ParticleField::ObstacleElasticity => "Obstacle elasticity",
+    }
+}
+
+fn transport_label(action: TransportAction) -> &'static str {
+    match action {
+        TransportAction::Go => "Next cue",
+        TransportAction::Prev => "Previous cue",
+        TransportAction::Stop => "Stop scene",
+    }
+}
+
+/// Shader uniform fields offered in the target picker. A curated subset of
+/// [`UniformField::ALL`](crate::bindings::types::UniformField): the rest are
+/// bindable by name but are mostly read-only features a direct override
+/// rarely helps with.
+pub const UNIFORM_TARGETS: &[UniformField] = &[
+    UniformField::SubBass,
+    UniformField::Bass,
+    UniformField::LowMid,
+    UniformField::Mid,
+    UniformField::UpperMid,
+    UniformField::Presence,
+    UniformField::Brilliance,
+    UniformField::Rms,
+    UniformField::Kick,
+    UniformField::Centroid,
+    UniformField::Flux,
+    UniformField::Flatness,
+    UniformField::Rolloff,
+    UniformField::Bandwidth,
+    UniformField::Zcr,
+    UniformField::Onset,
+    UniformField::Beat,
+    UniformField::BeatPhase,
+    UniformField::Bpm,
+    UniformField::BeatStrength,
+    UniformField::DominantChroma,
+    UniformField::FeedbackDecay,
+    UniformField::Time,
 ];
 
 // ---------------------------------------------------------------------------
@@ -615,7 +630,7 @@ pub fn all_source_groups(snapshot: &SourceSnapshot) -> Vec<SourceGroup> {
         let mut keys: Vec<String> = snapshot
             .keys()
             .filter(|k| k.starts_with(prefix))
-            .cloned()
+            .map(|k| k.to_string())
             .collect();
         if keys.is_empty() {
             return None;
@@ -648,7 +663,7 @@ pub fn all_source_groups(snapshot: &SourceSnapshot) -> Vec<SourceGroup> {
         let mut bins: Vec<String> = snapshot
             .keys()
             .filter(|k| k.starts_with("audio.chroma."))
-            .cloned()
+            .map(|k| k.to_string())
             .collect();
         bins.sort_by_key(|k| {
             k.strip_prefix("audio.chroma.")
@@ -686,7 +701,7 @@ pub fn all_source_groups(snapshot: &SourceSnapshot) -> Vec<SourceGroup> {
         let mut keys: Vec<String> = snapshot
             .keys()
             .filter(|k| k.starts_with(prefix))
-            .cloned()
+            .map(|k| k.to_string())
             .collect();
         if keys.is_empty() {
             continue;
@@ -704,7 +719,7 @@ pub fn all_source_groups(snapshot: &SourceSnapshot) -> Vec<SourceGroup> {
     let mut ws_keys: Vec<String> = snapshot
         .keys()
         .filter(|k| k.starts_with("ws."))
-        .cloned()
+        .map(|k| k.to_string())
         .collect();
     ws_keys.sort();
     for key in ws_keys {
@@ -951,7 +966,8 @@ pub fn friendly_target(target: &BindingTarget) -> String {
         BindingTarget::LegacyParam { param, .. } => param.clone(),
         BindingTarget::Layer { layer, field } => format!("L{} {}", layer + 1, field.as_str()),
         BindingTarget::GlobalMasterOpacity => "master opacity".to_string(),
-        BindingTarget::PostFx(field) | BindingTarget::Particle(field) => field.replace('_', " "),
+        BindingTarget::PostFx(field) => field.as_str().replace('_', " "),
+        BindingTarget::Particle(field) => field.as_str().replace('_', " "),
         BindingTarget::Uniform(field) => format!("u.{field}"),
         BindingTarget::SceneTransport(action) => format!("scene {action}"),
         BindingTarget::Unknown(raw) => raw.clone(),
@@ -1143,9 +1159,21 @@ mod tests {
     fn all_collected_audio_sources() -> std::collections::HashSet<String> {
         use crate::bindings::sources;
         let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-        keys.extend(sources::collect_audio(&Default::default()).into_keys());
-        keys.extend(sources::collect_mel_bands(&[0.0; 64]).into_keys());
-        keys.extend(sources::collect_dmfcc_bands(&[0.0; 13]).into_keys());
+        keys.extend(
+            sources::collect_audio(&Default::default())
+                .into_keys()
+                .map(String::from),
+        );
+        keys.extend(
+            sources::collect_mel_bands(&[0.0; 64])
+                .into_keys()
+                .map(String::from),
+        );
+        keys.extend(
+            sources::collect_dmfcc_bands(&[0.0; 13])
+                .into_keys()
+                .map(String::from),
+        );
         keys
     }
 
@@ -1193,29 +1221,26 @@ mod tests {
     }
 
     fn raw() -> SourceRaw {
-        SourceRaw {
-            display: String::new(),
-            numeric: 0.0,
-        }
+        SourceRaw::Value(0.0)
     }
 
     /// A snapshot holding every key both collectors and the dynamic families emit.
     fn full_snapshot() -> SourceSnapshot {
         let mut snap: SourceSnapshot = SourceSnapshot::new();
         for k in all_collected_audio_sources() {
-            snap.insert(k, (0.0, raw()));
+            snap.insert(k.into(), (0.0, raw()));
         }
         for i in 0..13 {
-            snap.insert(format!("audio.mfcc.{i}"), (0.0, raw()));
+            snap.insert(format!("audio.mfcc.{i}").into(), (0.0, raw()));
         }
         for i in 0..12 {
-            snap.insert(format!("audio.chroma.{i}"), (0.0, raw()));
+            snap.insert(format!("audio.chroma.{i}").into(), (0.0, raw()));
         }
-        snap.insert("audio.dominant_chroma".to_string(), (0.0, raw()));
-        snap.insert("midi.MPD218.cc.0.42".to_string(), (0.0, raw()));
-        snap.insert("osc./foo/bar".to_string(), (0.0, raw()));
-        snap.insert("ws.mediapipe.left_thumb_y".to_string(), (0.0, raw()));
-        snap.insert("ws.mediapipe.right_index_x".to_string(), (0.0, raw()));
+        snap.insert("audio.dominant_chroma".into(), (0.0, raw()));
+        snap.insert("midi.MPD218.cc.0.42".into(), (0.0, raw()));
+        snap.insert("osc./foo/bar".into(), (0.0, raw()));
+        snap.insert("ws.mediapipe.left_thumb_y".into(), (0.0, raw()));
+        snap.insert("ws.mediapipe.right_index_x".into(), (0.0, raw()));
         snap
     }
 
@@ -1237,9 +1262,10 @@ mod tests {
             }
         }
 
-        let missing: Vec<&String> = snap
+        let missing: Vec<&str> = snap
             .keys()
-            .filter(|k| !seen.contains_key(k.as_str()))
+            .map(|k| k.as_ref())
+            .filter(|k| !seen.contains_key(k))
             .collect();
         assert!(missing.is_empty(), "snapshot keys in no group: {missing:?}");
 

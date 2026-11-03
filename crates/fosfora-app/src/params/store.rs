@@ -15,7 +15,11 @@ pub struct ParamStore {
     /// [`Self::clear_modulation`] empties it, so a binding that is removed or
     /// goes quiet hands the param back to its base value the same frame
     /// (#4053).
-    modulated: HashMap<String, ParamValue>,
+    ///
+    /// A cleared slot is `None` rather than a removed key: a param bound every
+    /// frame keeps its key, so modulating it allocates nothing after the first
+    /// frame (#150). `load_from_defs` and `merge_from_defs` drop the keys.
+    modulated: HashMap<String, Option<ParamValue>>,
 }
 
 impl ParamStore {
@@ -96,13 +100,20 @@ impl ParamStore {
             log::warn!("Ignoring non-finite modulated value for param '{name}': {value:?}");
             return;
         }
-        self.modulated.insert(name.to_string(), value);
+        match self.modulated.get_mut(name) {
+            Some(slot) => *slot = Some(value),
+            None => {
+                self.modulated.insert(name.to_string(), Some(value));
+            }
+        }
     }
 
     /// Drop this frame's modulation. The binding bus calls it before it
     /// applies, so only bindings that fired this frame are laid over the base.
     pub fn clear_modulation(&mut self) {
-        self.modulated.clear();
+        for slot in self.modulated.values_mut() {
+            *slot = None;
+        }
     }
 
     /// The base value: the user's, not what a binding is doing to it.
@@ -112,13 +123,13 @@ impl ParamStore {
 
     /// This frame's binding output for `name`, if one is laid over it.
     pub fn modulated(&self, name: &str) -> Option<&ParamValue> {
-        self.modulated.get(name)
+        self.modulated.get(name).and_then(Option::as_ref)
     }
 
     /// What renders this frame: the binding's value when one is laid over the
     /// param, the base value otherwise.
     pub fn effective(&self, name: &str) -> Option<&ParamValue> {
-        self.modulated.get(name).or_else(|| self.values.get(name))
+        self.modulated(name).or_else(|| self.values.get(name))
     }
 
     pub fn reset(&mut self, name: &str) {
@@ -315,6 +326,28 @@ mod tests {
         s.set_modulated("speed", ParamValue::Float(0.9));
         s.load_from_defs(&test_defs());
         assert!(s.modulated("speed").is_none());
+        assert!(approx_eq(s.pack_to_buffer()[0], 0.5, 1e-6));
+    }
+
+    /// A param bound every frame keeps its slot across `clear_modulation`, so
+    /// the per-frame path re-uses it instead of allocating a key (#150) — and a
+    /// cleared slot still reads as unmodulated.
+    #[test]
+    fn a_cleared_slot_is_reused_and_reads_as_unmodulated() {
+        let mut s = ParamStore::new();
+        s.load_from_defs(&test_defs());
+        for frame in 0..3 {
+            s.clear_modulation();
+            assert!(s.modulated("speed").is_none(), "frame {frame}");
+            s.set_modulated("speed", ParamValue::Float(0.1 * frame as f32));
+            assert!(approx_eq(
+                float(s.effective("speed")),
+                0.1 * frame as f32,
+                1e-6
+            ));
+        }
+        assert_eq!(s.modulated.len(), 1, "one slot, reused");
+        s.clear_modulation();
         assert!(approx_eq(s.pack_to_buffer()[0], 0.5, 1e-6));
     }
 

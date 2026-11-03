@@ -150,9 +150,20 @@ pub fn source_keys() -> Vec<String> {
     use crate::bindings::sources;
 
     let features = AudioFeatures::zeroed();
-    let mut keys: Vec<String> = sources::collect_audio(&features).into_keys().collect();
-    keys.extend(sources::collect_mel_bands(&vec![0.0; SPECTROGRAM_MELS]).into_keys());
-    keys.extend(sources::collect_dmfcc_bands(&[0.0; 13]).into_keys());
+    let mut keys: Vec<String> = sources::collect_audio(&features)
+        .into_keys()
+        .map(String::from)
+        .collect();
+    keys.extend(
+        sources::collect_mel_bands(&vec![0.0; SPECTROGRAM_MELS])
+            .into_keys()
+            .map(String::from),
+    );
+    keys.extend(
+        sources::collect_dmfcc_bands(&[0.0; 13])
+            .into_keys()
+            .map(String::from),
+    );
     keys.sort();
     keys.dedup();
     keys
@@ -195,11 +206,11 @@ pub fn build(loader_effects: &[PfxEffect]) -> Capabilities {
                 "scene.transport.{action}",
                 "global.master_opacity",
             ],
-            postfx: catalog::POSTFX_TARGETS.to_vec(),
-            particle: catalog::PARTICLE_TARGETS.to_vec(),
-            uniform: catalog::UNIFORM_TARGETS.to_vec(),
+            postfx: catalog::postfx_targets(),
+            particle: catalog::particle_targets(),
+            uniform: catalog::uniform_targets(),
             layer_fields: catalog::layer_fields().to_vec(),
-            scene_transport: catalog::SCENE_TRANSPORT_ACTIONS.to_vec(),
+            scene_transport: catalog::scene_transport_actions(),
             global: vec!["global.master_opacity"],
         },
         limits: Limits {
