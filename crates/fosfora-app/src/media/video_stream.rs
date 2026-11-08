@@ -293,15 +293,11 @@ fn settle_seek(cmd_rx: &Receiver<Cmd>, looping: &mut bool, mut secs: f64) -> Flo
 /// `start + n / fps` is frame `n`'s time exactly.
 fn spawn_ffmpeg(path: &Path, meta: &VideoMeta, start: f64) -> Result<Child, String> {
     Command::new("ffmpeg")
-        .args([
-            "-v",
-            "error",
-            "-nostdin",
-            "-ss",
-            &format!("{start:.3}"),
-            "-i",
-        ])
+        .args(["-v", "error", "-nostdin", "-ss", &format!("{start:.3}")])
+        .args(super::hwaccel::input_args())
+        .arg("-i")
         .arg(path)
+        .args(super::hwaccel::output_args())
         .args([
             "-an",
             "-vf",
