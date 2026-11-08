@@ -206,9 +206,9 @@ dependencies = [
 
 [[package]]
 name = "archery"
-version = "1.2.3"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33ca55ee147b1926dbea904f50fe4902494e97bc742205abbbf10c709e43815f"
+checksum = "70e0a5f99dfebb87bb342d0f53bb92c81842e100bbb915223e38349580e5441d"
 dependencies = [
  "triomphe",
 ]
@@ -238,15 +238,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
  "libloading 0.8.9",
-]
-
-[[package]]
-name = "atomic-polyfill"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cf2bce30dfe09ef0bfaef228b9d414faaf7e563035494d7fe092dba54b300f4"
-dependencies = [
- "critical-section",
 ]
 
 [[package]]
@@ -574,19 +565,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "cljrs-async"
+version = "0.1.0"
+source = "git+https://github.com/BuddhiLW/clojurust?rev=5cf0d706#5cf0d706bfdea58af3a2b5e5dfd71b76dcdf779d"
+dependencies = [
+ "cljrs-gc",
+ "cljrs-reader",
+ "cljrs-runtime",
+ "cljrs-value",
+ "corosensei",
+ "futures-util",
+ "gloo-timers",
+ "rand 0.10.3",
+ "tokio",
+]
+
+[[package]]
 name = "cljrs-gc"
 version = "0.1.0"
+source = "git+https://github.com/BuddhiLW/clojurust?rev=5cf0d706#5cf0d706bfdea58af3a2b5e5dfd71b76dcdf779d"
 dependencies = [
  "bigdecimal",
+ "inventory",
+ "libc",
  "num-bigint",
  "num-rational",
- "system-memory",
  "tracing",
 ]
 
 [[package]]
 name = "cljrs-ir"
 version = "0.1.0"
+source = "git+https://github.com/BuddhiLW/clojurust?rev=5cf0d706#5cf0d706bfdea58af3a2b5e5dfd71b76dcdf779d"
 dependencies = [
  "cljrs-reader",
  "cljrs-types",
@@ -597,7 +607,9 @@ dependencies = [
 [[package]]
 name = "cljrs-nrepl"
 version = "0.1.0"
+source = "git+https://github.com/BuddhiLW/clojurust?rev=5cf0d706#5cf0d706bfdea58af3a2b5e5dfd71b76dcdf779d"
 dependencies = [
+ "cljrs-async",
  "cljrs-gc",
  "cljrs-reader",
  "cljrs-runtime",
@@ -610,16 +622,16 @@ dependencies = [
 [[package]]
 name = "cljrs-project"
 version = "0.1.0"
+source = "git+https://github.com/BuddhiLW/clojurust?rev=5cf0d706#5cf0d706bfdea58af3a2b5e5dfd71b76dcdf779d"
 dependencies = [
- "cljrs-gc",
  "cljrs-reader",
- "cljrs-types",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "cljrs-reader"
 version = "0.1.0"
+source = "git+https://github.com/BuddhiLW/clojurust?rev=5cf0d706#5cf0d706bfdea58af3a2b5e5dfd71b76dcdf779d"
 dependencies = [
  "cljrs-types",
  "miette",
@@ -628,6 +640,7 @@ dependencies = [
 [[package]]
 name = "cljrs-runtime"
 version = "0.1.0"
+source = "git+https://github.com/BuddhiLW/clojurust?rev=5cf0d706#5cf0d706bfdea58af3a2b5e5dfd71b76dcdf779d"
 dependencies = [
  "bigdecimal",
  "cljrs-gc",
@@ -640,7 +653,6 @@ dependencies = [
  "num-rational",
  "num-traits",
  "rand 0.10.3",
- "rpds",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
@@ -650,10 +662,10 @@ dependencies = [
 [[package]]
 name = "cljrs-stdlib"
 version = "0.1.0"
+source = "git+https://github.com/BuddhiLW/clojurust?rev=5cf0d706#5cf0d706bfdea58af3a2b5e5dfd71b76dcdf779d"
 dependencies = [
  "chrono",
  "cljrs-gc",
- "cljrs-ir",
  "cljrs-reader",
  "cljrs-runtime",
  "cljrs-value",
@@ -663,6 +675,7 @@ dependencies = [
 [[package]]
 name = "cljrs-types"
 version = "0.1.0"
+source = "git+https://github.com/BuddhiLW/clojurust?rev=5cf0d706#5cf0d706bfdea58af3a2b5e5dfd71b76dcdf779d"
 dependencies = [
  "miette",
  "serde",
@@ -672,12 +685,13 @@ dependencies = [
 [[package]]
 name = "cljrs-value"
 version = "0.1.0"
+source = "git+https://github.com/BuddhiLW/clojurust?rev=5cf0d706#5cf0d706bfdea58af3a2b5e5dfd71b76dcdf779d"
 dependencies = [
  "arc-swap",
+ "archery",
  "bigdecimal",
  "cljrs-gc",
  "cljrs-reader",
- "cljrs-types",
  "num-bigint",
  "num-rational",
  "num-traits",
@@ -934,6 +948,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "corosensei"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6886a0c0f263965933c438626e7179139a62b978a33aa18281cbf0cd5a975f34"
+dependencies = [
+ "autocfg",
+ "cfg-if 1.0.4",
+ "libc",
+ "scopeguard",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "cpal"
 version = "0.17.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -989,12 +1016,6 @@ checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if 1.0.4",
 ]
-
-[[package]]
-name = "critical-section"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
 name = "crossbeam-channel"
@@ -1586,10 +1607,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-channel"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
+dependencies = [
+ "futures-core",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
+
+[[package]]
+name = "futures-macro"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "futures-sink"
@@ -1610,6 +1651,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
  "futures-core",
+ "futures-macro",
  "futures-task",
  "pin-project-lite",
  "slab",
@@ -1706,6 +1748,18 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "glow"
@@ -1831,15 +1885,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hash32"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1857,20 +1902,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
  "foldhash 0.2.0",
-]
-
-[[package]]
-name = "heapless"
-version = "0.7.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdc6457c0eb62c71aac4bc17216026d8410337c4126773b9c5daba343f17964f"
-dependencies = [
- "atomic-polyfill",
- "hash32",
- "rustc_version",
- "serde",
- "spin",
- "stable_deref_trait",
 ]
 
 [[package]]
@@ -2099,6 +2130,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e05c02b5e89bff3b946cedeca278abc628fe811e604f027c45a8aa3cf793d0eb"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "inventory"
+version = "0.3.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6928282826c822ad91bf1c9a1cb90a30ba1c26770749929b4656cd6be829cd7c"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
@@ -2404,15 +2444,6 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
-
-[[package]]
-name = "mach"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b823e83b2affd8f40a9ee8c29dbc56404c1e34cd2710921f2801e2cf29527afa"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "mach2"
@@ -3488,7 +3519,6 @@ dependencies = [
  "cobs",
  "embedded-io 0.4.0",
  "embedded-io 0.6.1",
- "heapless",
  "serde",
 ]
 
@@ -4440,19 +4470,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "system-memory"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e643d568427db177ec7de23c26448140d6de9b2a6c6f02db3e8ed277048bcc7"
-dependencies = [
- "errno",
- "libc",
- "mach",
- "rustc_version",
- "windows-sys 0.59.0",
 ]
 
 [[package]]

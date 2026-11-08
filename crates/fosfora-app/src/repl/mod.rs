@@ -133,6 +133,7 @@ fn boot(port: u16, bridge: Bridge) -> anyhow::Result<cljrs_nrepl::Poller> {
     let config = cljrs_nrepl::Config {
         addr: ([127, 0, 0, 1], port).into(),
         port_file: Some(PathBuf::from(".nrepl-port")),
+        ..Default::default()
     };
     let server =
         cljrs_nrepl::start(config, globals).map_err(|e| anyhow::anyhow!("nREPL: {e:?}"))?;

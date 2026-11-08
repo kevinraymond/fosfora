@@ -31,8 +31,12 @@ fn is_media(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .is_some_and(|e| {
-            crate::media::decoder::VIDEO_EXTENSIONS.contains(&e.as_str())
-                || IMAGE_EXTENSIONS.contains(&e.as_str())
+            // Video files only load when the `video` feature is on.
+            #[cfg(feature = "video")]
+            if crate::media::decoder::VIDEO_EXTENSIONS.contains(&e.as_str()) {
+                return true;
+            }
+            IMAGE_EXTENSIONS.contains(&e.as_str())
         })
 }
 
