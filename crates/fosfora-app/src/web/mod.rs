@@ -39,6 +39,8 @@ pub struct WebSystem {
     pub preview_images: std::collections::HashMap<String, Vec<u8>>,
     /// In-process producers (the embedded REPL). Unlike `inbound_tx` this
     /// queue lives as long as the system, so a server restart keeps it.
+    /// Only the REPL clones it; without that feature the queue stays empty.
+    #[cfg_attr(not(feature = "repl"), allow(dead_code))]
     local_tx: DropOldestSender<WsInMessage>,
     local_rx: Receiver<WsInMessage>,
     /// Latest audio snapshot JSON, kept only while a local reader is attached.
