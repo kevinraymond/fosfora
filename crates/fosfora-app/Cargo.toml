@@ -130,15 +130,16 @@ symphonia = { version = "0.6", default-features = false, features = [
 ], optional = true }
 # Embedded clojurust nREPL (`repl` feature): live-code a running instance from
 # CIDER/Calva/Conjure. Interpreter only: no JIT (Cranelift) and no git-deps
-# tree. SPIKE: relative path deps on a sibling clojurust checkout, resolved
-# from this worktree. Replace with a pinned git rev before merging, or lockfile
-# resolution breaks for every other checkout and in CI.
-cljrs-runtime = { path = "../../../../../../clojurust/crates/cljrs-runtime", default-features = false, features = ["regex-full"], optional = true }
-cljrs-stdlib = { path = "../../../../../../clojurust/crates/cljrs-stdlib", default-features = false, features = ["regex-full"], optional = true }
-cljrs-nrepl = { path = "../../../../../../clojurust/crates/cljrs-nrepl", default-features = false, features = ["regex-full"], optional = true }
-cljrs-value = { path = "../../../../../../clojurust/crates/cljrs-value", default-features = false, features = ["regex-full"], optional = true }
-cljrs-gc = { path = "../../../../../../clojurust/crates/cljrs-gc", optional = true }
-cljrs-reader = { path = "../../../../../../clojurust/crates/cljrs-reader", optional = true }
+# tree. LOCAL ONLY: path deps on a clojurust checkout next to this repo
+# (../clojurust beside ../fosfora). Cargo resolves optional path deps even when
+# the feature is off, so a clone without that sibling cannot build at all.
+# Switch to a pinned git rev before this goes upstream.
+cljrs-runtime = { path = "../../../clojurust/crates/cljrs-runtime", default-features = false, features = ["regex-full"], optional = true }
+cljrs-stdlib = { path = "../../../clojurust/crates/cljrs-stdlib", default-features = false, features = ["regex-full"], optional = true }
+cljrs-nrepl = { path = "../../../clojurust/crates/cljrs-nrepl", default-features = false, features = ["regex-full"], optional = true }
+cljrs-value = { path = "../../../clojurust/crates/cljrs-value", default-features = false, features = ["regex-full"], optional = true }
+cljrs-gc = { path = "../../../clojurust/crates/cljrs-gc", optional = true }
+cljrs-reader = { path = "../../../clojurust/crates/cljrs-reader", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # v4l2 loopback output (GH #6). MIT; already in the graph transitively via nokhwa.
