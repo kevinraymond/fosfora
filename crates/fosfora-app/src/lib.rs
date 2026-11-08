@@ -57,6 +57,8 @@ pub mod paths;
 pub mod preset;
 #[cfg(feature = "desktop")]
 pub mod recording;
+#[cfg(feature = "repl")]
+pub mod repl;
 pub mod scene;
 pub mod settings;
 pub mod shader;

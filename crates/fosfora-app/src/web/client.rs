@@ -103,8 +103,9 @@ fn finite_f32(v: &serde_json::Value) -> Option<f32> {
     v.as_f64().map(|f| f as f32).filter(|f| f.is_finite())
 }
 
-/// Parse a JSON message from the client into a WsInMessage.
-fn parse_client_message(text: &str) -> Option<WsInMessage> {
+/// Parse a JSON message from the client into a WsInMessage. Also the embedded
+/// REPL's command path (`repl` feature), so both speak one vocabulary.
+pub(crate) fn parse_client_message(text: &str) -> Option<WsInMessage> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let msg_type = v.get("type")?.as_str()?;
 

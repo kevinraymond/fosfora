@@ -1,4 +1,5 @@
 pub mod client;
+mod local;
 pub mod server;
 #[allow(dead_code)]
 pub mod state;
@@ -36,14 +37,28 @@ pub struct WebSystem {
     pub bind_values: std::collections::HashMap<String, f32>,
     /// Preview thumbnail JPEG data from bridge sources.
     pub preview_images: std::collections::HashMap<String, Vec<u8>>,
+    /// In-process producers (the embedded REPL). Unlike `inbound_tx` this
+    /// queue lives as long as the system, so a server restart keeps it.
+    local_tx: DropOldestSender<WsInMessage>,
+    local_rx: Receiver<WsInMessage>,
+    /// Latest audio snapshot JSON, kept only while a local reader is attached.
+    latest_audio: Arc<Mutex<String>>,
+    #[cfg(feature = "repl")]
+    repl: Option<crate::repl::Repl>,
 }
 
 impl WebSystem {
     /// The system with `config` and nothing opened: no server started.
     fn unconnected(config: WebConfig) -> Self {
         let (inbound_tx, inbound_rx) = crate::inbound::bounded(64);
+        let (local_tx, local_rx) = crate::inbound::bounded(256);
 
         Self {
+            local_tx,
+            local_rx,
+            latest_audio: Arc::new(Mutex::new(String::new())),
+            #[cfg(feature = "repl")]
+            repl: None,
             inbound_rx: Some(inbound_rx),
             inbound_tx,
             clients: Arc::new(Mutex::new(Vec::new())),
@@ -76,6 +91,11 @@ impl WebSystem {
 
         if sys.config.enabled {
             sys.start_server();
+        }
+
+        #[cfg(feature = "repl")]
+        if let Some(port) = crate::repl::requested_port() {
+            sys.start_repl(port);
         }
 
         sys
@@ -182,11 +202,7 @@ impl WebSystem {
 
         self.refresh_client_count();
 
-        let Some(ref rx) = self.inbound_rx else {
-            return result;
-        };
-
-        let messages: Vec<WsInMessage> = rx.try_iter().collect();
+        let messages = self.drain_inbound();
         if messages.is_empty() {
             return result;
         }
@@ -248,11 +264,7 @@ impl WebSystem {
 
         self.refresh_client_count();
 
-        let Some(ref rx) = self.inbound_rx else {
-            return result;
-        };
-
-        let messages: Vec<WsInMessage> = rx.try_iter().collect();
+        let messages = self.drain_inbound();
         if messages.is_empty() {
             return result;
         }
@@ -313,7 +325,8 @@ impl WebSystem {
 
     /// Broadcast audio features at 10Hz.
     pub fn broadcast_audio(&mut self, features: &AudioFeatures) {
-        if self.client_count == 0 {
+        let local = self.local_reader();
+        if self.client_count == 0 && !local {
             return;
         }
         // 10Hz = 100ms interval
@@ -323,14 +336,19 @@ impl WebSystem {
         self.last_audio_broadcast = Instant::now();
 
         let json = state::build_audio_snapshot(features);
-        self.broadcast_json(&json);
+        if local {
+            self.store_audio(&json);
+        }
+        if self.client_count > 0 {
+            self.broadcast_json(&json);
+        }
     }
 
     /// Whether the caller should build full state this frame: the server is up
     /// and either `changed` forces it or the 10 Hz refresh is due. Building it
     /// serialises every layer's parameters, so it is not done every frame.
     pub fn state_due(&self, changed: bool) -> bool {
-        (self.client_count > 0 || self.is_running())
+        (self.client_count > 0 || self.is_running() || self.local_reader())
             && (changed
                 || self
                     .last_state_update

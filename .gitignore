@@ -32,3 +32,6 @@ __pycache__/
 /bench/out/
 /bench/*.mp3
 /bench/*.signal.jsonl
+
+# Embedded nREPL (repl feature) writes this in the working directory
+.nrepl-port

@@ -1,0 +1,75 @@
+(ns fosfora
+  "Live control of the running fosfora instance.
+
+  Commands are queued for the render thread and apply on the next frame.
+  Values for params, opacity and data are normalized to 0..1, exactly as the
+  web remote sends them.
+
+    (f/state)                  ; full snapshot: effects, layers, params, presets
+    (f/audio)                  ; latest audio features (bands, rms, kick, beat, bpm...)
+    (f/set-param! :speed 0.8)
+    (f/load-effect! 3)
+    (f/trigger! :next-preset)"
+  (:require [fosfora.native :as native]
+            [clojure.edn :as edn]
+            [clojure.string :as str]))
+
+(defn send!
+  "Queue one raw web-remote message, e.g. {:type \"set_param\" :name \"speed\" :value 0.5}."
+  [msg]
+  (native/send-edn (pr-str msg)))
+
+(defn state
+  "The latest full state (refreshed at 10 Hz), or nil before the first frame."
+  []
+  (edn/read-string (native/state-edn)))
+
+(defn audio
+  "The latest audio features (refreshed at 10 Hz), or nil before the first frame."
+  []
+  (edn/read-string (native/audio-edn)))
+
+(defn- param-name [p] (if (keyword? p) (name p) (str p)))
+
+(defn set-param!
+  "Set a param on the active layer. `v` is normalized 0..1."
+  [param v]
+  (send! {:type "set_param" :name (param-name param) :value (double v)}))
+
+(defn set-layer-param!
+  "Set a param on layer `layer`. `v` is normalized 0..1."
+  [layer param v]
+  (send! {:type "set_layer_param" :layer layer :name (param-name param) :value (double v)}))
+
+(defn load-effect! [index] (send! {:type "load_effect" :index index}))
+(defn select-layer! [index] (send! {:type "select_layer" :index index}))
+(defn load-preset! [index] (send! {:type "load_preset" :index index}))
+
+(defn opacity! [layer v] (send! {:type "set_layer_opacity" :layer layer :value (double v)}))
+(defn blend! [layer mode] (send! {:type "set_layer_blend" :layer layer :value mode}))
+(defn enable! [layer on?] (send! {:type "set_layer_enabled" :layer layer :value (boolean on?)}))
+(defn postprocess! [on?] (send! {:type "set_postprocess_enabled" :value (boolean on?)}))
+
+(defn trigger!
+  "Fire a trigger: :next-effect :prev-effect :toggle-postprocess :toggle-overlay
+  :next-preset :prev-preset :next-layer :prev-layer :scene-go-next :scene-go-prev
+  :toggle-timeline :tempo-half :tempo-double :tempo-tap"
+  [action]
+  (send! {:type "trigger" :action (str/replace (name action) "-" "_")}))
+
+(defn data!
+  "Feed the binding bus: fields appear in the Binding Matrix as ws.<source>.<field>.
+  Values expire after 5 s unless something is bound to them, so send them steadily."
+  [source fields]
+  (send! {:type "data"
+          :source (param-name source)
+          :fields (into {} (map (fn [[k v]] [(param-name k) (double v)]) fields))}))
+
+(defn trama-dir [] (native/trama-dir))
+
+(defn put-trama!
+  "Write a trama effect, assets/trama/effects/<id>.wgsl. The source must open
+  with its /*! trama {...} */ manifest whose id equals `id`. It is validated and
+  hot-swapped on the render thread; a broken file keeps the last good version."
+  [id wgsl]
+  (native/write-trama! (param-name id) wgsl))
