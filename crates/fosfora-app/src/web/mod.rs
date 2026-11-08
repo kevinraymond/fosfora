@@ -252,6 +252,7 @@ impl WebSystem {
                 WsInMessage::BindPreview { source, jpeg_data } => {
                     self.preview_images.insert(source, jpeg_data);
                 }
+                WsInMessage::AddMedia { path } => result.media_add.push(path),
             }
         }
 
@@ -303,6 +304,7 @@ impl WebSystem {
                 WsInMessage::BindPreview { source, jpeg_data } => {
                     self.preview_images.insert(source, jpeg_data);
                 }
+                WsInMessage::AddMedia { path } => result.media_add.push(path),
                 _ => {} // Skip active-layer param application
             }
         }

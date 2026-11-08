@@ -44,6 +44,10 @@ pub enum WsInMessage {
     },
     /// Preview thumbnail image (JPEG) from a bridge source.
     BindPreview { source: String, jpeg_data: Vec<u8> },
+    /// Decode a local image or video into a new media layer. In-process only
+    /// (the embedded REPL): `parse_client_message` never produces it, so a
+    /// network client cannot name a path on this machine.
+    AddMedia { path: PathBuf },
 }
 
 /// Metadata for a WebSocket source field.
@@ -75,6 +79,8 @@ pub struct WebFrameResult {
     pub select_layer: Option<usize>,
     /// Last preset load this frame (coalesced like `effect_load`).
     pub preset_load: Option<usize>,
+    /// Files to decode into new media layers, in order.
+    pub media_add: Vec<PathBuf>,
 }
 
 impl WebFrameResult {
@@ -89,6 +95,7 @@ impl WebFrameResult {
             effect_load: None,
             select_layer: None,
             preset_load: None,
+            media_add: Vec::new(),
         }
     }
 }

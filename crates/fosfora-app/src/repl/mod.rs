@@ -28,6 +28,8 @@ use cljrs_value::{Arity, NativeFn, Value, ValueError, ValueResult};
 use crate::inbound::DropOldestSender;
 use crate::web::types::WsInMessage;
 
+mod media;
+
 /// Namespace of the raw natives. User code goes through `fosfora`.
 const NATIVE_NS: &str = "fosfora.native";
 
@@ -182,6 +184,7 @@ fn register_natives(globals: &GlobalEnv, bridge: Bridge) {
         state,
         audio,
     } = bridge;
+    media::register(globals, commands.clone());
 
     // (send-edn "{:type \"set_param\" ...}") queues one web-remote message.
     def_native(globals, "send-edn", Arity::Fixed(1), move |args| {

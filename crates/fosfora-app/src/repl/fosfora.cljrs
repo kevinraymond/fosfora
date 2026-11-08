@@ -65,6 +65,32 @@
           :source (param-name source)
           :fields (into {} (map (fn [[k v]] [(param-name k) (double v)]) fields))}))
 
+(defn ls-media
+  "Playable images and videos in `dir` (a leading ~ is your home), sorted."
+  [dir]
+  (edn/read-string (native/list-media dir)))
+
+(defn media!
+  "Decode `path` (image or video) into a new media layer on top of the stack.
+  Decoding runs in the background; the layer appears when it is ready and
+  becomes the active layer. Returns the resolved path."
+  [path]
+  (native/add-media! path))
+
+(def tessera-dir "~/PP/mentat-collective/tessera/out/hd")
+
+(defn tessera
+  "The tessera HD loops, or open one by name (a substring of its file name):
+  (f/tessera) lists them, (f/tessera \"graphene\") opens graphene-fermi.mp4."
+  ([] (mapv #(last (str/split % #"/")) (ls-media tessera-dir)))
+  ([pick]
+   (let [hits (filter #(str/includes? (last (str/split % #"/")) pick) (ls-media tessera-dir))]
+     (case (count hits)
+       0 (throw (ex-info (str "no tessera loop matches " pick) {:pick pick}))
+       1 (media! (first hits))
+       (throw (ex-info (str pick " matches several loops")
+                       {:matches (mapv #(last (str/split % #"/")) hits)}))))))
+
 (defn trama-dir [] (native/trama-dir))
 
 (defn put-trama!

@@ -1219,6 +1219,8 @@ impl App {
         // Set when a preset load should reach web clients this frame rather
         // than at the next 10 Hz state refresh.
         let mut web_state_changed = false;
+        // Media the embedded REPL asked for, started once the layer borrow ends.
+        let mut web_media_add = Vec::new();
 
         // Drain WebSocket messages (runs after OSC — last-write-wins)
         if let Some(layer) = self.layer_stack.active_mut() {
@@ -1230,6 +1232,7 @@ impl App {
                 self.web.update(values, changed, defs)
             };
             self.pending_web_triggers = web_result.triggers;
+            web_media_add = web_result.media_add;
 
             // Apply layer-targeted WS messages
             for (layer_idx, name, value) in web_result.layer_params {
@@ -1314,6 +1317,9 @@ impl App {
 
             // After preset load, push full state so all clients update
             web_state_changed |= had_preset_loads;
+        }
+        for path in web_media_add {
+            self.start_media_layer(path);
         }
 
         // Evaluate binding bus (runs after MIDI/OSC/WS drain — bus overrides direct mappings)
