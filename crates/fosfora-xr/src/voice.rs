@@ -7,8 +7,10 @@
 //! **The pure part** (every target, desktop-tested): the push-to-talk window
 //! ([`PushToTalk`]), the stream's 48 kHz stereo to whisper's 16 kHz mono
 //! ([`mono_16k`]), the encoder window cut to the clip ([`audio_ctx`]), the
-//! log and label text ([`heard_line`], [`label_text`]) and a tiny RIFF
-//! reader for the unworn test path ([`parse_wav`]).
+//! log and label text ([`heard_line`], [`label_text`]), the window's peak
+//! and RMS for the log ([`peak_rms`]), and a tiny RIFF reader and writer
+//! for the unworn test path and the window dumps ([`parse_wav`],
+//! [`wav_16k_mono`]).
 //!
 //! **The window.** A fist opens it only once it has lasted [`DWELL_S`] (a
 //! shorter one is a tracking glitch or a grab, not a press); release closes
@@ -331,6 +333,19 @@ pub fn level(samples: &[f32]) -> f32 {
     (sum / samples.len() as f64).sqrt() as f32
 }
 
+/// A closed window's audio for the log (board #5375): its peak and its RMS
+/// on the ±1 scale, in one pass, (0, 0) for none. Digital silence reads 0
+/// and 0, a live microphone in a quiet room a little above.
+pub fn peak_rms(samples: &[f32]) -> (f32, f32) {
+    if samples.is_empty() {
+        return (0.0, 0.0);
+    }
+    let (peak, sum) = samples.iter().fold((0.0f32, 0.0f64), |(peak, sum), &s| {
+        (peak.max(s.abs()), sum + f64::from(s) * f64::from(s))
+    });
+    (peak, (sum / samples.len() as f64).sqrt() as f32)
+}
+
 /// The tail of an interleaved stereo buffer at `rate` that [`level`] reads:
 /// its last [`LEVEL_S`].
 pub fn level_tail(stereo: &[f32], rate: u32) -> &[f32] {
@@ -468,13 +483,18 @@ pub fn spoken(text: &str) -> &str {
 }
 
 /// The log line for a transcription of `ms` milliseconds:
-/// `voice: heard "…" (412 ms)`, or `voice: heard nothing`.
+/// `voice: heard "…" (412 ms)`; `voice: heard nothing ("[Music]")` when
+/// whisper returned only a non-speech annotation, quoted so the log tells
+/// it from no text at all (board #5375); `voice: heard nothing` for none.
 pub fn heard_line(text: &str, ms: u32) -> String {
-    let text = spoken(text);
-    if text.is_empty() {
+    let raw = text.trim();
+    let words = spoken(raw);
+    if !words.is_empty() {
+        format!("voice: heard \"{words}\" ({ms} ms)")
+    } else if raw.is_empty() {
         "voice: heard nothing".to_owned()
     } else {
-        format!("voice: heard \"{text}\" ({ms} ms)")
+        format!("voice: heard nothing (\"{raw}\")")
     }
 }
 
@@ -486,6 +506,41 @@ pub fn label_text(text: &str) -> String {
     } else {
         text.to_owned()
     }
+}
+
+/// The directory under the app's files that `debug.fosfora.voicedump`
+/// writes each window's audio to (board #5375).
+pub const DUMP_DIR: &str = "voice";
+
+/// The `n`th dumped window's file name in [`DUMP_DIR`]: `window-001.wav`.
+pub fn dump_name(n: u32) -> String {
+    format!("window-{n:03}.wav")
+}
+
+/// 16 kHz mono samples in -1..1 as a RIFF WAVE file, PCM 16-bit: what
+/// [`parse_wav`] reads, so a dumped window plays back through `voicefile`.
+/// Samples outside -1..1 are clipped.
+pub fn wav_16k_mono(samples: &[f32]) -> Vec<u8> {
+    let data = (samples.len() * 2) as u32;
+    let mut b = Vec::with_capacity(44 + samples.len() * 2);
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&(36 + data).to_le_bytes());
+    b.extend_from_slice(b"WAVE");
+    b.extend_from_slice(b"fmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&WHISPER_RATE.to_le_bytes());
+    b.extend_from_slice(&(WHISPER_RATE * 2).to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&data.to_le_bytes());
+    for &s in samples {
+        let s = (s * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+        b.extend_from_slice(&s.to_le_bytes());
+    }
+    b
 }
 
 /// A WAV file's samples as f32 in -1..1, for the `voicefile` path: RIFF
@@ -554,7 +609,7 @@ mod device {
     use log::{error, info, warn};
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-    use super::{WHISPER_RATE, audio_ctx, mono_16k, pad_short, parse_wav};
+    use super::{WHISPER_RATE, audio_ctx, dump_name, mono_16k, pad_short, parse_wav, wav_16k_mono};
 
     /// The window's stream: 48 kHz stereo, the voice recognition preset,
     /// no low-latency mode (the window reads it once a frame).
@@ -580,7 +635,7 @@ mod device {
     }
 
     /// A clip for the worker: the window's stereo at its rate, or a 16 kHz
-    /// mono file.
+    /// mono file (the `voicefile` clip, never dumped).
     enum Job {
         Stereo(Vec<f32>, u32),
         Mono16k(Vec<f32>),
@@ -626,16 +681,28 @@ mod device {
     impl Voice {
         /// Start the worker: it loads the model in the background (logging
         /// `voice: model <path> loaded in N ms`) and then waits for clips.
-        pub fn new(model: &Path, threads: i32, file: Option<PathBuf>) -> Result<Self> {
+        /// With `dump` (`debug.fosfora.voicedump`), it writes each window's
+        /// audio as whisper gets it to `dump/window-<NNN>.wav`, numbered
+        /// from 001.
+        pub fn new(
+            model: &Path,
+            threads: i32,
+            file: Option<PathBuf>,
+            dump: Option<PathBuf>,
+        ) -> Result<Self> {
             let (jobs, job_rx) = channel::<Job>();
             let (msg_tx, msgs) = channel::<Msg>();
             let model = model.to_path_buf();
+            let dump_text = dump
+                .as_ref()
+                .map(|d| format!(" · voicedump to {}", d.display()))
+                .unwrap_or_default();
             std::thread::Builder::new()
                 .name("fosfora-voice".to_owned())
-                .spawn(move || worker(&model, threads, &job_rx, &msg_tx))
+                .spawn(move || worker(&model, threads, dump.as_deref(), &job_rx, &msg_tx))
                 .context("spawning the voice thread")?;
             info!(
-                "voice: on · {threads} threads · loading the model in the background{}",
+                "voice: on · {threads} threads · loading the model in the background{}{dump_text}",
                 file.as_ref()
                     .map(|f| format!(
                         " · voicefile {} {FILE_DELAY_S} s after the load",
@@ -701,7 +768,9 @@ mod device {
         /// The window closed after `seconds`, for `why`: close the stream
         /// and hand the audio to the worker. False when nothing was sent
         /// (no stream, or the model is not loaded: logged), so the window
-        /// can open again.
+        /// can open again. The close line has the audio's peak and RMS
+        /// (board #5375), so the log shows a silent microphone whether the
+        /// model has loaded or not.
         pub fn close(&mut self, seconds: f32, why: super::Close) -> bool {
             let Some(mic) = self.mic.take() else {
                 return false;
@@ -711,12 +780,13 @@ mod device {
             let rate = mic.rate;
             let started = Instant::now();
             drop(mic);
+            let close_ms = started.elapsed().as_secs_f64() * 1e3;
             let audio = std::mem::take(&mut self.captured);
+            let (peak, rms) = super::peak_rms(&audio);
             info!(
-                "voice: window closed after {seconds:.2} s {} · {:.2} s of audio · stream closed in {:.1} ms",
+                "voice: window closed after {seconds:.2} s {} · {:.2} s of audio · peak {peak:.4} · rms {rms:.4} · stream closed in {close_ms:.1} ms",
                 super::close_text(why),
                 audio.len() as f32 / (2.0 * rate as f32),
-                started.elapsed().as_secs_f64() * 1e3
             );
             if !self.loaded {
                 if self.failed {
@@ -848,8 +918,16 @@ mod device {
     }
 
     /// The worker thread: load the model, then transcribe clips until the
-    /// app goes away (the job channel closes).
-    fn worker(model: &Path, threads: i32, jobs: &Receiver<Job>, msgs: &Sender<Msg>) {
+    /// app goes away (the job channel closes). With `dump`, each window's
+    /// clip is written there after its text has gone back, so neither the
+    /// frame nor the text waits on the file.
+    fn worker(
+        model: &Path,
+        threads: i32,
+        dump: Option<&Path>,
+        jobs: &Receiver<Job>,
+        msgs: &Sender<Msg>,
+    ) {
         // whisper.cpp and ggml log to stderr, which Android discards; the
         // hooks without a log backend silence them.
         whisper_rs::install_logging_hooks();
@@ -874,8 +952,10 @@ mod device {
         if msgs.send(Msg::Loaded).is_err() {
             return;
         }
+        let mut dumped = 0u32;
         while let Ok(job) = jobs.recv() {
             let started = Instant::now();
+            let window = matches!(job, Job::Stereo(..));
             let mut mono = match job {
                 Job::Stereo(stereo, rate) => mono_16k(&stereo, rate),
                 Job::Mono16k(mono) => mono,
@@ -912,6 +992,25 @@ mod device {
             if msgs.send(Msg::Heard(heard)).is_err() {
                 return;
             }
+            if window && let Some(dir) = dump {
+                dumped += 1;
+                dump_window(dir, dumped, &mono);
+            }
+        }
+    }
+
+    /// Write a window's clip, 16 kHz mono as whisper got it (padded when
+    /// short), to `dir/window-<NNN>.wav` (`debug.fosfora.voicedump`).
+    fn dump_window(dir: &Path, n: u32, mono: &[f32]) {
+        let path = dir.join(dump_name(n));
+        let bytes = wav_16k_mono(mono);
+        match std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, &bytes)) {
+            Ok(()) => info!(
+                "voice: window dumped to {} ({} bytes)",
+                path.display(),
+                bytes.len()
+            ),
+            Err(e) => warn!("voice: dumping the window to {}: {e}", path.display()),
         }
     }
 }
@@ -1369,12 +1468,70 @@ mod tests {
         );
         assert_eq!(heard_line("", 90), "voice: heard nothing");
         assert_eq!(heard_line("  ", 90), "voice: heard nothing");
-        assert_eq!(heard_line("[BLANK_AUDIO]", 90), "voice: heard nothing");
-        assert_eq!(heard_line(" (wind blowing)", 90), "voice: heard nothing");
+        // An annotation is nothing heard, and the log quotes it (board #5375).
+        assert_eq!(
+            heard_line("[BLANK_AUDIO]", 90),
+            "voice: heard nothing (\"[BLANK_AUDIO]\")"
+        );
+        assert_eq!(
+            heard_line(" (wind blowing)", 90),
+            "voice: heard nothing (\"(wind blowing)\")"
+        );
+        assert_eq!(
+            heard_line(" [Music] ", 90),
+            "voice: heard nothing (\"[Music]\")"
+        );
         assert_eq!(label_text("[Music]"), NOTHING_LABEL);
         assert_eq!(label_text(" Edit the room. "), "Edit the room.");
         // Brackets inside a sentence are words.
         assert_eq!(spoken("[a] and [b]"), "[a] and [b]");
+    }
+
+    #[test]
+    fn peak_and_rms_tell_silence_from_a_quiet_microphone() {
+        let (peak, rms) = peak_rms(&[]);
+        assert_close!([peak, rms], [0.0, 0.0]);
+        let (peak, rms) = peak_rms(&[0.0; 1000]);
+        assert_close!([peak, rms], [0.0, 0.0]);
+        let (peak, rms) = peak_rms(&[0.5, -0.5, 0.5, -0.5]);
+        assert_close!(peak, 0.5);
+        assert_close!(rms, 0.5);
+        // A negative peak counts by its size.
+        let (peak, _) = peak_rms(&[0.1, -0.8, 0.3]);
+        assert_close!(peak, 0.8);
+        // A full-scale sine: peak 1, RMS 1/√2.
+        let (peak, rms) = peak_rms(&sine(440.0, 48_000, 1.0));
+        assert!((peak - 1.0).abs() < 1e-3, "{peak}");
+        assert!(
+            (rms - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3,
+            "{rms}"
+        );
+        // The RMS is the level's.
+        let quiet: Vec<f32> = (0..9600).map(|i| 0.002 * (i as f32 * 0.37).sin()).collect();
+        assert_close!(peak_rms(&quiet).1, level(&quiet));
+        assert!(peak_rms(&quiet).0 > 0.0);
+    }
+
+    #[test]
+    fn a_dumped_window_reads_back_through_the_wav_reader() {
+        assert_eq!(dump_name(1), "window-001.wav");
+        assert_eq!(dump_name(42), "window-042.wav");
+        assert_eq!(dump_name(1234), "window-1234.wav");
+        let samples = [0.0, 0.5, -1.0, 32767.0 / 32768.0, -0.25];
+        let bytes = wav_16k_mono(&samples);
+        assert_eq!(bytes.len(), 44 + 2 * samples.len());
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(
+            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize,
+            bytes.len() - 8
+        );
+        assert_close!(parse_wav(&bytes).unwrap(), samples);
+        // Out of range clips; nothing is a valid empty file.
+        assert_close!(
+            parse_wav(&wav_16k_mono(&[1.5, -2.0])).unwrap(),
+            [32767.0 / 32768.0, -1.0]
+        );
+        assert!(parse_wav(&wav_16k_mono(&[])).unwrap().is_empty());
     }
 
     /// A WAV file: `fmt ` with these fields, a padded odd-length `LIST`

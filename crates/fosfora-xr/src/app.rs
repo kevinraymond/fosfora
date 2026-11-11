@@ -254,6 +254,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       close; read at launch)
     //   adb shell setprop debug.fosfora.voicefile <path>         (unworn test: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a
     //       window had closed; the label shows it ahead of the head; read at launch)
+    //   adb shell setprop debug.fosfora.voicedump 1              (board #5375: each window's audio as whisper gets it, 16 kHz mono, written by the
+    //       voice thread as a 16-bit WAV to files/voice/window-<NNN>.wav, numbered from 001 per launch and logged; the voicefile clip is
+    //       not dumped; default off; read at launch)
     //   adb shell "setprop debug.fosfora.say 'the desk in amber'"   (board #3751, V2: a sentence fed to the grammar as if heard, voice on or
     //       off, for the unworn gate: logged `voice: heard "…" → <intent or miss> · label "…"`, the label ahead of the head; read at launch
     //       and polled once a second, fed once per value (waiting for the room's anchors as debug.fosfora.surface does); an app cannot
@@ -514,9 +517,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let voice_threads = debug_prop("debug.fosfora.voicethreads")
         .and_then(|v| v.trim().parse::<i32>().ok())
         .map_or(VOICE_THREADS, |n| n.clamp(1, 6));
+    // Board #5375: each window's audio as whisper gets it, as a WAV under
+    // the app's files, to tell a silent microphone from words whisper
+    // missed.
+    let voice_dump = (debug_prop("debug.fosfora.voicedump").as_deref() == Some("1"))
+        .then(|| dirs.files.join(crate::voice::DUMP_DIR));
     let mut voice = if voice_on {
         let file = debug_prop("debug.fosfora.voicefile").map(std::path::PathBuf::from);
-        Voice::new(&voice_model, voice_threads, file)
+        Voice::new(&voice_model, voice_threads, file, voice_dump.clone())
             .inspect_err(|e| error!("voice: {e:#}; off"))
             .ok()
     } else {
@@ -1819,7 +1827,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         }
                         if on && voice.is_none() {
                             if voice_model.is_file() {
-                                voice = Voice::new(&voice_model, voice_threads, None)
+                                voice = Voice::new(
+                                    &voice_model,
+                                    voice_threads,
+                                    None,
+                                    voice_dump.clone(),
+                                )
                                     .inspect_err(|e| error!("voice: {e:#}; off"))
                                     .ok();
                             } else {

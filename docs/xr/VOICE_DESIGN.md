@@ -792,7 +792,9 @@ itself then.
 **The knobs.** `debug.fosfora.voice 0|1` (forces the toggle at launch,
 saved), `debug.fosfora.voicequiet <level>` (the tap window's quiet level,
 default 0.01), and V1 to V3's unchanged: `voicethreads`, `voicefile`,
-`say`, `agent`.
+`say`, `agent`. (Amended Nov 11, board #5375: `debug.fosfora.voicedump 1`
+writes each window's audio to a WAV, "The window's audio in the log"
+below.)
 
 **The `say` knob on the replayed room** (nothing pointed, the agent off;
 `the_v4_sentences_on_the_replayed_room` checks these lines):
@@ -1097,6 +1099,42 @@ same value again), through the same switch, and saved as a press is; a
 value the headset cannot pick logs `voice agent: agentpick "<v>" not
 available` and does nothing. There is no voice phrase for the control;
 the grammar is unchanged.
+
+## The window's audio in the log (board #5375)
+
+The first worn windows logged `voice: heard nothing` every time, and the
+log could not say whether the microphone delivered silence or whisper
+returned only an annotation such as `[Music]`. It says both now.
+
+**The close line** has the window's peak and RMS on the ±1 scale, taken
+over its stereo samples in one pass on the frame thread. It is logged
+whether the model has loaded or not:
+
+`voice: window closed after 6.00 s (6 s) · 5.86 s of audio · peak 0.0120 · rms 0.0030 · stream closed in 21.3 ms`
+
+Digital silence reads `peak 0.0000 · rms 0.0000`. Four decimals keep a
+quiet room's noise floor from rounding to zero. For scale, the tap
+window's quiet level is 0.01 RMS.
+
+**Nothing heard** quotes whisper's text when it was only an annotation:
+`voice: heard nothing ("[Music]")`. An empty result is still `voice:
+heard nothing`. The label reads "Didn't catch that" for both.
+
+**The dump.** `debug.fosfora.voicedump 1`, read at launch, off by default
+(any other value is off). The voice thread writes each window's audio as
+whisper gets it, 16 kHz mono and padded to 1.1 s when shorter, as a
+16-bit PCM WAV to `files/voice/window-<NNN>.wav` under the app's files
+directory. The files are numbered from 001 each launch, so a new launch
+overwrites the last one's. The write comes after the text has gone back
+to the frame loop, so neither the frame nor the label waits on the file.
+Each window logs `voice: window dumped to <path> (<bytes> bytes)`, 192,044
+bytes for 6 s, and the launch's `voice: on` line ends in `· voicedump to
+<dir>`. The `voicefile` clip is not dumped. A window that closes before
+the model has loaded never reaches the worker, so it is not dumped
+either, but its close line still has the peak and RMS. A dump is a WAV
+the `voicefile` knob reads, so the logged path set as `voicefile`
+transcribes that window again unworn. To pull one: `adb exec-out "run-as
+dev.fosfora.xr cat files/voice/window-001.wav" > window-001.wav`.
 
 ## Open questions for Kevin
 

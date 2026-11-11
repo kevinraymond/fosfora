@@ -25,6 +25,9 @@ const STAMP_FILE: &str = ".stamp";
 
 /// Directories the app uses under internal storage.
 pub struct AppDirs {
+    /// The app's files directory (`internal_data_path`), which the others
+    /// sit in.
+    pub files: PathBuf,
     pub assets: PathBuf,
     pub config: PathBuf,
 }
@@ -80,7 +83,11 @@ pub fn install(app: &AndroidApp) -> Result<AppDirs> {
     }
 
     pin_core_dirs(&assets, &config);
-    Ok(AppDirs { assets, config })
+    Ok(AppDirs {
+        files: data,
+        assets,
+        config,
+    })
 }
 
 fn pin_core_dirs(assets: &Path, config: &Path) {
