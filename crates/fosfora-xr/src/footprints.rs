@@ -460,6 +460,8 @@ pub fn to_obstacle_box(f: &Footprint) -> PlaneBox {
         emit: 1.0,
         hidden: false,
         uuid: footprint_uuid(f.id),
+        // A curb around a footprint, not a box closed from an object's faces.
+        closed: false,
     }
 }
 
