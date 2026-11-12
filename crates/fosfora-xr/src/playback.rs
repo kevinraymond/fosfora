@@ -12,10 +12,18 @@
 //! frames in a delay line and hands them to the tap when the speaker is
 //! about to play them, less the detection time. cpal's output path could
 //! not do this: its callback timestamps mix two clocks and hide the stream.
+//!
+//! One stream plays one track after another (board #5385): the caller
+//! queues the next clip ([`Playback::queue`]) and the callback swaps it in,
+//! at once for a step the wearer asked for, or where the playing clip ends
+//! when the music plays through. The stream, its tap and the analysis on
+//! the tap carry on across the swap. The callback never frees a clip: the
+//! one it swaps out waits in a slot for the caller to take
+//! ([`Playback::take_retired`]) and free off the audio thread.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use anyhow::{Context, Result, anyhow};
 use fosfora_app::audio::capture::RingBuffer;
@@ -156,12 +164,36 @@ pub struct PlaybackOptions {
     /// length): the hand menu's Music row resumes where it stopped
     /// ([`Playback::resume_frame`]). 0 = the top.
     pub start_frame: usize,
+    /// Loop the clip at its end (the bundled clip, a playlist of one);
+    /// false plays it once, then silence until a queued clip takes over
+    /// (board #5385). [`Playback::set_looping`] changes it.
+    pub looping: bool,
+}
+
+/// A clip handed to the callback: it takes over at the next callback
+/// (`now`), or where the playing clip ends.
+struct Queued {
+    clip: Arc<Clip>,
+    now: bool,
 }
 
 struct Shared {
-    /// Shared with the caller, so a stopped clip is kept without a copy
-    /// and started again without a decode.
-    clip: Arc<Clip>,
+    /// The playing clip's rate and length in frames. The callback owns the
+    /// clip itself and swaps it (`queued`); these say which is playing.
+    clip_rate: AtomicU32,
+    clip_frames: AtomicUsize,
+    /// Loop the clip at its end (else play it once).
+    looping: AtomicBool,
+    /// The clip played to its end with nothing queued and no loop: the
+    /// callback plays silence until a clip is queued.
+    ended: AtomicBool,
+    /// Clips the callback has swapped in so far.
+    swaps: AtomicU32,
+    /// The clip the caller queued, until the callback swaps it in.
+    queued: Mutex<Option<Queued>>,
+    /// The clip the callback swapped out, until the caller takes it: the
+    /// callback never frees a clip (a 100 MB free on the audio thread).
+    retired: Mutex<Option<Arc<Clip>>>,
     /// The rate the output stream opened with (set before it starts).
     output_rate: AtomicU32,
     /// Deliveries into the tap, for the analysis watchdog.
@@ -216,7 +248,13 @@ impl Playback {
             0
         };
         let shared = Arc::new(Shared {
-            clip,
+            clip_rate: AtomicU32::new(requested_rate),
+            clip_frames: AtomicUsize::new(clip_frames),
+            looping: AtomicBool::new(options.looping),
+            ended: AtomicBool::new(false),
+            swaps: AtomicU32::new(0),
+            queued: Mutex::new(None),
+            retired: Mutex::new(None),
             output_rate: AtomicU32::new(requested_rate),
             callback_count: Arc::new(AtomicU64::new(0)),
             frames_since_estimate: AtomicUsize::new(ESTIMATE_EVERY_FRAMES),
@@ -231,6 +269,8 @@ impl Playback {
             estimates: Mutex::new((0.0, 0)),
         });
         let cb = shared.clone();
+        // The callback's own: it swaps a queued clip in here.
+        let mut current = clip;
         let stream = AudioStreamBuilder::new()
             .context("AAudio builder")?
             .direction(AudioDirection::Output)
@@ -259,7 +299,7 @@ impl Playback {
                 // `channel_count` channels (checked after open), writable
                 // for the duration of the call.
                 let out = unsafe { std::slice::from_raw_parts_mut(data.cast::<f32>(), n) };
-                fill(&cb, stream, out, channels);
+                fill(&cb, &mut current, stream, out, channels);
                 AudioCallbackResult::Continue
             }))
             .error_callback(Box::new(|_stream, e| {
@@ -338,29 +378,70 @@ impl Playback {
         self.shared.frames_played.load(Ordering::Relaxed)
     }
 
+    /// The playing clip's rate (Hz, at least 1).
+    fn clip_rate(&self) -> f32 {
+        self.shared.clip_rate.load(Ordering::Relaxed).max(1) as f32
+    }
+
     /// Playhead position in the clip, seconds: the frame being handed to
     /// AAudio now, `latency_ms` ahead of the speaker.
     pub fn position_secs(&self) -> f32 {
         let pos = self.shared.pos.load(Ordering::Relaxed);
-        (pos >> 32) as f32 / self.shared.clip.sample_rate as f32
+        (pos >> 32) as f32 / self.clip_rate()
+    }
+
+    /// The playing clip's length, seconds.
+    pub fn clip_secs(&self) -> f32 {
+        self.shared.clip_frames.load(Ordering::Relaxed) as f32 / self.clip_rate()
+    }
+
+    /// What is left of the playing clip, seconds (0 once it ended).
+    pub fn remaining_secs(&self) -> f32 {
+        (self.clip_secs() - self.position_secs()).max(0.0)
     }
 
     /// The clip frame to start again from after this playback stops: the
     /// playhead less the output latency (the frames handed to AAudio but
     /// not yet played, which closing the stream discards), wrapped.
     pub fn resume_frame(&self) -> usize {
-        let frames = self.shared.clip.samples.len() / 2;
+        let frames = self.shared.clip_frames.load(Ordering::Relaxed);
         if frames == 0 {
             return 0;
         }
         let head = (self.shared.pos.load(Ordering::Relaxed) >> 32) as usize;
-        let behind = (self.latency_ms() / 1000.0 * self.shared.clip.sample_rate as f32) as usize;
+        let behind = (self.latency_ms() / 1000.0 * self.clip_rate()) as usize;
         (head + frames - behind % frames) % frames
     }
 
-    /// The clip this plays.
-    pub fn clip(&self) -> &Arc<Clip> {
-        &self.shared.clip
+    /// Hand `clip` to the callback to replace the playing one: at the next
+    /// callback (`now`, a step the wearer asked for), or where the playing
+    /// clip ends (the next track of a playlist playing through), at once
+    /// if it already has. A clip queued before and not swapped in yet
+    /// comes back, for the caller to free.
+    pub fn queue(&self, clip: Arc<Clip>, now: bool) -> Option<Arc<Clip>> {
+        lock(&self.shared.queued)
+            .replace(Queued { clip, now })
+            .map(|q| q.clip)
+    }
+
+    /// The queued clip taken back before the callback swapped it in.
+    pub fn unqueue(&self) -> Option<Arc<Clip>> {
+        lock(&self.shared.queued).take().map(|q| q.clip)
+    }
+
+    /// The clip the callback swapped out, for the caller to free.
+    pub fn take_retired(&self) -> Option<Arc<Clip>> {
+        lock(&self.shared.retired).take()
+    }
+
+    /// How many queued clips the callback has swapped in so far.
+    pub fn swaps(&self) -> u32 {
+        self.shared.swaps.load(Ordering::Acquire)
+    }
+
+    /// Loop the playing clip at its end, or play it once.
+    pub fn set_looping(&self, on: bool) {
+        self.shared.looping.store(on, Ordering::Relaxed);
     }
 
     /// Latest estimate of the output latency (handed to AAudio → speaker),
@@ -419,35 +500,102 @@ fn output_latency_s(stream: &AudioStream, frames_in_flight: i64) -> Option<f64> 
     (0.0..2.0).contains(&ahead).then_some(ahead)
 }
 
-/// Output callback: linear-interpolated, looping read of the clip into
-/// `out`, the same frames into the delay line, and the frames whose time
-/// has come from the delay line into the tap. No allocation: the tap is fed
-/// in fixed chunks and the delay line was sized up front. Only this
-/// callback advances `pos`.
-fn fill(shared: &Shared, stream: &AudioStream, out: &mut [f32], channels: usize) {
+/// `m` locked, a poisoned lock taken as it is (the data is a slot).
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `m` locked if it is free now; the callback never waits on the caller.
+fn try_lock<T>(m: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    match m.try_lock() {
+        Ok(g) => Some(g),
+        Err(TryLockError::Poisoned(p)) => Some(p.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+
+/// Swap the queued clip in for `current` if it may go now: asked for at
+/// once, or `at_end` (the playing clip is at its end). The clip swapped out
+/// waits in `retired` for the caller to free; while that slot is still
+/// full, or a lock is busy, the swap waits for the next callback.
+fn swap_in(shared: &Shared, current: &mut Arc<Clip>, at_end: bool) -> bool {
+    let Some(mut queued) = try_lock(&shared.queued) else {
+        return false;
+    };
+    if !queued.as_ref().is_some_and(|q| q.now || at_end) {
+        return false;
+    }
+    let Some(mut retired) = try_lock(&shared.retired) else {
+        return false;
+    };
+    if retired.is_some() {
+        return false;
+    }
+    let Some(next) = queued.take() else {
+        return false;
+    };
+    shared
+        .clip_rate
+        .store(next.clip.sample_rate, Ordering::Relaxed);
+    shared
+        .clip_frames
+        .store(next.clip.samples.len() / 2, Ordering::Relaxed);
+    *retired = Some(std::mem::replace(current, next.clip));
+    shared.swaps.fetch_add(1, Ordering::Release);
+    true
+}
+
+/// Output callback: linear-interpolated read of `current` into `out`
+/// (looped, or played once and then silence until a queued clip takes
+/// over, `swap_in`), the same frames into the delay line, and the frames
+/// whose time has come from the delay line into the tap. No allocation
+/// and no free: the tap is fed in fixed chunks, the delay line was sized
+/// up front, and a swapped-out clip goes to the caller. Only this callback
+/// advances `pos`.
+fn fill(
+    shared: &Shared,
+    current: &mut Arc<Clip>,
+    stream: &AudioStream,
+    out: &mut [f32],
+    channels: usize,
+) {
     const CHUNK: usize = 256;
-    let clip = &shared.clip;
-    let frames = clip.samples.len() / 2;
     let output_rate = u32::try_from(stream.sample_rate()).unwrap_or(0).max(1);
-    if frames < 2 || channels == 0 {
+    if channels == 0 {
         out.fill(0.0);
         return;
     }
-    // Clip frames per output frame, 32.32 fixed point.
-    let step = ((f64::from(clip.sample_rate) / f64::from(output_rate)) * 4_294_967_296.0) as u64;
     let mut pos = shared.pos.load(Ordering::Relaxed);
-    let wrap = (frames as u64) << 32;
-    let mut line = shared
-        .delay_line
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut ended = shared.ended.load(Ordering::Relaxed);
+    // A clip asked for at once, or one queued after the last one ended,
+    // takes over before this buffer.
+    if swap_in(shared, current, ended) {
+        pos = 0;
+        ended = false;
+    }
+    let looping = shared.looping.load(Ordering::Relaxed);
+    // Clip frames per output frame, 32.32 fixed point.
+    let step_for = |clip: &Clip| {
+        ((f64::from(clip.sample_rate) / f64::from(output_rate)) * 4_294_967_296.0) as u64
+    };
+    let mut step = step_for(current.as_ref());
+    let mut line = lock(&shared.delay_line);
     for frame in out.chunks_exact_mut(channels) {
-        let i = (pos >> 32) as usize;
-        let frac = (pos & 0xffff_ffff) as f32 / 4_294_967_296.0;
-        let j = if i + 1 < frames { i + 1 } else { 0 };
-        let l = clip.samples[2 * i] + (clip.samples[2 * j] - clip.samples[2 * i]) * frac;
-        let r =
-            clip.samples[2 * i + 1] + (clip.samples[2 * j + 1] - clip.samples[2 * i + 1]) * frac;
+        let clip: &Clip = current.as_ref();
+        let frames = clip.samples.len() / 2;
+        let sounding = !ended && frames >= 2;
+        let (l, r) = if sounding {
+            let i = ((pos >> 32) as usize).min(frames - 1);
+            let frac = (pos & 0xffff_ffff) as f32 / 4_294_967_296.0;
+            let j = if i + 1 < frames { i + 1 } else { 0 };
+            (
+                clip.samples[2 * i] + (clip.samples[2 * j] - clip.samples[2 * i]) * frac,
+                clip.samples[2 * i + 1]
+                    + (clip.samples[2 * j + 1] - clip.samples[2 * i + 1]) * frac,
+            )
+        } else {
+            (0.0, 0.0)
+        };
         match channels {
             1 => frame[0] = (l + r) * 0.5,
             _ => {
@@ -462,12 +610,26 @@ fn fill(shared: &Shared, stream: &AudioStream, out: &mut [f32], channels: usize)
             line.push_back(l);
             line.push_back(r);
         }
+        if !sounding {
+            continue;
+        }
         pos += step;
+        let wrap = (frames as u64) << 32;
         if pos >= wrap {
-            pos -= wrap;
+            if swap_in(shared, current, true) {
+                pos = 0;
+                step = step_for(current.as_ref());
+            } else if looping {
+                pos -= wrap;
+            } else {
+                // Held on the last frame, silent, until a clip is queued.
+                ended = true;
+                pos = wrap - (1 << 32);
+            }
         }
     }
     shared.pos.store(pos, Ordering::Relaxed);
+    shared.ended.store(ended, Ordering::Relaxed);
     let out_frames = out.len() / channels;
     shared
         .frames_played

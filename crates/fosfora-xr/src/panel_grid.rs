@@ -14,7 +14,9 @@
 //! action. The pointer picks a row by its height alone (a row owns half
 //! the gap above and below it, so the rows tile the block), a column by
 //! the side of the panel's center it is on, and a half of the cell by the
-//! side of the cell's center.
+//! side of the cell's center. The Music cell is the one exception (board
+//! #5385): its two end boxes and the middle between them are three
+//! targets ([`end_box`]).
 
 /// Texture size (pixels) and egui scale: 3200 px per meter on the 20 x 46
 /// cm panel, about the display's density at arm's length.
@@ -232,9 +234,40 @@ pub fn hit(bottom: f32, rows: usize, cursor: [f32; 2]) -> Option<Hit> {
     Some(Hit { row: k, col, right })
 }
 
+/// Which end box of `area` the pointer at `x` is in: `Some(false)` the
+/// left, `Some(true)` the right, `None` between them. The Music cell's
+/// `<` and `>` around its play/stop (board #5385), where the middle is a
+/// third target and the halves cannot pick.
+pub fn end_box(area: Rect, x: f32) -> Option<bool> {
+    let (left, right) = area.end_boxes();
+    if x < left.max[0] {
+        Some(false)
+    } else if x >= right.min[0] {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_end_boxes_and_the_middle_split_a_cell_in_three() {
+        let c = cell(row(PANEL_H, 0), 0);
+        let (left, right) = c.end_boxes();
+        assert_eq!(end_box(c, c.min[0]), Some(false));
+        assert_eq!(end_box(c, left.max[0] - 0.1), Some(false));
+        assert_eq!(end_box(c, left.max[0]), None);
+        assert_eq!(end_box(c, c.center_x()), None);
+        assert_eq!(end_box(c, right.min[0] - 0.1), None);
+        assert_eq!(end_box(c, right.min[0]), Some(true));
+        assert_eq!(end_box(c, c.max[0]), Some(true));
+        // Each end box is as wide as a stepper's, 2 cm on the panel.
+        assert_close!(left.width(), END_BOX_W);
+        assert!(c.middle().width() > 100.0, "{:?}", c.middle());
+    }
 
     #[test]
     fn the_rows_tile_the_block_bottom_up() {
