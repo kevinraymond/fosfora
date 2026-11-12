@@ -142,6 +142,11 @@ pub struct EnvDepthOptions {
     /// atlas pass, the rows and the sim's test but skips the copy, so
     /// nothing collides; it splits the pass's cost from the copy's).
     pub collide_upload: bool,
+    /// The live planes' read-back (board #5397, `live_wire.rs`): cells per
+    /// side of its grid (`debug.fosfora.liveplanesgrid`), 0 for none. Built
+    /// with the provider; it runs only while `EnvDepth::set_planes` has it
+    /// on.
+    pub planes_grid: u32,
 }
 
 impl Default for EnvDepthOptions {
@@ -160,6 +165,7 @@ impl Default for EnvDepthOptions {
             collide_thickness_m: COLLIDE_THICKNESS_M,
             collide_every: COLLIDE_EVERY,
             collide_upload: true,
+            planes_grid: 0,
         }
     }
 }
@@ -759,6 +765,37 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 ";
 
+/// The live planes' read-back (board #5397): [`CHECK_WGSL`]'s load for
+/// one layer, `layer`, at `grid` cells a side: `out[gy * grid + gx]` is the
+/// stored value at texel (`live_planes::grid_texel(gx)`, `grid_texel(gy)`),
+/// the layout `live_planes::unproject_grid` reads.
+pub fn planes_wgsl(grid: u32, layer: u32) -> String {
+    format!(
+        r"
+const GRID: u32 = {grid}u;
+const LAYER: i32 = {layer};
+@group(0) @binding(0) var depth_map: texture_depth_2d_array;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {{
+    if id.x >= GRID || id.y >= GRID {{
+        return;
+    }}
+    let dim = textureDimensions(depth_map);
+    let texel = id.xy * dim / GRID + dim / (2u * GRID);
+    out[id.y * GRID + id.x] = textureLoad(depth_map, vec2<i32>(texel), LAYER, 0);
+}}
+"
+    )
+}
+
+/// Bytes of the live planes' read-back buffers for `grid`: one f32 per
+/// cell, rounded up to the 8 bytes a buffer map's range is aligned to.
+pub fn planes_bytes(grid: u32) -> u64 {
+    (u64::from(grid) * u64::from(grid) * 4).next_multiple_of(8)
+}
+
 /// An oriented box: center, rotation box to world, half extents.
 #[derive(Debug, Clone, Copy)]
 pub struct Obb {
@@ -1179,7 +1216,7 @@ impl DepthCollide {
 #[cfg(target_os = "android")]
 pub use runtime::{
     AtlasOutcome, AtlasPass, EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthPasses, EnvDepthSlot,
-    OccluderTarget,
+    OccluderTarget, PlanesPass,
 };
 
 /// The OpenXR provider, its swapchain wrapped as wgpu textures, and the
@@ -1203,9 +1240,11 @@ mod runtime {
     use super::{
         ATLAS_PARAM_ROWS, ATLAS_WGSL, CHECK_GRID, CHECK_WGSL, CheckStats, DepthCollide, DepthView,
         ENV_DEPTH_WGSL, EnvDepthOptions, EyeReprojection, Obb, Reading, UNIFORM_ROWS, atlas_params,
-        atlas_row_texels, check_layer, mesh_indices, mesh_indices_len, mesh_side,
+        atlas_row_texels, check_layer, mesh_indices, mesh_indices_len, mesh_side, planes_bytes,
+        planes_wgsl,
     };
     use crate::gfx::{EyeCamera, Gfx, SWAPCHAIN_FORMAT};
+    use crate::live_wire::{DepthGrid, LAYER};
     use crate::math::Fov;
     use crate::particles3d::{DEPTH_FORMAT, ObstacleBox};
     use crate::room::check;
@@ -1444,6 +1483,9 @@ mod runtime {
         // the swapchain in `provider` owns (fields drop in order).
         /// The self-check (`debug.fosfora.envdepthcheck`), when asked for.
         check: Option<Check>,
+        /// The live planes' read-back (board #5397), when built
+        /// (`EnvDepthOptions::planes_grid`).
+        planes: Option<Planes>,
         /// The depth atlas for the sim's collide
         /// (`debug.fosfora.depthcollide`), when asked for.
         atlas: Option<Atlas>,
@@ -1638,6 +1680,8 @@ mod runtime {
                 });
             }
             let check = opts.check.then(|| build_check(&gfx.device, &images));
+            let planes = (opts.planes_grid > 0)
+                .then(|| build_planes(&gfx.device, &images, opts.planes_grid));
             let atlas = opts
                 .collide
                 .then(|| build_atlas(&gfx.device, &images, opts.collide_res));
@@ -1682,7 +1726,7 @@ mod runtime {
                 })
                 .collect();
             info!(
-                "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · {} · filter {} · discard under {} m · v flip {} · self-check {} · depth collide {}",
+                "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · {} · filter {} · discard under {} m · v flip {} · self-check {} · depth collide {} · live planes read-back {}",
                 images.len(),
                 if hand_removal { "on" } else { "off" },
                 opts.hand_removal,
@@ -1736,9 +1780,15 @@ mod runtime {
                 } else {
                     "off".to_owned()
                 },
+                if opts.planes_grid > 0 {
+                    format!("{0}x{0} of layer {LAYER}, idle until on", opts.planes_grid)
+                } else {
+                    "none".to_owned()
+                },
             );
             Ok(Some(Self {
                 check,
+                planes,
                 atlas,
                 bind_groups,
                 _images: images,
@@ -1764,9 +1814,13 @@ mod runtime {
         /// (`ENVIRONMENT_DEPTH_NOT_AVAILABLE_META`, counted) or on an
         /// error (logged, rate-limited).
         pub fn acquire(&mut self, space: &xr::Space, time: xr::Time) -> Option<EnvDepthFrame> {
-            // The atlas pass follows this acquire's image, or none.
+            // The atlas pass follows this acquire's image, or none; so
+            // does the live planes' read-back.
             if let Some(a) = self.atlas.as_mut() {
                 a.image = None;
+            }
+            if let Some(p) = self.planes.as_mut() {
+                p.image = None;
             }
             if !self.provider.running {
                 self.start_retry_in = self.start_retry_in.saturating_sub(1);
@@ -2095,6 +2149,140 @@ mod runtime {
     }
 
     impl EnvDepth {
+        /// The live planes' read-back on at `hz` read-backs a second, or
+        /// off with `None` (board #5397); nothing without one built. Off,
+        /// nothing is recorded; a read-back in flight still lands.
+        pub fn set_planes(&mut self, hz: Option<f32>) {
+            if let Some(p) = self.planes.as_mut() {
+                p.hz = hz
+                    .filter(|h| h.is_finite() && *h > 0.0)
+                    .map(|h| h.clamp(0.1, 60.0));
+            }
+        }
+
+        /// After each acquire: when the read-back is on, none is in flight
+        /// and one is due, keep `frame`'s image for this frame's pass
+        /// ([`Self::planes_pass`]) with layer [`LAYER`]'s pose and fov, the
+        /// near and far and the time, which the grid carries to the finder.
+        pub fn prepare_planes(&mut self, frame: &EnvDepthFrame) {
+            let Some(p) = self.planes.as_mut() else {
+                return;
+            };
+            let Some(hz) = p.hz else {
+                return;
+            };
+            if p.pending.is_some() || p.bind_groups.get(frame.index as usize).is_none() {
+                return;
+            }
+            let every = Duration::from_secs_f32(1.0 / hz);
+            if p.last.is_some_and(|t| t.elapsed() < every) {
+                return;
+            }
+            let now = Instant::now();
+            p.last = Some(now);
+            p.image = Some((
+                frame.index,
+                PlanesMeta {
+                    view: frame.views[LAYER],
+                    near: frame.near,
+                    far: frame.far,
+                    acquired: now,
+                },
+            ));
+        }
+
+        /// This frame's read-back pass (prepared by
+        /// [`Self::prepare_planes`]), for `Gfx::render` to record in the
+        /// frame's one submission; `None` without one.
+        pub fn planes_pass(&self) -> Option<PlanesPass<'_>> {
+            let p = self.planes.as_ref()?;
+            let (index, _) = p.image?;
+            Some(PlanesPass {
+                pipeline: &p.pipeline,
+                bind_group: p.bind_groups.get(index as usize)?,
+                storage: &p.storage,
+                staging: &p.staging,
+                grid: p.grid,
+            })
+        }
+
+        /// After the frame's submit: map the read-back the frame recorded
+        /// (`recorded`, which [`Self::planes_pass`] gave), to land a few
+        /// frames later ([`Self::poll_planes`]). Never waits.
+        pub fn note_planes(&mut self, recorded: bool) {
+            let Some(p) = self.planes.as_mut() else {
+                return;
+            };
+            let Some((_, meta)) = p.image.take() else {
+                return;
+            };
+            if !recorded {
+                return;
+            }
+            let state = Arc::new(AtomicU8::new(0));
+            let done = Arc::clone(&state);
+            p.staging
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |r| {
+                    done.store(if r.is_ok() { 1 } else { 2 }, Ordering::Release);
+                });
+            p.pending = Some(PlanesPending {
+                meta,
+                state,
+                frames: 0,
+            });
+        }
+
+        /// The read-back in flight once the GPU has delivered it: its grid,
+        /// copied out and the buffer unmapped. Never waits; called every
+        /// frame, it costs nothing while none is in flight.
+        pub fn poll_planes(&mut self, device: &wgpu::Device) -> Option<DepthGrid> {
+            let size = self.size;
+            let p = self.planes.as_mut()?;
+            let pending = p.pending.as_mut()?;
+            pending.frames += 1;
+            // Non-blocking: runs the map callback if the copy is done.
+            let _ = device.poll(wgpu::PollType::Poll);
+            match pending.state.load(Ordering::Acquire) {
+                0 => return None,
+                1 => {}
+                _ => {
+                    warn!("live planes: the read-back map failed");
+                    p.pending = None;
+                    return None;
+                }
+            }
+            let n = (p.grid * p.grid) as usize;
+            let depth: Vec<f32> = p
+                .staging
+                .slice(..)
+                .get_mapped_range()
+                .chunks_exact(4)
+                .take(n)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            p.staging.unmap();
+            let pending = p.pending.take()?;
+            p.landed += 1;
+            if p.landed == 1 {
+                info!(
+                    "live planes: first read-back landed {} frames after its submit",
+                    pending.frames
+                );
+            }
+            Some(DepthGrid {
+                n: p.grid as usize,
+                depth,
+                size,
+                view: pending.meta.view,
+                near: pending.meta.near,
+                far: pending.meta.far,
+                acquired: pending.meta.acquired,
+            })
+        }
+    }
+
+    impl EnvDepth {
         /// Ask the runtime to remove the hands from the depth map, or keep
         /// them (`xrSetEnvironmentDepthHandRemovalMETA`), and log what was
         /// asked and what the runtime answered. On a system without hand
@@ -2289,12 +2477,41 @@ mod runtime {
         }
     }
 
+    /// The live planes' read-back for this frame (board #5397), recorded
+    /// by `Gfx::render` into the frame's command encoder: the load into the
+    /// storage buffer, then the copy into the staging buffer that
+    /// `EnvDepth::note_planes` maps after the submit.
+    pub struct PlanesPass<'a> {
+        pipeline: &'a wgpu::ComputePipeline,
+        bind_group: &'a wgpu::BindGroup,
+        storage: &'a wgpu::Buffer,
+        staging: &'a wgpu::Buffer,
+        grid: u32,
+    }
+
+    impl PlanesPass<'_> {
+        pub fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("xr-env-depth-planes"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(self.pipeline);
+                pass.set_bind_group(0, self.bind_group, &[]);
+                pass.dispatch_workgroups(self.grid.div_ceil(8), self.grid.div_ceil(8), 1);
+            }
+            encoder.copy_buffer_to_buffer(self.storage, 0, self.staging, 0, self.staging.size());
+        }
+    }
+
     /// What `Gfx::render` records for the environment depth this frame:
-    /// the occluder draw and the atlas pass, each when there is one.
+    /// the occluder draw, the atlas pass and the live planes' read-back,
+    /// each when there is one.
     #[derive(Default)]
     pub struct EnvDepthPasses<'a> {
         pub occluder: Option<EnvDepthDraw<'a>>,
         pub atlas: Option<AtlasPass<'a>>,
+        pub planes: Option<PlanesPass<'a>>,
     }
 
     /// The depth atlas's GPU side.
@@ -2449,6 +2666,136 @@ mod runtime {
             s.within_25 * 100.0,
             s.median_m
         )
+    }
+
+    /// The live planes' read-back's GPU side (board #5397): the check's
+    /// shape for one layer, and its one read-back in flight.
+    struct Planes {
+        grid: u32,
+        pipeline: wgpu::ComputePipeline,
+        /// Per swapchain image: the image and the storage buffer.
+        bind_groups: Vec<wgpu::BindGroup>,
+        storage: wgpu::Buffer,
+        staging: wgpu::Buffer,
+        /// Read-backs a second while on, `None` off.
+        hz: Option<f32>,
+        last: Option<Instant>,
+        /// This frame's image and what it was acquired with, from
+        /// `prepare_planes` until `note_planes` (cleared by every acquire).
+        image: Option<(u32, PlanesMeta)>,
+        pending: Option<PlanesPending>,
+        landed: u64,
+    }
+
+    /// What a read-back's image was acquired with: layer [`LAYER`]'s pose
+    /// and fov, the planes and when.
+    #[derive(Debug, Clone, Copy)]
+    struct PlanesMeta {
+        view: DepthView,
+        near: f32,
+        far: f32,
+        acquired: Instant,
+    }
+
+    /// A read-back in flight.
+    struct PlanesPending {
+        meta: PlanesMeta,
+        /// 0 waiting, 1 mapped, 2 the map failed.
+        state: Arc<AtomicU8>,
+        frames: u32,
+    }
+
+    fn build_planes(
+        device: &wgpu::Device,
+        images: &[(wgpu::Texture, wgpu::TextureView)],
+        grid: u32,
+    ) -> Planes {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xr-env-depth-planes"),
+            source: wgpu::ShaderSource::Wgsl(planes_wgsl(grid, LAYER as u32).into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("xr-env-depth-planes"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("xr-env-depth-planes"),
+            bind_group_layouts: &[&layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("xr-env-depth-planes"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("cs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let bytes = planes_bytes(grid);
+        let storage = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-env-depth-planes"),
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-env-depth-planes-staging"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_groups = images
+            .iter()
+            .map(|(_, view)| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("xr-env-depth-planes"),
+                    layout: &layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: storage.as_entire_binding(),
+                        },
+                    ],
+                })
+            })
+            .collect();
+        Planes {
+            grid,
+            pipeline,
+            bind_groups,
+            storage,
+            staging,
+            hz: None,
+            last: None,
+            image: None,
+            pending: None,
+            landed: 0,
+        }
     }
 
     /// The self-check's GPU side and its one read-back in flight.
@@ -3018,6 +3365,36 @@ mod tests {
         assert!(mirrored.within_10 < top.within_10 - 0.05, "{mirrored:?}");
         assert_eq!(check_texel(0, 320), 4);
         assert_eq!(check_texel(CHECK_GRID - 1, 320), 316);
+    }
+
+    #[test]
+    fn the_planes_shader_validates_at_every_grid_and_reads_the_finders_texels() {
+        for grid in [40, 41, 64, 80] {
+            let source = planes_wgsl(grid, 0);
+            let module = naga::front::wgsl::parse_str(&source).expect("planes WGSL parses");
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::default(),
+            )
+            .validate(&module)
+            .expect("planes WGSL validates");
+            assert!(source.contains(&format!("const GRID: u32 = {grid}u;")));
+            assert_eq!(planes_bytes(grid) % 8, 0);
+            assert!(planes_bytes(grid) >= u64::from(grid * grid) * 4);
+        }
+        assert!(planes_wgsl(64, 1).contains("const LAYER: i32 = 1;"));
+        // The shader's texel, `i * dim / GRID + dim / (2 GRID)` in u32,
+        // is the finder's `grid_texel`, as the check's is `check_texel`.
+        for i in 0..CHECK_GRID {
+            assert_eq!(
+                crate::live_planes::grid_texel(i as usize, CHECK_GRID as usize, 320),
+                check_texel(i, 320)
+            );
+        }
+        assert_eq!(
+            crate::live_planes::grid_texel(63, 64, 320),
+            63 * 320 / 64 + 320 / 128
+        );
     }
 
     #[test]

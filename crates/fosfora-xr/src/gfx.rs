@@ -102,6 +102,14 @@ pub struct Gfx {
     highlight: QuadBinding,
     highlight_visible: std::cell::Cell<bool>,
     highlight_pipeline: wgpu::RenderPipeline,
+    /// The live planes' outlines (board #5397, `set_live_outlines`,
+    /// `highlight::outline`): the highlight's shader with a slot per
+    /// plane, built only when live planes can run (`build_live_outlines`);
+    /// the first `live_outline_count` drawn after the highlight.
+    live_outlines: Option<(wgpu::RenderPipeline, Vec<QuadBinding>)>,
+    live_outline_count: std::cell::Cell<usize>,
+    /// The eye camera's bind group layout, for pipelines built later.
+    eye_layout: wgpu::BindGroupLayout,
     /// Whether the eye pass draws the world effect (`set_world_visible`;
     /// the hand menu's Cloud row, board #3326).
     world_visible: std::cell::Cell<bool>,
@@ -500,6 +508,9 @@ impl Gfx {
             highlight_visible: std::cell::Cell::new(false),
             world_visible: std::cell::Cell::new(true),
             highlight_pipeline,
+            live_outlines: None,
+            live_outline_count: std::cell::Cell::new(0),
+            eye_layout,
             ghost,
             ghost_count: std::cell::Cell::new(0),
             ghost_pipeline,
@@ -871,6 +882,36 @@ impl Gfx {
         self.highlight_visible.set(rows.is_some());
     }
 
+    /// Build the live planes' outlines (board #5397): `slots` of the
+    /// highlight's quad, drawn after it. Once, at launch, where live planes
+    /// can run; until then [`Self::set_live_outlines`] draws nothing.
+    pub fn build_live_outlines(&mut self, slots: usize) {
+        let (pipeline, bindings) = build_surface_slots(
+            &self.device,
+            &self.eye_layout,
+            crate::highlight::HIGHLIGHT_WGSL,
+            "xr-live-outline",
+            crate::highlight::UNIFORM_ROWS,
+            slots,
+        );
+        self.live_outlines = Some((pipeline, bindings));
+    }
+
+    /// The live planes' outlines for this frame (`highlight::outline`'s
+    /// rows), each into its own slot; past the slots dropped, empty hides
+    /// them. Nothing without `build_live_outlines`.
+    pub fn set_live_outlines(&self, rows: &[[[f32; 4]; crate::highlight::UNIFORM_ROWS]]) {
+        let Some((_, slots)) = &self.live_outlines else {
+            return;
+        };
+        let n = rows.len().min(slots.len());
+        for (slot, r) in slots.iter().zip(&rows[..n]) {
+            self.queue
+                .write_buffer(&slot.uniform, 0, bytemuck::cast_slice(r));
+        }
+        self.live_outline_count.set(n);
+    }
+
     /// Whether the eye pass draws the world effect from this frame on
     /// (`room_edit::Cloud::visible`; on at start). Hidden, `render` skips
     /// its `prepare_world` and `draw_world` for every eye, but still
@@ -1162,6 +1203,11 @@ impl Gfx {
             };
             a.record(&mut encoder, target.as_ref().map(|(t, sized)| (t, *sized)))
         });
+        // Board #5397: the live planes' read-back, its load and its copy in
+        // this one submission too (a submit of its own cost about 0.8 ms).
+        if let Some(p) = &env_depth.planes {
+            p.record(&mut encoder);
+        }
         if let Some(p) = particles {
             p.step(&mut encoder);
         }
@@ -1230,6 +1276,19 @@ impl Gfx {
                 pass.set_bind_group(0, &eye.bind_group, &[]);
                 pass.set_bind_group(1, &self.highlight.bind_group, &[]);
                 pass.draw(0..6, 0..1);
+            }
+            // Board #5397: the live planes' outlines, on the highlight's
+            // terms (`debug.fosfora.liveplanesshow`).
+            let outlines = self.live_outline_count.get();
+            if outlines > 0
+                && let Some((pipeline, slots)) = &self.live_outlines
+            {
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                for b in &slots[..outlines] {
+                    pass.set_bind_group(1, &b.bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
             }
             if let Some(p) = particles {
                 p.draw(&mut pass, i);

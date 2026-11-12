@@ -2,7 +2,8 @@
 //! planar surfaces in world space, kept from the depth samples of each
 //! update, so the surface effects have something to draw on where the
 //! room scan has nothing. Plain numbers in (glam only), so it builds and
-//! tests on the desktop; wiring it to the depth read-back is a later step.
+//! tests on the desktop. `live_wire.rs` feeds it the depth read-back on a
+//! worker thread and puts its planes into the show (board #5397).
 //!
 //! **Input.** One [`Observation`] per update: the depth camera's pose and
 //! fov, and a row-major grid of world points (row 0 at the top of the
