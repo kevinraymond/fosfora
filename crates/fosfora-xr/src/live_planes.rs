@@ -233,6 +233,117 @@ pub const NEST_PARALLEL_M: f32 = 0.15;
 /// A nesting patch's merge score starts here, after every plane the patch
 /// is within the merge window of.
 const NESTED_SCORE: f32 = 3.0;
+/// Two sets of points side by side (their rectangles overlapping by at
+/// most [`CREASE_OVERLAP`] of the smaller) are two surfaces, not one fitted
+/// twice, when each fits its own plane well, the planes differ by at least
+/// this (degrees) and by [`CREASE_SIGMAS`] times the fits' standard errors,
+/// and one plane through both leaves a systematic residual: either set lies
+/// off the other's plane, beyond its own scatter, by [`CREASE_MIN_M`] rms.
+/// Two surfaces meeting at a crease (a vaulted ceiling's slope and its flat
+/// part, 8 degrees or more) and two faces side by side at slightly
+/// different depths stay two planes. Pieces of one surface seen at a slant
+/// lie over each other and still join, however their fits differ. Board
+/// #5401.
+pub const CREASE_MIN_DEG: f32 = 5.0;
+pub const CREASE_SIGMAS: f32 = 3.0;
+pub const CREASE_MIN_M: f64 = 0.01;
+pub const CREASE_OVERLAP: f32 = 0.5;
+/// ...and each covers at least this much (m², from its points' spread):
+/// two well-supported surfaces. Two small fits of one object stay one.
+pub const CREASE_MIN_AREA_M2: f64 = 0.25;
+/// A region grown across a shallow crease (each refit follows the bend a
+/// little) is cut in two where that leaves a systematic residual behind:
+/// along its two in-plane axes, at tenths of its cells ([`SPLIT_STEPS`]),
+/// the cut whose sides fit planes at least [`CREASE_MIN_DEG`] apart and
+/// leave under this share of one plane's scatter. Only a region scattering
+/// at least [`SPLIT_MIN_SD`] noise deviations off its plane is tried.
+pub const SPLIT_GAIN: f64 = 0.4;
+pub const SPLIT_STEPS: usize = 20;
+pub const SPLIT_MIN_SD: f32 = 0.5;
+
+// ---- Closed geometry (board #5401) -------------------------------------
+
+/// Two reported planes more than [`CREASE_MIN_DEG`] apart that both reach
+/// their intersection line meet along it, in what is reported (never in
+/// the fit): a rectangle running on past the line is cut back to it, by at
+/// most [`MEET_TRIM_M`] and never to under half its size; two room surfaces
+/// (wall, floor, ceiling, sloped or not) meeting concavely whose
+/// rectangles end within this of the line (m) are extended to it, unless
+/// the map sees through the added strip ([`MEET_PROBES`] points along it).
+/// The line has to run along one of a rectangle's axes, within
+/// [`MEET_ALIGN_DEG`].
+pub const CLOSE_GAP_M: f32 = 0.25;
+/// ...or within this many cells at the line's range, when more: the cells
+/// of a crease straddle it and belong to neither surface.
+pub const CLOSE_GAP_CELLS: f32 = 2.0;
+/// A met edge's dead band (m), much under an edge's usual cell: it goes to
+/// the line, at the usual rates.
+pub const MEET_BAND_M: f32 = 0.005;
+/// How long a plane follows its estimate at the moving camera's rates
+/// after it appeared, took the room's axes or moved past its merge window
+/// (s).
+pub const CATCH_UP_S: f32 = 1.0;
+pub const MEET_TRIM_M: f32 = 0.6;
+pub const MEET_PROBES: usize = 3;
+pub const MEET_ALIGN_DEG: f32 = 10.0;
+/// The room's yaw comes from the reported walls of at least this area
+/// (m²), weighted by area, the four directions folded into one...
+pub const ROOM_WALL_AREA_M2: f32 = 1.0;
+/// ...followed with this time constant (s). Floors and ceilings take their
+/// rectangles' axes from it, so their edges run along the walls'.
+pub const ROOM_TAU_S: f32 = 2.0;
+/// A plane whose normal is within this of a room direction (degrees: up,
+/// down, or level at the room's yaw or a multiple of 90 degrees from it)
+/// matches it. What is reported turns toward it by a weight, not a snap:
+/// the fit's standard error squared over that plus [`PRIOR_SD_DEG`]
+/// squared, so a well-measured plane hardly moves and a poorly measured
+/// one comes halfway.
+pub const PRIOR_DEG: f32 = 8.0;
+pub const PRIOR_SD_DEG: f32 = 2.0;
+/// Once the room's yaw is known, a candidate that matches no room
+/// direction and is not a ceiling ([`CEILING_SLOPE_DEG`]) needs more to
+/// appear: patches in [`APPEAR_STILL_FRAC`] of its updates over at least
+/// this long (s), and its points no further off its plane than
+/// [`PRIOR_SCATTER`] noise deviations at its range (rms). A plane across
+/// separate objects scatters; a ramp, an angled cabinet's face or a
+/// sloped ceiling does not.
+pub const PRIOR_APPEAR_S: f32 = 1.5;
+pub const PRIOR_SCATTER: f32 = 1.0;
+/// Two reported planes are faces of one object when their normals are 90
+/// degrees apart within this (degrees), each lies behind the other's plane
+/// (convex, the faces pointing away from each other), each comes within
+/// [`BOX_GAP_M`] or [`BOX_GAP_CELLS`] cells at its range of the line where
+/// they meet (a face's cells stop a cell or three short of an edge, where
+/// the cells straddle it), and they share at least [`BOX_SHARED`] of the
+/// shorter one's span along that line. The object is
+/// reported as one box instead of its faces: axes from the two normals
+/// (the better-supported face's kept, the other's made square to it) and
+/// their cross product; each face gives the depth along the other's normal;
+/// a third face meeting both fixes the third extent, else the faces' spans
+/// do.
+pub const BOX_ANGLE_TOL_DEG: f32 = 12.0;
+pub const BOX_GAP_M: f32 = 0.05;
+pub const BOX_GAP_CELLS: f32 = 3.0;
+pub const BOX_SHARED: f32 = 0.5;
+/// A plane joins a box as its third face when it lies on the box's open
+/// face: its normal within this of that face's (degrees; a soft or
+/// cluttered top tilts), its center within [`BOX_GAP_CELLS`] cells of the
+/// face and over it.
+pub const BOX_OPEN_DEG: f32 = 20.0;
+/// A box the map sees through at this many of its inner points (its
+/// corners and the middles of its faces at [`BOX_PROBE_DEPTH`] of its half
+/// extents, the hidden volume where there would be free space), on every
+/// update for [`BOX_THROUGH_UPDATES`] updates, is no box: its faces go back
+/// to being planes, and that pair is not tried again. Inside, because faces
+/// stop a few cells short of their edges and a box made of them can sit a
+/// few centimeters off its object.
+pub const BOX_THROUGH: u32 = 3;
+/// Two faces close into a box once they have met on this many updates in
+/// a row, the window [`BOX_THROUGH_UPDATES`] takes to open one: two faces
+/// meeting for a moment make no box.
+pub const BOX_FORM_UPDATES: u32 = 1;
+pub const BOX_PROBE_DEPTH: f32 = 0.6;
+pub const BOX_THROUGH_UPDATES: u32 = 4;
 /// A candidate first seen while the camera was still ([`STILL_GRACE_S`])
 /// that lies over a reported plane, its normal within [`NEST_DEG`] and its
 /// center within this of that plane (m), more than [`NEST_OVERLAP`] of it
@@ -348,8 +459,11 @@ pub const FLOOR_TOL_M: f32 = 0.15;
 /// An upward plane this high above the floor is a table (m).
 pub const TABLE_MIN_M: f32 = 0.3;
 pub const TABLE_MAX_M: f32 = 1.3;
-/// A downward plane this high above the floor is the ceiling (m).
+/// A downward plane this high above the floor is the ceiling (m)...
 pub const CEILING_MIN_M: f32 = 1.9;
+/// ...at any slope up to this from level (degrees): a sloped or vaulted
+/// ceiling is a ceiling, not other.
+pub const CEILING_SLOPE_DEG: f32 = 60.0;
 /// A kind boundary a plane already sits on one side of is moved this much
 /// further out (m), so a plane near a boundary does not flip.
 pub const KIND_HYSTERESIS_M: f32 = 0.05;
@@ -591,12 +705,38 @@ pub struct LivePlane {
     pub confidence: f32,
     /// The last update the plane was seen in (s).
     pub last_seen_s: f32,
+    /// A closed box made of two or three faces of one object (its half
+    /// extents are its size), not a plane...
+    pub closed: bool,
+    /// ...and the ids of those faces (0 for none, all 0 for a plane).
+    pub faces: [u32; 3],
 }
 
 impl LivePlane {
     pub fn normal(&self) -> Vec3 {
         self.rot * Vec3::Z
     }
+}
+
+/// The six faces of a closed box ([`LivePlane::closed`]) as planes with its
+/// id, each facing out: local Z the face's normal, its half extents the
+/// box's along the other two axes.
+pub fn box_faces(b: &LivePlane) -> [LivePlane; 6] {
+    let axes = [b.rot * Vec3::X, b.rot * Vec3::Y, b.rot * Vec3::Z];
+    let half = b.half.to_array();
+    std::array::from_fn(|i| {
+        let (k, sign) = (i / 2, if i % 2 == 0 { 1.0 } else { -1.0 });
+        let n = axes[k] * sign;
+        let x = axes[(k + 1) % 3];
+        let y = n.cross(x);
+        LivePlane {
+            center: b.center + n * half[k],
+            rot: Quat::from_mat3(&Mat3::from_cols(x, y, n)).normalize(),
+            half: Vec3::new(half[(k + 1) % 3], half[(k + 2) % 3], PLANE_HALF_THICKNESS_M),
+            closed: false,
+            ..*b
+        }
+    })
 }
 
 /// The fields of an obstacle box (`particles3d::ObstacleBox`, which is
@@ -611,6 +751,8 @@ pub struct PlaneBox {
     pub emit: f32,
     pub hidden: bool,
     pub uuid: [u8; 16],
+    /// A closed box, not a plane ([`LivePlane::closed`]).
+    pub closed: bool,
 }
 
 /// A live plane as an obstacle box: a scene plane's shape (local Z the
@@ -625,6 +767,7 @@ pub fn to_obstacle_box(p: &LivePlane) -> PlaneBox {
         emit: 1.0,
         hidden: false,
         uuid: plane_uuid(p.id),
+        closed: p.closed,
     }
 }
 
@@ -864,6 +1007,21 @@ impl Moments {
         self.noise = turn_sym(self.noise, r);
     }
 
+    /// The points' variance along the unit vector `n`, about their mean.
+    fn var_along(&self, n: DVec3) -> f64 {
+        if self.w <= 0.0 {
+            return 0.0;
+        }
+        let m = self.s / self.w;
+        let mm = outer(m, 1.0);
+        let c: [f64; 6] = std::array::from_fn(|k| self.ss[k] / self.w - mm[k]);
+        let [xx, xy, xz, yy, yz, zz] = c;
+        xx * n.x * n.x
+            + yy * n.y * n.y
+            + zz * n.z * n.z
+            + 2.0 * (xy * n.x * n.y + xz * n.x * n.z + yz * n.y * n.z)
+    }
+
     fn fit(&self) -> Option<Fit> {
         if self.w <= 0.0 {
             return None;
@@ -934,6 +1092,100 @@ fn sym3_eigen(a: [f64; 6]) -> Option<([f64; 3], DVec3, DVec3)> {
         .filter(|m| m.length_squared() > 0.5)
         .unwrap_or_else(|| normal.any_orthonormal_vector());
     Some(([lo, mid, hi], normal, major))
+}
+
+/// Where to cut a region's `cells` (fitted by `fit`) at a crease
+/// ([`SPLIT_GAIN`]): the cells reordered so the first part comes first, and
+/// how many it has.
+fn crease_split(
+    pts: &[Vec3],
+    range: &[f32],
+    cam: Vec3,
+    noise: NoiseModel,
+    cells: &mut [u32],
+    fit: &Fit,
+    keys: &mut Vec<(f32, u32)>,
+) -> Option<usize> {
+    let n = cells.len();
+    if n < 2 * MIN_CELLS || fit.off_var <= 0.0 {
+        return None;
+    }
+    let axes = [fit.major, fit.normal.cross(fit.major)];
+    let side = |part: &[(f32, u32)]| {
+        let mut m = Moments::new(pts[part[0].1 as usize]);
+        for &(_, c) in part {
+            let i = c as usize;
+            m.add(pts[i], cam, noise.weight(range[i]), noise);
+        }
+        m
+    };
+    let sort = |keys: &mut Vec<(f32, u32)>, cells: &[u32], axis: Vec3| {
+        keys.clear();
+        keys.extend(
+            cells
+                .iter()
+                .map(|&c| ((pts[c as usize] - fit.centroid).dot(axis), c)),
+        );
+        keys.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    };
+    let mut best: Option<(f64, usize, usize)> = None;
+    for (a, &axis) in axes.iter().enumerate() {
+        sort(keys, cells, axis);
+        for step in 1..SPLIT_STEPS {
+            let k = n * step / SPLIT_STEPS;
+            if k < MIN_CELLS || n - k < MIN_CELLS {
+                continue;
+            }
+            let (m1, m2) = (side(&keys[..k]), side(&keys[k..]));
+            let (Some(f1), Some(f2)) = (m1.fit(), m2.fit()) else {
+                continue;
+            };
+            if f1.normal.dot(f2.normal).abs() > CREASE_MIN_DEG.to_radians().cos() {
+                continue;
+            }
+            let left = (m1.w * f1.off_var + m2.w * f2.off_var) / (m1.w + m2.w);
+            if left < SPLIT_GAIN * fit.off_var && best.is_none_or(|b| left < b.0) {
+                best = Some((left, a, k));
+            }
+        }
+    }
+    let (_, a, k) = best?;
+    sort(keys, cells, axes[a]);
+    for (slot, &(_, c)) in cells.iter_mut().zip(keys.iter()) {
+        *slot = c;
+    }
+    Some(k)
+}
+
+/// Whether the points of `a` and `b`, whose rectangles overlap by
+/// `share` of the smaller, are two surfaces: see [`CREASE_MIN_DEG`].
+fn apart(a: &Moments, b: &Moments, share: f32) -> bool {
+    let (Some(fa), Some(fb)) = (a.fit(), b.fit()) else {
+        return false;
+    };
+    if share > CREASE_OVERLAP {
+        return false;
+    }
+    let angle = fa.normal.dot(fb.normal).abs().min(1.0).acos();
+    if angle < CREASE_MIN_DEG.to_radians()
+        || angle < CREASE_SIGMAS * (fa.normal_sd() + fb.normal_sd())
+    {
+        return false;
+    }
+    // Each side's area from its points' in-plane spread (a uniform
+    // rectangle w wide has a variance of w² / 12 along it).
+    let area = |f: &Fit| 12.0 * (f.lambda[1].max(0.0) * f.lambda[2].max(0.0)).sqrt();
+    if area(&fa) < CREASE_MIN_AREA_M2 || area(&fb) < CREASE_MIN_AREA_M2 {
+        return false;
+    }
+    // How far `m`'s points lie off `o`'s plane, beyond their scatter about
+    // their own (`f`): the tilt and the offset between the two, squared.
+    let beyond = |m: &Moments, f: &Fit, o: &Fit| {
+        let n = o.normal.as_dvec3();
+        let d = f64::from(o.normal.dot(f.centroid - o.centroid));
+        (m.var_along(n) + d * d - f.off_var).max(0.0)
+    };
+    beyond(a, &fa, &fb).max(beyond(b, &fb, &fa)).sqrt() >= CREASE_MIN_M
 }
 
 /// Move `err` toward zero: nothing inside `deadband`, past it the gap
@@ -1100,6 +1352,8 @@ struct Scratch {
     order: Vec<u32>,
     cells: Vec<u32>,
     patches: Vec<Patch>,
+    /// A region's cells by a coordinate, for the crease split.
+    keys: Vec<(f32, u32)>,
 }
 
 impl Scratch {
@@ -1118,6 +1372,7 @@ impl Scratch {
             self.order.reserve(n);
             self.cells.reserve(n);
             self.patches.reserve(n / MIN_CELLS + 1);
+            self.keys.reserve(n);
             self.sat.reserve((obs.cols + 1) * (obs.rows + 1));
         }
         let cam = obs.camera.position;
@@ -1307,6 +1562,7 @@ impl Scratch {
             order,
             cells,
             patches,
+            keys,
             ..
         } = self;
         let (cols, rows) = (lens.cols, lens.rows);
@@ -1426,12 +1682,50 @@ impl Scratch {
             if fit.normal.dot(cam - fit.centroid) < 0.0 {
                 fit.normal = -fit.normal;
             }
+            let mean_range = range_sum / len as f32;
+            // Grown across a crease: two patches, one each side.
+            let tried = fit.off_var.sqrt() >= f64::from(SPLIT_MIN_SD * noise.sigma(mean_range));
+            if tried
+                && let Some(k) = crease_split(
+                    pts,
+                    range,
+                    cam,
+                    noise,
+                    &mut cells[start..start + len],
+                    &fit,
+                    keys,
+                )
+            {
+                for (s0, l) in [(start, k), (start + k, len - k)] {
+                    let mut m = Moments::new(pts[cells[s0] as usize]);
+                    let mut rs = 0.0f32;
+                    for &c in &cells[s0..s0 + l] {
+                        let i = c as usize;
+                        m.add(pts[i], cam, noise.weight(range[i]), noise);
+                        rs += range[i];
+                    }
+                    let Some(mut f) = m.fit() else {
+                        continue;
+                    };
+                    if f.normal.dot(cam - f.centroid) < 0.0 {
+                        f.normal = -f.normal;
+                    }
+                    patches.push(Patch {
+                        mom: m,
+                        fit: f,
+                        start: s0,
+                        len: l,
+                        mean_range: rs / l as f32,
+                    });
+                }
+                continue;
+            }
             patches.push(Patch {
                 mom,
                 fit,
                 start,
                 len,
-                mean_range: range_sum / len as f32,
+                mean_range,
             });
         }
     }
@@ -1505,10 +1799,20 @@ struct Tracked {
     /// ([`REBASE_STARVED_S`]).
     outside: Option<Moments>,
     inside_s: f32,
-    /// The estimate moved past the merge window ([`Tracked::rebase`]): the
-    /// reported rectangle follows it at the moving camera's rates until it
-    /// is there.
-    catch_up: bool,
+    /// What is reported follows these edges (the estimate's, met with its
+    /// neighbors along their lines) and this turn toward a room direction.
+    shape: [f32; 4],
+    /// Which of the shape's edges meet a neighbor along their line (a dead
+    /// band of [`MEET_BAND_M`] for those), and which of them are cut back
+    /// to it (followed at the moving camera's rates: a correction, not a
+    /// growth).
+    met: [bool; 4],
+    cut: [bool; 4],
+    pull: Quat,
+    /// Seconds left of following at the moving camera's rates
+    /// ([`CATCH_UP_S`]): after the estimate moved past the merge window
+    /// ([`Tracked::rebase`]), took the room's axes, or appeared.
+    catch_up: f32,
     kind: u32,
     pending: Option<(u32, f32)>,
     confidence: f32,
@@ -1519,10 +1823,16 @@ struct Tracked {
 }
 
 impl Tracked {
-    fn new(id: u32, p: &Patch, edges_of: impl FnOnce(Frame) -> [f32; 4]) -> Self {
+    fn new(
+        id: u32,
+        p: &Patch,
+        room: Option<Vec3>,
+        edges_of: impl FnOnce(Frame) -> [f32; 4],
+    ) -> Self {
         let n = p.fit.normal;
         let upright = n.y.abs() < 10.0f32.to_radians().cos();
-        let yaw_ref = Vec3::new(p.fit.major.x, 0.0, p.fit.major.z).normalize_or(Vec3::X);
+        let yaw_ref = room
+            .unwrap_or_else(|| Vec3::new(p.fit.major.x, 0.0, p.fit.major.z).normalize_or(Vec3::X));
         let (u, v) = plane_axes(n, upright, yaw_ref);
         let edges = edges_of(Frame {
             o: p.fit.centroid,
@@ -1559,10 +1869,14 @@ impl Tracked {
             miss_s: 0.0,
             appeared: false,
             reported: false,
-            catch_up: false,
+            catch_up: 0.0,
             under: false,
             outside: None,
             inside_s: 0.0,
+            shape: edges,
+            met: [false; 4],
+            cut: [false; 4],
+            pull: Quat::IDENTITY,
             kind: KIND_OTHER,
             pending: None,
             confidence: 0.0,
@@ -1750,7 +2064,7 @@ impl Tracked {
         self.last_seen_s = self.last_seen_s.max(o.last_seen_s);
         self.miss_s = 0.0;
         self.strong += o.strong;
-        self.catch_up = true;
+        self.catch_up = CATCH_UP_S;
         self.inside_s = o.inside_s;
         self.outside = None;
     }
@@ -1921,22 +2235,66 @@ impl Tracked {
 
     /// Report the estimate as it is (a plane appearing).
     fn snap(&mut self) {
-        let (c, h) = self.center_half();
+        let (c, h) = self.shape_center_half();
         self.rep_center = c;
-        self.rep_rot = self.rot();
+        self.rep_rot = (self.pull * self.rot()).normalize();
         self.rep_half = h;
+    }
+
+    /// What is reported is heading for, as a plane: the met edges'
+    /// rectangle, turned toward its room direction.
+    fn shape_live(&self) -> LivePlane {
+        let (c, h) = self.shape_center_half();
+        LivePlane {
+            center: c,
+            rot: (self.pull * self.rot()).normalize(),
+            half: Vec3::new(h[0], h[1], PLANE_HALF_THICKNESS_M),
+            ..self.live()
+        }
+    }
+
+    /// What is reported follows: the met edges' rectangle.
+    fn shape_center_half(&self) -> (Vec3, [f32; 2]) {
+        let (u, v) = self.axes();
+        let e = self.shape;
+        let c = self.origin() + u * (0.5 * (e[0] + e[1])) + v * (0.5 * (e[2] + e[3]));
+        (c, [0.5 * (e[1] - e[0]), 0.5 * (e[3] - e[2])])
+    }
+
+    /// Take `yaw_ref` (a horizontal plane's axes from the room, at most 45
+    /// degrees from its own): the rectangle keeps its center and its
+    /// sides, turned onto the new axes, and what is reported takes them at
+    /// once (a one-time turn in its own plane) and catches up.
+    fn reframe(&mut self, yaw_ref: Vec3) {
+        let (c, h) = self.center_half();
+        self.yaw_ref = yaw_ref;
+        let (u, v) = self.axes();
+        let o = self.origin();
+        let (cu, cv) = ((c - o).dot(u), (c - o).dot(v));
+        let e = [cu - h[0], cu + h[0], cv - h[1], cv + h[1]];
+        self.edges = e;
+        self.shape = e;
+        self.hist = [e; EDGE_HISTORY];
+        self.hist_seen = [[false; 4]; EDGE_HISTORY];
+        self.hist_len = 1;
+        self.catch_up = CATCH_UP_S;
+        if self.appeared {
+            self.rep_rot = (self.pull * self.rot()).normalize();
+        }
     }
 
     /// Move the reported rectangle toward the estimate, within the dead
     /// bands and rate limits.
     fn follow(&mut self, dt: f32, cam: Vec3, cell_angle: f32, moving: bool) {
-        let (turn_max, offset_max, edge_max) = if moving || self.catch_up {
+        let fast = moving || self.catch_up > 0.0;
+        self.catch_up = (self.catch_up - dt).max(0.0);
+        let (turn_max, offset_max, edge_max) = if fast {
             (TURN_MAX_DEG_S, OFFSET_MAX_M_S, EDGE_MAX_M_S)
         } else {
             (TURN_STILL_DEG_S, OFFSET_STILL_M_S, EDGE_STILL_M_S)
         };
-        let (c, h) = self.center_half();
-        let q = self.rot();
+        let (c, h) = self.shape_center_half();
+        let q = (self.pull * self.rot()).normalize();
         let angle = self.rep_rot.angle_between(q);
         let step = follow(
             angle,
@@ -1947,7 +2305,7 @@ impl Tracked {
         if step > 0.0 && angle > 0.0 {
             self.rep_rot = self.rep_rot.slerp(q, (step / angle).min(1.0)).normalize();
         }
-        let mut stepped = step > 0.0;
+
         let (u, v, n) = (
             self.rep_rot * Vec3::X,
             self.rep_rot * Vec3::Y,
@@ -1960,7 +2318,7 @@ impl Tracked {
             dt,
         );
         self.rep_center += n * lift;
-        stepped |= lift != 0.0;
+
         let d = c - self.rep_center;
         let (cu, cv) = (d.dot(u), d.dot(v));
         let target = [cu - h[0], cu + h[0], cv - h[1], cv + h[1]];
@@ -1973,17 +2331,19 @@ impl Tracked {
             center + v * e[2],
             center + v * e[3],
         ];
+        // The rectangle's edges in reported order (u0, u1, v0, v1) map onto
+        // the estimate's in the same order; a met edge has no dead band.
         for k in 0..4 {
-            let band =
-                (EDGE_DEADBAND_CELLS * cell_angle * mids[k].distance(cam)).max(EDGE_DEADBAND_M);
-            let de = follow(target[k] - e[k], band, edge_max, dt);
+            let band = if self.met[k] {
+                MEET_BAND_M
+            } else {
+                (EDGE_DEADBAND_CELLS * cell_angle * mids[k].distance(cam)).max(EDGE_DEADBAND_M)
+            };
+            let max = if self.cut[k] { EDGE_MAX_M_S } else { edge_max };
+            let de = follow(target[k] - e[k], band, max, dt);
             e[k] += de;
-            stepped |= de != 0.0;
         }
-        // There: within every dead band.
-        if !stepped {
-            self.catch_up = false;
-        }
+
         for k in [0, 2] {
             if e[k + 1] < e[k] {
                 let m = 0.5 * (e[k] + e[k + 1]);
@@ -2014,7 +2374,7 @@ impl Tracked {
             } else {
                 KIND_OTHER
             }
-        } else if n.y <= -cos_h {
+        } else if n.y <= -CEILING_SLOPE_DEG.to_radians().cos() {
             if h >= CEILING_MIN_M - hy(KIND_CEILING) {
                 KIND_CEILING
             } else {
@@ -2052,6 +2412,8 @@ impl Tracked {
             half: Vec3::new(self.rep_half[0], self.rep_half[1], PLANE_HALF_THICKNESS_M),
             confidence: self.confidence,
             last_seen_s: self.last_seen_s,
+            closed: false,
+            faces: [0; 3],
         }
     }
 }
@@ -2059,11 +2421,12 @@ impl Tracked {
 /// Whether two tracked planes are one surface: normals within
 /// [`MERGE_ANGLE_DEG`], the smaller's center within [`MERGE_OFFSET_M`] of
 /// the larger's plane, rectangles overlapping or touching. While one of
-/// them has not appeared, normals within [`DUPLICATE_SCALE`] times that,
-/// and the center within the nesting limits ([`NEST_M`], [`NEST_PARALLEL_M`]
-/// within [`NEST_PARALLEL_DEG`] of parallel): a second plane started on a
-/// surface, from a noisy patch or from a piece of a large slanted surface
-/// whose fit differs, joins the first before it can appear beside it.
+/// them has not appeared, normals within [`DUPLICATE_SCALE`] times that:
+/// a second plane started on a surface from a noisy patch joins the first
+/// before it can appear beside it. Further off they are one surface only
+/// when they nest ([`NEST_OVERLAP`]): two faces side by side at depths a
+/// step apart (fronts of separate things on a shelf) stay two, and no plane
+/// is fitted across the step.
 fn same_surface(a: &Tracked, b: &Tracked) -> bool {
     let both = a.appeared && b.appeared;
     let scale = if both { 1.0 } else { DUPLICATE_SCALE };
@@ -2071,16 +2434,9 @@ fn same_surface(a: &Tracked, b: &Tracked) -> bool {
     if cos < (scale * MERGE_ANGLE_DEG).to_radians().cos() {
         return false;
     }
-    let limit = if both {
-        MERGE_OFFSET_M
-    } else if cos >= NEST_PARALLEL_DEG.to_radians().cos() {
-        NEST_PARALLEL_M
-    } else {
-        NEST_M
-    };
     let (big, small) = if a.area() >= b.area() { (a, b) } else { (b, a) };
     let (c, _) = small.center_half();
-    if (big.normal.dot(c) - big.offset()).abs() > limit {
+    if (big.normal.dot(c) - big.offset()).abs() > MERGE_OFFSET_M {
         return false;
     }
     let (u, v) = big.axes();
@@ -2091,6 +2447,8 @@ fn same_surface(a: &Tracked, b: &Tracked) -> bool {
         r = union(r, [x, x, y, y]);
     }
     overlaps(r, big.edges, TOUCH_M)
+        && (cos >= CREASE_MIN_DEG.to_radians().cos()
+            || !apart(&a.mom, &b.mom, overlap_share(big, small)))
 }
 
 /// The share of the smaller of `a` and `b` that their rectangles overlap,
@@ -2137,6 +2495,7 @@ fn nested(a: &Tracked, b: &Tracked) -> bool {
     (big.normal.dot(cs) - big.offset()).abs() < limit
         && (small.normal.dot(cb) - small.offset()).abs() < limit
         && overlap_share(big, small) > NEST_OVERLAP
+        && !apart(&a.mom, &b.mom, overlap_share(big, small))
 }
 
 /// Whether the candidate `c` lies over the reported plane `r`: see
@@ -2146,7 +2505,9 @@ fn lies_over(c: &Tracked, r: &Tracked) -> bool {
         return false;
     }
     let (cc, _) = c.center_half();
-    (r.normal.dot(cc) - r.offset()).abs() <= UNDER_M && overlap_share(r, c) > NEST_OVERLAP
+    (r.normal.dot(cc) - r.offset()).abs() <= UNDER_M
+        && overlap_share(r, c) > NEST_OVERLAP
+        && !apart(&c.mom, &r.mom, overlap_share(r, c))
 }
 
 /// Whether `new`, a candidate with a patch this update (and one strong
@@ -2164,6 +2525,7 @@ fn takes_over(old: &Tracked, new: &Tracked, now_s: f32) -> bool {
     (old.normal.dot(cn) - old.offset()).abs() <= REBASE_M
         && (new.normal.dot(co) - new.offset()).abs() <= REBASE_M
         && overlap_share(old, new) > REBASE_OVERLAP
+        && !apart(&old.mom, &new.mom, overlap_share(old, new))
 }
 
 // ---- Tracking corrections ----------------------------------------------
@@ -2225,6 +2587,402 @@ fn median_of(v: &mut [f32]) -> f32 {
     *v.select_nth_unstable_by(mid, f32::total_cmp).1
 }
 
+// ---- Closed geometry (board #5401) -------------------------------------
+
+/// The room direction `n` matches ([`PRIOR_DEG`]): up, down, or level at
+/// `room_yaw` or a multiple of 90 degrees from it. `None` without a room
+/// yaw, or when it matches none.
+fn room_direction(room_yaw: Option<f32>, n: Vec3) -> Option<Vec3> {
+    let yaw = room_yaw?;
+    let (s, c) = PRIOR_DEG.to_radians().sin_cos();
+    if n.y.abs() >= c {
+        return Some(Vec3::Y * n.y.signum());
+    }
+    if n.y.abs() > s {
+        return None;
+    }
+    let d = fold90(n.x.atan2(n.z) - yaw);
+    (d.abs() <= PRIOR_DEG.to_radians()).then(|| {
+        let a = n.x.atan2(n.z) - d;
+        Vec3::new(a.sin(), 0.0, a.cos())
+    })
+}
+
+/// `a` (radians) folded into -45..45 degrees.
+fn fold90(a: f32) -> f32 {
+    let q = std::f32::consts::FRAC_PI_2;
+    a - q * (a / q).round()
+}
+
+/// Whether the map sees past `p` along the ray of the cell it falls in, by
+/// more than the evidence tolerance: `None` out of view or range, or with
+/// no depth there.
+fn sees_past(
+    p: Vec3,
+    obs: &Observation<'_>,
+    lens: &Lens,
+    max_range: f32,
+    noise: NoiseModel,
+) -> Option<bool> {
+    let cam = obs.camera.position;
+    let r = p.distance(cam);
+    if !(NEAR_M..=max_range).contains(&r) {
+        return None;
+    }
+    let cell = lens.cell(obs.camera.rotation.inverse() * (p - cam))?;
+    let q = obs.points[cell].filter(|q| q.is_finite())?;
+    let tol = (EVIDENCE_SIGMAS * noise.sigma(r)).max(EVIDENCE_TOL_MIN_M);
+    Some(q.distance(cam) > r + tol)
+}
+
+/// Whether the map sees past the plane `n . x = offset` along the ray of
+/// the cell `p` (a point on it) falls in, by more than the evidence
+/// tolerance, as `Tracked::check` judges a plane: right at any incidence,
+/// where a point's range is not. `None` out of view, range or depth.
+fn plane_seen_past(
+    n: Vec3,
+    offset: f32,
+    p: Vec3,
+    obs: &Observation<'_>,
+    lens: &Lens,
+    max_range: f32,
+    noise: NoiseModel,
+) -> Option<bool> {
+    let cam = obs.camera.position;
+    if !(NEAR_M..=max_range).contains(&p.distance(cam)) {
+        return None;
+    }
+    let cell = lens.cell(obs.camera.rotation.inverse() * (p - cam))?;
+    let q = obs.points[cell].filter(|q| q.is_finite())?;
+    let ray = q - cam;
+    let den = n.dot(ray);
+    let t = (offset - n.dot(cam)) / den;
+    if den.abs() < 1e-6 || t <= 0.0 {
+        return None;
+    }
+    let expected = t * ray.length();
+    let tol = (EVIDENCE_SIGMAS * noise.sigma(expected)).max(EVIDENCE_TOL_MIN_M);
+    Some(ray.length() - expected > tol)
+}
+
+/// Where the planes `(na, ha)` and `(nb, hb)` (`n . x = h`) meet: a point
+/// and the unit direction of their line, `None` when they are parallel.
+fn meeting_line(na: Vec3, ha: f32, nb: Vec3, hb: f32) -> Option<(Vec3, Vec3)> {
+    let dn = na.cross(nb);
+    let len2 = dn.length_squared();
+    if len2 < 1e-6 {
+        return None;
+    }
+    Some(((nb * ha - na * hb).cross(dn) / len2, dn / len2.sqrt()))
+}
+
+/// Where the line through `p` along `d` lies in a rectangle's frame (`o`,
+/// `u`, `v`): the index of the pair of edges it runs along (0 for the `u`
+/// edges, at a `u` coordinate; 2 for the `v` edges) and its coordinate,
+/// when it runs along an axis within [`MEET_ALIGN_DEG`].
+fn line_in(o: Vec3, u: Vec3, v: Vec3, p: Vec3, d: Vec3) -> Option<(usize, f32)> {
+    let c = MEET_ALIGN_DEG.to_radians().cos();
+    if d.dot(u).abs() >= c {
+        Some((2, (p - o).dot(v)))
+    } else if d.dot(v).abs() >= c {
+        Some((0, (p - o).dot(u)))
+    } else {
+        None
+    }
+}
+
+/// The span of `corners` along `d` (from `p`).
+fn span_along(corners: &[Vec3; 4], p: Vec3, d: Vec3) -> (f32, f32) {
+    corners
+        .iter()
+        .map(|c| (*c - p).dot(d))
+        .fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)))
+}
+
+/// A reported rectangle's corners.
+fn plane_corners(p: &LivePlane) -> [Vec3; 4] {
+    let (x, y) = (p.rot * Vec3::X * p.half.x, p.rot * Vec3::Y * p.half.y);
+    [
+        p.center - x - y,
+        p.center + x - y,
+        p.center + x + y,
+        p.center - x + y,
+    ]
+}
+
+/// The distance from `q` to the line through `p` along `d`.
+fn to_line(q: Vec3, p: Vec3, d: Vec3) -> f32 {
+    let w = q - p;
+    (w - d * w.dot(d)).length()
+}
+
+/// Whether the reported planes `a` and `b` are two faces of one object
+/// ([`BOX_ANGLE_TOL_DEG`]), seen from `cam` with cells `cell_angle` wide.
+fn faces_meet(a: &LivePlane, b: &LivePlane, cam: Vec3, cell_angle: f32) -> bool {
+    let (na, nb) = (a.normal(), b.normal());
+    if na.dot(nb).abs() > BOX_ANGLE_TOL_DEG.to_radians().sin()
+        || nb.dot(a.center - b.center) >= 0.0
+        || na.dot(b.center - a.center) >= 0.0
+    {
+        return false;
+    }
+    let Some((p, d)) = meeting_line(na, na.dot(a.center), nb, nb.dot(b.center)) else {
+        return false;
+    };
+    let near = |q: &LivePlane| {
+        let gap = BOX_GAP_M.max(BOX_GAP_CELLS * cell_angle * q.center.distance(cam));
+        plane_corners(q)
+            .iter()
+            .map(|c| to_line(*c, p, d))
+            .fold(f32::MAX, f32::min)
+            <= gap
+    };
+    let (sa, sb) = (
+        span_along(&plane_corners(a), p, d),
+        span_along(&plane_corners(b), p, d),
+    );
+    let shared = sa.1.min(sb.1) - sa.0.max(sb.0);
+    near(a) && near(b) && shared >= BOX_SHARED * (sa.1 - sa.0).min(sb.1 - sb.0)
+}
+
+/// Where `me`'s rectangle meets the line through `p` along `d` (shared with
+/// `other`): the edge to move and where to, when `other` reaches the line
+/// too ([`CLOSE_GAP_M`]). Cut back when it runs on past the line; extended
+/// to it when `extend` (two room surfaces meeting concavely) and the map
+/// does not see through the strip it adds.
+#[allow(clippy::too_many_arguments)]
+fn meet_edge(
+    me: &Tracked,
+    other: &Tracked,
+    p: Vec3,
+    d: Vec3,
+    extend: bool,
+    obs: &Observation<'_>,
+    lens: &Lens,
+    max_range: f32,
+    noise: NoiseModel,
+) -> Option<(usize, f32)> {
+    let reach = |t: &Tracked| {
+        let (u, v) = t.axes();
+        let (k, at) = line_in(t.origin(), u, v, p, d)?;
+        let e = t.edges;
+        Some((k, at, (e[k] - at).max(at - e[k + 1]).max(0.0)))
+    };
+    let (k, at, gap) = reach(me)?;
+    let (_, _, other_gap) = reach(other)?;
+    let close =
+        CLOSE_GAP_M.max(CLOSE_GAP_CELLS * lens.cell_angle() * p.distance(obs.camera.position));
+    if other_gap > close {
+        return None;
+    }
+    let e = me.edges;
+    let mid = 0.5 * (e[k] + e[k + 1]);
+    // The edge on the line's side, and the far one.
+    let (near, far) = if mid < at { (k + 1, k) } else { (k, k + 1) };
+    let size = (e[k + 1] - e[k]).max(1e-6);
+    let inside = (e[near] - at) * (at - e[far]).signum();
+    if inside > 0.0 {
+        // Past the line: cut back, never to under half.
+        return (inside <= MEET_TRIM_M && (at - e[far]).abs() >= 0.5 * size).then_some((near, at));
+    }
+    if !(extend && gap <= close) {
+        return None;
+    }
+    // The strip it adds, probed along the line where both rectangles are;
+    // one narrower than a cell the map cannot tell apart.
+    if gap < lens.cell_angle() * p.distance(obs.camera.position) {
+        return Some((near, at));
+    }
+    let (u, v) = me.axes();
+    let o = me.origin();
+    let (sa, sb) = (
+        span_along(&me.corners(), p, d),
+        span_along(&other.corners(), p, d),
+    );
+    let (lo, hi) = (sa.0.max(sb.0), sa.1.min(sb.1));
+    let across = 0.5 * (e[near] + at);
+    for i in 0..MEET_PROBES {
+        let along = lo + (hi - lo) * (i as f32 + 0.5) / MEET_PROBES as f32;
+        let on_line = p + d * along;
+        let q = if k == 2 {
+            o + u * (on_line - o).dot(u) + v * across
+        } else {
+            o + u * across + v * (on_line - o).dot(v)
+        };
+        if plane_seen_past(me.normal, me.offset(), q, obs, lens, max_range, noise) == Some(true) {
+            return None;
+        }
+    }
+    Some((near, at))
+}
+
+/// Whether the plane `c` lies on one of the two faces of the box `b`
+/// across its third axis (local Z, the one no face of it gives yet): see
+/// [`BOX_OPEN_DEG`].
+fn on_open_face(c: &LivePlane, b: &LivePlane, cam: Vec3, cell_angle: f32) -> bool {
+    let z = b.rot * Vec3::Z;
+    let cos = c.normal().dot(z);
+    if cos.abs() < BOX_OPEN_DEG.to_radians().cos() {
+        return false;
+    }
+    let face = b.center + z * (b.half.z * cos.signum());
+    let gap = BOX_GAP_M.max(BOX_GAP_CELLS * cell_angle * c.center.distance(cam));
+    let d = c.center - face;
+    let (x, y) = (b.rot * Vec3::X, b.rot * Vec3::Y);
+    d.dot(z).abs() <= gap && d.dot(x).abs() <= b.half.x + gap && d.dot(y).abs() <= b.half.y + gap
+}
+
+/// Give box `b` its shape from those of its faces reported in `out`, the
+/// better supported first; with one face left it keeps the shape it had.
+fn shape_box(b: &mut Boxed, out: &[LivePlane]) {
+    let find = |id: u32| out.iter().position(|p| p.id == id && !p.closed);
+    let mut faces: Vec<LivePlane> = b
+        .faces
+        .iter()
+        .filter_map(|&f| (f != 0).then(|| find(f)).flatten())
+        .map(|i| out[i])
+        .collect();
+    faces.sort_by(|x, y| {
+        let s = |p: &LivePlane| p.confidence * p.half.x * p.half.y;
+        s(y).total_cmp(&s(x))
+    });
+    if faces.len() >= 2
+        && let Some((center, rot, half)) = box_of(&faces)
+    {
+        b.plane = LivePlane {
+            id: b.id,
+            kind: KIND_OTHER,
+            center,
+            rot,
+            half,
+            confidence: faces.iter().map(|f| f.confidence).fold(1.0, f32::min),
+            last_seen_s: faces.iter().map(|f| f.last_seen_s).fold(0.0, f32::max),
+            closed: true,
+            faces: b.faces,
+        };
+    }
+}
+
+/// How many of the box `p`'s inner points ([`BOX_PROBE_DEPTH`]) the map
+/// sees through.
+fn box_through(
+    p: &LivePlane,
+    obs: &Observation<'_>,
+    lens: &Lens,
+    max_range: f32,
+    noise: NoiseModel,
+) -> u32 {
+    let f = BOX_PROBE_DEPTH;
+    let mut through = 0;
+    for k in 0..14 {
+        let s = if k < 8 {
+            Vec3::new(
+                if k & 1 == 0 { -f } else { f },
+                if k & 2 == 0 { -f } else { f },
+                if k & 4 == 0 { -f } else { f },
+            )
+        } else {
+            let mut v = Vec3::ZERO;
+            v[(k - 8) / 2] = if k % 2 == 0 { -f } else { f };
+            v
+        };
+        if sees_past(p.center + p.rot * (s * p.half), obs, lens, max_range, noise) == Some(true) {
+            through += 1;
+        }
+    }
+    through
+}
+
+/// A closed box: its id, its faces' ids (0 for none) and what is reported.
+#[derive(Debug, Clone, Copy)]
+struct Boxed {
+    id: u32,
+    faces: [u32; 3],
+    plane: LivePlane,
+    /// Updates in a row the map has seen through it.
+    through: u32,
+}
+
+/// The box `faces` make (two or three; the first is the better supported):
+/// its center, rotation (local X the first face's normal, Y the second's
+/// made square to it, Z their cross product) and half extents. Along an
+/// axis with a face the box runs from that face back to the far edge of
+/// the other faces; along one without, over the faces' span. A face's span
+/// counts along an axis its rectangle runs along ([`MEET_ALIGN_DEG`]).
+fn box_of(faces: &[LivePlane]) -> Option<(Vec3, Quat, Vec3)> {
+    let a1 = faces[0].normal();
+    let n2 = faces[1].normal();
+    let a2 = (n2 - a1 * n2.dot(a1)).normalize_or_zero();
+    if a2 == Vec3::ZERO {
+        return None;
+    }
+    let axes = [a1, a2, a1.cross(a2)];
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    for (k, a) in axes.iter().enumerate() {
+        let face = faces
+            .iter()
+            .position(|f| f.normal().dot(*a).abs() >= BOX_ANGLE_TOL_DEG.to_radians().cos());
+        // A face's span along the axis, when one of its rectangle's axes
+        // runs along it: a rectangle turned in its plane (a top whose axes
+        // follow the room, not the object) would stick out at its corners.
+        // An upright face's axes are its object's (vertical, and along the
+        // face); a level face's run however its frame was set, so it
+        // counts only where no upright face does.
+        let align = MEET_ALIGN_DEG.to_radians().cos();
+        let upright = |f: &LivePlane| f.normal().y.abs() < 10f32.to_radians().cos();
+        for pass in [true, false] {
+            for (i, f) in faces.iter().enumerate() {
+                if Some(i) == face || upright(f) != pass {
+                    continue;
+                }
+                let at = f.center.dot(*a);
+                let reach = if (f.rot * Vec3::X).dot(*a).abs() >= align {
+                    f.half.x
+                } else if (f.rot * Vec3::Y).dot(*a).abs() >= align {
+                    f.half.y
+                } else {
+                    continue;
+                };
+                lo[k] = lo[k].min(at - reach);
+                hi[k] = hi[k].max(at + reach);
+            }
+            if lo[k] < f32::MAX {
+                break;
+            }
+        }
+        if lo[k] >= f32::MAX {
+            for (i, f) in faces.iter().enumerate() {
+                if Some(i) != face {
+                    for c in plane_corners(f) {
+                        lo[k] = lo[k].min(c.dot(*a));
+                        hi[k] = hi[k].max(c.dot(*a));
+                    }
+                }
+            }
+        }
+        if let Some(i) = face {
+            let at = faces[i].center.dot(*a);
+            if faces[i].normal().dot(*a) > 0.0 {
+                hi[k] = at;
+            } else {
+                lo[k] = at;
+            }
+        }
+        if hi[k] - lo[k] < 2.0 * PLANE_HALF_THICKNESS_M {
+            return None;
+        }
+    }
+    let center = (0..3).fold(Vec3::ZERO, |c, k| c + axes[k] * (0.5 * (lo[k] + hi[k])));
+    let rot = Quat::from_mat3(&Mat3::from_cols(axes[0], axes[1], axes[2])).normalize();
+    let half = Vec3::new(
+        0.5 * (hi[0] - lo[0]),
+        0.5 * (hi[1] - lo[1]),
+        0.5 * (hi[2] - lo[2]),
+    );
+    Some((center, rot, half))
+}
+
 // ---- The store ---------------------------------------------------------
 
 /// The live planes: feed it an [`Observation`] per update, read
@@ -2248,6 +3006,15 @@ pub struct LivePlanes {
     /// one the planes followed.
     reference: Reference,
     correction: Option<Correction>,
+    /// The room's yaw (radians about the vertical, a level normal's
+    /// direction folded into 0 to 90 degrees), once walls give one.
+    room_yaw: Option<f32>,
+    /// The closed boxes, and the face pairs the map ruled out as boxes.
+    boxes: Vec<Boxed>,
+    not_boxes: Vec<(u32, u32)>,
+    /// Face pairs that meet, on how many updates in a row, and whether
+    /// this one.
+    meeting: Vec<((u32, u32), u32, bool)>,
     /// What happened to planes, for the tests' failure messages.
     #[cfg(test)]
     events: Vec<String>,
@@ -2275,6 +3042,10 @@ impl LivePlanes {
             ranked: Vec::with_capacity(MAX_TRACKED + 1),
             reference: Reference::default(),
             correction: None,
+            room_yaw: None,
+            boxes: Vec::with_capacity(MAX_PLANES),
+            not_boxes: Vec::with_capacity(MAX_PLANES),
+            meeting: Vec::with_capacity(MAX_PLANES),
             #[cfg(test)]
             events: Vec::new(),
         }
@@ -2396,12 +3167,16 @@ impl LivePlanes {
                     _ => t.pending = Some((k, now_s)),
                 }
             }
+        }
+        self.update_room(dt);
+        self.shape(obs, &lens);
+        for t in &mut self.tracked {
             // Out of view (or hidden), a plane is kept as it was.
             if t.appeared && (t.merged || t.evidence >= MIN_EVIDENCE) {
                 t.follow(dt, cam, lens.cell_angle(), moving);
             }
         }
-        self.select(cam);
+        self.select(cam, obs, &lens);
         stats.tracked = self.tracked.len();
         stats.reported = self.out.len();
         stats
@@ -2429,6 +3204,7 @@ impl LivePlanes {
             return Jump::None;
         };
         if c0.distance(cam) <= JUMP_CHECK_M && turn(q0, rot) <= JUMP_CHECK_DEG.to_radians() {
+            r.take(cam, rot, s);
             return Jump::None;
         }
         let inv = rot.inverse();
@@ -2462,7 +3238,10 @@ impl LivePlanes {
                 r.take(cam, rot, s);
                 return Jump::Moved(q, t, c0.distance(cam));
             }
-            // Too small a change to tell either way.
+            // Too small a change to tell either way: an orbit over a floor
+            // or a walk along a wall barely changes the image, and must not
+            // add up against an old view.
+            r.take(cam, rot, s);
             return Jump::None;
         }
         if miss < still || r.odd >= JUMP_ODD_MAX {
@@ -2493,6 +3272,7 @@ impl LivePlanes {
     /// Merge patch `k` into the tracked plane it belongs to, or start one.
     fn place(&mut self, k: usize, now_s: f32, lens: &Lens, cam: Vec3, stats: &mut Stats) {
         let (max_range, noise) = (self.config.max_range_m, self.config.noise);
+        let room = self.room_yaw.map(|y| Vec3::new(y.sin(), 0.0, y.cos()));
         let late = self
             .still_since
             .is_some_and(|since| now_s - since >= STILL_GRACE_S);
@@ -2543,6 +3323,13 @@ impl LivePlanes {
                 coords,
             );
             let angle = cos.clamp(-1.0, 1.0).acos();
+            // A patch of a surface meeting this plane at a crease, or of a
+            // face beside it, is neither this plane nor a noisy view of it.
+            if angle >= CREASE_MIN_DEG.to_radians()
+                && apart(&p.mom, &t.mom, nest_share(ext, t.edges))
+            {
+                continue;
+            }
             let score =
                 if cos >= cos_merge && off <= MERGE_OFFSET_M && overlaps(ext, t.edges, TOUCH_M) {
                     angle / MERGE_ANGLE_DEG.to_radians() + off / MERGE_OFFSET_M
@@ -2603,7 +3390,7 @@ impl LivePlanes {
             tracked.remove(i);
             stats.dropped += 1;
         }
-        let mut t = Tracked::new(*next_id, &p, |f| {
+        let mut t = Tracked::new(*next_id, &p, room, |f| {
             extents(&scratch.pts, cells, cam, f, pad, max_range, noise, coords)
         });
         *next_id += 1;
@@ -2686,6 +3473,7 @@ impl LivePlanes {
     /// Hits, misses, appearing, vanishing, forgetting, confidence.
     fn life(&mut self, now_s: f32, dt: f32, camera: &DepthCamera, stats: &mut Stats) {
         let cam = camera.position;
+        let (room_yaw, noise) = (self.room_yaw, self.config.noise);
         for t in &mut self.tracked {
             // Only patches from outside the merge window for a while: the
             // surface is where they are.
@@ -2695,7 +3483,7 @@ impl LivePlanes {
                 t.mom = m;
                 t.refit();
                 t.inside_s = now_s;
-                t.catch_up = true;
+                t.catch_up = CATCH_UP_S;
                 #[cfg(test)]
                 self.events
                     .push(format!("{now_s:.1} {} moved to its patches", t.id));
@@ -2753,19 +3541,35 @@ impl LivePlanes {
                 t.hits = u32::from(t.merged);
                 t.updates = 1;
             }
-            let (window, frac) = if t.late {
+            let (mut window, mut frac) = if t.late {
                 (APPEAR_STILL_S, APPEAR_STILL_FRAC)
             } else {
                 (APPEAR_S, APPEAR_FRAC)
             };
+            // Matching no room direction: more evidence (PRIOR_APPEAR_S).
+            let strict = room_yaw.is_some()
+                && room_direction(room_yaw, t.normal).is_none()
+                && t.normal.y > -CEILING_SLOPE_DEG.to_radians().cos();
+            if strict {
+                window = window.max(PRIOR_APPEAR_S);
+                frac = frac.max(APPEAR_STILL_FRAC);
+            }
+            let tight = !strict
+                || t.mom.fit().is_some_and(|f| {
+                    let r = f.centroid.distance(cam);
+                    f.off_var.sqrt() <= f64::from(PRIOR_SCATTER * noise.sigma(r))
+                });
             if t.alive && !t.appeared && t.held.is_none() && now_s - t.first_s >= window - 1e-3 {
                 if t.hits >= APPEAR_HITS
                     && t.hits as f32 >= frac * t.updates as f32
                     && t.strong > 0
+                    && tight
                     && !(t.late && t.under)
                 {
                     t.appeared = true;
                     t.snap();
+                    // Out to where it meets its neighbors, at once.
+                    t.catch_up = CATCH_UP_S;
                     #[cfg(test)]
                     self.events.push(format!("{now_s:.1} {} appeared", t.id));
                 } else {
@@ -2778,6 +3582,243 @@ impl LivePlanes {
         let before = self.tracked.len();
         self.tracked.retain(|t| t.alive);
         stats.dropped += before - self.tracked.len();
+    }
+
+    /// The room's yaw from the reported walls ([`ROOM_WALL_AREA_M2`]),
+    /// followed slowly. When it is first known or has turned, floors and
+    /// ceilings take their axes from it.
+    fn update_room(&mut self, dt: f32) {
+        let (mut s, mut c) = (0.0f32, 0.0f32);
+        for t in &self.tracked {
+            if t.reported && t.kind == KIND_WALL && t.area() >= ROOM_WALL_AREA_M2 {
+                let a = 4.0 * t.normal.x.atan2(t.normal.z);
+                s += t.area() * a.sin();
+                c += t.area() * a.cos();
+            }
+        }
+        if s == 0.0 && c == 0.0 {
+            return;
+        }
+        let yaw = s.atan2(c) / 4.0;
+        let now = match self.room_yaw {
+            None => yaw,
+            Some(old) => old + fold90(yaw - old) * (1.0 - (-dt / ROOM_TAU_S).exp()),
+        };
+        self.room_yaw = Some(now);
+        for t in &mut self.tracked {
+            if !t.upright {
+                // To the nearest of the room's four directions: a turn of 45
+                // degrees at most.
+                let yaw = t.yaw_ref.x.atan2(t.yaw_ref.z);
+                let off = fold90(yaw - now);
+                if off.abs() > MEET_ALIGN_DEG.to_radians() * 0.5 {
+                    let y = yaw - off;
+                    t.reframe(Vec3::new(y.sin(), 0.0, y.cos()));
+                }
+            }
+        }
+    }
+
+    /// What every plane reports this update ([`CLOSE_GAP_M`],
+    /// [`PRIOR_DEG`]): its edges met with its neighbors' along their lines,
+    /// and a turn toward the room direction it matches. Nothing here goes
+    /// back into the fit.
+    fn shape(&mut self, obs: &Observation<'_>, lens: &Lens) {
+        let (max_range, noise, room_yaw) =
+            (self.config.max_range_m, self.config.noise, self.room_yaw);
+        for t in &mut self.tracked {
+            t.shape = t.edges;
+            t.met = [false; 4];
+            t.cut = [false; 4];
+            t.pull = Quat::IDENTITY;
+            if !t.appeared {
+                continue;
+            }
+            if let (Some(m), Some(f)) = (room_direction(room_yaw, t.normal), t.mom.fit()) {
+                let sd = f.normal_sd();
+                let prior = PRIOR_SD_DEG.to_radians();
+                let w = sd * sd / (sd * sd + prior * prior);
+                t.pull = Quat::IDENTITY.slerp(Quat::from_rotation_arc(t.normal, m), w);
+            }
+        }
+        let n = self.tracked.len();
+        let cos_crease = CREASE_MIN_DEG.to_radians().cos();
+        for i in 0..n {
+            for j in i + 1..n {
+                let (a, b) = (self.tracked[i], self.tracked[j]);
+                if !(a.appeared && b.appeared) || a.normal.dot(b.normal).abs() >= cos_crease {
+                    continue;
+                }
+                let Some((p, d)) = meeting_line(a.normal, a.offset(), b.normal, b.offset()) else {
+                    continue;
+                };
+                let (sa, sb) = (
+                    span_along(&a.corners(), p, d),
+                    span_along(&b.corners(), p, d),
+                );
+                if sa.1.min(sb.1) - sa.0.max(sb.0) <= 0.0 {
+                    continue;
+                }
+                let room = |k: u32| matches!(k, KIND_WALL | KIND_FLOOR | KIND_CEILING);
+                let (ca, _) = a.center_half();
+                let (cb, _) = b.center_half();
+                let concave = a.normal.dot(cb - ca) > 0.0 && b.normal.dot(ca - cb) > 0.0;
+                let extend = room(a.kind) && room(b.kind) && concave;
+                let edges = [
+                    meet_edge(&a, &b, p, d, extend, obs, lens, max_range, noise),
+                    meet_edge(&b, &a, p, d, extend, obs, lens, max_range, noise),
+                ];
+                for (k, e) in [(i, edges[0]), (j, edges[1])] {
+                    if let Some((at, to)) = e {
+                        let t = &mut self.tracked[k];
+                        let mid = 0.5 * (t.edges[at & !1] + t.edges[at | 1]);
+                        t.cut[at] = (to - mid).abs() < (t.edges[at] - mid).abs();
+                        t.shape[at] = to;
+                        t.met[at] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Close the reported planes that are faces of one object into boxes
+    /// ([`BOX_ANGLE_TOL_DEG`]): each box takes its faces' place in what is
+    /// reported, keeps its own id, and outlives a face that has gone. A box
+    /// the map sees through ([`BOX_THROUGH`]) goes back to its faces.
+    fn close_boxes(&mut self, obs: &Observation<'_>, lens: &Lens) {
+        let (max_range, noise) = (self.config.max_range_m, self.config.noise);
+        let (cam, cell) = (obs.camera.position, lens.cell_angle());
+        let find = |out: &[LivePlane], id: u32| out.iter().position(|p| p.id == id && !p.closed);
+        // Boxes go with their last face.
+        let out = &self.out;
+        self.boxes
+            .retain(|b| b.faces.iter().any(|&f| f != 0 && find(out, f).is_some()));
+        // New pairs, then third faces: judged on where the faces are
+        // heading. A pair's count runs while it meets on every update.
+        for m in &mut self.meeting {
+            m.2 = false;
+        }
+        let aim: Vec<LivePlane> = self
+            .tracked
+            .iter()
+            .filter(|t| t.reported)
+            .map(Tracked::shape_live)
+            .collect();
+        let aim_of = |id: u32| aim.iter().find(|p| p.id == id);
+        let used = |boxes: &[Boxed], id: u32| boxes.iter().any(|b| b.faces.contains(&id));
+        for i in 0..self.out.len() {
+            for j in i + 1..self.out.len() {
+                let (a, b) = (self.out[i], self.out[j]);
+                let meet = matches!((aim_of(a.id), aim_of(b.id)), (Some(x), Some(y)) if faces_meet(x, y, cam, cell));
+                if used(&self.boxes, a.id)
+                    || used(&self.boxes, b.id)
+                    || self.not_boxes.contains(&(a.id, b.id))
+                    || !meet
+                {
+                    continue;
+                }
+                let pair = (a.id, b.id);
+                let n = match self.meeting.iter_mut().find(|m| m.0 == pair) {
+                    Some(m) => {
+                        m.1 += 1;
+                        m.2 = true;
+                        m.1
+                    }
+                    None => {
+                        self.meeting.push((pair, 1, true));
+                        1
+                    }
+                };
+                if n < BOX_FORM_UPDATES {
+                    continue;
+                }
+                // A box the map already sees through is never reported.
+                let mut fresh = Boxed {
+                    id: 0,
+                    faces: [a.id, b.id, 0],
+                    plane: a,
+                    through: 0,
+                };
+                shape_box(&mut fresh, &self.out);
+                if !fresh.plane.closed
+                    || box_through(&fresh.plane, obs, lens, max_range, noise) >= BOX_THROUGH
+                {
+                    continue;
+                }
+                self.boxes.push(Boxed {
+                    id: self.next_id,
+                    faces: [a.id, b.id, 0],
+                    plane: a,
+                    through: 0,
+                });
+                self.next_id += 1;
+            }
+        }
+        self.meeting.retain(|m| m.2);
+        for b in &mut self.boxes {
+            shape_box(b, &self.out);
+        }
+        for k in 0..self.boxes.len() {
+            if self.boxes[k].faces[2] != 0 {
+                continue;
+            }
+            let [f0, f1, _] = self.boxes[k].faces;
+            let (Some(i0), Some(i1)) = (find(&self.out, f0), find(&self.out, f1)) else {
+                continue;
+            };
+            let (Some(a0), Some(a1)) = (aim_of(self.out[i0].id), aim_of(self.out[i1].id)) else {
+                continue;
+            };
+            // A third face meets both, or lies on the box's open face (a
+            // top whose edges do not run square to the sides').
+            let open = self.boxes[k].plane;
+            let third = aim.iter().find(|c| {
+                !used(&self.boxes, c.id)
+                    && ((faces_meet(c, a0, cam, cell) && faces_meet(c, a1, cam, cell))
+                        || (open.closed && on_open_face(c, &open, cam, cell)))
+            });
+            if let Some(c) = third {
+                self.boxes[k].faces[2] = c.id;
+            }
+        }
+        // Each box's shape from the faces it has.
+        let mut gone = Vec::new();
+        for b in &mut self.boxes {
+            shape_box(b, &self.out);
+            if !b.plane.closed {
+                gone.push(b.id);
+                continue;
+            }
+            // Free space where the box would be: inside it, the map
+            // seeing through.
+            let through = box_through(&b.plane, obs, lens, max_range, noise);
+            b.through = if through >= BOX_THROUGH {
+                b.through + 1
+            } else {
+                0
+            };
+            if b.through >= BOX_THROUGH_UPDATES {
+                gone.push(b.id);
+            }
+        }
+        for id in gone {
+            if let Some(k) = self.boxes.iter().position(|b| b.id == id) {
+                let b = self.boxes.remove(k);
+                let pair = (b.faces[0].min(b.faces[1]), b.faces[0].max(b.faces[1]));
+                if !self.not_boxes.contains(&pair) {
+                    self.not_boxes.push(pair);
+                }
+                #[cfg(test)]
+                self.events
+                    .push(format!("box {} ruled out by the map", b.id));
+            }
+        }
+        // The boxes replace their faces.
+        let boxes = &self.boxes;
+        self.out
+            .retain(|p| !boxes.iter().any(|b| b.faces.contains(&p.id)));
+        self.out.extend(self.boxes.iter().map(|b| b.plane));
+        self.out.sort_by_key(|p| p.id);
     }
 
     /// Follow the lowest large upward plane well below the camera.
@@ -2804,7 +3845,7 @@ impl LivePlanes {
     }
 
     /// Redraw the reported set within the budget and fill the output.
-    fn select(&mut self, cam: Vec3) {
+    fn select(&mut self, cam: Vec3, obs: &Observation<'_>, lens: &Lens) {
         self.ranked.clear();
         for (i, t) in self.tracked.iter().enumerate() {
             if t.appeared {
@@ -2846,6 +3887,7 @@ impl LivePlanes {
                 .filter(|t| t.reported)
                 .map(Tracked::live),
         );
+        self.close_boxes(obs, lens);
     }
 
     /// Elements the store's buffers hold room for, for the no-growth test.
@@ -3263,6 +4305,7 @@ mod tests {
         let n = truth.normal();
         planes
             .iter()
+            .filter(|p| !p.closed)
             .filter_map(|p| {
                 let angle = p.normal().dot(n).abs().min(1.0).acos().to_degrees();
                 let d = p.center - truth.c;
@@ -3276,13 +4319,21 @@ mod tests {
 
     /// Whether every reported plane lies on some surface of `scene`.
     fn ghosts(planes: &[LivePlane], scene: &Scene) -> Vec<LivePlane> {
+        let lies_on = |p: &LivePlane| {
+            scene.shapes.iter().any(|s| match s {
+                Shape::Rect(r) => on(std::slice::from_ref(p), r).is_some(),
+                _ => false,
+            })
+        };
         planes
             .iter()
             .filter(|p| {
-                !scene.shapes.iter().any(|s| match s {
-                    Shape::Rect(r) => on(std::slice::from_ref(p), r).is_some(),
-                    _ => false,
-                })
+                // A box is real when two of its faces are on surfaces.
+                if p.closed {
+                    box_faces(p).iter().filter(|f| lies_on(f)).count() < 2
+                } else {
+                    !lies_on(p)
+                }
             })
             .copied()
             .collect()
@@ -3481,10 +4532,26 @@ mod tests {
     /// Whether any reported plane lies on one of the box's faces.
     fn box_planes(planes: &[LivePlane], scene: &Scene, faces: &[Rect]) -> Vec<u32> {
         let _ = scene;
-        faces
+        // The cuboid's faces as planes, or a box two of whose faces are on
+        // them (since board #5401 the faces of one object close into one).
+        let mut ids: Vec<u32> = faces
             .iter()
             .filter_map(|f| on(planes, f).map(|x| x.0.id))
-            .collect()
+            .collect();
+        for b in planes.iter().filter(|p| p.closed) {
+            let on_faces = box_faces(b)
+                .iter()
+                .filter(|bf| {
+                    faces
+                        .iter()
+                        .any(|f| on(std::slice::from_ref(*bf), f).is_some())
+                })
+                .count();
+            if on_faces >= 2 {
+                ids.push(b.id);
+            }
+        }
+        ids
     }
 
     #[test]
@@ -3502,7 +4569,16 @@ mod tests {
         sim.run(2.0, |_| look(0.0), |_, _| {});
         let seen = box_planes(sim.planes.planes(), &sim.scene, &faces);
         eprintln!("box seen as {seen:?}");
-        assert_eq!(seen.len(), 2, "{}", dump(sim.planes.planes()));
+        // Its top and side are one closed box (board #5401), not two planes.
+        assert_eq!(seen.len(), 1, "{}", dump(sim.planes.planes()));
+        assert!(
+            sim.planes
+                .planes()
+                .iter()
+                .any(|p| p.id == seen[0] && p.closed),
+            "{}",
+            dump(sim.planes.planes())
+        );
         sim.scene.remove(&r.cuboid);
         let removed = sim.t;
         let mut gone_at = None;
@@ -3529,7 +4605,7 @@ mod tests {
         let mut sim = Sim::new(r.scene.clone(), SENSOR, 6);
         sim.run(2.0, |_| look(0.0), |_, _| {});
         let seen = box_planes(sim.planes.planes(), &sim.scene, &faces);
-        assert_eq!(seen.len(), 2);
+        assert_eq!(seen.len(), 1);
         let t0 = sim.t;
         sim.run(1.0, |t| look(180.0 * (t - t0)), |_, _| {});
         sim.scene.remove(&r.cuboid);
@@ -3542,7 +4618,7 @@ mod tests {
                     .iter()
                     .filter(|p| seen.contains(&p.id))
                     .count();
-                assert_eq!(kept, 2, "box dropped out of view at {t}");
+                assert_eq!(kept, 1, "box dropped out of view at {t}");
             },
         );
         let t1 = sim.t;
@@ -3886,6 +4962,8 @@ mod tests {
             half: Vec3::new(0.9, 1.1, PLANE_HALF_THICKNESS_M),
             confidence: 0.8,
             last_seen_s: 3.0,
+            closed: false,
+            faces: [0; 3],
         };
         let b = to_obstacle_box(&p);
         assert_close!(b.center, [1.0, 1.2, -2.0]);
@@ -3971,7 +5049,7 @@ mod tests {
             len: 81,
             mean_range: 2.0,
         };
-        Tracked::new(1, &patch, |_| [-half[0], half[0], -half[1], half[1]])
+        Tracked::new(1, &patch, None, |_| [-half[0], half[0], -half[1], half[1]])
     }
 
     #[test]
@@ -4360,6 +5438,305 @@ mod tests {
                 assert_surface(planes, &table, KIND_TABLE, "low table");
             }
         }
+    }
+
+    // ---- Closed geometry (board #5401) -----------------------------------
+
+    /// A room 5 m wide (x -2.5..2.5) and 5 m deep (z -3..2) whose ceiling is
+    /// flat at 2.7 m from x = -0.8 and slopes `deg` down from there to the
+    /// left wall: the slope's rectangle and the flat's.
+    fn vaulted(deg: f32) -> (Scene, Rect, Rect) {
+        let mut scene = Scene::default();
+        let (s, c) = deg.to_radians().sin_cos();
+        let run = 1.7;
+        let low = 2.7 - run * s / c;
+        scene.add(level(0.0, [-2.5, 2.5], [-3.0, 2.0], true));
+        let flat = scene.add(level(2.7, [-0.8, 2.5], [-3.0, 2.0], false));
+        let slope = scene.add(Rect {
+            c: Vec3::new(-0.8 - 0.5 * run, 0.5 * (2.7 + low), -0.5),
+            u: Vec3::NEG_Z,
+            v: Vec3::new(c, s, 0.0),
+            hu: 2.5,
+            hv: 0.5 * run / c,
+        });
+        scene.add(upright([-2.5, -3.0], [2.5, -3.0], [0.0, 2.7]));
+        scene.add(upright([2.5, -3.0], [2.5, 2.0], [0.0, 2.7]));
+        scene.add(upright([-2.5, 2.0], [-2.5, -3.0], [0.0, low]));
+        let (flat, slope) = (scene.rect(flat), scene.rect(slope));
+        (scene, flat, slope)
+    }
+
+    #[test]
+    fn a_vaulted_ceiling_is_two_ceilings_meeting_at_the_crease() {
+        // A flat ceiling and an 18 degree slope, seen from three eye
+        // heights: two ceiling planes, each fitted to its own part.
+        for (eye, seed) in [(0.76, 41), (1.2, 42), (1.7, 43)] {
+            let (scene, flat, slope) = vaulted(18.0);
+            let mut sim = Sim::new(scene, SENSOR, seed);
+            let view = cam(Vec3::new(0.6, eye, 1.2), 20.0, 25.0);
+            sim.run(4.0, |_| view, |_, _| {});
+            let planes = sim.planes.planes();
+            eprintln!("vault from {eye} m: {} planes", planes.len());
+            let f = assert_tight(planes, &flat, KIND_CEILING, "flat ceiling", 2.0, 0.03);
+            let s = assert_tight(planes, &slope, KIND_CEILING, "slope", 2.0, 0.03);
+            assert_ne!(f, s, "eye {eye}: {}", dump(planes));
+            assert!(crate::live_rec::doubles(planes).is_empty(), "eye {eye}");
+        }
+    }
+
+    #[test]
+    fn a_crease_of_8_degrees_is_kept_and_one_of_3_is_one_plane() {
+        for (deg, two) in [(8.0, true), (3.0, false)] {
+            let (scene, flat, slope) = vaulted(deg);
+            let mut sim = Sim::new(scene, SENSOR, 44);
+            let view = cam(Vec3::new(0.6, 1.2, 1.2), 20.0, 25.0);
+            sim.run(4.0, |_| view, |_, _| {});
+            let planes = sim.planes.planes();
+            let ceilings = planes.iter().filter(|p| p.kind == KIND_CEILING).count();
+            eprintln!("a {deg} degree crease: {ceilings} ceiling planes");
+            if two {
+                let a = on(planes, &flat).unwrap_or_else(|| panic!("{deg}: flat{}", dump(planes)));
+                let b =
+                    on(planes, &slope).unwrap_or_else(|| panic!("{deg}: slope{}", dump(planes)));
+                assert_ne!(a.0.id, b.0.id, "{deg} degrees: {}", dump(planes));
+            } else {
+                assert_eq!(ceilings, 1, "{deg} degrees: {}", dump(planes));
+            }
+        }
+    }
+
+    /// The reported plane on `truth` of `kind`, within `deg` and `m`.
+    fn assert_tight(
+        planes: &[LivePlane],
+        truth: &Rect,
+        kind: u32,
+        name: &str,
+        deg: f32,
+        m: f32,
+    ) -> u32 {
+        let Some((p, angle, off)) = on(planes, truth) else {
+            panic!("no plane on the {name}: {}", dump(planes));
+        };
+        eprintln!(
+            "  {name}: #{} {} {angle:.2} deg, {:.1} cm",
+            p.id,
+            crate::surfaces::kind_name(p.kind),
+            off * 100.0
+        );
+        assert_eq!(p.kind, kind, "{name}: {}", dump(std::slice::from_ref(p)));
+        assert!(angle < deg && off < m, "{name}: {angle} deg, {off} m");
+        p.id
+    }
+
+    /// The closed boxes of `planes` with at least two faces on `faces`.
+    fn boxes_on(planes: &[LivePlane], faces: &[Rect]) -> Vec<LivePlane> {
+        planes
+            .iter()
+            .filter(|p| {
+                p.closed
+                    && box_faces(p)
+                        .iter()
+                        .filter(|bf| {
+                            faces
+                                .iter()
+                                .any(|f| on(std::slice::from_ref(*bf), f).is_some())
+                        })
+                        .count()
+                        >= 2
+            })
+            .copied()
+            .collect()
+    }
+
+    /// How far a box is from a true cuboid (center and size, m) and how far
+    /// its axes turn from the cuboid's (degrees).
+    fn box_error(b: &LivePlane, center: Vec3, size: Vec3, turn: Quat) -> (f32, f32, f32) {
+        let axes = [turn * Vec3::X, turn * Vec3::Y, turn * Vec3::Z];
+        let mut worst = 0.0f32;
+        let mut sized = [0.0f32; 3];
+        for (k, a) in [b.rot * Vec3::X, b.rot * Vec3::Y, b.rot * Vec3::Z]
+            .iter()
+            .enumerate()
+        {
+            let (i, cos) = axes
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (i, t.dot(*a).abs()))
+                .fold((0, 0.0), |m, x| if x.1 > m.1 { x } else { m });
+            worst = worst.max(cos.min(1.0).acos().to_degrees());
+            sized[i] = 2.0 * b.half[k];
+        }
+        let size_err = (Vec3::from(sized) - size).abs().max_element();
+        (b.center.distance(center), size_err, worst)
+    }
+
+    #[test]
+    fn a_box_seen_corner_on_is_one_box_through_a_walk_around_it() {
+        // A 0.6 x 0.5 x 0.6 m box on the floor, seen from above a corner
+        // (three faces), then walked 90 degrees around at 2 m: one box,
+        // one id. A table top beside it stays a plane.
+        let mut scene = Scene::default();
+        scene.room([-3.0, 3.0], [-4.0, 2.5], 2.6);
+        let cube = scene.cuboid([-0.3, 0.3], [-1.8, -1.2], 0.5);
+        let table = scene.add(level(0.75, [0.9, 1.7], [-1.9, -1.3], true));
+        let faces: Vec<Rect> = cube.iter().map(|&i| scene.rect(i)).collect();
+        let table = scene.rect(table);
+        let mut sim = Sim::new(scene, SENSOR, 45);
+        sim.grid = 64;
+        let center = Vec3::new(0.0, 0.25, -1.5);
+        let at = |deg: f32| {
+            let a = deg.to_radians();
+            let pos = center + Vec3::new(2.0 * a.sin(), 1.35, 2.0 * a.cos());
+            let look = (center - pos).normalize();
+            cam(
+                pos,
+                -look.x.atan2(-look.z).to_degrees(),
+                look.y.asin().to_degrees(),
+            )
+        };
+        let start = 45.0;
+        sim.run(2.0, |_| at(start), |_, _| {});
+        let first = boxes_on(sim.planes.planes(), &faces);
+        assert_eq!(first.len(), 1, "{}", dump(sim.planes.planes()));
+        let id = first[0].id;
+        let (dc, ds, da) = box_error(&first[0], center, Vec3::new(0.6, 0.5, 0.6), Quat::IDENTITY);
+        eprintln!(
+            "box corner-on: #{id}, center {:.1} cm, size {:.1} cm, axes {da:.2} deg",
+            dc * 100.0,
+            ds * 100.0
+        );
+        assert!(dc < 0.05 && ds < 0.05 && da < 4.0, "{dc} {ds} {da}");
+        assert_tight(
+            sim.planes.planes(),
+            &table,
+            KIND_TABLE,
+            "table top",
+            3.0,
+            0.03,
+        );
+        let t0 = sim.t;
+        sim.run(
+            6.0,
+            |t| at(start + 15.0 * (t - t0)),
+            |t, planes| {
+                let now = boxes_on(planes.planes(), &faces);
+                assert!(
+                    now.len() == 1 && now[0].id == id,
+                    "at {t}: {:?}{}",
+                    now.iter().map(|b| b.id).collect::<Vec<_>>(),
+                    dump(planes.planes())
+                );
+            },
+        );
+        let last = boxes_on(sim.planes.planes(), &faces)[0];
+        let (dc, ds, da) = box_error(&last, center, Vec3::new(0.6, 0.5, 0.6), Quat::IDENTITY);
+        eprintln!(
+            "  after a 90 degree walk: #{}, center {:.1} cm, size {:.1} cm, axes {da:.2} deg",
+            last.id,
+            dc * 100.0,
+            ds * 100.0
+        );
+        assert!(dc < 0.05 && ds < 0.05 && da < 4.0, "{dc} {ds} {da}");
+    }
+
+    #[test]
+    fn a_box_seen_face_on_stays_a_plane() {
+        let mut scene = Scene::default();
+        scene.room([-3.0, 3.0], [-4.0, 2.5], 2.6);
+        let cube = scene.cuboid([-0.3, 0.3], [-1.8, -1.2], 0.5);
+        let front = scene.rect(cube[1]);
+        let mut sim = Sim::new(scene, SENSOR, 46);
+        sim.grid = 64;
+        sim.run(3.0, |_| cam(Vec3::new(0.0, 0.25, 0.3), 0.0, 0.0), |_, _| {});
+        let planes = sim.planes.planes();
+        assert!(planes.iter().all(|p| !p.closed), "{}", dump(planes));
+        on(planes, &front).unwrap_or_else(|| panic!("no front face{}", dump(planes)));
+    }
+
+    #[test]
+    fn two_walls_and_the_floor_meet_with_no_gap() {
+        // Looking into a corner: each wall reaches the other and the floor,
+        // and the floor reaches both walls.
+        let mut scene = Scene::default();
+        let [floor, _, front, left, _, _] = scene.room([-2.0, 2.0], [-2.0, 2.5], 2.6);
+        let (front, left, floor) = (scene.rect(front), scene.rect(left), scene.rect(floor));
+        let mut sim = Sim::new(scene, SENSOR, 47);
+        sim.run(
+            10.0,
+            |_| cam(Vec3::new(-0.6, 1.6, 0.4), 40.0, -20.0),
+            |_, _| {},
+        );
+        let planes = sim.planes.planes();
+        let reach = |p: &LivePlane, axis: Vec3, to: f32| {
+            plane_corners(p)
+                .iter()
+                .map(|c| (c.dot(axis) - to).abs())
+                .fold(f32::MAX, f32::min)
+        };
+        let f = on(planes, &front)
+            .unwrap_or_else(|| panic!("front{}", dump(planes)))
+            .0;
+        let l = on(planes, &left)
+            .unwrap_or_else(|| panic!("left{}", dump(planes)))
+            .0;
+        let g = on(planes, &floor)
+            .unwrap_or_else(|| panic!("floor{}", dump(planes)))
+            .0;
+        let gaps = [
+            ("front wall to the left wall", reach(f, Vec3::X, -2.0)),
+            ("left wall to the front wall", reach(l, Vec3::Z, -2.0)),
+            ("front wall to the floor", reach(f, Vec3::Y, 0.0)),
+            ("left wall to the floor", reach(l, Vec3::Y, 0.0)),
+            ("floor to the front wall", reach(g, Vec3::Z, -2.0)),
+            ("floor to the left wall", reach(g, Vec3::X, -2.0)),
+        ];
+        for (name, gap) in gaps {
+            eprintln!("  corner: {name} {:.1} cm", gap * 100.0);
+            assert!(gap < 0.03, "{name}: {gap}{}", dump(planes));
+        }
+    }
+
+    #[test]
+    fn a_cabinet_turned_30_degrees_still_closes_into_a_box() {
+        // A 0.8 x 1.1 x 0.5 m cabinet turned 30 degrees off the room's
+        // walls: its faces match no room direction, need more evidence, and
+        // still close into one box.
+        let mut scene = Scene::default();
+        scene.room([-3.0, 3.0], [-4.0, 2.5], 2.6);
+        let turn = Quat::from_rotation_y(30f32.to_radians());
+        let center = Vec3::new(0.3, 0.55, -1.8);
+        let mut cab = Scene::default();
+        let ids = cab.cuboid([-0.4, 0.4], [-0.25, 0.25], 1.1);
+        let mut faces = Vec::new();
+        for i in ids {
+            let r = cab.rect(i);
+            let moved = Rect {
+                c: turn * (r.c - Vec3::new(0.0, 0.55, 0.0)) + center,
+                u: turn * r.u,
+                v: turn * r.v,
+                ..r
+            };
+            faces.push(moved);
+            scene.add(moved);
+        }
+        let mut sim = Sim::new(scene, SENSOR, 48);
+        sim.grid = 64;
+        sim.run(
+            4.0,
+            |_| cam(Vec3::new(-0.4, 1.7, 0.2), -15.0, -25.0),
+            |_, _| {},
+        );
+        let planes = sim.planes.planes();
+        let boxes = boxes_on(planes, &faces);
+        assert_eq!(boxes.len(), 1, "{}", dump(planes));
+        let (dc, ds, da) = box_error(&boxes[0], center, Vec3::new(0.8, 1.1, 0.5), turn);
+        eprintln!(
+            "cabinet at 30 degrees: #{}, center {:.1} cm, size {:.1} cm, axes {da:.2} deg",
+            boxes[0].id,
+            dc * 100.0,
+            ds * 100.0
+        );
+        assert!(da < 4.0, "{da}");
     }
 
     #[test]
