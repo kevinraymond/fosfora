@@ -856,8 +856,10 @@ it. The slab jumps, it does not glide. The floor is the same plane wherever
 its center is, so collisions and the depth occluder do not change, and the
 rings spread from under the head in the world. Only a pattern drawn in the
 face's own frame (streamlines, curls, a ported effect assigned to the stage
-floor) moves, and only at a jump. The height stays y = 0. Seated, the slab
-is at the stage's origin as before.
+floor) moves, and only at a jump. In roam its height follows the live
+planes' floor once the finder has one ("Live planes", "Wiring"), and stays
+y = 0 until then. Seated, the slab is at the stage's origin at y = 0, as
+before.
 
 **Something to see.** In roam, when the effect showing is the surface-born
 one (Embers) and nothing in reach carries emitter weight, the show switches
@@ -892,10 +894,11 @@ it on; "stay here", "seated", "stop roaming", "roam off" and "seated mode"
 turn it off. These are grammar phrases only. The on-device model and the
 agents' actions do not know them.
 
-**Live planes.** A later step (board #5391) adds surface boxes found in the
-live depth map while roaming. In `app.rs` they are chained after the room's
-boxes once a frame, into the one list every reader of the room's boxes
-uses. The list is empty until then.
+**Live planes.** Surface boxes found in the live depth map while roaming
+(board #5391, wired by #5397) are chained after the room's boxes once a
+frame in `app.rs`, into the one list every reader of the room's boxes uses.
+The space fit, the room editor, the voice path's vocabulary and the surface
+labels pass them by. "Live planes" below has the rules.
 
 **Knobs.** `debug.fosfora.roam 0|1` forces roam for a launch, not saved,
 for unworn tests where the head never moves; a press or a spoken roam takes
@@ -920,8 +923,8 @@ The effects draw on the room's surfaces, and today those come only from the
 room scan. A wearer who walks somewhere the scan never covered has nothing to
 draw on. The live depth map works anywhere but sees only the current view and
 keeps nothing. `live_planes.rs` turns it into a small, stable set of planes in
-world space. It is plain numbers with desktop tests. Nothing on the device
-calls it yet.
+world space. It is plain numbers with desktop tests. Since board #5397 the
+headset's depth map feeds it ("Wiring", below).
 
 **What it takes.** One observation per update: the depth camera's pose and
 fov, and a row-major grid of world points, row 0 at the top, `None` where the
@@ -992,8 +995,8 @@ view is dropped after 1.8 s. Over 100 noise seeds the scripted tests failed
 once in 900 runs: on the 80x80 grid, one of 40 panels was reported 10.5
 degrees off.
 
-**Not yet.** Nothing feeds it from the device, and the read-back runs once a
-second today. At 40x40 a cell is 8 cm at 1.5 m and 16 cm at 3 m, so a table
+**Not yet.** The wiring reads 64x64 by default (below). At 40x40 a cell is
+8 cm at 1.5 m and 16 cm at 3 m, so a table
 top 2.3 m from a standing wearer spans two rows and is not found, and 40
 separate patches in one view need the 80x80 grid. The noise model is assumed, not measured. On
 noise-free depth the correction leans slanted walls 2.5 degrees the other way,
@@ -1001,3 +1004,126 @@ so the Quest's real noise has to be measured before the model is trusted.
 Planes are not saved, and their ids last one session, so the room file must
 not key behaviors to them. Horizontal planes take their yaw from their first
 patch, not from the walls. No meshes, no curved surfaces.
+
+### Wiring (board #5397)
+
+`live_wire.rs` feeds the finder from the headset and puts its planes into
+the show. Its rules are plain numbers with desktop tests, and so is its
+worker thread.
+
+**The read-back.** The self-check's shape, made for the finder. A compute
+pass loads a 64x64 grid of the left depth layer into a buffer, and the
+buffer is mapped a few frames later. The pass and its copy ride in the
+frame's one submission, since a submit of its own cost about 0.8 ms. Nothing
+waits on the map: the frame loop polls it. One layer, the left, because the
+two layers see nearly the same room and one costs half as much. It runs 4
+times a second while live planes are on, with or without room boxes. Each
+grid carries the pose and fov its image was acquired with, its near and far,
+and when. The finder unprojects with those, not with the current frame's.
+The self-check runs as it did.
+
+**The worker.** The frame loop hands each read-back to a thread through a
+slot that holds one job, so a newer one replaces one the thread has not
+taken. The thread runs `unproject_grid` and `LivePlanes::update` and sends
+back the reported planes, `floor_y`, the `Stats` and how long the update
+took, with a mean and a max over the last 16. The frame loop never waits
+on it. It hands a job over only when the thread is not holding the slot,
+else it keeps the job for the next frame, and it drains the results with
+`try_recv`.
+
+**When it runs.** While roam is on and the depth provider runs. Off,
+nothing is read back and the thread sleeps. Each time it turns on, the
+finder starts fresh. `debug.fosfora.liveplanes 1` also runs it with roam
+off, to measure in a scanned room, and 0 keeps it off.
+
+**Into the show.** Each frame the reported planes become obstacle boxes
+after the room's, so the surfaces pass, the emitters and the collisions
+treat them as room surfaces. Each runs its kind's default behavior.
+
+- A live plane that lies on a scanned box is left out, so a scanned wall is
+  not lit twice. It lies on one when its normal is within 15 degrees of a
+  face's, its center within 10 cm of the face's plane, and more than half
+  of its rectangle over the face. The stage floor counts as such a box. In
+  roam it stands at the finder's floor height, so it already is that
+  surface, 20 m across.
+- The room's boxes come first. Live boxes fill what is left of the 32 in
+  the finder's order (by id), with the stage floor's slot kept, since it is
+  pushed last and would be the one dropped. The count past the budget is
+  logged when it changes.
+- A live plane fades in over 0.6 s from when it is first shown, and out
+  over the same time when it leaves, with its last box. The fade scales the
+  strength in its lane row. The surfaces pass applies that strength to the
+  light and the sim already scales its emitters by it, so nothing in the
+  sim changed. A plane past the budget waits at zero and fades in once it
+  has a box. Collisions do not fade.
+- The space fit takes the room's boxes alone. With the live planes in it,
+  the space would change size as the wearer looks around.
+
+**Never saved.** A live plane's UUID is never written to a room file and
+never enters the room id. Its id lasts one session, so an entry under it
+would name nothing at the next launch, and a room id with it would change
+as the wearer looks around. Every place a box's UUID is kept or hashed, and
+what it does with a live one:
+
+- `room_file::room_id` leaves it out.
+- `RoomFile::assign` writes nothing for it and `assign_kind` skips it.
+  `to_json` never writes one, and a file that names one skips it with a
+  line.
+- The lanes' writers refuse it. `#<k>` and a UUID never name one, a kind
+  passes it by (it follows the kind's new default), and the hand menu's
+  surface rows refuse it.
+- The room editor's ray passes through live planes
+  (`RoomEditor::step_except`). The voice path's vocabulary, its agent and
+  the surface labels leave them out and name the room's surfaces among
+  themselves.
+- The lanes' build key hashes every box's UUID, live ones included. It is a
+  key in memory, so the rows rebuild when a live plane comes or goes.
+- The anchor replay (`debug/anchors.json`) saves the room's located
+  anchors, which never include a live plane.
+
+A live box's label is "live wall", "live table" and so on, which no anchor
+has, so a scanned surface's name never changes because of one.
+
+**The floor.** In roam, once the finder has a floor, the stage floor's slab
+and rings stand at its height. The height is already filtered, so the slab
+follows it directly, at up to 0.25 m/s, which turns a first value well off
+y = 0 into a glide. Seated, it stays at y = 0. Whether the room has a floor
+of its own (the stage floor's emitter flag, its rings and the editor's
+pick) is decided by the room's boxes alone, so a live floor never makes the
+stage floor stand down.
+
+**Noise calibration.** With `debug.fosfora.liveplanesnoise 1` in a scanned
+room the read-back runs whatever roam does. Each texel's ray is cast
+against the room's boxes as the self-check casts it. For a texel whose ray
+meets the nearest face more than 30 degrees off grazing, the depth error
+along the ray goes into a 0.5 m bin by the box's range, from 0.5 to 4.5 m.
+Every 5 s one line gives each bin's count, median and spread (1.4826 times
+the median absolute deviation) in centimeters, and the noise constant that
+spread implies at the bin's middle range. `NOISE_K` stays at 0.01 in this
+step, to be set from those lines.
+
+**Seeing the planes unworn.** `debug.fosfora.liveplanesshow 1` outlines
+every reported plane's rectangle in its kind's color, the ones left out on
+scanned boxes too, with the room editor's highlight shader.
+
+**Knobs.** `debug.fosfora.liveplanes 0|1` (polled once a second, so on and
+off can be compared in one launch; 1 at launch also creates the depth
+provider), `liveplanesgrid` 40..80 (default 64, at launch), `liveplaneshz`
+1..10 (default 4, at launch), `liveplanesnoise 0|1` (at launch) and
+`liveplanesshow 0|1` (polled once a second).
+
+**Log.** At start "live planes: on · grid 64 · 4 Hz · layer left", and
+"live planes: off (roam off)" when it stops. Once a second while it runs
+"live planes: 7 reported (floor 1, wall 3, table 1, other 2) · 12 tracked ·
+floor y -0.02 · update 1.9 ms (max 3.4) · 4.0 Hz · 3 shown, 2 on scanned
+boxes, 1 on the stage floor, 0 over budget". A line when a plane is first
+reported, "live planes: + #12 wall 1.20 x 2.10 m, 1.8 m away", and the
+same with "-" when it leaves. When the count past the budget changes, "live
+planes: 2 over budget (the room's 29 boxes and the stage floor leave 2 of
+32)". The stage floor's height when it moves 5 cm,
+"roam: the stage floor at height -0.02, the live planes' floor". The noise
+line, "live planes noise: 20 reads, error along the ray (cm) by range (m),
+over 30° off grazing: 0.5 n 210 med +0.40 sd 0.60 k 0.0107 · ...".
+
+**Not measured yet.** The read-back's cost, the update's time on the Quest
+and the depth noise are for the device.

@@ -430,6 +430,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       own phase: the collide's GPU cost divided by N, a collision caught up to N-1 frames late; default 2)
     //   adb shell setprop debug.fosfora.depthcollideupload 0|1   (diagnostic: 0 runs the atlas pass and writes the sim's rows but skips the
     //       copy into the obstacle texture, so nothing collides; splits the atlas pass's cost from the copy's)
+    //   adb shell setprop debug.fosfora.liveplanes 0|1           (board #5397: live planes, surfaces found in the depth map (live_planes.rs) put into the show
+    //       after the room's boxes (live_wire.rs); unset, on while roam is on and the depth provider runs; 1 also with roam off (a scanned
+    //       room, for measurement), 0 never; live: polled once a second, so on and off can be A/B'd in one launch; 1 at launch creates
+    //       the depth provider with every other depth knob off)
+    //   adb shell setprop debug.fosfora.liveplanesgrid 64        (live planes: the read-back's cells per side of the left depth layer, 40..80; default 64;
+    //       read at launch)
+    //   adb shell setprop debug.fosfora.liveplaneshz 4           (live planes: read-backs a second, 1..10; default 4; read at launch)
+    //   adb shell setprop debug.fosfora.liveplanesnoise 0|1      (live planes: in a scanned room, the depth map's error against the room's boxes by range,
+    //       for texels whose ray meets a face more than 30 degrees off grazing, one line every 5 s ("live planes noise: ..."), to set
+    //       live_planes::NOISE_K from; runs the read-back whatever roam is and creates the depth provider; default 0; read at launch)
+    //   adb shell setprop debug.fosfora.liveplanesshow 0|1       (live planes: each reported plane's rectangle as an outline in its kind's color, for an
+    //       unworn capture of what was found; default 0; live: polled once a second)
     //   The envdepth and depthcollide knobs are read at startup (restart the app after a change), except envdepthhands; with envdepth,
     //   envdepthshow, envdepthcheck and depthcollide all 0 no depth provider is created, so the baseline is the app without it.
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
@@ -709,7 +721,22 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             "debug.fosfora.depthcollide",
             env_occlude || env_show || env_check,
         );
-    let env_depth = (env_occlude || env_show || env_check || env_collide).then(|| {
+    // Board #5397: live planes (`live_wire.rs`). The read-back is built with
+    // the depth provider in the mixed modes and idles until live planes
+    // run; the on/off knob is polled live, so a launch can A/B them.
+    let live_grid =
+        crate::live_wire::grid_knob(debug_prop("debug.fosfora.liveplanesgrid").as_deref());
+    let live_hz = crate::live_wire::hz_knob(debug_prop("debug.fosfora.liveplaneshz").as_deref());
+    let live_noise = toggle("debug.fosfora.liveplanesnoise", false);
+    let mut live_knob = switch("debug.fosfora.liveplanes");
+    let mut live_outline = toggle("debug.fosfora.liveplanesshow", false);
+    let env_depth = (env_occlude
+        || env_show
+        || env_check
+        || env_collide
+        || live_noise
+        || live_knob == Some(true))
+    .then(|| {
         let d = EnvDepthOptions::default();
         EnvDepthOptions {
             occlude: env_occlude,
@@ -747,6 +774,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 .map_or(d.collide_every, |v| {
                     v.clamp(1, crate::env_depth::COLLIDE_EVERY_MAX)
                 }),
+            planes_grid: if mixed { live_grid as u32 } else { 0 },
         }
     });
     // `envdepthhands` is live: polled once a second (below) and applied
@@ -1660,12 +1688,55 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     if let Some(speed) = roam_walk {
         info!("roam: head speed faked at {speed:.2} m/s (debug.fosfora.roamwalk)");
     }
-    // Board #5391: the live planes (`live_planes.rs`, a later step) are
-    // extra surface boxes found in the depth map while roaming. They are
-    // chained after the room's boxes once a frame, at the top of the frame
-    // below, and everything that reads the room's boxes then sees them.
-    // Empty in this step.
-    let live_boxes: Vec<ObstacleBox> = Vec::new();
+    // Board #5391, #5397: the live planes (`live_planes.rs`, wired by
+    // `live_wire.rs`) are extra surface boxes found in the depth map while
+    // roaming. They are chained after the room's boxes once a frame, at
+    // the top of the frame below, and everything that reads the room's
+    // boxes then sees them, but the space fit, the room editor, the voice
+    // path's vocabulary and the surface labels. The worker thread starts
+    // the first time they run; each start is a new epoch (a fresh finder).
+    // The read-back exists only with the depth provider in a mixed mode.
+    let live_possible = session.has_env_depth() && env_depth.is_some_and(|o| o.planes_grid > 0);
+    if live_possible {
+        gfx.build_live_outlines(crate::live_planes::MAX_PLANES);
+    }
+    let live_reading = if env_depth.is_some_and(|o| o.flip_v) {
+        crate::env_depth::Reading::RowTop
+    } else {
+        crate::env_depth::Reading::RowBottom
+    };
+    let mut live_worker: Option<crate::live_wire::Worker> = None;
+    let mut live_on = false;
+    let mut live_epoch = 0u64;
+    // The newest snapshot of this epoch, and one just in from the worker
+    // (its appear and leave lines are logged in the frame).
+    let mut live_snap: Option<crate::live_wire::Snapshot> = None;
+    let mut live_fresh: Option<crate::live_wire::Snapshot> = None;
+    let mut live_show = crate::live_wire::LiveShow::default();
+    // The updates count at the last status line and when, for its rate.
+    let mut live_rate = (Instant::now(), 0u64);
+    let mut live_unavailable_logged = false;
+    // The planes past the budget as last logged.
+    let mut live_over_logged = 0usize;
+    // The stage floor's height (`live_wire::stage_floor_y`) and the height
+    // last logged.
+    let mut stage_floor_y = 0.0f32;
+    let mut stage_floor_logged = 0.0f32;
+    // The room's boxes for the noise calibration, refreshed each frame
+    // while it is on.
+    let mut noise_boxes: Vec<crate::env_depth::Obb> = Vec::new();
+    if live_noise {
+        if live_possible {
+            live_worker = spawn_live_worker();
+            session.set_live_planes(Some(live_hz));
+            info!(
+                "live planes noise: on (debug.fosfora.liveplanesnoise): grid {live_grid} of the left layer at {live_hz} Hz against the room's boxes, a line every {} s",
+                crate::live_wire::NOISE_EVERY_S
+            );
+        } else {
+            info!("live planes noise: no depth read-back in this run");
+        }
+    }
 
     loop {
         // While the session is running, Android events are drained without
@@ -1788,6 +1859,44 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             scan_logged = scan_state;
         }
+        // Board #5397: live planes run while roam is on (or the knob says),
+        // where there is a depth read-back. Each start is a fresh finder;
+        // off, the read-back stops and the planes fade out of the show.
+        let live_want = crate::live_wire::runs(roam.now().is_on(), live_knob);
+        if live_want && !live_possible && !live_unavailable_logged {
+            live_unavailable_logged = true;
+            info!(
+                "live planes: no depth read-back in this run (no depth provider, or not a mixed mode)"
+            );
+        }
+        let live_want = live_want && live_possible;
+        if live_want != live_on {
+            live_on = live_want;
+            live_snap = None;
+            live_fresh = None;
+            if live_on {
+                live_epoch += 1;
+                live_show.clear();
+                if live_worker.is_none() {
+                    live_worker = spawn_live_worker();
+                }
+                live_rate = (Instant::now(), 0);
+                info!("{}", crate::live_wire::start_line(live_grid, live_hz));
+            } else {
+                info!(
+                    "live planes: off ({})",
+                    crate::live_wire::why(roam.now().is_on(), live_knob)
+                );
+            }
+            session.set_live_planes((live_on || live_noise).then_some(live_hz));
+        }
+        if let Some(w) = live_worker.as_mut()
+            && let Some(snap) = w.poll()
+            && live_on
+            && snap.epoch == live_epoch
+        {
+            live_fresh = Some(snap);
+        }
         // The hand menu's rescan, carried out of the frame closure (the
         // session is borrowed inside it).
         let mut rescan = false;
@@ -1796,19 +1905,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
             // Board #3789: the governor's signal, taken after the frame.
             gpu_frame = input.perf.app_gpu_ms;
-            // Board #5391: the room's boxes and the live planes after them
-            // (`live_boxes`, empty in this step), the one list every user
-            // of the room's boxes below reads.
-            let room_boxes: Vec<ObstacleBox> = input
-                .room_boxes
-                .iter()
-                .chain(live_boxes.iter())
-                .copied()
-                .collect();
+            // Board #5397: a snapshot just in from the live planes' worker:
+            // the planes it reports first and the ones gone, then it is the
+            // frame's.
+            if let Some(fresh) = live_fresh.take() {
+                let before = live_snap.as_ref().map_or(&[][..], |s| s.planes.as_slice());
+                let head = glam::Vec3::from(input.head);
+                for line in crate::live_wire::change_lines(before, &fresh.planes, head) {
+                    info!("{line}");
+                }
+                live_snap = Some(fresh);
+            }
             // Board #5393: in roam the stage floor's slab re-centers under
             // the head once the head is 3 m from its center
             // (`roam::floor_center`); seated, it is at the stage's origin.
-            // y = 0 either way.
+            // Board #5397: in roam it stands at the live planes' floor
+            // height, following it (`live_wire::stage_floor_y`); seated,
+            // and in roam until the finder has a floor, at y = 0.
             let roam_on = roam.now().is_on();
             let floor_at = if roam_on {
                 crate::roam::floor_center(stage_floor_at, glam::Vec3::from(input.head))
@@ -1824,10 +1937,86 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 );
             }
             stage_floor_at = floor_at;
+            let floor_y = crate::live_wire::stage_floor_y(
+                stage_floor_y,
+                roam_on,
+                live_snap.as_ref().and_then(|s| s.floor_y),
+                dt,
+            );
+            let back_to_zero = floor_y.abs() < 1e-6 && stage_floor_logged.abs() >= 1e-6;
+            if floor_box.is_some() && ((floor_y - stage_floor_logged).abs() >= 0.05 || back_to_zero) {
+                info!(
+                    "roam: the stage floor at height {floor_y:.2}{}",
+                    if roam_on { ", the live planes' floor" } else { ", seated" }
+                );
+                stage_floor_logged = floor_y;
+            }
+            stage_floor_y = floor_y;
             let floor_box = floor_box.map(|f| ObstacleBox {
-                center: [floor_at.x, f.center[1], floor_at.y],
+                center: [floor_at.x, f.center[1] + stage_floor_y, floor_at.y],
                 ..f
             });
+            // Board #5391, #5397: the room's boxes and the live planes after
+            // them, the one list every user of the room's boxes below reads,
+            // but the space fit, the room editor, the voice path's
+            // vocabulary and the surface labels, which take the room's alone
+            // or pass the live ones by. A live plane on a scanned box or on
+            // the stage floor is left out; the rest take the boxes the room
+            // and the stage floor leave of the 32, by id, fading in and out
+            // (`live_wire::LiveShow`).
+            let scanned_n = input.room_boxes.len();
+            let live_planes = live_snap.as_ref().map_or(&[][..], |s| s.planes.as_slice());
+            let scanned: Vec<crate::env_depth::Obb> = if live_planes.is_empty() {
+                Vec::new()
+            } else {
+                input.room_boxes.iter().map(obb_of).collect()
+            };
+            let stage_obb = floor_box.as_ref().map(obb_of);
+            let live_room = crate::live_wire::room_for_live(scanned_n, floor_box.is_some());
+            let shown = live_show.step(dt, live_planes, &scanned, stage_obb.as_ref(), live_room);
+            let live_levels: Vec<f32> = shown.iter().map(|l| l.level).collect();
+            let room_boxes: Vec<ObstacleBox> = input
+                .room_boxes
+                .iter()
+                .copied()
+                .chain(shown.iter().map(|l| live_box(&l.b)))
+                .collect();
+            let over = live_show.counts().over_budget;
+            if over != live_over_logged {
+                live_over_logged = over;
+                info!(
+                    "live planes: {over} over budget (the room's {scanned_n} boxes{} leave {live_room} of {})",
+                    if floor_box.is_some() {
+                        " and the stage floor"
+                    } else {
+                        ""
+                    },
+                    crate::surfaces::SURFACE_LANE_ROWS
+                );
+            }
+            let live_range = crate::live_wire::unpickable(scanned_n, live_levels.len());
+            if live_noise {
+                noise_boxes.clear();
+                noise_boxes.extend(input.room_boxes.iter().filter(|b| !b.hidden).map(obb_of));
+            }
+            // Board #5397, `debug.fosfora.liveplanesshow`: every reported
+            // plane's rectangle outlined in its kind's color, the ones left
+            // out on scanned boxes too.
+            if live_possible {
+                let head = glam::Vec3::from(input.head);
+                let rows: Vec<[[f32; 4]; crate::highlight::UNIFORM_ROWS]> = if live_outline {
+                    live_planes
+                        .iter()
+                        .map(|p| {
+                            let face = crate::surfaces::acting_face(p.center, p.rot, p.half, head);
+                            crate::highlight::outline(&face, crate::surfaces::palette(p.kind))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                gfx.set_live_outlines(&rows);
+            }
             // Board #3326: the boxes in the obstacle block's order (the
             // room's, then the stage floor) and each one's behavior; the
             // knob waits while the room is on but has no anchors yet.
@@ -1837,7 +2026,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 .map(|(i, b)| crate::lanes::LaneBox {
                     uuid: b.uuid,
                     kind: b.kind,
-                    label: input.room_labels.get(i).map_or("", String::as_str),
+                    label: if i < scanned_n {
+                        input.room_labels.get(i).map_or("", String::as_str)
+                    } else {
+                        crate::live_wire::label(b.kind)
+                    },
                 })
                 .chain(floor_box.iter().map(|f| crate::lanes::LaneBox {
                     uuid: f.uuid,
@@ -2334,9 +2527,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 // The room fit for this frame's boxes and anchor (the
                 // stage floor is not a room box); applied after the frame.
+                // Board #5397: the room's boxes alone: with the live planes
+                // the space would change size as the wearer looks around.
                 room_fit = crate::space::fit_room(
                     glam::Vec3::from(anchor),
-                    room_boxes.iter().map(|b| {
+                    input.room_boxes.iter().map(|b| {
                         (
                             glam::Vec3::from(b.center),
                             glam::Quat::from_array(b.rot),
@@ -2344,7 +2539,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         )
                     }),
                 )
-                .map(|half| (half, room_boxes.len()));
+                .map(|half| (half, scanned_n));
                 // Seated reach: each hand's joint set moves out along the
                 // arm past a comfortable reach. Only the sim sees the far
                 // hand; occlusion (the skinned mesh), pinch gestures and the
@@ -2548,7 +2743,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // right far pinch point. Off, it runs once more to clear.
                 if edit_on || edit_was_on {
                     let head = glam::Vec3::from(input.head);
-                    let pick_boxes = ray_boxes(&room_boxes, floor_box.as_ref());
+                    let pick_boxes = ray_boxes(&room_boxes, scanned_n, floor_box.as_ref());
                     let mut tap = edit_tap && !panel_up;
                     let ray = match pick_test_s {
                         Some(every) if edit_on => {
@@ -2565,7 +2760,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             crate::room_edit::Ray::through(head, glam::Vec3::from(p) + offsets[1])
                         }),
                     };
-                    let frame = editor.step(&crate::room_edit::EditInput {
+                    // Board #5397: the live planes are not offered.
+                    let frame = editor.step_except(&crate::room_edit::EditInput {
                         on: edit_on,
                         ray,
                         boxes: &pick_boxes,
@@ -2576,7 +2772,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         tap,
                         hold: edit_hold && !panel_up,
                         dt,
-                    });
+                    }, live_range.clone());
                     // The pointed box as the log names it.
                     let named = |k: usize| {
                         let (label, uuid8) = lane_boxes
@@ -2775,8 +2971,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 if let Some(f) = &floor_box {
                     set.push_box(&ObstacleBox {
+                        // Board #5397: the room's kinds alone; a live floor
+                        // is left out on the stage floor.
                         emit: crate::surfaces::synthetic_floor_emit(
-                            room_boxes.iter().map(|b| b.kind),
+                            input.room_boxes.iter().map(|b| b.kind),
                         ),
                         ..*f
                     });
@@ -2803,7 +3001,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         throw = Some((1, Some(head + ahead * 0.5)));
                     }
                     if let Some((hand, pinch)) = throw {
-                        let boxes = ray_boxes(&room_boxes, floor_box.as_ref());
+                        let boxes = ray_boxes(&room_boxes, scanned_n, floor_box.as_ref());
                         let room_n = room_boxes.len();
                         let flight =
                             pinch.and_then(|p| crate::instruments::Flight::aim(head, p, &boxes));
@@ -2919,7 +3117,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         &lanes,
                         &instrument_rows,
                         pour_row,
-                        &cloud_ran.rows(surface_lanes.rows()),
+                        // Board #5397: the live planes' strengths faded.
+                        &cloud_ran.rows(&crate::live_wire::fade_rows(
+                            surface_lanes.rows(),
+                            scanned_n,
+                            live_levels.iter().copied(),
+                        )),
                     );
                 }
                 if let Some(offset) = hand_mesh_test {
@@ -3126,7 +3329,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let vocab = crate::intent::Vocabulary {
                     effects: &world_effects,
                     behaviors: &crate::surfaces::SurfaceBehavior::ALL,
-                    surfaces: crate::intent::surfaces(&lane_boxes),
+                    // Board #5397: not the live planes.
+                    surfaces: crate::live_wire::offered(&lane_boxes),
                     pointed: editor
                         .hit()
                         .filter(|_| controls.edit_room)
@@ -3415,21 +3619,24 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 if stage > 0 {
                     use crate::surface_labels::{MAX_LABELS, Tag, placed, pose};
                     // The lane boxes' names as the grammar has them, and
-                    // their boxes in the same order.
-                    let tags: Vec<Tag> = crate::intent::surfaces(&lane_boxes)
-                        .into_iter()
+                    // their boxes in the same order (board #5397: the live
+                    // planes left out, as the grammar leaves them).
+                    let offered = crate::live_wire::offered(&lane_boxes);
+                    let tags: Vec<Tag> = offered
+                        .iter()
                         .take(MAX_LABELS)
                         .map(|s| Tag {
                             behavior: crate::label::behavior_word(
                                 surface_lanes.effective(s.index, &lane_boxes),
                             ),
-                            name: s.name,
+                            name: s.name.clone(),
                         })
                         .collect();
-                    let boxes = room_boxes.iter().chain(floor_box.iter());
-                    let poses = boxes.enumerate().map(|(k, b)| {
+                    let boxes: Vec<&ObstacleBox> = room_boxes.iter().chain(floor_box.iter()).collect();
+                    let poses = offered.iter().enumerate().filter_map(|(k, s)| {
+                        let b = boxes.get(s.index)?;
                         let (center, half) = (glam::Vec3::from(b.center), glam::Vec3::from(b.half));
-                        (k, pose(center, glam::Quat::from_array(b.rot), half, head, head_rot))
+                        Some((k, pose(center, glam::Quat::from_array(b.rot), half, head, head_rot)))
                     });
                     // Board #5379: labels that crowd on the screen move
                     // apart and point back at their surfaces.
@@ -3598,7 +3805,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 use crate::surfaces::{KIND_CEILING, KIND_FLOOR, SurfaceBehavior};
                 let head = glam::Vec3::from(input.head);
                 let stage_k = room_boxes.len();
-                let scene_floor = room_boxes.iter().any(|b| b.kind == KIND_FLOOR);
+                // Board #5397: the room's floor, not a live one (a live
+                // floor on the stage floor is left out).
+                let scene_floor = input.room_boxes.iter().any(|b| b.kind == KIND_FLOOR);
+                // Board #5397: the live planes' strengths faded.
+                let lane_rows = crate::live_wire::fade_rows(
+                    surface_lanes.rows(),
+                    scanned_n,
+                    live_levels.iter().copied(),
+                );
                 let stage_top = floor_box.map(|b| b.center[1] + b.half[1]);
                 let mut audio = crate::surface_fx::Audio {
                     rms: f.rms,
@@ -3627,7 +3842,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // The lane's behavior, strength, color index and band
                     // (board #3488; a box past the lanes' rows: the
                     // defaults).
-                    let row = surface_lanes.rows().get(k).copied();
+                    let row = lane_rows.get(k).copied();
                     let lane = surface_lanes.behavior(k);
                     let test_rings = ripple_ceiling && b.kind == KIND_CEILING;
                     let (behavior, strength) = if spectrum_box == Some(k) {
@@ -3807,6 +4022,27 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
         })?;
         frame_index += 1;
+        // Board #5397: a depth read-back that landed this frame goes to the
+        // live planes' worker, with the time it was acquired at, for the
+        // finder (live planes on) and the noise bins (their knob).
+        if let Some(grid) = session.take_depth_grid()
+            && let Some(w) = live_worker.as_mut()
+        {
+            let noise = (live_noise && !noise_boxes.is_empty()).then(|| noise_boxes.clone());
+            if live_on || noise.is_some() {
+                w.submit(crate::live_wire::Job {
+                    epoch: live_epoch,
+                    time_s: grid
+                        .acquired
+                        .saturating_duration_since(started)
+                        .as_secs_f32(),
+                    grid,
+                    reading: live_reading,
+                    fit: live_on,
+                    noise,
+                });
+            }
+        }
         if rescan {
             session.rescan_room();
         }
@@ -4135,6 +4371,47 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     scene.alive_count(),
                     scene.emitter_weight()
                 );
+            }
+            // Board #5397: the live planes' knobs, live, and their line
+            // once a second while they run.
+            let knob = switch_now("debug.fosfora.liveplanes");
+            if knob != live_knob {
+                live_knob = knob;
+                info!(
+                    "live planes: debug.fosfora.liveplanes {}",
+                    knob.map_or("unset", |on| if on { "1" } else { "0" })
+                );
+            }
+            let show = switch_now("debug.fosfora.liveplanesshow") == Some(true);
+            if show != live_outline {
+                live_outline = show;
+                info!(
+                    "live planes: outlines {} (debug.fosfora.liveplanesshow)",
+                    if show { "on" } else { "off" }
+                );
+            }
+            if live_on {
+                match &live_snap {
+                    Some(snap) => {
+                        let (since, updates) = live_rate;
+                        let secs = since.elapsed().as_secs_f32().max(1e-3);
+                        let hz = snap.updates.saturating_sub(updates) as f32 / secs;
+                        live_rate = (Instant::now(), snap.updates);
+                        info!(
+                            "{}",
+                            crate::live_wire::status_line(&crate::live_wire::Status {
+                                planes: &snap.planes,
+                                tracked: snap.stats.tracked,
+                                floor_y: snap.floor_y,
+                                mean_ms: snap.mean_ms,
+                                max_ms: snap.max_ms,
+                                hz,
+                                counts: live_show.counts(),
+                            })
+                        );
+                    }
+                    None => info!("live planes: on, no update yet"),
+                }
             }
             // Board #5384: the immersion level once a second while the room
             // is dimmed, and once when it is back.
@@ -4487,7 +4764,11 @@ impl FrameStats {
 /// The boxes a ray from a hand is cast against (the throw's and the room
 /// editor's): the room's, then the stage floor while the room has no
 /// floor, in the lanes' order.
-fn ray_boxes(room: &[ObstacleBox], floor: Option<&ObstacleBox>) -> Vec<crate::instruments::RayBox> {
+fn ray_boxes(
+    room: &[ObstacleBox],
+    scanned: usize,
+    floor: Option<&ObstacleBox>,
+) -> Vec<crate::instruments::RayBox> {
     let ray_box = |b: &ObstacleBox| crate::instruments::RayBox {
         center: glam::Vec3::from(b.center),
         rot: glam::Quat::from_array(b.rot),
@@ -4495,12 +4776,54 @@ fn ray_boxes(room: &[ObstacleBox], floor: Option<&ObstacleBox>) -> Vec<crate::in
         kind: b.kind,
     };
     let mut boxes: Vec<_> = room.iter().map(ray_box).collect();
-    if !room.iter().any(|b| b.kind == crate::surfaces::KIND_FLOOR)
+    // Board #5397: whether the room has a floor of its own, the live
+    // planes (after the first `scanned`) aside.
+    if !room[..scanned.min(room.len())]
+        .iter()
+        .any(|b| b.kind == crate::surfaces::KIND_FLOOR)
         && let Some(f) = floor
     {
         boxes.push(ray_box(f));
     }
     boxes
+}
+
+/// Board #5397: a live plane's box (`live_planes::to_obstacle_box`) as the
+/// obstacle block takes it.
+fn live_box(b: &crate::live_planes::PlaneBox) -> ObstacleBox {
+    ObstacleBox {
+        center: b.center,
+        rot: b.rot,
+        half: b.half,
+        kind: b.kind,
+        emit: b.emit,
+        hidden: b.hidden,
+        uuid: b.uuid,
+    }
+}
+
+// The live planes' budget counts the lane rows, one per obstacle box.
+const _: () = assert!(crate::particles3d::MAX_BOXES == crate::surfaces::SURFACE_LANE_ROWS);
+
+/// An obstacle box as the self-check's and the overlap test's oriented box.
+fn obb_of(b: &ObstacleBox) -> crate::env_depth::Obb {
+    crate::env_depth::Obb {
+        center: glam::Vec3::from(b.center),
+        rot: glam::Quat::from_array(b.rot),
+        half: glam::Vec3::from(b.half),
+    }
+}
+
+/// Board #5397: the live planes' worker thread; `None`, logged, when it
+/// does not start.
+fn spawn_live_worker() -> Option<crate::live_wire::Worker> {
+    match crate::live_wire::Worker::spawn() {
+        Ok(w) => Some(w),
+        Err(e) => {
+            log::warn!("live planes: the worker thread did not start: {e}");
+            None
+        }
+    }
 }
 
 /// Board #3751, V3: the agent's call in flight: its answer's channel, the
@@ -4757,6 +5080,16 @@ fn debug_prop(name: &str) -> Option<String> {
         .ok()?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     (!v.is_empty()).then_some(v)
+}
+
+/// A 0|1 knob polled from the frame loop ([`system_prop`]): `None` unset or
+/// any other value.
+fn switch_now(name: &str) -> Option<bool> {
+    match system_prop(name).as_deref() {
+        Some("0") => Some(false),
+        Some("1") => Some(true),
+        _ => None,
+    }
 }
 
 /// A system property read in place through bionic, without spawning

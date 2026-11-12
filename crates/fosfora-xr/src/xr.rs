@@ -437,6 +437,11 @@ pub struct XrSession {
     system: xr::SystemId,
     /// Display rate to request when the session becomes ready (S5 sweep).
     wanted_hz: Option<f32>,
+    /// Board #5397: the live planes' read-back rate while on
+    /// (`set_live_planes`), handed to the depth provider each frame.
+    live_planes_hz: Option<f32>,
+    /// The last read-back that landed, until `take_depth_grid`.
+    depth_grid: Option<crate::live_wire::DepthGrid>,
 }
 
 impl XrSession {
@@ -680,6 +685,8 @@ impl XrSession {
             events: xr::EventDataBuffer::new(),
             has_refresh_rate_ext: ctx.has_refresh_rate_ext,
             wanted_hz: None,
+            live_planes_hz: None,
+            depth_grid: None,
         })
     }
 
@@ -863,6 +870,29 @@ impl XrSession {
         }
     }
 
+    /// Board #5397: the live planes' read-back on at `hz` read-backs a
+    /// second, or off with `None` (`EnvDepth::set_planes`, applied from the
+    /// next frame). Off drops a grid not yet taken.
+    pub fn set_live_planes(&mut self, hz: Option<f32>) {
+        self.live_planes_hz = hz;
+        if hz.is_none() {
+            self.depth_grid = None;
+        }
+    }
+
+    /// The last live planes' read-back that landed, once.
+    pub fn take_depth_grid(&mut self) -> Option<crate::live_wire::DepthGrid> {
+        self.depth_grid.take()
+    }
+
+    /// Whether this run asked for the environment depth (created, or its
+    /// creation being retried).
+    pub fn has_env_depth(&self) -> bool {
+        self.env_depth
+            .as_ref()
+            .is_some_and(|slot| !matches!(slot, EnvDepthSlot::GaveUp))
+    }
+
     /// Relaunch Space Setup and requery the room's anchors
     /// (`Room::rescan`); nothing without a room.
     pub fn rescan_room(&mut self) {
@@ -1022,15 +1052,25 @@ impl XrSession {
             .env_depth
             .as_mut()
             .and_then(|slot| slot.get(&self.session, self.system, gfx));
-        let env_frame = env.as_deref_mut().and_then(|e| {
+        // Board #5397: the live planes' read-back, on or off as asked; one
+        // that landed is kept for `take_depth_grid`.
+        let mut env_frame = None;
+        if let Some(e) = env.as_deref_mut() {
             e.poll_check(&gfx.device);
-            e.acquire(&self.space, time)
-        });
+            e.set_planes(self.live_planes_hz);
+            if let Some(grid) = e.poll_planes(&gfx.device) {
+                self.depth_grid = Some(grid);
+            }
+            env_frame = e.acquire(&self.space, time);
+        }
         if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref())
             && let Some(collide) = e.prepare_atlas(&gfx.queue, f)
             && let Some(s) = scene.as_deref_mut()
         {
             s.set_depth_collide(collide);
+        }
+        if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref()) {
+            e.prepare_planes(f);
         }
         before_render(&input, scene.as_deref_mut());
 
@@ -1056,7 +1096,9 @@ impl XrSession {
                     )
                 }),
                 atlas: e.atlas_pass(),
+                planes: e.planes_pass(),
             });
+        let planes_recorded = env_passes.planes.is_some();
 
         // The eyes' images, then the faces layer's beside them.
         let mut image_indices = [0u32; EYE_COUNT];
@@ -1091,6 +1133,7 @@ impl XrSession {
         );
         if let Some(e) = env {
             e.note_atlas(atlas);
+            e.note_planes(planes_recorded);
         }
 
         for eye in self.eyes.iter_mut().chain(self.faces.iter_mut()) {

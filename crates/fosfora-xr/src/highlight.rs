@@ -15,6 +15,11 @@
 //! box's behavior acts on (`surfaces::acting_face`: a volume's top, a
 //! plane's face toward the head; step 2h, the face the ray entered
 //! before) lifted [`LIFT_M`] toward the room.
+//!
+//! **Live plane outlines** (board #5397, `debug.fosfora.liveplanesshow`):
+//! the same quad with no fill, a border [`OUTLINE_M`] wide in the plane's
+//! kind's color ([`outline`]), one per reported plane, so a screen capture
+//! shows what the finder found against the passthrough image.
 
 use crate::surfaces::Face;
 
@@ -32,6 +37,9 @@ pub const PULSE_ALPHA: f32 = 0.25;
 pub const COLOR: [f32; 3] = crate::ripple::COLOR;
 /// Rows of [`uniform`], `struct Highlight` in [`HIGHLIGHT_WGSL`].
 pub const UNIFORM_ROWS: usize = 7;
+/// A live plane's outline: its border's width (m) and alpha.
+pub const OUTLINE_M: f32 = 0.03;
+pub const OUTLINE_ALPHA: f32 = 0.6;
 
 /// The uniform rows for `face` at pulse `pulse` (0..1): the four corners
 /// ([`Face::corners`] at [`LIFT_M`]), the shape (the two axes' half
@@ -45,6 +53,17 @@ pub fn uniform(face: &Face, pulse: f32) -> [[f32; 4]; UNIFORM_ROWS] {
     rows[4] = [face.half[0], face.half[1], BORDER_M, 0.0];
     rows[5] = [FILL_ALPHA, BORDER_ALPHA, pulse.clamp(0.0, 1.0), PULSE_ALPHA];
     rows[6] = [COLOR[0], COLOR[1], COLOR[2], 0.0];
+    rows
+}
+
+/// A live plane's outline on `face` in `color` (linear RGB): [`uniform`]'s
+/// rows with no fill and no pulse, the border [`OUTLINE_M`] wide at
+/// [`OUTLINE_ALPHA`].
+pub fn outline(face: &Face, color: [f32; 3]) -> [[f32; 4]; UNIFORM_ROWS] {
+    let mut rows = uniform(face, 0.0);
+    rows[4][2] = OUTLINE_M;
+    rows[5] = [0.0, OUTLINE_ALPHA, 0.0, 0.0];
+    rows[6] = [color[0], color[1], color[2], 0.0];
     rows
 }
 
@@ -156,6 +175,16 @@ mod tests {
         let pulsed = uniform(&desk(), 1.0);
         assert_close!(alpha_at(&pulsed, 0.0, 0.0), FILL_ALPHA + PULSE_ALPHA);
         assert_close!(alpha_at(&pulsed, 0.0, 0.29), BORDER_ALPHA + PULSE_ALPHA);
+    }
+
+    #[test]
+    fn an_outline_is_a_border_alone_in_its_color() {
+        let rows = outline(&desk(), [0.3, 1.0, 0.5]);
+        assert_close!(rows[..4], uniform(&desk(), 0.0)[..4]);
+        assert_close!(alpha_at(&rows, 0.0, 0.0), 0.0);
+        assert_close!(alpha_at(&rows, 0.0, 0.28), OUTLINE_ALPHA);
+        assert_close!(alpha_at(&rows, 0.0, 0.26), 0.0);
+        assert_close!(rows[6], [0.3, 1.0, 0.5, 0.0]);
     }
 
     #[test]

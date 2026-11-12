@@ -40,11 +40,19 @@
 //! The synthetic stage floor has no anchor: an assignment to it is kept
 //! under the all-zero UUID, which no anchor has, and never counts toward
 //! the room id.
+//!
+//! A live plane (board #5397, `live_planes::plane_id`) is never kept: its
+//! id lasts one session, so an entry under it would name nothing at the
+//! next launch, and a room id with it would change as the wearer looks
+//! around. [`room_id`] leaves it out, [`RoomFile::assign`] writes nothing
+//! for it, a file that names one skips it, and [`RoomFile::to_json`] never
+//! writes one.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
+use crate::live_planes::plane_id;
 use crate::surfaces::{KIND_NAMES, SurfaceBehavior, kind_from_name, kind_name};
 
 /// The room file's format version: 2 since D2 (board #3488), which reads
@@ -88,12 +96,12 @@ fn fnv1a64(bytes: impl IntoIterator<Item = u8>) -> u64 {
 
 /// The room id of a set of anchor UUIDs: FNV-1a 64 over the UUIDs sorted
 /// bytewise, so the order the runtime returns them in does not matter.
-/// The all-zero UUID (the stage floor) is left out; `None` without an
-/// anchor.
+/// The all-zero UUID (the stage floor) and a live plane's are left out;
+/// `None` without an anchor.
 pub fn room_id(uuids: impl IntoIterator<Item = [u8; 16]>) -> Option<u64> {
     let mut sorted: Vec<[u8; 16]> = uuids
         .into_iter()
-        .filter(|u| *u != STAGE_FLOOR_UUID)
+        .filter(|u| *u != STAGE_FLOOR_UUID && plane_id(u).is_none())
         .collect();
     if sorted.is_empty() {
         return None;
@@ -213,8 +221,11 @@ impl RoomFile {
 
     /// Assign `behavior` at `strength` (clamped to 0..1) to the surface
     /// `uuid` of `kind`, replacing its entry if it has one (its parameters
-    /// kept).
+    /// kept). Nothing for a live plane's UUID: it is never kept.
     pub fn assign(&mut self, uuid: [u8; 16], kind: u32, behavior: SurfaceBehavior, strength: f32) {
+        if plane_id(&uuid).is_some() {
+            return;
+        }
         let strength = strength.clamp(0.0, 1.0);
         match self.anchors.iter_mut().find(|e| e.uuid == uuid) {
             Some(e) => {
@@ -235,8 +246,9 @@ impl RoomFile {
     /// The class assignment: `behavior` at `strength` becomes `kind`'s
     /// default and every entry of that kind's, and each surface in `live`
     /// (the room's surfaces of that kind now) gets an entry, so the
-    /// strength holds for the ones that had none. Returns how many entries
-    /// it wrote.
+    /// strength holds for the ones that had none; a live plane among them
+    /// gets none and follows the default. Returns how many entries it
+    /// wrote.
     pub fn assign_kind(
         &mut self,
         kind: u32,
@@ -252,7 +264,7 @@ impl RoomFile {
             e.strength = strength;
             written += 1;
         }
-        for uuid in live {
+        for uuid in live.into_iter().filter(|u| plane_id(u).is_none()) {
             if self.entry(&uuid).is_none_or(|e| e.kind != kind) {
                 self.assign(uuid, kind, behavior, strength);
                 written += 1;
@@ -284,13 +296,18 @@ impl RoomFile {
     }
 
     /// The file's JSON ([`VERSION`]), every kind default, entries in UUID
-    /// order, an entry's `params` only when set.
+    /// order, an entry's `params` only when set; never a live plane's.
     pub fn to_json(&self) -> String {
         let defaults: Map<String, Value> = KIND_NAMES
             .iter()
             .map(|&(k, name)| (name.to_owned(), json!(self.kind_default(k).name())))
             .collect();
-        let mut anchors = self.anchors.clone();
+        let mut anchors: Vec<AnchorEntry> = self
+            .anchors
+            .iter()
+            .filter(|e| plane_id(&e.uuid).is_none())
+            .copied()
+            .collect();
         anchors.sort_by_key(|e| e.uuid);
         let anchors: Vec<Value> = anchors
             .iter()
@@ -373,6 +390,10 @@ impl RoomFile {
                 continue;
             };
             let what = format!("anchors[{i}] {}", uuid_hex(&uuid));
+            if plane_id(&uuid).is_some() {
+                skipped.push(format!("{what}: a live plane's, never kept"));
+                continue;
+            }
             let Some(b) = behavior(a.get("behavior"), &what, &mut skipped) else {
                 continue;
             };
@@ -805,5 +826,46 @@ mod tests {
         assert_eq!(skipped.len(), 2, "{skipped:?}");
         assert!(bad.anchors.iter().all(|e| e.params.is_none()));
         assert_eq!(bad.anchors.len(), 2);
+    }
+
+    #[test]
+    fn a_live_plane_is_never_kept_and_never_names_the_room() {
+        use crate::live_planes::plane_uuid;
+        use SurfaceBehavior as B;
+        let live = plane_uuid(3);
+        // The room id does not see it.
+        let id = room_id([uuid(1), uuid(2)]);
+        assert_eq!(room_id([uuid(1), live, uuid(2)]), id);
+        assert_eq!(room_id([live]), None);
+        // Nothing assigned under it, alone or with its kind.
+        let mut file = RoomFile::default();
+        file.assign(live, KIND_WALL, B::Curls, 1.0);
+        assert!(file.entry(&live).is_none());
+        let written = file.assign_kind(KIND_WALL, B::Pulse, 0.5, [uuid(1), live]);
+        assert_eq!(written, 1);
+        assert!(file.entry(&live).is_none());
+        // It follows the kind's default.
+        assert_eq!(
+            file.resolve(&live, KIND_WALL),
+            (B::Pulse, 1.0, default_params(B::Pulse))
+        );
+        // An entry pushed past the writers is not saved, and a file that
+        // names one skips it.
+        file.anchors.push(AnchorEntry {
+            uuid: live,
+            kind: KIND_WALL,
+            behavior: B::Curls,
+            strength: 1.0,
+            params: None,
+        });
+        let json = file.to_json();
+        assert!(!json.contains(&uuid_hex(&live)), "{json}");
+        let text = format!(
+            r#"{{ "version": 2, "anchors": [ {{ "uuid": "{}", "behavior": "pulse" }} ] }}"#,
+            uuid_hex(&live)
+        );
+        let (read, skipped) = RoomFile::from_json(&text).expect("reads");
+        assert!(read.anchors.is_empty());
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
     }
 }

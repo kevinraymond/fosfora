@@ -36,11 +36,17 @@
 //! params, so an anchor of the kind that the room gains later runs the
 //! defaults); the strength 0..1, 1 by default. `clear` alone drops every
 //! entry and puts the kind defaults back. A bad value applies nothing.
+//!
+//! A live plane's box (board #5397, `live_planes::plane_id`) runs its
+//! kind's default and is never written: a UUID or `#<k>` naming one is
+//! refused, a kind leaves it out, and the panel's writer refuses it
+//! (`room_file.rs` keeps none either).
 
 use std::path::PathBuf;
 
 use log::{info, warn};
 
+use crate::live_planes::plane_id;
 use crate::room_file::{Loaded, RoomFile, STAGE_FLOOR_UUID, room_id_hex, room_path, uuid_hex};
 use crate::surface_fx::BANDS;
 use crate::surfaces::{
@@ -275,15 +281,19 @@ fn parse_target(t: &str) -> Result<Target, String> {
 
 /// The boxes `target` names among `boxes`: one for a UUID or an index, a
 /// UUID prefix only when one anchor has it; every box of a kind (maybe
-/// none: the kind's default still takes).
+/// none: the kind's default still takes). A live plane is never named: an
+/// index on one is refused, a kind and a UUID pass it by.
 pub fn resolve(target: &Target, boxes: &[LaneBox<'_>]) -> Result<Vec<usize>, String> {
     match target {
+        Target::Index(k) if boxes.get(*k).is_some_and(is_live) => {
+            Err(format!("#{k} is a live plane, which is not kept"))
+        }
         Target::Index(k) if *k < boxes.len() => Ok(vec![*k]),
         Target::Index(k) => Err(format!("no box #{k} ({} boxes)", boxes.len())),
         Target::Kind(kind) => Ok(boxes
             .iter()
             .enumerate()
-            .filter(|(_, b)| b.kind == *kind)
+            .filter(|(_, b)| b.kind == *kind && !is_live(b))
             .map(|(k, _)| k)
             .collect()),
         Target::Uuid(prefix) => {
@@ -291,7 +301,9 @@ pub fn resolve(target: &Target, boxes: &[LaneBox<'_>]) -> Result<Vec<usize>, Str
                 .iter()
                 .enumerate()
                 .filter(|(_, b)| {
-                    b.uuid != STAGE_FLOOR_UUID && uuid_hex(&b.uuid).starts_with(prefix)
+                    b.uuid != STAGE_FLOOR_UUID
+                        && !is_live(b)
+                        && uuid_hex(&b.uuid).starts_with(prefix)
                 })
                 .map(|(k, _)| k)
                 .collect();
@@ -302,6 +314,11 @@ pub fn resolve(target: &Target, boxes: &[LaneBox<'_>]) -> Result<Vec<usize>, Str
             }
         }
     }
+}
+
+/// Whether `b` is a live plane's box (`live_planes::plane_id`).
+fn is_live(b: &LaneBox<'_>) -> bool {
+    plane_id(&b.uuid).is_some()
 }
 
 /// The lane rows and the behavior of each of `boxes` under `file`. The
@@ -527,6 +544,9 @@ impl RoomLanes {
         if index >= boxes.len() {
             return bad(format!("no box #{index} ({} boxes)", boxes.len()));
         }
+        if is_live(&boxes[index]) {
+            return bad(format!("#{index} is a live plane, which is not kept"));
+        }
         if let Some(c) = edit.color.filter(|c| *c > COLOR_KEY) {
             return bad(format!("color {c} is not from 0 to {COLOR_KEY}"));
         }
@@ -608,7 +628,7 @@ impl RoomLanes {
         for (kind, _) in crate::surfaces::KIND_NAMES {
             let live = boxes
                 .iter()
-                .filter(|b| b.kind == kind && b.uuid != STAGE_FLOOR_UUID)
+                .filter(|b| b.kind == kind && b.uuid != STAGE_FLOOR_UUID && !is_live(b))
                 .map(|b| b.uuid);
             entries += self
                 .file
@@ -1711,6 +1731,54 @@ mod tests {
         assert!(lanes.poll_knob(Some("floor=ripple"), false, stage));
         assert!(lanes.update(None, stage));
         assert_eq!(lanes.behavior(0), B::Rings);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_planes_run_their_kind_and_no_writer_keeps_them() {
+        use crate::live_planes::plane_uuid;
+        let dir = std::env::temp_dir().join(format!("fosfora-lanes-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // The room, then two live walls after its boxes, then the stage
+        // floor, as the obstacle block orders them.
+        let mut boxes = room();
+        let stage = boxes.pop().expect("the stage floor");
+        let id = room_of(&boxes);
+        for n in [7, 8] {
+            boxes.push(LaneBox {
+                uuid: plane_uuid(n),
+                kind: KIND_WALL,
+                label: "live wall",
+            });
+        }
+        boxes.push(stage);
+        assert_eq!(room_of(&boxes), id, "the room id does not see them");
+        let mut lanes = RoomLanes::new(dir.clone());
+        assert!(lanes.update(id, &boxes));
+        assert_eq!(lanes.behavior(5), B::Spectrum, "a wall's default");
+        // Neither an index nor a UUID names one; the knob applies nothing.
+        assert!(resolve(&Target::Index(5), &boxes).is_err());
+        let hex = uuid_hex(&plane_uuid(7));
+        assert!(resolve(&Target::Uuid(hex.clone()), &boxes).is_err());
+        assert!(!lanes.poll_knob(Some("#6=curls"), false, &boxes));
+        assert!(lanes.cycle(5, &boxes).is_err());
+        assert!(!lanes.set_params(5, &boxes, color(3)));
+        // A kind leaves them out, and they follow its new default.
+        assert_eq!(resolve(&Target::Kind(KIND_WALL), &boxes), Ok(vec![1, 2]));
+        assert!(lanes.poll_knob(Some("wall=pulse"), false, &boxes));
+        lanes.all_none(&boxes);
+        assert!(lanes.update(id, &boxes));
+        assert_eq!(lanes.behavior(5), B::None);
+        assert!(lanes.cycle_kind_of(5, &boxes).is_ok());
+        let text = std::fs::read_to_string(room_path(&dir, id.unwrap())).expect("saved");
+        assert!(!text.contains(&hex[..12]), "{text}");
+        assert!(
+            lanes
+                .file
+                .anchors
+                .iter()
+                .all(|e| plane_id(&e.uuid).is_none())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
