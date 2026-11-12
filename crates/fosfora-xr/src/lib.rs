@@ -37,6 +37,7 @@ pub mod governor;
 pub mod highlight;
 #[cfg(target_os = "android")]
 mod hud;
+pub mod immerse;
 #[cfg(target_os = "android")]
 mod input;
 pub mod instruments;
