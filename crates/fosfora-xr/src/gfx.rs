@@ -75,6 +75,12 @@ pub struct Gfx {
     /// atlas, the first `surface_label_count` drawn, before the panel.
     surface_labels: Vec<QuadBinding>,
     surface_label_count: std::cell::Cell<usize>,
+    /// The surface labels' leaders (`set_surface_label_leaders`, board
+    /// #5379): strips of the beams' pipeline, a slot per label, the first
+    /// `leader_count` drawn, before the labels.
+    leaders: QuadBinding,
+    leader_count: std::cell::Cell<usize>,
+    leader_pipeline: wgpu::RenderPipeline,
     panel_pipeline: wgpu::RenderPipeline,
     panel_layout: wgpu::BindGroupLayout,
     /// Beams (`set_beam`): the debug panel's pointer, one per hand for
@@ -445,7 +451,14 @@ impl Gfx {
 
         let (pipeline, eyes, quad_layout, eye_layout) = build_quad_pipeline(&device);
         let (panel_pipeline, panel_layout) = build_panel_pipeline(&device, &eye_layout);
-        let (beam_pipeline, beam) = build_beam_pipeline(&device, &eye_layout);
+        let (beam_pipeline, beam) =
+            build_beam_pipeline(&device, &eye_layout, "xr-beam", BEAM_SLOTS);
+        let (leader_pipeline, leaders) = build_beam_pipeline(
+            &device,
+            &eye_layout,
+            "xr-surface-label-leader",
+            crate::surface_labels::MAX_LABELS,
+        );
         let (ghost_pipeline, ghost) = build_ghost_pipeline(&device, &eye_layout);
         let (surface_pipeline, surfaces) = build_surface_slots(
             &device,
@@ -471,6 +484,9 @@ impl Gfx {
             label: PosedQuad::default(),
             surface_labels: Vec::new(),
             surface_label_count: std::cell::Cell::new(0),
+            leaders,
+            leader_count: std::cell::Cell::new(0),
+            leader_pipeline,
             panel_pipeline,
             panel_layout,
             beam,
@@ -607,6 +623,23 @@ impl Gfx {
             .set(labels.len().min(self.surface_labels.len()));
     }
 
+    /// Place this frame's surface label leaders (board #5379), each a
+    /// strip as a beam is drawn and its color (linear RGB, at the beam's
+    /// alpha); at most a label's worth, the rest dropped. Empty hides
+    /// them.
+    pub fn set_surface_label_leaders(&self, leaders: &[(Beam, [f32; 3])]) {
+        let rows: Vec<[[f32; 4]; 5]> = leaders
+            .iter()
+            .filter_map(|(b, [r, g, bl])| strip_rows(b, [*r, *g, *bl, b.alpha]))
+            .take(crate::surface_labels::MAX_LABELS)
+            .collect();
+        if !rows.is_empty() {
+            self.queue
+                .write_buffer(&self.leaders.uniform, 0, bytemuck::cast_slice(&rows));
+        }
+        self.leader_count.set(rows.len());
+    }
+
     /// A posed quad's uniform and bind group for `view`, named `name`.
     fn posed_binding(&self, name: &str, view: &wgpu::TextureView) -> QuadBinding {
         let sampler = self.posed_sampler(name);
@@ -688,31 +721,12 @@ impl Gfx {
     pub fn set_beam(&self, slot: usize, beam: Option<Beam>) {
         let mut visible = self.beam_visible.get();
         // A hidden slot is a zero-area strip: it draws no fragments.
-        let mut data = [[0.0f32; 4]; 5];
-        visible[slot] = false;
-        if let Some(b) = beam {
-            let (a, e) = (glam::Vec3::from(b.start), glam::Vec3::from(b.end));
-            // Across the beam, facing the eye.
-            let side = (e - a)
-                .cross(glam::Vec3::from(b.eye) - a)
-                .normalize_or_zero()
-                * (b.width_m * 0.5);
-            if side != glam::Vec3::ZERO {
-                let corner = |p: glam::Vec3, across: f32| [p.x, p.y, p.z, across];
-                data = [
-                    corner(a - side, -1.0),
-                    corner(a + side, 1.0),
-                    corner(e + side, 1.0),
-                    corner(e - side, -1.0),
-                    [1.0, 1.0, 1.0, b.alpha],
-                ];
-                visible[slot] = true;
-            }
-        }
+        let rows = beam.and_then(|b| strip_rows(&b, [1.0, 1.0, 1.0, b.alpha]));
+        visible[slot] = rows.is_some();
         self.queue.write_buffer(
             &self.beam.uniform,
             slot as u64 * BEAM_BYTES,
-            bytemuck::cast_slice(&data),
+            bytemuck::cast_slice(&rows.unwrap_or([[0.0; 4]; 5])),
         );
         self.beam_visible.set(visible);
     }
@@ -1236,6 +1250,14 @@ impl Gfx {
                 pass.set_bind_group(1, &self.beam.bind_group, &[]);
                 pass.draw(0..6 * BEAM_SLOTS as u32, 0..1);
             }
+            // Board #5379: the surface labels' leaders, under the labels.
+            let leaders = self.leader_count.get();
+            if leaders > 0 {
+                pass.set_pipeline(&self.leader_pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                pass.set_bind_group(1, &self.leaders.bind_group, &[]);
+                pass.draw(0..6 * leaders as u32, 0..1);
+            }
             // Board #5378: the surface labels, farthest first, on the
             // panel's terms, before it and the editor's label (which are
             // nearer the head).
@@ -1264,6 +1286,29 @@ impl Gfx {
         self.queue.submit([encoder.finish()]);
         atlas
     }
+}
+
+/// A strip's uniform rows (`BEAM_WGSL`'s `Beam`): its four corners, from
+/// `b.start` to `b.end`, `b.width_m` across and turned to face `b.eye`,
+/// and `color` (linear RGB and alpha). `None` for a strip of no area.
+fn strip_rows(b: &Beam, color: [f32; 4]) -> Option<[[f32; 4]; 5]> {
+    let (a, e) = (glam::Vec3::from(b.start), glam::Vec3::from(b.end));
+    // Across the strip, facing the eye.
+    let side = (e - a)
+        .cross(glam::Vec3::from(b.eye) - a)
+        .normalize_or_zero()
+        * (b.width_m * 0.5);
+    if side == glam::Vec3::ZERO {
+        return None;
+    }
+    let corner = |p: glam::Vec3, across: f32| [p.x, p.y, p.z, across];
+    Some([
+        corner(a - side, -1.0),
+        corner(a + side, 1.0),
+        corner(e + side, 1.0),
+        corner(e - side, -1.0),
+        color,
+    ])
 }
 
 /// Put `view` at `slot` of `views`: replace it, or append it as the next.
@@ -1540,9 +1585,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 }
 ";
 
-/// The beams' shader. `BEAM_SLOTS` in it is replaced by the constant's
-/// value when the pipeline is built, so the array and the uniform buffer
-/// are the same size.
+/// The beams' shader. `BEAM_SLOTS` in it is replaced by the pipeline's
+/// slots when it is built ([`BEAM_SLOTS`] for the beams, a label's worth
+/// for the leaders), so the array and the uniform buffer are the same
+/// size.
 const BEAM_WGSL: &str = r"
 struct Eye { view_proj: mat4x4<f32> }
 struct Beam { corners: array<vec4<f32>, 4>, color: vec4<f32> }
@@ -1579,42 +1625,43 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 }
 ";
 
-/// The aiming beam's pipeline and its uniform: a camera-facing strip,
-/// premultiplied alpha, depth-tested (a hand or the panel hides it), no
-/// depth write.
+/// The aiming beams' pipeline and its uniform of `slots` strips, named
+/// `name`: camera-facing strips, premultiplied alpha, depth-tested (a hand
+/// or the panel hides one), no depth write. The surface labels' leaders
+/// are a second one (board #5379).
 fn build_beam_pipeline(
     device: &wgpu::Device,
     eye_layout: &wgpu::BindGroupLayout,
+    name: &str,
+    slots: usize,
 ) -> (wgpu::RenderPipeline, QuadBinding) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("xr-beam"),
+        label: Some(name),
         source: wgpu::ShaderSource::Wgsl(
-            BEAM_WGSL
-                .replace("BEAM_SLOTS", &BEAM_SLOTS.to_string())
-                .into(),
+            BEAM_WGSL.replace("BEAM_SLOTS", &slots.to_string()).into(),
         ),
     });
     let beam_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("xr-beam"),
+        label: Some(name),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
-                min_binding_size: wgpu::BufferSize::new(BEAM_BYTES * BEAM_SLOTS as u64),
+                min_binding_size: wgpu::BufferSize::new(BEAM_BYTES * slots as u64),
             },
             count: None,
         }],
     });
     let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("xr-beam-uniform"),
-        size: BEAM_BYTES * BEAM_SLOTS as u64,
+        label: Some(&format!("{name}-uniform")),
+        size: BEAM_BYTES * slots as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("xr-beam"),
+        label: Some(name),
         layout: &beam_layout,
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
@@ -1622,12 +1669,12 @@ fn build_beam_pipeline(
         }],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("xr-beam"),
+        label: Some(name),
         bind_group_layouts: &[eye_layout, &beam_layout],
         push_constant_ranges: &[],
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("xr-beam"),
+        label: Some(name),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,

@@ -1370,6 +1370,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let labels_knob = debug_prop("debug.fosfora.labels").as_deref() == Some("1");
     let mut surface_labels = crate::surface_labels::SurfaceLabels::default();
     let mut label_atlas = crate::surface_labels::LabelAtlas::new(&mut gfx);
+    // Board #5379: where crowded labels moved last frame, so a near tie
+    // keeps its order.
+    let mut label_spread = crate::surface_labels::Spread::default();
     let mut labels_shown = false;
     if labels_knob {
         info!("surface labels: always shown (debug.fosfora.labels 1)");
@@ -3102,16 +3105,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         let (center, half) = (glam::Vec3::from(b.center), glam::Vec3::from(b.half));
                         (k, pose(center, glam::Quat::from_array(b.rot), half, head, head_rot))
                     });
-                    let in_view = placed(poses, head, head_rot);
+                    // Board #5379: labels that crowd on the screen move
+                    // apart and point back at their surfaces.
+                    let in_view = label_spread.place(&placed(poses, head, head_rot), head, head_rot);
                     if !labels_shown {
                         info!(
-                            "surface labels: shown ({}) \u{b7} {} surfaces, {} in view",
+                            "surface labels: shown ({}) \u{b7} {} surfaces, {} in view, {} moved apart",
                             surface_labels.why(),
                             tags.len(),
-                            in_view.len()
+                            in_view.len(),
+                            in_view.iter().filter(|s| s.leader.is_some()).count()
                         );
                     }
-                    label_atlas.show(&gfx, &tags, stage, &in_view);
+                    label_atlas.show(&gfx, &tags, stage, &in_view, head);
                 } else {
                     if labels_shown {
                         info!("surface labels: hidden");

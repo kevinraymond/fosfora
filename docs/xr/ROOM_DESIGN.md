@@ -724,22 +724,48 @@ The status cell and the labels read that word from one function
 **Which surfaces.** Every lane box gets a label: the planes and volumes the
 scene query returned, then the stage floor. Next to a scene floor the stage
 floor is "floor N", as the grammar names it. The stage floor is a 10 cm
-slab, a volume, so its label floats over the stage's origin. A hidden wall
+slab, a volume, so its label stands just off the slab at the stage's origin
+as the head sees it. A hidden wall
 (`INVISIBLE_WALL_FACE`) is labeled like any other, because the grammar takes
 its name. There are 32 cells, one per lane box, the same 32 boxes the lanes
 have rows for.
 
-**Where.** A plane's label lies flat on its face toward the head
-(`Face::facing`), centered on the rect and 8 cm out from it
-(`label::OUT_M`, as the editor's label). On a wall it stands upright. On a
-floor or a ceiling its top points the way a label facing the head would
-point, laid into the plane, so it reads the right way round from the chair.
-A volume's label floats over the center of its top face and faces the head,
-placed as the editor's label is over a hit (`label::billboard`, 8 cm out and
-6 cm up). Each label is `label::label_w_m` wide for its distance from the
-head, as the editor's label is, and 0.375 of that high (the cell's aspect).
-A label whose center is behind the head, or farther than 6 m from it, does
-not draw.
+**Where** (board #5379). Every label faces the head and stays upright. Its
+right edge is level, so its text never tilts, even when the head rolls. It
+sits at its surface's center as the head sees it: on the line from the center
+of the plane's rect or the volume's box to the head, just in front of the
+face that line leaves by. Its nearest corner stands 4 cm off that face
+(`CLEAR_M`), so it never z-fights with a wall and never sinks into a table.
+That matters because the room's boxes and the depth map hide whatever is
+behind them. Square on, the label is about 4 cm out. On a wall seen at a
+slant it has to come nearer the head to clear the wall, and it shrinks by as
+much, so its size on the screen stays the same. It comes at most halfway to
+the head, so a wall seen nearly edge-on hides part of its label. Looking
+almost straight down at a label, the head's right takes over from the level
+right, so the label reads the right way round and does not spin as the head
+passes over it. Each label is `label::label_w_m` wide for its face's distance
+from the head, as the editor's label is, and 0.375 of that high (the cell's
+aspect). A label whose center is behind the head, or farther than 6 m from
+it, does not draw. The first build laid a plane's label flat on the plane,
+upright on a wall and turned on a floor. After wearing it Kevin asked for
+every label to face the wearer and sit at its surface's center (Nov 12).
+
+**Crowding** (board #5379). Each frame the labels in view are projected onto
+the head's level view, a screen with no roll. Two labels whose rects overlap
+move apart along its vertical, half each, until they are their heights and
+15% apart (`SPREAD_GAP`). The one whose surface is higher on the screen goes
+up. Near a tie they keep last frame's order until the other surface is higher
+by half the gap they need (`SPREAD_FLIP`), so two labels do not swap back and
+forth as the head moves. Two labels side by side push only as far as they
+overlap across, reaching the full push at a quarter of the narrower one's
+width (`SPREAD_RAMP`), so the push grows from nothing as they slide together.
+The relaxation makes at most 32 passes over the pairs and stops once nothing
+moves (`SPREAD_PASSES`). 32 labels packed into one band of the view need
+about 30. A label that moved more than half its height off its surface's
+center gets a leader: a thin line from the middle of its edge nearer that
+point (the bottom when it went up) to the point, in the labels' ink at their
+alpha, 5% of the label's height wide. A head that only rolls moves nothing.
+The spread is rects in and offsets out (`spread`), with desktop tests.
 
 **When.** While Edit room is on. While a voice window is open, listening or
 transcribing, and for 4 s after it closes. For 4 s after a miss on a name,
@@ -760,19 +786,22 @@ panel's pipeline that reads its own cell. For that the panel's uniform gained
 a texture rect (64 bytes, was 48), which the hand menu and the editor's label
 set to the whole width and their top part. The labels draw farthest first,
 before the hand menu and the editor's label. Turning the head changes which
-quads draw and never redraws the atlas. With no label showing, the frame
-checks one counter and draws nothing, and the atlas is not touched.
+quads draw and never redraws the atlas. The leaders are strips of the beams'
+pipeline, a second one with a slot per label, drawn just before the labels.
+With no label showing, the frame checks one counter and draws nothing, and the
+atlas is not touched.
 
 **Describe.** Asking for a kind now lists its surfaces by the same names,
 each with its behavior ("walls: wall 1 aurora · wall 6 aurora" over "wall 8
 none · wall 14 none"), so the voice label and the labels in the room agree
 (`VOICE_DESIGN.md`, "What the wearer sees").
 
-**Log.** "surface labels: shown (edit room) · 17 surfaces, 9 in view" when
-they appear, the reason being "edit room", "voice window", "a voice window
-closed", "a miss on a name" or "debug.fosfora.labels". "surface labels:
-hidden" when they go. A launch with the knob on says "surface labels: always
-shown (debug.fosfora.labels 1)".
+**Log.** "surface labels: shown (edit room) · 17 surfaces, 9 in view, 2
+moved apart" when they appear, the reason being "edit room", "voice window",
+"a voice window closed", "a miss on a name" or "debug.fosfora.labels". The
+last count is the labels with a leader. "surface labels: hidden" when they
+go. A launch with the knob on says "surface labels: always shown
+(debug.fosfora.labels 1)".
 
 **Unworn check.** `debug.fosfora.say "make wall 16 blue"` on a room without a
 wall 16 misses on the name, so the labels show for 4 s, long enough for a
