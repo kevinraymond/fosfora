@@ -1917,6 +1917,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             && live_on
             && snap.epoch == live_epoch
         {
+            // Board #5400: the runtime corrected its tracking with the
+            // planes in view; they moved with the world.
+            if let Some(c) = snap.correction {
+                info!(
+                    "live planes: the tracking origin moved {:.2} m and turned {:.1}°; the planes moved with it",
+                    c.moved_m, c.turned_deg
+                );
+            }
             live_fresh = Some(snap);
         }
         // The hand menu's rescan, carried out of the frame closure (the

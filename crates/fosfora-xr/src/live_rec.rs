@@ -511,8 +511,8 @@ pub struct Step {
     pub stats: Stats,
     /// The update's time on this machine (ms).
     pub update_ms: f32,
-    /// The ids reported after it, in id order.
-    pub reported: Vec<u32>,
+    /// The planes reported after it, in id order.
+    pub planes: Vec<LivePlane>,
 }
 
 /// What a replay did.
@@ -554,7 +554,7 @@ pub fn replay(rec: &Recording) -> Replay {
             time_s: r.time_s,
             stats: snap.stats,
             update_ms: snap.update_ms,
-            reported: snap.planes.iter().map(|p| p.id).collect(),
+            planes: snap.planes.clone(),
         });
         out.planes = snap.planes;
         out.floor_y = snap.floor_y;
@@ -685,11 +685,49 @@ pub fn doubles(planes: &[LivePlane]) -> Vec<Double> {
 
 // ---- The report --------------------------------------------------------
 
+/// The summary also lists the planes reported at this time (s), so two
+/// runs of one scene can be compared.
+pub const LIST_AT_S: f32 = 10.0;
+
+/// One reported plane: its id, kind, world plane and rectangle, its center
+/// and normal in the frame of the camera `view` (so runs whose tracking
+/// origins differ compare), and when it was first reported.
+fn plane_line(s: &mut String, p: &LivePlane, run: &Replay, view: Option<&DepthView>) {
+    use std::fmt::Write as _;
+    let n = p.normal();
+    let first = run
+        .first_reported
+        .iter()
+        .find(|&&(id, _)| id == p.id)
+        .map_or(f32::NAN, |&(_, t)| t);
+    let (c, nc) = view.map_or((p.center, n), |v| {
+        let [x, y, z, w] = v.orientation;
+        let inv = Quat::from_xyzw(x, y, z, w).normalize().inverse();
+        (inv * (p.center - Vec3::from(v.position)), inv * n)
+    });
+    let _ = writeln!(
+        s,
+        "  #{:<3} {:7} {:.2} x {:.2} m · center ({:5.2} {:5.2} {:5.2}) n ({:5.2} {:5.2} {:5.2}) · world offset {:6.2} m · first reported {first:.2} s",
+        p.id,
+        kind_name(p.kind),
+        2.0 * p.half.x,
+        2.0 * p.half.y,
+        c.x,
+        c.y,
+        c.z,
+        nc.x,
+        nc.y,
+        nc.z,
+        n.dot(p.center)
+    );
+}
+
 /// A replay as text: the recording, one line per update (the camera's
 /// move and the depth's change since the update before and against the
-/// last read-back, the fit's counts, the reported and tracked planes and
-/// the ids that came and went), then each reported plane at the end and
-/// the doubles among them.
+/// last read-back, the fit's counts, the reported and tracked planes, the
+/// ids that came and went and any doubles), then the planes reported at
+/// [`LIST_AT_S`] and at the end, the most doubles any update had and the
+/// doubles at the end.
 pub fn summary(rec: &Recording, run: &Replay) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
@@ -718,7 +756,8 @@ pub fn summary(rec: &Recording, run: &Replay) -> String {
     }
     s.push('\n');
     let last = rec.records.last().map(|r| &r.grid);
-    let mut before: &[u32] = &[];
+    let mut before: Vec<u32> = Vec::new();
+    let mut worst: (usize, f32) = (0, 0.0);
     for (k, step) in run.steps.iter().enumerate() {
         let st = step.stats;
         let _ = write!(s, "t {:6.2}", step.time_s);
@@ -746,14 +785,28 @@ pub fn summary(rec: &Recording, run: &Replay) -> String {
             " · valid {} patches {} merged {} created {} dropped {} · tracked {} · reported {}",
             st.valid, st.patches, st.merged, st.created, st.dropped, st.tracked, st.reported
         );
-        for id in step.reported.iter().filter(|id| !before.contains(id)) {
+        let ids: Vec<u32> = step.planes.iter().map(|p| p.id).collect();
+        for id in ids.iter().filter(|id| !before.contains(id)) {
             let _ = write!(s, " +#{id}");
         }
-        for id in before.iter().filter(|id| !step.reported.contains(id)) {
+        for id in before.iter().filter(|id| !ids.contains(id)) {
             let _ = write!(s, " -#{id}");
         }
+        if st.corrected {
+            let _ = write!(s, " · the tracking origin moved, the planes with it");
+        }
+        if st.odd {
+            let _ = write!(s, " · left out (explained neither still nor moved)");
+        }
+        let ds = doubles(&step.planes).len();
+        if ds > 0 {
+            let _ = write!(s, " · {ds} doubles");
+        }
+        if ds > worst.0 {
+            worst = (ds, step.time_s);
+        }
         let _ = writeln!(s, " · {:.2} ms", step.update_ms);
-        before = &step.reported;
+        before = ids;
     }
     if !run.steps.is_empty() {
         let n = run.steps.len() as f32;
@@ -766,31 +819,35 @@ pub fn summary(rec: &Recording, run: &Replay) -> String {
             run.floor_y.map_or("-".to_owned(), |y| format!("{y:.2}"))
         );
     }
-    let _ = writeln!(s, "reported at the end: {}", run.planes.len());
-    for p in &run.planes {
-        let n = p.normal();
-        let first = run
-            .first_reported
-            .iter()
-            .find(|&&(id, _)| id == p.id)
-            .map_or(f32::NAN, |&(_, t)| t);
+    if let Some(k) = run.steps.iter().position(|x| x.time_s >= LIST_AT_S) {
+        let step = &run.steps[k];
         let _ = writeln!(
             s,
-            "  #{:<3} {:7} n ({:5.2} {:5.2} {:5.2}) offset {:6.2} m · center ({:5.2} {:5.2} {:5.2}) · {:.2} x {:.2} m · first reported {first:.2} s",
-            p.id,
-            kind_name(p.kind),
-            n.x,
-            n.y,
-            n.z,
-            n.dot(p.center),
-            p.center.x,
-            p.center.y,
-            p.center.z,
-            2.0 * p.half.x,
-            2.0 * p.half.y
+            "reported at {:.2} s: {} (center and normal in the camera's frame: x right, y up, z back)",
+            step.time_s,
+            step.planes.len()
         );
+        let view = rec.records.get(k).map(|r| &r.grid.view);
+        for p in &step.planes {
+            plane_line(&mut s, p, run, view);
+        }
+    }
+    let _ = writeln!(s, "reported at the end: {}", run.planes.len());
+    let view = rec.records.last().map(|r| &r.grid.view);
+    for p in &run.planes {
+        plane_line(&mut s, p, run, view);
     }
     let ds = doubles(&run.planes);
+    let _ = writeln!(
+        s,
+        "doubles at any update: at most {}{}",
+        worst.0,
+        if worst.0 > 0 {
+            format!(" (first at {:.2} s)", worst.1)
+        } else {
+            String::new()
+        }
+    );
     let _ = writeln!(s, "doubles: {}", ds.len());
     for d in &ds {
         let _ = writeln!(

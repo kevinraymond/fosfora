@@ -75,8 +75,8 @@ use crate::env_depth::{DepthView, Obb, Reading, decode_distance, ray_obb, texel_
 use crate::intent::Surface;
 use crate::lanes::LaneBox;
 use crate::live_planes::{
-    DepthCamera, LivePlane, LivePlanes, Observation, PlaneBox, Stats, grid_texel, plane_id,
-    to_obstacle_box, unproject_grid,
+    Correction, DepthCamera, LivePlane, LivePlanes, Observation, PlaneBox, Stats, grid_texel,
+    plane_id, to_obstacle_box, unproject_grid,
 };
 use crate::live_rec::{Ask, Recorder};
 use crate::surfaces::{
@@ -787,6 +787,8 @@ pub struct Snapshot {
     pub max_ms: f32,
     /// Updates in this epoch so far, this one included.
     pub updates: u64,
+    /// The tracking correction this update's planes followed, if any.
+    pub correction: Option<Correction>,
 }
 
 /// Updates the running mean and max cover.
@@ -866,6 +868,11 @@ impl Fitter {
             mean_ms: held.iter().sum::<f32>() / held.len() as f32,
             max_ms: held.iter().copied().fold(0.0, f32::max),
             updates: self.updates,
+            correction: if stats.corrected {
+                self.planes.last_correction()
+            } else {
+                None
+            },
         })
     }
 }

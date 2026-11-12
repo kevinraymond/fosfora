@@ -31,9 +31,12 @@
 //! inverse noise variance, with the noise's own scatter (along each ray)
 //! taken out, which otherwise tilts a small far plane toward the rays.
 //!
-//! **Noise model.** One standard deviation along the ray is [`NOISE_K`]
-//! times the squared range: 1% of the range at 1 m, 4% at 4 m. Every
-//! distance threshold scales with it.
+//! **Noise model** ([`NoiseModel`], a config value). One standard
+//! deviation along the ray is [`NOISE_K`] times the squared range, never
+//! under [`NOISE_MIN_M`]: 0.5 cm to 1.6 m, 1.8 cm at 3 m, 3.2 cm at 4 m.
+//! Every distance threshold scales with it. The figure is the headset's:
+//! its depth is filtered by the runtime, and real surfaces scatter about
+//! 0.5 cm off their planes near, under 1 cm at 3 to 4 m (board #5400).
 //!
 //! **Persist and merge.** A patch merges into a tracked plane whose normal
 //! is within [`MERGE_ANGLE_DEG`], whose plane passes within
@@ -48,6 +51,32 @@
 //! merge too. A patch that merges nowhere starts a new plane, unless it lies
 //! over one just outside the merge angle ([`DUPLICATE_SCALE`]). Ids are
 //! never reused.
+//!
+//! **One surface, one plane.** A large surface seen at a slant (a ceiling
+//! from the floor, a far wall) can come apart into pieces whose fits differ
+//! by up to 15 degrees and 20 cm. A patch, or a plane, that nests in
+//! another that far off ([`NEST_OVERLAP`]) joins it, and a candidate that
+//! lies over a reported plane does not appear beside it while the camera
+//! is still ([`UNDER_M`]). These are the limits of `live_rec::doubles`, so
+//! no reported pair is one surface twice.
+//!
+//! **A surface that moves.** A surface can move past the merge window, or
+//! the sensor's view of it can (on a cold start the headset's depth beyond
+//! 2.5 m came up to 15 cm nearer at once, about 11 s in). A plane whose
+//! patches for [`REBASE_STARVED_S`] all came from outside its window takes
+//! their estimate; one that lost its patches to a candidate on its surface
+//! takes the candidate's. Either way it keeps its id, and its rectangle
+//! catches up at the moving camera's rates.
+//!
+//! **Tracking corrections.** The runtime can correct its tracking with the
+//! camera still (on the headset, 0.30 m and 31 degrees in one read-back, a
+//! couple of seconds after a launch): every pose jumps, and the world with
+//! it. Each update compares the range along each cell's ray with a
+//! reference view once the pose has moved ([`JUMP_CHECK_M`]). The same
+//! ranges under a pose that says they should have changed mean the world
+//! moved: every plane moves with it, at once ([`JUMP_MISS_M`]). A view
+//! that fits neither a still camera nor the pose's move is left out
+//! ([`JUMP_ODD_MAX`]).
 //!
 //! **Stability.** A plane is reported once it has had patches in
 //! [`APPEAR_FRAC`] of its updates over [`APPEAR_S`], one of them strong
@@ -67,8 +96,12 @@
 //! ceiling. Normal within [`WALL_DEG`] of horizontal and reaching
 //! [`WALL_MIN_TOP_M`] above the floor: a wall (a box side or a cabinet
 //! front is other). Anything else: other. The floor estimate is a slow
-//! filter of the lowest large horizontal plane well below the camera,
-//! since the tracking origin's `y = 0` need not be the floor.
+//! filter of the lowest large upward plane at least [`FLOOR_BELOW_EYE_M`]
+//! below the camera, whatever the eye height (a headset set down on a desk
+//! is 0.76 m up), since the tracking origin's `y = 0` need not be the floor
+//! (on the headset it was 1.2 to 1.9 m off). A large table seen before the
+//! floor gives way when the floor shows below it, and the kinds follow the
+//! estimate.
 //!
 //! **Budget.** At most [`LivePlanesConfig::max_planes`] are reported, by a
 //! score of confidence, area and nearness, with the reported ones favored
@@ -89,9 +122,10 @@ use crate::surfaces::{
 pub const NEAR_M: f32 = 0.3;
 /// Samples farther than this are ignored by default (m).
 pub const MAX_RANGE_M: f32 = 4.5;
-/// The noise the fit assumes: one standard deviation along the ray is this
-/// times the squared range (m⁻¹), 1% of the range at 1 m and 4% at 4 m.
-pub const NOISE_K: f32 = 0.01;
+/// The noise the fit assumes by default ([`NoiseModel`]): one standard
+/// deviation along the ray is this times the squared range (m⁻¹), 1% of the
+/// range at 1 m and 4% at 4 m.
+pub const NOISE_K: f32 = 0.002;
 /// The noise never assumed below this (m).
 pub const NOISE_MIN_M: f32 = 0.005;
 
@@ -164,6 +198,48 @@ pub const TOUCH_M: f32 = 0.05;
 /// the merge angle (and within the merge offset), but not within the angle
 /// itself, starts no new plane.
 pub const DUPLICATE_SCALE: f32 = 1.5;
+/// A reported plane that has had no patch for this long (s) while a
+/// candidate on the same surface has had them takes the candidate's
+/// estimate and keeps its id: the surface moved, or the sensor's view of
+/// it did (its depth settles by up to 15 cm at 3 to 5 m in the first
+/// seconds after a cold start), past the merge window. So does a plane
+/// whose patches for this long all nested in it from outside the merge
+/// window ([`NEST_OVERLAP`]): it takes their estimate alone...
+pub const REBASE_STARVED_S: f32 = 0.5;
+/// ...when their normals are within this (degrees), each one's center is
+/// within [`REBASE_M`] of the other's plane and their rectangles overlap by
+/// more than [`REBASE_OVERLAP`] of the smaller's area: what would
+/// otherwise end as one surface reported twice.
+pub const REBASE_DEG: f32 = 15.0;
+pub const REBASE_M: f32 = 0.2;
+pub const REBASE_OVERLAP: f32 = 0.3;
+/// Two tracked planes are one surface when more than [`NEST_OVERLAP`] of
+/// the smaller's rectangle lies over the bigger's, their normals are within
+/// [`NEST_DEG`] and each center is within [`NEST_M`] of the other's plane:
+/// a large surface seen at a slant (a ceiling from the floor, a far wall)
+/// can come apart into pieces whose fits differ that much, and each would
+/// be drawn over the other. Planes within [`NEST_PARALLEL_DEG`] of parallel
+/// are one surface only within [`NEST_PARALLEL_M`], so a shelf 20 cm over a
+/// table stays apart; between planes further apart than that the offset
+/// grows with the distance between their centers, as at a shallow crease
+/// (a vaulted ceiling's slope and its flat part), and both are drawn over
+/// each other where their rectangles overlap. These are the limits of
+/// `live_rec::doubles`, so no reported pair is one surface twice.
+pub const NEST_OVERLAP: f32 = 0.3;
+pub const NEST_DEG: f32 = 15.0;
+pub const NEST_M: f32 = 0.2;
+pub const NEST_PARALLEL_DEG: f32 = 5.0;
+pub const NEST_PARALLEL_M: f32 = 0.15;
+/// A nesting patch's merge score starts here, after every plane the patch
+/// is within the merge window of.
+const NESTED_SCORE: f32 = 3.0;
+/// A candidate first seen while the camera was still ([`STILL_GRACE_S`])
+/// that lies over a reported plane, its normal within [`NEST_DEG`] and its
+/// center within this of that plane (m), more than [`NEST_OVERLAP`] of it
+/// over the plane, is held at its decision instead of appearing: a piece
+/// of a large slanted surface fitted apart from the plane that holds the
+/// rest of it would appear only to merge into it a moment later.
+pub const UNDER_M: f32 = 0.3;
 /// An edge of a tracked rectangle follows the median of the last this many
 /// observations of it (see `Tracked::apply_seen`)...
 pub const EDGE_HISTORY: usize = 8;
@@ -229,6 +305,34 @@ pub const MIN_EVIDENCE: u32 = 3;
 /// Patches for the confidence to reach 1 - 1/e.
 pub const CONF_HITS: f32 = 3.0;
 
+// ---- Tracking corrections ----------------------------------------------
+
+/// The runtime can correct its tracking while the camera stays where it is
+/// (it finds its map again, typically in the first seconds after a
+/// launch): every pose, the depth layer's among them, changes at once, and
+/// every point of the map lands somewhere else in the world. The camera's
+/// pose is checked against a reference view once it has moved more than
+/// this (m)...
+pub const JUMP_CHECK_M: f32 = 0.02;
+/// ...or turned more than this (degrees).
+pub const JUMP_CHECK_DEG: f32 = 1.0;
+/// The camera did not move when the range along each cell's ray is the
+/// same as in the reference (the median change at most this, m)...
+pub const JUMP_STILL_M: f32 = 0.02;
+/// ...while the move the pose says it made would have changed the view:
+/// the reference's points, seen from the new pose, miss the map by a
+/// median of at least this (m) and at least [`JUMP_RATIO`] times the
+/// change. The world moved instead, and every plane moves with it.
+pub const JUMP_MISS_M: f32 = 0.05;
+pub const JUMP_RATIO: f32 = 4.0;
+/// Both medians are taken over at least this share of the cells.
+pub const JUMP_SHARED: f32 = 0.25;
+/// A view the reference explains neither way (one odd read-back in the
+/// middle of a correction: neither the image of a still camera nor the one
+/// the pose's move predicts) is left out, and does not replace the
+/// reference, for at most this many updates in a row.
+pub const JUMP_ODD_MAX: u32 = 4;
+
 // ---- Kinds -------------------------------------------------------------
 
 /// A plane is horizontal when its normal is within this of vertical
@@ -255,9 +359,12 @@ pub const KIND_HOLD_S: f32 = 1.0;
 /// The floor estimate takes upward planes of at least this area (m²; the
 /// first from a single patch, then from planes seen twice)...
 pub const FLOOR_MIN_AREA_M2: f32 = 1.0;
-/// ...at least this far below the camera (m): a seated head is about
-/// 1.2 m up, a table top about 0.5 m below it.
-pub const FLOOR_BELOW_EYE_M: f32 = 0.9;
+/// ...at least this far below the camera (m): a headset set down on a desk
+/// is 0.7 m up, a child's or a low seat's eye 0.5 m, so the lowest large
+/// upward plane in view is the floor whatever the eye height; a large
+/// table seen before the floor gives way once the floor shows below it
+/// ([`FLOOR_TRACK_M`]).
+pub const FLOOR_BELOW_EYE_M: f32 = 0.3;
 /// ...follows a candidate up to this much above it (m; a step) or any
 /// amount below...
 pub const FLOOR_TRACK_M: f32 = 0.3;
@@ -314,20 +421,39 @@ pub const FOLLOW_GAIN: f32 = 4.0;
 /// and the prefix keeps it off the stage floor's all-zero UUID.
 pub const UUID_PREFIX: [u8; 8] = *b"fslive\0\0";
 
-/// The noise the fit assumes at range `r` (m): one standard deviation.
-pub fn noise_sigma(r: f32) -> f32 {
-    (NOISE_K * r * r).max(NOISE_MIN_M)
+/// The depth noise the finder assumes ([`LivePlanesConfig::noise`]): one
+/// standard deviation along the ray is `k` times the squared range, never
+/// under [`NOISE_MIN_M`]. Every distance threshold of the fit scales with
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NoiseModel {
+    /// m⁻¹: the deviation at 1 m is `k` meters, at 2 m `4 k`.
+    pub k: f32,
 }
 
-/// How far off a plane a sample at range `r` may lie and still be on it,
-/// seen at incidence cosine `cos` (m).
-fn plane_tol(r: f32, cos: f32) -> f32 {
-    (GROW_SIGMAS * noise_sigma(r) * cos.abs().max(NOISE_MIN_COS)).max(GROW_TOL_MIN_M)
+impl Default for NoiseModel {
+    fn default() -> Self {
+        Self { k: NOISE_K }
+    }
 }
 
-/// A sample's weight in a fit: its inverse noise variance, 1 at 1 m.
-fn weight(r: f32) -> f32 {
-    (noise_sigma(1.0) / noise_sigma(r)).powi(2)
+impl NoiseModel {
+    /// One standard deviation along the ray at range `r` (m).
+    pub fn sigma(self, r: f32) -> f32 {
+        (self.k * r * r).max(NOISE_MIN_M)
+    }
+
+    /// How far off a plane a sample at range `r` may lie and still be on
+    /// it, seen at incidence cosine `cos` (m).
+    fn plane_tol(self, r: f32, cos: f32) -> f32 {
+        (GROW_SIGMAS * self.sigma(r) * cos.abs().max(NOISE_MIN_COS)).max(GROW_TOL_MIN_M)
+    }
+
+    /// A sample's weight in a fit: its inverse noise variance, relative to
+    /// one at 1 m.
+    fn weight(self, r: f32) -> f32 {
+        (self.sigma(1.0) / self.sigma(r)).powi(2)
+    }
 }
 
 /// The depth camera: its pose in the app's world space and its fov.
@@ -430,6 +556,8 @@ pub struct LivePlanesConfig {
     pub max_range_m: f32,
     /// Planes reported at most.
     pub max_planes: usize,
+    /// The depth noise the fit assumes.
+    pub noise: NoiseModel,
 }
 
 impl Default for LivePlanesConfig {
@@ -437,6 +565,7 @@ impl Default for LivePlanesConfig {
         Self {
             max_range_m: MAX_RANGE_M,
             max_planes: MAX_PLANES,
+            noise: NoiseModel::default(),
         }
     }
 }
@@ -530,6 +659,20 @@ pub struct Stats {
     pub dropped: usize,
     pub tracked: usize,
     pub reported: usize,
+    /// The tracking origin moved this update, and the planes with it.
+    pub corrected: bool,
+    /// The view was explained neither by a still camera nor by the pose's
+    /// move, and was left out ([`JUMP_ODD_MAX`]).
+    pub odd: bool,
+}
+
+/// A tracking correction the planes followed: when, and how far the world
+/// moved and turned.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Correction {
+    pub at_s: f32,
+    pub moved_m: f32,
+    pub turned_deg: f32,
 }
 
 // ---- Geometry helpers --------------------------------------------------
@@ -666,8 +809,9 @@ impl Moments {
         }
     }
 
-    /// Add point `p` seen from `cam` with weight `w`.
-    fn add(&mut self, p: Vec3, cam: Vec3, w: f32) {
+    /// Add point `p` seen from `cam` with weight `w`, its noise along the
+    /// ray as `noise` has it.
+    fn add(&mut self, p: Vec3, cam: Vec3, w: f32, noise: NoiseModel) {
         let x = (p - self.origin).as_dvec3();
         let w = f64::from(w);
         self.w += w;
@@ -675,7 +819,7 @@ impl Moments {
         self.s += x * w;
         let ray = (p - cam).as_dvec3();
         let r = ray.length();
-        let along = ray * (f64::from(noise_sigma(r as f32)) / r.max(1e-9));
+        let along = ray * (f64::from(noise.sigma(r as f32)) / r.max(1e-9));
         let (xx, nn) = (outer(x, w), outer(along, w));
         for k in 0..6 {
             self.ss[k] += xx[k];
@@ -708,6 +852,16 @@ impl Moments {
         for v in self.ss.iter_mut().chain(self.noise.iter_mut()) {
             *v *= k;
         }
+    }
+
+    /// Move every point by the rigid motion `p -> q p + t`. The noise
+    /// turns with them: it lies along the rays, which turn too.
+    fn shift(&mut self, q: Quat, t: Vec3) {
+        let r = glam::DMat3::from_quat(q.as_dquat());
+        self.origin = q * self.origin + t;
+        self.s = r * self.s;
+        self.ss = turn_sym(self.ss, r);
+        self.noise = turn_sym(self.noise, r);
     }
 
     fn fit(&self) -> Option<Fit> {
@@ -807,6 +961,29 @@ fn union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     ]
 }
 
+/// The angle of rotation from `a` to `b` (radians), exact for small turns
+/// (an arc cosine of the dot product has a floor of a few hundredths of a
+/// degree).
+fn turn(a: Quat, b: Quat) -> f32 {
+    let d = a.inverse() * b;
+    2.0 * Vec3::new(d.x, d.y, d.z).length().atan2(d.w.abs())
+}
+
+/// The symmetric matrix `m` (xx, xy, xz, yy, yz, zz) turned by `r`:
+/// `r m rᵀ`.
+fn turn_sym(m: [f64; 6], r: glam::DMat3) -> [f64; 6] {
+    let [xx, xy, xz, yy, yz, zz] = m;
+    let full = glam::DMat3::from_cols(
+        DVec3::new(xx, xy, xz),
+        DVec3::new(xy, yy, yz),
+        DVec3::new(xz, yz, zz),
+    );
+    let t = r * full * r.transpose();
+    [
+        t.x_axis.x, t.y_axis.x, t.z_axis.x, t.y_axis.y, t.z_axis.y, t.z_axis.z,
+    ]
+}
+
 /// A plane frame: origin, in-plane axes and normal.
 #[derive(Debug, Clone, Copy)]
 struct Frame {
@@ -832,6 +1009,7 @@ fn extents(
     f: Frame,
     pad: f32,
     max_range: f32,
+    noise: NoiseModel,
     coords: &mut (Vec<f32>, Vec<f32>),
 ) -> [f32; 4] {
     let (a, b) = coords;
@@ -846,7 +1024,7 @@ fn extents(
         if den.abs() <= 0.1 * r
             || t <= 0.0
             || t * r > max_range
-            || (t - 1.0).abs() * r > EXTENT_SIGMAS * noise_sigma(r)
+            || (t - 1.0).abs() * r > EXTENT_SIGMAS * noise.sigma(r)
         {
             continue;
         }
@@ -927,7 +1105,7 @@ struct Scratch {
 impl Scratch {
     /// Copy the points in range, leaving out blends at silhouettes; returns
     /// how many there are.
-    fn prepare(&mut self, obs: &Observation<'_>, max_range: f32) -> usize {
+    fn prepare(&mut self, obs: &Observation<'_>, max_range: f32, noise: NoiseModel) -> usize {
         let n = obs.cols * obs.rows;
         if self.pts.len() != n {
             self.pts.resize(n, Vec3::ZERO);
@@ -968,7 +1146,7 @@ impl Scratch {
             }
             let (col, row) = (i % cols, i / cols);
             let r = self.range[i];
-            let near = 3.0 * noise_sigma(r);
+            let near = 3.0 * noise.sigma(r);
             let jump = 2.0 * (JUMP_FRAC * r + near);
             let pairs = [
                 (col > 0 && col + 1 < cols).then(|| (i - 1, i + 1)),
@@ -995,7 +1173,7 @@ impl Scratch {
     /// on the cell's own surface, so the normal does not blend two. The
     /// windows' moments come from summed-area tables, so each costs the
     /// same whatever its size.
-    fn normals(&mut self, lens: &Lens, cam: Vec3) {
+    fn normals(&mut self, lens: &Lens, cam: Vec3, noise: NoiseModel) {
         let (cols, rows) = (lens.cols, lens.rows);
         let w = cols + 1;
         self.sat.clear();
@@ -1038,7 +1216,7 @@ impl Scratch {
             }
             let (col, row) = (i % cols, i / cols);
             let (p, r) = (self.pts[i], self.range[i]);
-            let sigma = noise_sigma(r);
+            let sigma = noise.sigma(r);
             let ratio = sigma / (r * spacing);
             let reach = 1 + WINDOW_NOISE_FRACS.iter().filter(|&&f| ratio > f).count() as isize;
             let full = ((2 * reach + 1) * (2 * reach + 1)) as f64;
@@ -1118,7 +1296,7 @@ impl Scratch {
     }
 
     /// Grow regions from the flattest seeds; keep those that make patches.
-    fn grow(&mut self, lens: &Lens, cam: Vec3) {
+    fn grow(&mut self, lens: &Lens, cam: Vec3, noise: NoiseModel) {
         let Self {
             pts,
             range,
@@ -1154,7 +1332,7 @@ impl Scratch {
             let start = cells.len();
             cells.push(seed as u32);
             let mut mom = Moments::new(pts[seed]);
-            mom.add(pts[seed], cam, weight(range[seed]));
+            mom.add(pts[seed], cam, noise.weight(range[seed]), noise);
             let mut n = normal[seed];
             let mut d = n.dot(pts[seed]);
             let mut refit_at = 12;
@@ -1175,15 +1353,15 @@ impl Scratch {
                     }
                     let rj = range[j];
                     let cos = n.dot(pts[j] - cam) / rj;
-                    if (rj - range[i]).abs() > JUMP_FRAC * range[i] + 3.0 * noise_sigma(range[i])
+                    if (rj - range[i]).abs() > JUMP_FRAC * range[i] + 3.0 * noise.sigma(range[i])
                         || normal[j].dot(n) < cos_grow
-                        || (n.dot(pts[j]) - d).abs() > plane_tol(rj, cos)
+                        || (n.dot(pts[j]) - d).abs() > noise.plane_tol(rj, cos)
                     {
                         continue;
                     }
                     label[j] = tag;
                     cells.push(j as u32);
-                    mom.add(pts[j], cam, weight(rj));
+                    mom.add(pts[j], cam, noise.weight(rj), noise);
                 }
                 let count = cells.len() - start;
                 if count >= refit_at {
@@ -1221,12 +1399,12 @@ impl Scratch {
                 let r = range[i];
                 let cos = fnorm.dot(pts[i] - cam) / r;
                 let off = fnorm.dot(pts[i]) - fd;
-                if off.abs() > plane_tol(r, cos) {
+                if off.abs() > noise.plane_tol(r, cos) {
                     continue;
                 }
                 cells[kept] = cells[c];
                 kept += 1;
-                mom.add(pts[i], cam, weight(r));
+                mom.add(pts[i], cam, noise.weight(r), noise);
                 area += lens.solid_angle(i % cols, i / cols) * r * r / cos.abs().max(0.25);
                 range_sum += r;
             }
@@ -1320,6 +1498,17 @@ struct Tracked {
     miss_s: f32,
     appeared: bool,
     reported: bool,
+    /// Lies over a reported plane this update (see [`UNDER_M`]).
+    under: bool,
+    /// The patches that nested in the plane from outside the merge window
+    /// since the last one inside it, and when that one was
+    /// ([`REBASE_STARVED_S`]).
+    outside: Option<Moments>,
+    inside_s: f32,
+    /// The estimate moved past the merge window ([`Tracked::rebase`]): the
+    /// reported rectangle follows it at the moving camera's rates until it
+    /// is there.
+    catch_up: bool,
     kind: u32,
     pending: Option<(u32, f32)>,
     confidence: f32,
@@ -1370,6 +1559,10 @@ impl Tracked {
             miss_s: 0.0,
             appeared: false,
             reported: false,
+            catch_up: false,
+            under: false,
+            outside: None,
+            inside_s: 0.0,
             kind: KIND_OTHER,
             pending: None,
             confidence: 0.0,
@@ -1490,12 +1683,82 @@ impl Tracked {
         self.miss_s = self.miss_s.min(o.miss_s);
         self.merged |= o.merged;
         self.agrees |= o.agrees;
+        self.inside_s = self.inside_s.max(o.inside_s);
+        self.outside = None;
+    }
+
+    /// Move the plane by the rigid motion `p -> q p + t`: the tracking
+    /// origin moved, and the surface with it. The estimate, the rectangle
+    /// and what is reported move at once.
+    fn shift(&mut self, q: Quat, t: Vec3) {
+        let corners = self.corners().map(|c| q * c + t);
+        let before = self.edges;
+        self.mom.shift(q, t);
+        self.anchor = q * self.anchor + t;
+        self.centroid = q * self.centroid + t;
+        self.normal = (q * self.normal).normalize();
+        let yaw = q * self.yaw_ref;
+        self.yaw_ref = Vec3::new(yaw.x, 0.0, yaw.z).normalize_or(self.yaw_ref);
+        // The rectangle: the moved corners in the moved frame. A turn about
+        // the vertical turns the frame with the plane, so then the edges
+        // and their history stay as they were.
+        let (u, v) = self.axes();
+        let o = self.origin();
+        let mut e = [f32::MAX, f32::MIN, f32::MAX, f32::MIN];
+        for c in corners {
+            let d = c - o;
+            let (a, b) = (d.dot(u), d.dot(v));
+            e = union(e, [a, a, b, b]);
+        }
+        self.edges = e;
+        for h in &mut self.hist {
+            for k in 0..4 {
+                h[k] += e[k] - before[k];
+            }
+        }
+        self.rep_center = q * self.rep_center + t;
+        self.rep_rot = (q * self.rep_rot).normalize();
+        if let Some(m) = &mut self.outside {
+            m.shift(q, t);
+        }
+        if let Some((at, fwd)) = self.held {
+            self.held = Some((q * at + t, q * fwd));
+        }
+    }
+
+    /// Take `o`'s estimate (a candidate on this plane's surface, which has
+    /// had its patches): its points, its plane and its rectangle. The id,
+    /// the life and the reported rectangle stay, and the rectangle catches
+    /// up.
+    fn rebase(&mut self, o: &Tracked) {
+        self.mom = o.mom;
+        self.anchor = o.anchor;
+        self.centroid = o.centroid;
+        self.normal = o.normal;
+        self.upright = o.upright;
+        self.yaw_ref = o.yaw_ref;
+        self.edges = o.edges;
+        self.hist = o.hist;
+        self.hist_seen = o.hist_seen;
+        self.hist_len = o.hist_len;
+        self.seen_edges = o.seen_edges;
+        self.edge_seen = o.edge_seen;
+        self.merged |= o.merged;
+        self.agrees |= o.agrees;
+        self.evidence = self.evidence.max(o.evidence);
+        self.last_hit_s = self.last_hit_s.max(o.last_hit_s);
+        self.last_seen_s = self.last_seen_s.max(o.last_seen_s);
+        self.miss_s = 0.0;
+        self.strong += o.strong;
+        self.catch_up = true;
+        self.inside_s = o.inside_s;
+        self.outside = None;
     }
 
     /// Check a 4x4 grid of points on the rectangle, and three points just
     /// inside each edge, against the map: sets `agrees`, `evidence` and
     /// `edge_seen`.
-    fn check(&mut self, obs: &Observation<'_>, lens: &Lens, max_range: f32) {
+    fn check(&mut self, obs: &Observation<'_>, lens: &Lens, max_range: f32, noise: NoiseModel) {
         self.merged = false;
         self.seen_edges = None;
         self.agrees = false;
@@ -1534,7 +1797,7 @@ impl Tracked {
             }
             let expected = t * ray.length();
             let diff = ray.length() - expected;
-            let tol = (EVIDENCE_SIGMAS * noise_sigma(expected)).max(EVIDENCE_TOL_MIN_M);
+            let tol = (EVIDENCE_SIGMAS * noise.sigma(expected)).max(EVIDENCE_TOL_MIN_M);
             if diff < -tol {
                 Probe::Hidden
             } else if diff > tol {
@@ -1667,7 +1930,7 @@ impl Tracked {
     /// Move the reported rectangle toward the estimate, within the dead
     /// bands and rate limits.
     fn follow(&mut self, dt: f32, cam: Vec3, cell_angle: f32, moving: bool) {
-        let (turn_max, offset_max, edge_max) = if moving {
+        let (turn_max, offset_max, edge_max) = if moving || self.catch_up {
             (TURN_MAX_DEG_S, OFFSET_MAX_M_S, EDGE_MAX_M_S)
         } else {
             (TURN_STILL_DEG_S, OFFSET_STILL_M_S, EDGE_STILL_M_S)
@@ -1684,17 +1947,20 @@ impl Tracked {
         if step > 0.0 && angle > 0.0 {
             self.rep_rot = self.rep_rot.slerp(q, (step / angle).min(1.0)).normalize();
         }
+        let mut stepped = step > 0.0;
         let (u, v, n) = (
             self.rep_rot * Vec3::X,
             self.rep_rot * Vec3::Y,
             self.rep_rot * Vec3::Z,
         );
-        self.rep_center += n * follow(
+        let lift = follow(
             (c - self.rep_center).dot(n),
             OFFSET_DEADBAND_M,
             offset_max,
             dt,
         );
+        self.rep_center += n * lift;
+        stepped |= lift != 0.0;
         let d = c - self.rep_center;
         let (cu, cv) = (d.dot(u), d.dot(v));
         let target = [cu - h[0], cu + h[0], cv - h[1], cv + h[1]];
@@ -1710,7 +1976,13 @@ impl Tracked {
         for k in 0..4 {
             let band =
                 (EDGE_DEADBAND_CELLS * cell_angle * mids[k].distance(cam)).max(EDGE_DEADBAND_M);
-            e[k] += follow(target[k] - e[k], band, edge_max, dt);
+            let de = follow(target[k] - e[k], band, edge_max, dt);
+            e[k] += de;
+            stepped |= de != 0.0;
+        }
+        // There: within every dead band.
+        if !stepped {
+            self.catch_up = false;
         }
         for k in [0, 2] {
             if e[k + 1] < e[k] {
@@ -1787,21 +2059,28 @@ impl Tracked {
 /// Whether two tracked planes are one surface: normals within
 /// [`MERGE_ANGLE_DEG`], the smaller's center within [`MERGE_OFFSET_M`] of
 /// the larger's plane, rectangles overlapping or touching. While one of
-/// them has not appeared, normals within [`DUPLICATE_SCALE`] times that: a
-/// second plane started on a surface from a noisy patch joins the first
-/// before it can appear beside it.
+/// them has not appeared, normals within [`DUPLICATE_SCALE`] times that,
+/// and the center within the nesting limits ([`NEST_M`], [`NEST_PARALLEL_M`]
+/// within [`NEST_PARALLEL_DEG`] of parallel): a second plane started on a
+/// surface, from a noisy patch or from a piece of a large slanted surface
+/// whose fit differs, joins the first before it can appear beside it.
 fn same_surface(a: &Tracked, b: &Tracked) -> bool {
-    let scale = if a.appeared && b.appeared {
-        1.0
-    } else {
-        DUPLICATE_SCALE
-    };
-    if a.normal.dot(b.normal) < (scale * MERGE_ANGLE_DEG).to_radians().cos() {
+    let both = a.appeared && b.appeared;
+    let scale = if both { 1.0 } else { DUPLICATE_SCALE };
+    let cos = a.normal.dot(b.normal);
+    if cos < (scale * MERGE_ANGLE_DEG).to_radians().cos() {
         return false;
     }
+    let limit = if both {
+        MERGE_OFFSET_M
+    } else if cos >= NEST_PARALLEL_DEG.to_radians().cos() {
+        NEST_PARALLEL_M
+    } else {
+        NEST_M
+    };
     let (big, small) = if a.area() >= b.area() { (a, b) } else { (b, a) };
     let (c, _) = small.center_half();
-    if (big.normal.dot(c) - big.offset()).abs() > MERGE_OFFSET_M {
+    if (big.normal.dot(c) - big.offset()).abs() > limit {
         return false;
     }
     let (u, v) = big.axes();
@@ -1812,6 +2091,138 @@ fn same_surface(a: &Tracked, b: &Tracked) -> bool {
         r = union(r, [x, x, y, y]);
     }
     overlaps(r, big.edges, TOUCH_M)
+}
+
+/// The share of the smaller of `a` and `b` that their rectangles overlap,
+/// `b` seen in `a`'s frame.
+fn overlap_share(a: &Tracked, b: &Tracked) -> f32 {
+    let (u, v) = a.axes();
+    let o = a.origin();
+    let mut r = [f32::MAX, f32::MIN, f32::MAX, f32::MIN];
+    for p in b.corners() {
+        let d = p - o;
+        let (x, y) = (d.dot(u), d.dot(v));
+        r = union(r, [x, x, y, y]);
+    }
+    let e = a.edges;
+    let w = (e[1].min(r[1]) - e[0].max(r[0])).max(0.0);
+    let h = (e[3].min(r[3]) - e[2].max(r[2])).max(0.0);
+    let smaller = a.area().min((r[1] - r[0]) * (r[3] - r[2]));
+    if smaller > 0.0 { w * h / smaller } else { 0.0 }
+}
+
+/// The share of the smaller of two rectangles `[u0, u1, v0, v1]` in one
+/// frame that they overlap.
+fn nest_share(a: [f32; 4], b: [f32; 4]) -> f32 {
+    let w = (a[1].min(b[1]) - a[0].max(b[0])).max(0.0);
+    let h = (a[3].min(b[3]) - a[2].max(b[2])).max(0.0);
+    let smaller = ((a[1] - a[0]) * (a[3] - a[2])).min((b[1] - b[0]) * (b[3] - b[2]));
+    if smaller > 0.0 { w * h / smaller } else { 0.0 }
+}
+
+/// Whether `a` and `b` nest: see [`NEST_OVERLAP`].
+fn nested(a: &Tracked, b: &Tracked) -> bool {
+    let cos = a.normal.dot(b.normal);
+    if cos < NEST_DEG.to_radians().cos() {
+        return false;
+    }
+    let limit = if cos >= NEST_PARALLEL_DEG.to_radians().cos() {
+        NEST_PARALLEL_M
+    } else {
+        NEST_M
+    };
+    let (big, small) = if a.area() >= b.area() { (a, b) } else { (b, a) };
+    let (cb, _) = big.center_half();
+    let (cs, _) = small.center_half();
+    (big.normal.dot(cs) - big.offset()).abs() < limit
+        && (small.normal.dot(cb) - small.offset()).abs() < limit
+        && overlap_share(big, small) > NEST_OVERLAP
+}
+
+/// Whether the candidate `c` lies over the reported plane `r`: see
+/// [`UNDER_M`].
+fn lies_over(c: &Tracked, r: &Tracked) -> bool {
+    if c.appeared || !r.reported || c.normal.dot(r.normal) < NEST_DEG.to_radians().cos() {
+        return false;
+    }
+    let (cc, _) = c.center_half();
+    (r.normal.dot(cc) - r.offset()).abs() <= UNDER_M && overlap_share(r, c) > NEST_OVERLAP
+}
+
+/// Whether `new`, a candidate with a patch this update (and one strong
+/// one), is on the surface of `old`, a plane that appeared and has had no
+/// patch for [`REBASE_STARVED_S`], this update's included: see
+/// [`REBASE_DEG`].
+fn takes_over(old: &Tracked, new: &Tracked, now_s: f32) -> bool {
+    let starved = old.appeared && !old.merged && now_s - old.last_hit_s >= REBASE_STARVED_S;
+    let fed = !new.appeared && new.merged && new.hits >= APPEAR_HITS && new.strong > 0;
+    if !(starved && fed && old.normal.dot(new.normal) >= REBASE_DEG.to_radians().cos()) {
+        return false;
+    }
+    let (co, _) = old.center_half();
+    let (cn, _) = new.center_half();
+    (old.normal.dot(cn) - old.offset()).abs() <= REBASE_M
+        && (new.normal.dot(co) - new.offset()).abs() <= REBASE_M
+        && overlap_share(old, new) > REBASE_OVERLAP
+}
+
+// ---- Tracking corrections ----------------------------------------------
+
+/// The view a tracking correction is checked against: the camera's pose,
+/// and each cell's range (0 for none) and point.
+#[derive(Debug, Default)]
+struct Reference {
+    pose: Option<(Vec3, Quat)>,
+    range: Vec<f32>,
+    pts: Vec<Vec3>,
+    /// Updates in a row it explained neither way.
+    odd: u32,
+    /// The two medians' samples.
+    still: Vec<f32>,
+    miss: Vec<f32>,
+}
+
+impl Reference {
+    /// Take this update's view, `s` prepared for it, as the reference.
+    fn take(&mut self, cam: Vec3, rot: Quat, s: &Scratch) {
+        self.pose = Some((cam, rot));
+        self.range.clear();
+        self.range.extend(
+            s.range
+                .iter()
+                .zip(&s.valid)
+                .map(|(&r, &v)| if v { r } else { 0.0 }),
+        );
+        self.pts.clear();
+        self.pts.extend_from_slice(&s.pts);
+        self.odd = 0;
+        let n = s.pts.len();
+        if self.still.capacity() < n {
+            self.still.reserve(n);
+            self.miss.reserve(n);
+        }
+    }
+}
+
+/// What the tracking check found.
+#[derive(Debug, Clone, Copy)]
+enum Jump {
+    /// Nothing to act on.
+    None,
+    /// The world moved by `p -> q p + t`; the camera's pose moved this far
+    /// (m).
+    Moved(Quat, Vec3, f32),
+    /// A view explained neither way: left out.
+    Odd,
+}
+
+/// The median of `v` (reordered), 0 when empty.
+fn median_of(v: &mut [f32]) -> f32 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let mid = v.len() / 2;
+    *v.select_nth_unstable_by(mid, f32::total_cmp).1
 }
 
 // ---- The store ---------------------------------------------------------
@@ -1833,6 +2244,10 @@ pub struct LivePlanes {
     scratch: Scratch,
     coords: (Vec<f32>, Vec<f32>),
     ranked: Vec<(f32, usize)>,
+    /// The view tracking corrections are checked against, and the last
+    /// one the planes followed.
+    reference: Reference,
+    correction: Option<Correction>,
     /// What happened to planes, for the tests' failure messages.
     #[cfg(test)]
     events: Vec<String>,
@@ -1858,6 +2273,8 @@ impl LivePlanes {
             scratch: Scratch::default(),
             coords: (Vec::new(), Vec::new()),
             ranked: Vec::with_capacity(MAX_TRACKED + 1),
+            reference: Reference::default(),
+            correction: None,
             #[cfg(test)]
             events: Vec::new(),
         }
@@ -1882,6 +2299,11 @@ impl LivePlanes {
         self.tracked.len()
     }
 
+    /// The last tracking correction the planes followed, if any.
+    pub fn last_correction(&self) -> Option<Correction> {
+        self.correction
+    }
+
     /// Take one observation at `now_s` (seconds, any monotonic clock).
     pub fn update(&mut self, now_s: f32, obs: &Observation<'_>) -> Stats {
         let mut stats = Stats::default();
@@ -1901,13 +2323,35 @@ impl LivePlanes {
             self.coords.1.reserve(n);
         }
 
-        stats.valid = self.scratch.prepare(obs, max_range);
-        self.scratch.normals(&lens, cam);
-        self.scratch.grow(&lens, cam);
+        let noise = self.config.noise;
+        stats.valid = self.scratch.prepare(obs, max_range, noise);
+        let jump = self.check_correction(obs, &lens);
+        if matches!(jump, Jump::Odd) {
+            stats.odd = true;
+            stats.tracked = self.tracked.len();
+            stats.reported = self.out.len();
+            return stats;
+        }
+        if let Jump::Moved(q, t, moved) = jump {
+            self.shift(q, t, obs.camera);
+            stats.corrected = true;
+            let turned_deg = turn(Quat::IDENTITY, q).to_degrees();
+            self.correction = Some(Correction {
+                at_s: now_s,
+                moved_m: moved,
+                turned_deg,
+            });
+            #[cfg(test)]
+            self.events.push(format!(
+                "{now_s:.1} the tracking origin moved {moved:.2} m and turned {turned_deg:.1} deg"
+            ));
+        }
+        self.scratch.normals(&lens, cam, noise);
+        self.scratch.grow(&lens, cam, noise);
         stats.patches = self.scratch.patches.len();
 
         for t in &mut self.tracked {
-            t.check(obs, &lens, max_range);
+            t.check(obs, &lens, max_range, noise);
         }
         for k in 0..self.scratch.patches.len() {
             self.place(k, now_s, &lens, cam, &mut stats);
@@ -1929,7 +2373,7 @@ impl LivePlanes {
         for t in &mut self.tracked {
             t.apply_seen(cam, lens.cell_angle(), moving);
         }
-        self.merge_tracked(&mut stats);
+        self.merge_tracked(now_s, &mut stats);
         self.life(now_s, dt, &obs.camera, &mut stats);
         self.update_floor(dt, cam);
 
@@ -1963,9 +2407,92 @@ impl LivePlanes {
         stats
     }
 
+    /// Whether the tracking origin moved since the reference view while the
+    /// camera stayed where it was ([`Jump::Moved`]: the world's rigid
+    /// motion). The camera stayed when each cell's range is what it was,
+    /// though the pose says the view should have changed. A view explained
+    /// by the pose's move becomes the reference. One explained neither way
+    /// is [`Jump::Odd`] and does not, for [`JUMP_ODD_MAX`] updates. Under
+    /// [`JUMP_CHECK_M`] and [`JUMP_CHECK_DEG`] the reference is kept, so a
+    /// slow drift adds up against it until it shows.
+    fn check_correction(&mut self, obs: &Observation<'_>, lens: &Lens) -> Jump {
+        let cam = obs.camera.position;
+        let rot = obs.camera.rotation.normalize();
+        let Self {
+            reference: r,
+            scratch: s,
+            ..
+        } = self;
+        let n = s.range.len();
+        let Some((c0, q0)) = r.pose.filter(|_| r.range.len() == n) else {
+            r.take(cam, rot, s);
+            return Jump::None;
+        };
+        if c0.distance(cam) <= JUMP_CHECK_M && turn(q0, rot) <= JUMP_CHECK_DEG.to_radians() {
+            return Jump::None;
+        }
+        let inv = rot.inverse();
+        r.still.clear();
+        r.miss.clear();
+        for i in 0..n {
+            let r0 = r.range[i];
+            if r0 <= 0.0 {
+                continue;
+            }
+            if s.valid[i] {
+                r.still.push((s.range[i] - r0).abs());
+            }
+            if let Some(j) = lens.cell(inv * (r.pts[i] - cam))
+                && s.valid[j]
+            {
+                r.miss.push((r.pts[i].distance(cam) - s.range[j]).abs());
+            }
+        }
+        let need = ((JUMP_SHARED * n as f32) as usize).max(1);
+        if r.still.len() < need || r.miss.len() < need {
+            r.take(cam, rot, s);
+            return Jump::None;
+        }
+        let still = median_of(&mut r.still);
+        let miss = median_of(&mut r.miss);
+        if still <= JUMP_STILL_M {
+            if miss >= JUMP_MISS_M && miss >= JUMP_RATIO * still {
+                let q = (rot * q0.inverse()).normalize();
+                let t = cam - q * c0;
+                r.take(cam, rot, s);
+                return Jump::Moved(q, t, c0.distance(cam));
+            }
+            // Too small a change to tell either way.
+            return Jump::None;
+        }
+        if miss < still || r.odd >= JUMP_ODD_MAX {
+            r.take(cam, rot, s);
+            return Jump::None;
+        }
+        r.odd += 1;
+        Jump::Odd
+    }
+
+    /// Move everything kept in the world by `p -> q p + t` (a tracking
+    /// correction), the camera at `camera` having stayed where it was.
+    fn shift(&mut self, q: Quat, t: Vec3, camera: DepthCamera) {
+        for tr in &mut self.tracked {
+            tr.shift(q, t);
+        }
+        if let Some(y) = self.floor_y {
+            // The floor under the camera, moved.
+            let before = q.inverse() * (camera.position - t);
+            self.floor_y = Some((q * Vec3::new(before.x, y, before.z) + t).y);
+        }
+        // The camera did not move: it is where it was in the moved world.
+        if self.last_view.is_some() {
+            self.last_view = Some((camera.position, camera.forward()));
+        }
+    }
+
     /// Merge patch `k` into the tracked plane it belongs to, or start one.
     fn place(&mut self, k: usize, now_s: f32, lens: &Lens, cam: Vec3, stats: &mut Stats) {
-        let max_range = self.config.max_range_m;
+        let (max_range, noise) = (self.config.max_range_m, self.config.noise);
         let late = self
             .still_since
             .is_some_and(|since| now_s - since >= STILL_GRACE_S);
@@ -1985,7 +2512,9 @@ impl LivePlanes {
         let strong = p.fit.normal_sd() <= max_sd.to_radians() && p.len as f32 >= min_cells;
         let cos_merge = MERGE_ANGLE_DEG.to_radians().cos();
         let cos_near = (DUPLICATE_SCALE * MERGE_ANGLE_DEG).to_radians().cos();
-        let mut best: Option<(usize, f32, [f32; 4])> = None;
+        let cos_parallel = NEST_PARALLEL_DEG.to_radians().cos();
+        // (plane, score, extents, nested from outside the merge window)
+        let mut best: Option<(usize, f32, [f32; 4], bool)> = None;
         let mut duplicate = false;
         for (i, t) in tracked.iter().enumerate() {
             let cos = t.normal.dot(p.fit.normal);
@@ -1993,26 +2522,58 @@ impl LivePlanes {
                 continue;
             }
             let off = (t.normal.dot(p.fit.centroid) - t.offset()).abs();
-            if off > MERGE_OFFSET_M {
+            // A patch that nests in the plane (see NEST_OVERLAP) may lie
+            // further off than the merge window.
+            let nest_m = if cos >= cos_parallel {
+                NEST_PARALLEL_M
+            } else {
+                NEST_M
+            };
+            if off > MERGE_OFFSET_M && off >= nest_m {
                 continue;
             }
-            let ext = extents(&scratch.pts, cells, cam, t.frame(), pad, max_range, coords);
-            if cos < cos_merge {
-                duplicate |= overlaps(ext, t.edges, TOUCH_M);
-                continue;
-            }
-            if !overlaps(ext, t.edges, TOUCH_M) {
-                continue;
-            }
+            let ext = extents(
+                &scratch.pts,
+                cells,
+                cam,
+                t.frame(),
+                pad,
+                max_range,
+                noise,
+                coords,
+            );
+            let angle = cos.clamp(-1.0, 1.0).acos();
             let score =
-                cos.clamp(-1.0, 1.0).acos() / MERGE_ANGLE_DEG.to_radians() + off / MERGE_OFFSET_M;
+                if cos >= cos_merge && off <= MERGE_OFFSET_M && overlaps(ext, t.edges, TOUCH_M) {
+                    angle / MERGE_ANGLE_DEG.to_radians() + off / MERGE_OFFSET_M
+                } else if off < nest_m
+                    && (p.fit.normal.dot(t.center_half().0 - p.fit.centroid)).abs() < nest_m
+                    && nest_share(ext, t.edges) > NEST_OVERLAP
+                {
+                    // After every plane the patch merges into outright.
+                    NESTED_SCORE + angle / NEST_DEG.to_radians() + off / nest_m
+                } else {
+                    if cos < cos_merge && off <= MERGE_OFFSET_M {
+                        duplicate |= overlaps(ext, t.edges, TOUCH_M);
+                    }
+                    continue;
+                };
             if best.is_none_or(|b| score < b.1) {
-                best = Some((i, score, ext));
+                best = Some((i, score, ext, score >= NESTED_SCORE));
             }
         }
-        if let Some((i, _, ext)) = best {
+        if let Some((i, _, ext, nested)) = best {
             let t = &mut tracked[i];
             t.absorb(&p.mom);
+            if nested {
+                match &mut t.outside {
+                    Some(m) => m.merge(&p.mom),
+                    None => t.outside = Some(p.mom),
+                }
+            } else {
+                t.inside_s = now_s;
+                t.outside = None;
+            }
             t.strong += u32::from(strong);
             t.seen_edges = Some(t.seen_edges.map_or(ext, |s| union(s, ext)));
             t.merged = true;
@@ -2043,11 +2604,12 @@ impl LivePlanes {
             stats.dropped += 1;
         }
         let mut t = Tracked::new(*next_id, &p, |f| {
-            extents(&scratch.pts, cells, cam, f, pad, max_range, coords)
+            extents(&scratch.pts, cells, cam, f, pad, max_range, noise, coords)
         });
         *next_id += 1;
         t.first_s = now_s;
         t.last_hit_s = now_s;
+        t.inside_s = now_s;
         t.last_seen_s = now_s;
         t.strong = u32::from(strong);
         t.late = late;
@@ -2056,13 +2618,48 @@ impl LivePlanes {
     }
 
     /// Merge tracked planes that have become one surface. The survivor is
-    /// the one reported if only one is, else the older.
-    fn merge_tracked(&mut self, stats: &mut Stats) {
+    /// the one reported if only one is, else the older. A plane that
+    /// appeared and lost its patches to a candidate on its surface takes
+    /// the candidate's estimate instead ([`takes_over`]).
+    fn merge_tracked(&mut self, now_s: f32, stats: &mut Stats) {
         let n = self.tracked.len();
+        for t in &mut self.tracked {
+            t.under = false;
+        }
         for i in 0..n {
             for j in i + 1..n {
                 let (a, b) = (self.tracked[i], self.tracked[j]);
-                if !(a.alive && b.alive && same_surface(&a, &b)) {
+                if !(a.alive && b.alive) {
+                    continue;
+                }
+                if lies_over(&a, &b) {
+                    self.tracked[i].under = true;
+                } else if lies_over(&b, &a) {
+                    self.tracked[j].under = true;
+                }
+                let over = if takes_over(&a, &b, now_s) {
+                    Some((i, j))
+                } else if takes_over(&b, &a, now_s) {
+                    Some((j, i))
+                } else {
+                    None
+                };
+                if over.is_some() || !(same_surface(&a, &b) || nested(&a, &b)) {
+                    let Some((keep, gone)) = over else {
+                        continue;
+                    };
+                    let other = self.tracked[gone];
+                    self.tracked[keep].rebase(&other);
+                    self.tracked[gone].alive = false;
+                    #[cfg(test)]
+                    self.events.push(format!(
+                        "{now_s:.1} {} took over {}",
+                        self.tracked[keep].id, other.id
+                    ));
+                    stats.dropped += 1;
+                    if gone == i {
+                        break;
+                    }
                     continue;
                 }
                 let keep_j = b.appeared && !a.appeared;
@@ -2090,6 +2687,19 @@ impl LivePlanes {
     fn life(&mut self, now_s: f32, dt: f32, camera: &DepthCamera, stats: &mut Stats) {
         let cam = camera.position;
         for t in &mut self.tracked {
+            // Only patches from outside the merge window for a while: the
+            // surface is where they are.
+            if now_s - t.inside_s >= REBASE_STARVED_S
+                && let Some(m) = t.outside.take()
+            {
+                t.mom = m;
+                t.refit();
+                t.inside_s = now_s;
+                t.catch_up = true;
+                #[cfg(test)]
+                self.events
+                    .push(format!("{now_s:.1} {} moved to its patches", t.id));
+            }
             if t.merged {
                 t.hits += 1;
                 t.last_hit_s = now_s;
@@ -2149,7 +2759,10 @@ impl LivePlanes {
                 (APPEAR_S, APPEAR_FRAC)
             };
             if t.alive && !t.appeared && t.held.is_none() && now_s - t.first_s >= window - 1e-3 {
-                if t.hits >= APPEAR_HITS && t.hits as f32 >= frac * t.updates as f32 && t.strong > 0
+                if t.hits >= APPEAR_HITS
+                    && t.hits as f32 >= frac * t.updates as f32
+                    && t.strong > 0
+                    && !(t.late && t.under)
                 {
                     t.appeared = true;
                     t.snap();
@@ -2255,6 +2868,10 @@ impl LivePlanes {
             + s.order.capacity()
             + s.cells.capacity()
             + s.patches.capacity()
+            + self.reference.range.capacity()
+            + self.reference.pts.capacity()
+            + self.reference.still.capacity()
+            + self.reference.miss.capacity()
     }
 }
 
@@ -3340,7 +3957,7 @@ mod tests {
         for i in -4..=4 {
             for j in -4..=4 {
                 let p = c + u * (half[0] * i as f32 / 4.0) + v * (half[1] * j as f32 / 4.0);
-                mom.add(p, c + n * 2.0, 1.0);
+                mom.add(p, c + n * 2.0, 1.0, NoiseModel::default());
             }
         }
         let mut fit = mom.fit().unwrap();
@@ -3421,8 +4038,11 @@ mod tests {
     #[test]
     fn the_noise_correction_untilts_a_small_far_plane() {
         // A 0.5 m panel facing +z, 3.3 m from the camera at 45 degrees,
-        // with the sensor's noise along each ray: a plain fit leans toward
-        // the rays, the corrected one does not.
+        // with a noisy sensor's noise along each ray (k 0.01, 11 cm at 3.3
+        // m) and the model matched to it: a plain fit leans toward the
+        // rays, the corrected one does not. The noise is set here: the
+        // device's depth is far quieter than this (see NOISE_K).
+        let noise = NoiseModel { k: 0.01 };
         let cam = Vec3::ZERO;
         let c = Vec3::new(-2.33, 0.0, -2.33);
         let mut rng = Rng(5);
@@ -3435,8 +4055,8 @@ mod tests {
                 for j in -4..=4 {
                     let p = c + Vec3::new(0.06 * i as f32, 0.06 * j as f32, 0.0);
                     let ray = (p - cam).normalize();
-                    let q = p + ray * (noise_sigma(p.length()) * rng.gauss());
-                    m.add(q, cam, weight(q.length()));
+                    let q = p + ray * (noise.sigma(p.length()) * rng.gauss());
+                    m.add(q, cam, noise.weight(q.length()), noise);
                 }
             }
             let w = m.w;
@@ -3483,6 +4103,263 @@ mod tests {
         }
         let ghosts = ghosts(planes, &r.scene);
         assert!(ghosts.is_empty(), "planes on no surface: {}", dump(&ghosts));
+    }
+
+    // ---- What the headset showed (board #5400) ----------------------------
+
+    /// `rect` moved by `p -> q p + t`.
+    fn moved_rect(rect: &Rect, q: Quat, t: Vec3) -> Rect {
+        Rect {
+            c: q * rect.c + t,
+            u: q * rect.u,
+            v: q * rect.v,
+            ..*rect
+        }
+    }
+
+    /// `scene` moved by `p -> q p + t`.
+    fn moved_scene(scene: &Scene, q: Quat, t: Vec3) -> Scene {
+        Scene {
+            shapes: scene
+                .shapes
+                .iter()
+                .map(|s| match s {
+                    Shape::Rect(r) => Shape::Rect(moved_rect(r, q, t)),
+                    Shape::Sphere(c, rad) => Shape::Sphere(q * *c + t, *rad),
+                    Shape::Gone => Shape::Gone,
+                })
+                .collect(),
+        }
+    }
+
+    /// `secs` of a still camera at 4 Hz on the 64x64 grid, the read-back
+    /// for each update given by `view(t, camera, points)` from the room as
+    /// `scene_at(t)` has it. After each update, no two reported planes may
+    /// be one surface twice; returns the reported ids after every update.
+    fn still_run(
+        sim: &mut Sim,
+        secs: f32,
+        scene_at: impl Fn(f32) -> Scene,
+        mut view: impl FnMut(f32, &mut DepthCamera, &mut Vec<Option<Vec3>>),
+    ) -> Vec<(f32, Vec<u32>)> {
+        sim.grid = 64;
+        sim.hz = 4.0;
+        let mut out = Vec::new();
+        for _ in 0..(secs * sim.hz).round() as usize {
+            let t = sim.t;
+            let mut camera = standing();
+            render(
+                &scene_at(t),
+                &camera,
+                sim.grid,
+                sim.noise,
+                &mut sim.rng,
+                &mut sim.buf,
+            );
+            view(t, &mut camera, &mut sim.buf);
+            let obs = Observation {
+                camera,
+                cols: sim.grid,
+                rows: sim.grid,
+                points: &sim.buf,
+            };
+            sim.planes.update(t, &obs);
+            sim.t += 1.0 / sim.hz;
+            let planes = sim.planes.planes();
+            let doubles = crate::live_rec::doubles(planes);
+            assert!(
+                doubles.is_empty(),
+                "at {t}: {doubles:?} in {}\n{}",
+                dump(planes),
+                sim.planes.events.join("\n")
+            );
+            out.push((t, planes.iter().map(|p| p.id).collect()));
+        }
+        out
+    }
+
+    /// The ids reported from `from_s` on, all the same: the set stopped
+    /// changing.
+    fn settled(ids: &[(f32, Vec<u32>)], from_s: f32) -> Vec<u32> {
+        let k = ids
+            .iter()
+            .position(|(t, _)| *t >= from_s - 1e-3)
+            .expect("updates");
+        for (t, now) in &ids[k..] {
+            assert_eq!(now, &ids[k].1, "the set changed at {t}");
+        }
+        ids[k].1.clone()
+    }
+
+    #[test]
+    fn a_tracking_correction_moves_every_plane_with_the_world() {
+        // The headset lies still and the runtime finds its map again: every
+        // pose, the depth layer's among them, jumps by what the headset
+        // showed (0.30 m and 30.8 degrees about the vertical), and every
+        // point of the map with it. The read-back at the jump fits neither
+        // frame (on the headset it was 46 cm off a still view and 83 cm off
+        // the moved one). The planes must follow the world, not stay where
+        // the old frame put them beside the ones the new frame finds.
+        let r = room();
+        let mut sim = Sim::new(r.scene.clone(), SENSOR, 21);
+        let q = Quat::from_rotation_y(30.8f32.to_radians());
+        let t = Vec3::new(0.27, -0.11, 0.06);
+        let jump = 2.0;
+        let odd = cam(Vec3::new(0.6, 1.1, 0.4), 40.0, 5.0);
+        let scene = r.scene.clone();
+        let mut odd_buf = Vec::new();
+        let mut odd_rng = Rng(77);
+        let ids = still_run(
+            &mut sim,
+            12.0,
+            |_| scene.clone(),
+            |now, camera, points| {
+                if now < jump - 1e-3 {
+                    return;
+                }
+                if (now - jump).abs() < 1e-3 {
+                    render(&r.scene, &odd, 64, SENSOR, &mut odd_rng, &mut odd_buf);
+                    points.clone_from(&odd_buf);
+                }
+                for p in points.iter_mut().flatten() {
+                    *p = q * *p + t;
+                }
+                camera.position = q * camera.position + t;
+                camera.rotation = q * camera.rotation;
+            },
+        );
+        let before = settled(&ids, 1.0);
+        eprintln!(
+            "a tracking correction: {} planes, the same ids from 1 s",
+            before.len()
+        );
+        let c = sim.planes.last_correction().expect("a correction");
+        eprintln!(
+            "  followed at {:.2} s: {:.2} m, {:.1} deg",
+            c.at_s, c.moved_m, c.turned_deg
+        );
+        assert!((c.turned_deg - 30.8).abs() < 0.1, "{c:?}");
+        assert!((c.at_s - (jump + 0.25)).abs() < 1e-3, "{c:?}");
+        // Every plane sits on the room as the new frame has it.
+        let planes = sim.planes.planes();
+        let there = moved_scene(&r.scene, q, t);
+        let ghosts = ghosts(planes, &there);
+        assert!(ghosts.is_empty(), "planes on no surface: {}", dump(&ghosts));
+        let floor = assert_surface(
+            planes,
+            &moved_rect(&r.scene.rect(r.floor), q, t),
+            KIND_FLOOR,
+            "floor",
+        );
+        let wall = assert_surface(
+            planes,
+            &moved_rect(&r.scene.rect(r.walls[0]), q, t),
+            KIND_WALL,
+            "front wall",
+        );
+        assert!(before.contains(&floor) && before.contains(&wall));
+        assert!(
+            sim.planes.floor_y().is_some_and(|y| (y - t.y).abs() < 0.03),
+            "{:?}",
+            sim.planes.floor_y()
+        );
+    }
+
+    #[test]
+    fn a_surface_that_moves_keeps_its_plane_and_is_never_doubled() {
+        // A surface moves past the merge window while the camera is still:
+        // the front wall comes 12 cm nearer at 4 s. On the headset the
+        // depth of a whole cold-started view did as much when its filter
+        // settled. The wall's plane follows it, with its id, and no second
+        // plane appears beside it.
+        let r = room();
+        let mut sim = Sim::new(r.scene.clone(), SENSOR, 22);
+        let front = r.scene.rect(r.walls[0]);
+        let near = Rect {
+            c: front.c + Vec3::new(0.0, 0.0, 0.12),
+            ..front
+        };
+        let mut after = r.scene.clone();
+        after.shapes[r.walls[0]] = Shape::Rect(near);
+        let before_scene = r.scene.clone();
+        let ids = still_run(
+            &mut sim,
+            10.0,
+            |t| {
+                if t < 4.0 {
+                    before_scene.clone()
+                } else {
+                    after.clone()
+                }
+            },
+            |_, _, _| {},
+        );
+        let kept = settled(&ids, 1.0);
+        let planes = sim.planes.planes();
+        let id = assert_surface(planes, &near, KIND_WALL, "front wall, moved");
+        assert!(kept.contains(&id), "{id} not in {kept:?}");
+    }
+
+    #[test]
+    fn a_settling_sensor_keeps_the_set() {
+        // On a cold start the headset's depth beyond about 2.5 m came up to
+        // 15 cm nearer at once, about 11 s in, and stayed there. The set
+        // found before it is kept.
+        let r = room();
+        let mut sim = Sim::new(r.scene.clone(), SENSOR, 23);
+        let scene = r.scene.clone();
+        let ids = still_run(
+            &mut sim,
+            10.0,
+            |_| scene.clone(),
+            |t, camera, points| {
+                if t < 4.0 {
+                    return;
+                }
+                let c = camera.position;
+                for p in points.iter_mut().flatten() {
+                    let r = p.distance(c);
+                    let k = 1.0 - 0.04 * ((r - 2.5) / 2.0).clamp(0.0, 1.0);
+                    *p = c + (*p - c) * k;
+                }
+            },
+        );
+        settled(&ids, 1.0);
+    }
+
+    #[test]
+    fn the_floor_is_found_at_any_eye_height() {
+        // The lowest large upward plane in view is the floor, whatever the
+        // eye height: a child's or a low seat's 0.5 m, a headset set down on
+        // a desk at 0.76 m, a seated 1.2 m and a standing 1.7 m. A large low
+        // table (1.6 x 1.0 m, 0.4 m up, so at least 0.3 m below every eye but
+        // the lowest) is a table, not the floor, when the floor shows below
+        // it.
+        for (eye, seed) in [(0.5, 31), (0.76, 32), (1.2, 33), (1.7, 34)] {
+            let mut scene = Scene::default();
+            let [floor, ..] = scene.room([-2.0, 2.0], [-3.5, 2.0], 2.6);
+            let table = scene.add(level(0.40, [-0.7, 0.9], [-0.9, 0.1], true));
+            let (floor, table) = (scene.rect(floor), scene.rect(table));
+            let mut sim = Sim::new(scene, SENSOR, seed);
+            let view = cam(Vec3::new(0.0, eye, 0.5), 0.0, -25.0);
+            sim.run(5.0, |_| view, |_, _| {});
+            let planes = sim.planes.planes();
+            eprintln!(
+                "eye at {eye} m: floor y {:?}, {} planes",
+                sim.planes.floor_y(),
+                planes.len()
+            );
+            assert!(
+                sim.planes.floor_y().is_some_and(|y| y.abs() < 0.03),
+                "eye {eye}: floor y {:?}{}",
+                sim.planes.floor_y(),
+                dump(planes)
+            );
+            assert_surface(planes, &floor, KIND_FLOOR, "floor");
+            if eye - 0.40 >= FLOOR_BELOW_EYE_M {
+                assert_surface(planes, &table, KIND_TABLE, "low table");
+            }
+        }
     }
 
     #[test]
