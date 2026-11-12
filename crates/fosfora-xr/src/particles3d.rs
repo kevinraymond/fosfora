@@ -56,6 +56,13 @@ struct SimUniform {
 pub const MAX_SPHERES: usize = 64;
 pub const MAX_BOXES: usize = 32;
 const _: () = assert!(SURFACE_LANE_ROWS == MAX_BOXES, "one surface lane per box");
+// Geometry first's explain pass reads this block (`struct Obstacles` in
+// `geom_first::EXPLAIN_WGSL`).
+const _: () = assert!(
+    MAX_BOXES == crate::geom_first::MAX_BOXES
+        && size_of::<ObstacleSet>() == crate::geom_first::OBSTACLES_BYTES,
+    "geometry first reads the obstacle block's layout"
+);
 
 /// An oriented box obstacle in the reference space: a scene plane (thin
 /// box), a scene volume or the floor.
@@ -886,6 +893,14 @@ impl Particles3d {
     pub fn set_obstacles(&self, queue: &wgpu::Queue, set: &ObstacleSet) {
         queue.write_buffer(&self.obstacles, 0, bytemuck::bytes_of(set));
         self.occluder_counts.set((set.box_count, set.sphere_count));
+    }
+
+    /// The obstacle block's uniform, as `set_obstacles` last wrote it, when
+    /// its boxes are drawn as occluders (`occluders`); for geometry first
+    /// (board #5416, `geom_first.rs`), whose explain pass tests the very
+    /// boxes `draw_occluders` draws.
+    pub fn box_occluders(&self) -> Option<&wgpu::Buffer> {
+        self.occluders.then_some(&self.obstacles)
     }
 
     /// Draw every obstacle as a depth-only cube into the current eye pass,

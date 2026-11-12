@@ -1208,6 +1208,11 @@ impl Gfx {
         if let Some(p) = &env_depth.planes {
             p.record(&mut encoder);
         }
+        // Board #5416: geometry first's explain and keep passes, before the
+        // eye passes whose occluder mesh reads the drops.
+        if let Some(g) = &env_depth.geom {
+            g.record(&mut encoder);
+        }
         if let Some(p) = particles {
             p.step(&mut encoder);
         }
