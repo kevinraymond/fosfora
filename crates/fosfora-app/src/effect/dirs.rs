@@ -61,6 +61,10 @@ fn localize_in(effect: &mut PfxEffect, pfx_path: &Path, dirs: &[PathBuf]) {
 /// Read one `.pfx`: parse it, apply the load-time fixups the built-in scan
 /// applies, and remember where it came from. `None` (logged) if unreadable.
 pub(crate) fn read_pfx(path: &Path) -> Option<PfxEffect> {
+    read_pfx_in(path, &extra_dirs())
+}
+
+fn read_pfx_in(path: &Path, dirs: &[PathBuf]) -> Option<PfxEffect> {
     let json = std::fs::read_to_string(path)
         .map_err(|e| log::warn!("Failed to read {}: {e}", path.display()))
         .ok()?;
@@ -72,8 +76,10 @@ pub(crate) fn read_pfx(path: &Path) -> Option<PfxEffect> {
     if let Some(pd) = effect.particles.as_mut() {
         pd.interaction |= pd.interaction_3d;
     }
+    // Localize against the path as listed: the extra directories are not
+    // canonical, so a symlinked one would not match the canonical path.
+    localize_in(&mut effect, path, dirs);
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    localize(&mut effect, &path);
     log::info!("Found effect: {} ({})", effect.name, path.display());
     effect.source_path = Some(path);
     Some(effect)
@@ -174,5 +180,30 @@ mod tests {
             .collect();
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(found, vec!["a.pfx", "b.pfx", "sub/c.pfx"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_extra_dir_still_localizes_shaders() {
+        let root = std::env::temp_dir().join(format!("fosfora-effect-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let real = root.join("real");
+        let link = root.join("link");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        std::fs::write(
+            real.join("glow.pfx"),
+            r#"{"name": "Glow", "shader": "glow.wgsl"}"#,
+        )
+        .unwrap();
+
+        let e = read_pfx_in(&link.join("glow.pfx"), std::slice::from_ref(&link));
+        let _ = std::fs::remove_dir_all(&root);
+        let e = e.expect("the .pfx parses");
+        assert_eq!(
+            Path::new(&e.shader),
+            link.join("glow.wgsl"),
+            "shader resolves beside the .pfx, not in assets/shaders"
+        );
     }
 }

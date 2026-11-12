@@ -34,7 +34,7 @@ pub fn all_dirs() -> Vec<PathBuf> {
 }
 
 /// Is `path` a trama effect file directly inside one of `dirs`? The watcher
-/// routes by this: the built-in directory is recognised by its name
+/// routes by this: the built-in directory is recognized by its name
 /// (`trama/effects`), an extra one only by being listed.
 pub fn is_effect_in(path: &Path, dirs: &[PathBuf]) -> bool {
     path.extension().is_some_and(|e| e == "wgsl")
