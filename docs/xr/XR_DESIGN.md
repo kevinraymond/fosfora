@@ -498,7 +498,7 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   stretched about five times over an eye and blended across silhouettes)
   and the room's boxes. Where both cover a surface, the map's blended
   silhouette spills past the box's exact edge, so even a scanned table
-  gets a soft, wandering edge. With `debug.fosfora.geomfirst 1` the map
+  gets a soft, wandering edge. With geometry first (the default; `debug.fosfora.geomfirst 0` turns it off) the map
   stops occluding where a box explains what it sees, and the box's own
   edge shows. The map keeps everything no box explains.
   - **The rule.** A map sample is explained by a box when the ray from its
@@ -532,7 +532,8 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     drops them all, for the A/B. The full-screen pass (`envdepthmesh 0`)
     has no vertices to test, so the feature needs the mesh.
   - **Knobs**, read at launch and polled once a second: `geomfirst 0|1|2`
-    (default 0), `geomfirstmargin` (texel widths, 0 to 8), `geomfirsttol`
+    (default 1, on with the keep rule, since the worn comparison; 0 is the
+    map occluding everywhere), `geomfirstmargin` (texel widths, 0 to 8), `geomfirsttol`
     (m, 0 to 0.5) and `geomfirstshow 1`, a magenta tint over the eye
     pass's map occluder where it still occludes, on or off with the
     feature, for an unworn screen capture (it includes the passthrough).

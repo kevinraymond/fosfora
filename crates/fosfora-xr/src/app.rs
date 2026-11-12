@@ -425,7 +425,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       per-pixel lookup)
     //   adb shell setprop debug.fosfora.geomfirst 0|1|2          (board #5416, geom_first.rs: the depth map stops occluding where a room box drawn as an
     //       occluder explains it, so the box's exact edge shows there; 1 on, 2 on without the keep rule (every explained mesh vertex
-    //       dropped, an unexplained edge against a box too); default 0; needs the mesh (envdepthmesh not 0); live: polled once a second)
+    //       dropped, an unexplained edge against a box too); 0 off; default 1; needs the mesh (envdepthmesh not 0); live: polled once a second)
     //   adb shell setprop debug.fosfora.geomfirstmargin 1.5      (geometry first: the margin beside a box's silhouette, depth texel widths, 0..8; live)
     //   adb shell setprop debug.fosfora.geomfirsttol 0.04        (geometry first: how far in front of a box's surface a sample is still the box's, m, plus
     //       the sensor's noise at its range, 0..0.5; live)

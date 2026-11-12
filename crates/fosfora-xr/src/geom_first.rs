@@ -81,8 +81,8 @@
 //! (a phone on a table, a cable along a wall) loses its occlusion.
 //!
 //! **Knobs**, read at launch and polled once a second
-//! ([`GeomFirstOptions::from_knobs`]): `debug.fosfora.geomfirst 0|1|2` (off,
-//! the default; on; on without the keep rule), `geomfirstmargin` (texel
+//! ([`GeomFirstOptions::from_knobs`]): `debug.fosfora.geomfirst 0|1|2` (off;
+//! on, the default; on without the keep rule), `geomfirstmargin` (texel
 //! widths, [`MARGIN_TEXELS`]), `geomfirsttol` (m, [`TOL_M`]) and
 //! `geomfirstshow 1` (a tint where the map still occludes, [`TINT`]). Off,
 //! the eye pass records exactly what it did before: no compute pass, the
@@ -149,11 +149,12 @@ pub const KNOB_SHOW: &str = "debug.fosfora.geomfirstshow";
 /// `debug.fosfora.geomfirst`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
-    /// 0 or unset: the map occludes everywhere, as before.
-    #[default]
+    /// 0: the map occludes everywhere, as before geometry first.
     Off,
-    /// 1: explained vertices dropped, but those an unexplained nearer
-    /// neighbor needs (the keep rule).
+    /// 1 or unset: explained vertices dropped, but those an unexplained
+    /// nearer neighbor needs (the keep rule). The default since the worn
+    /// comparison (board #5416).
+    #[default]
     On,
     /// 2: every explained vertex dropped, no keep rule (the A/B for it).
     DropAll,
@@ -180,7 +181,7 @@ pub struct GeomFirstOptions {
 impl Default for GeomFirstOptions {
     fn default() -> Self {
         Self {
-            mode: Mode::Off,
+            mode: Mode::On,
             margin_texels: MARGIN_TEXELS,
             tol_m: TOL_M,
             show: false,
@@ -201,9 +202,9 @@ impl GeomFirstOptions {
         };
         Self {
             mode: match prop(KNOB).as_deref().map(str::trim) {
-                Some("1") => Mode::On,
+                Some("0") => Mode::Off,
                 Some("2") => Mode::DropAll,
-                _ => Mode::Off,
+                _ => d.mode,
             },
             margin_texels: number(KNOB_MARGIN)
                 .map_or(d.margin_texels, |v| v.clamp(0.0, MARGIN_MAX_TEXELS)),
@@ -1966,8 +1967,8 @@ mod tests {
         let mut off = rows;
         set_drop_vertices(&mut off, 0);
         assert_eq!(off, rows);
-        // And the knobs default to off.
-        assert_eq!(GeomFirstOptions::default().mode, Mode::Off);
+        // And the knobs default to on, with the keep rule.
+        assert_eq!(GeomFirstOptions::default().mode, Mode::On);
         assert_eq!(
             GeomFirstOptions::from_knobs(|_| None),
             GeomFirstOptions::default()
@@ -1987,7 +1988,9 @@ mod tests {
         assert_eq!(on.mode, Mode::On);
         assert_eq!(knobs(&[(KNOB, "2")]).mode, Mode::DropAll);
         assert_eq!(knobs(&[(KNOB, "0")]).mode, Mode::Off);
-        assert_eq!(knobs(&[(KNOB, "yes")]).mode, Mode::Off);
+        // Anything else is the default, on.
+        assert_eq!(knobs(&[(KNOB, "yes")]).mode, Mode::On);
+        assert_eq!(knobs(&[]).mode, Mode::On);
         let tuned = knobs(&[
             (KNOB, " 1 "),
             (KNOB_MARGIN, "2.5"),
@@ -2005,7 +2008,7 @@ mod tests {
         assert_close!(bad.margin_texels, MARGIN_TEXELS);
         assert_close!(bad.tol_m, TOL_M);
         // The lines name the state, the change and a run without boxes.
-        let off = GeomFirstOptions::default();
+        let off = knobs(&[(KNOB, "0")]);
         assert!(off.line(true).starts_with("geometry first: off"));
         assert!(on.line(true).contains("margin 1.5 texels"));
         assert!(on.line(false).contains("debug.fosfora.occluders 0"));
