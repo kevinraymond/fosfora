@@ -57,6 +57,7 @@ pub mod permissions;
 pub mod pinch;
 #[cfg(target_os = "android")]
 mod playback;
+pub mod playlist;
 pub mod pose;
 pub mod reach;
 pub mod ripple;
