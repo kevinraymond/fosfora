@@ -3047,3 +3047,28 @@ should be labeled.
 **Log capture.** The main logcat buffer (256 KiB) holds about 70 s of this
 app's output and reset to that size on the v209 reboot. A worn session streams
 `adb logcat -v time` to a file from the start.
+
+## Labels that face the wearer, and the fist as a toggle (board #5379, #5380)
+
+Quest 3 on Horizon OS v209, Nov 12, 2026, unworn, tip ac89a27.
+
+**Labels (6a3841f), `debug.fosfora.labels 1`, the live room (21 anchors, 17
+lit), the headset on the floor looking up.** The capture shows "ceiling ·
+none" on the ceiling by the fan, "table 20 · streamlines" on the table, and a
+wall label hidden behind a storage bin by the depth map, every one facing the
+head and upright. 72 fps, 0 stale, App 6.15 ms, GPU 0.62 (5.46 ms with the flat
+labels of 86db1ef, same room and pose: the billboarding, the spread pass and
+the leader slots cost under a millisecond here, with nothing crowded). The
+spread and the leaders need a crowd, so they are a worn gate.
+
+**The 20 s window (ac89a27), through `debug.fosfora.voicefile` with a 20 s
+16 kHz mono cut of the clip.** 20.00 s of audio transcribed in 1532 ms
+(audio_ctx 1064, 3 threads), text 1540 ms after the close, the result logged
+as `heard nothing ("(upbeat music)")`. A 6 s window took 460 to 530 ms on
+Nov 12, so the cost grows with the window and a full fist window answers in
+about 1.5 s. The `voicefile` knob takes an absolute path.
+
+**A launch blocker after the upgrade.** The system's first-time dialog
+(`com.oculus.firsttimenux`) sat on top after the v209 reboot and every
+`am start` timed out at window placement with no process started; `adb shell
+am force-stop com.oculus.firsttimenux` cleared it.
