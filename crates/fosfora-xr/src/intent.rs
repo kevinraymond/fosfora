@@ -118,6 +118,30 @@ pub enum Strength {
     Off,
 }
 
+/// The hand menu's Immersion control by voice (board #5384): a step along
+/// off, low, full, or a depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImmersionStep {
+    /// "darker": one step deeper, full at most.
+    Darker,
+    /// "lighter": one step back, off at least.
+    Lighter,
+    /// "lights on" is off, "lights off" and "full dark" full, "immersion
+    /// low" low.
+    To(crate::immerse::Depth),
+}
+
+impl ImmersionStep {
+    /// The depth this asks for, from `now`.
+    pub fn resolve(self, now: crate::immerse::Depth) -> crate::immerse::Depth {
+        match self {
+            Self::Darker => now.deeper(),
+            Self::Lighter => now.lighter(),
+            Self::To(depth) => depth,
+        }
+    }
+}
+
 /// What a sentence asks for. Each variant does what a hand already does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
@@ -141,6 +165,9 @@ pub enum Intent {
     Recenter,
     /// The hand menu's "All: none".
     AllNone,
+    /// The hand menu's Immersion control (board #5384): how dark the room
+    /// may get with the music.
+    Immersion(ImmersionStep),
     /// The editor's tap (one surface) or hold (the kind), set to this
     /// behavior instead of stepped.
     Behavior {
@@ -348,6 +375,40 @@ const EVERY: [&str; 3] = ["all", "every", "each"];
 const LEVEL: [&str; 3] = ["strength", "brightness", "intensity"];
 /// Words for behavior none.
 const NONE_WORDS: [&str; 4] = ["none", "nothing", "clear", "off"];
+/// Board #5384: the room's immersion, a step at a time ("darker" alone is
+/// the room's; a surface's dimmer names the surface, "the desk darker")...
+const DARKER: [&str; 9] = [
+    "darker",
+    "room darker",
+    "make room darker",
+    "darken room",
+    "dim room",
+    "dim lights",
+    "lights down",
+    "more immersion",
+    "immersion up",
+];
+const LIGHTER: [&str; 8] = [
+    "lighter",
+    "room lighter",
+    "make room lighter",
+    "brighten room",
+    "room brighter",
+    "lights up",
+    "less immersion",
+    "immersion down",
+];
+/// ...or to a depth: the lights on is the plain room, off the full depth.
+const LIGHTS_ON: [&str; 4] = ["lights on", "light on", "on lights", "on light"];
+const LIGHTS_OFF: [&str; 7] = [
+    "lights off",
+    "light off",
+    "off lights",
+    "off light",
+    "lights out",
+    "full dark",
+    "full darkness",
+];
 
 /// A kind word, singular or plural (the plural is always the kind):
 /// `table`, `desk`; `floor`, `ground`; `wall`; `ceiling`, `roof`;
@@ -643,6 +704,9 @@ fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
     if any(ts, &ALL_NONE) {
         return Some(Intent::AllNone);
     }
+    if let Some(step) = immersion(ts) {
+        return Some(Intent::Immersion(step));
+    }
     if let Some(t) = toggle(ts) {
         return Some(t);
     }
@@ -681,6 +745,42 @@ fn device(w: &str) -> Option<fn(bool) -> Intent> {
         "music" => Some(Intent::Music),
         _ => None,
     }
+}
+
+/// Board #5384: the room's immersion. "darker" and "lighter" step it
+/// ([`DARKER`], [`LIGHTER`]); "lights on" sets it off, "lights off" and
+/// "full dark" full ([`LIGHTS_ON`], [`LIGHTS_OFF`]); "immersion" with off,
+/// none, low, half, full, on or max, before or after it, sets that depth. A
+/// leading "turn" or "switch" is dropped ("turn the lights off").
+fn immersion(ts: &[&str]) -> Option<ImmersionStep> {
+    use crate::immerse::Depth;
+    let ts = match ts {
+        ["turn" | "switch", rest @ ..] => rest,
+        _ => ts,
+    };
+    if any(ts, &DARKER) {
+        return Some(ImmersionStep::Darker);
+    }
+    if any(ts, &LIGHTER) {
+        return Some(ImmersionStep::Lighter);
+    }
+    if any(ts, &LIGHTS_ON) {
+        return Some(ImmersionStep::To(Depth::Off));
+    }
+    if any(ts, &LIGHTS_OFF) {
+        return Some(ImmersionStep::To(Depth::Full));
+    }
+    let depth = match ts {
+        ["immersion" | "immerse", w] | [w, "immersion"] => *w,
+        _ => return None,
+    };
+    let depth = match depth {
+        "off" | "none" => Depth::Off,
+        "low" | "half" => Depth::Low,
+        "full" | "on" | "max" => Depth::Full,
+        _ => return None,
+    };
+    Some(ImmersionStep::To(depth))
 }
 
 /// A world effect by name, alone or after a switching verb.
@@ -1390,6 +1490,9 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         Intent::Rescan => "rescanning the room".to_owned(),
         Intent::Recenter => "cloud recentered".to_owned(),
         Intent::AllNone => "every surface: none".to_owned(),
+        Intent::Immersion(ImmersionStep::To(depth)) => immersion_reply(depth),
+        Intent::Immersion(ImmersionStep::Darker) => "darker".to_owned(),
+        Intent::Immersion(ImmersionStep::Lighter) => "lighter".to_owned(),
         Intent::Behavior { target, behavior } => of(target, behavior.name()),
         Intent::Color { target, color: 0 } => of(target, "own color"),
         Intent::Color { target, color } => of(target, color_name(color)),
@@ -1407,6 +1510,13 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         Intent::Describe(target) => target_name(target, vocab),
         Intent::Help => "what can I say".to_owned(),
     }
+}
+
+/// The label once an immersion intent is applied, whatever asked for it:
+/// the depth it came to, "immersion low" (a "darker" at full says "immersion
+/// full", where "darker" would promise a change).
+pub fn immersion_reply(depth: crate::immerse::Depth) -> String {
+    format!("immersion {}", depth.name())
 }
 
 /// How many names an ambiguity lists before "or N more".
@@ -1836,6 +1946,89 @@ mod tests {
                 ("Nothing anywhere", Intent::AllNone),
                 ("all none", Intent::AllNone),
             ],
+        );
+    }
+
+    /// Board #5384: the room darker and lighter, the lights on and off;
+    /// a surface's dimmer still needs the surface.
+    #[test]
+    fn the_room_darker_lighter_and_the_lights() {
+        use crate::immerse::Depth::{Full, Low, Off};
+        use ImmersionStep::{Darker, Lighter, To};
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        let im = Intent::Immersion;
+        check(
+            &v,
+            &[
+                ("Darker.", im(Darker)),
+                ("Make the room darker.", im(Darker)),
+                ("Dim the lights", im(Darker)),
+                ("Turn the lights down.", im(Darker)),
+                ("More immersion", im(Darker)),
+                ("Lighter.", im(Lighter)),
+                ("Make the room lighter", im(Lighter)),
+                ("Lights up", im(Lighter)),
+                ("Lights on.", im(To(Off))),
+                ("Turn on the lights.", im(To(Off))),
+                ("Turn the lights on", im(To(Off))),
+                ("Lights off.", im(To(Full))),
+                ("Turn off the lights.", im(To(Full))),
+                ("Lights out", im(To(Full))),
+                ("Full dark.", im(To(Full))),
+                ("Immersion low.", im(To(Low))),
+                ("immersion half", im(To(Low))),
+                ("Immersion off", im(To(Off))),
+                ("full immersion", im(To(Full))),
+                ("Immersion on.", im(To(Full))),
+                // A surface named, or "it": the surface's strength, as
+                // before.
+                (
+                    "The desk darker.",
+                    strength_of(Target::Surface(0), Strength::Down),
+                ),
+                (
+                    "Make it darker",
+                    strength_of(Target::Pointed, Strength::Down),
+                ),
+                ("dimmer", strength_of(Target::Pointed, Strength::Down)),
+                ("brighter", strength_of(Target::Pointed, Strength::Up)),
+            ],
+        );
+        // No depth word: not the room's (the surface templates take them
+        // and find no surface by that name).
+        for sentence in ["Immersion purple.", "Lights blue.", "Turn immersion"] {
+            assert!(parse(sentence, &v).is_err(), "\"{sentence}\"");
+        }
+        // In a sentence of clauses, beside the menu's.
+        let clauses = parse_clauses("Lights off and next effect.", &v);
+        let outcomes: Vec<_> = clauses.into_iter().map(|c| c.outcome).collect();
+        assert_eq!(outcomes, [Ok(im(To(Full))), Ok(Intent::NextEffect)]);
+        // The steps from each depth, held at the ends.
+        assert_eq!(
+            [Off, Low, Full].map(|d| Darker.resolve(d)),
+            [Low, Full, Full]
+        );
+        assert_eq!(
+            [Off, Low, Full].map(|d| Lighter.resolve(d)),
+            [Off, Off, Low]
+        );
+        assert_eq!(To(Low).resolve(Full), Low);
+        // The replies: the depth it came to, in the menu's words.
+        assert_eq!(reply(&im(To(Full)), &v), "immersion full");
+        assert_eq!(reply(&im(To(Off)), &v), "immersion off");
+        assert_eq!(reply(&im(Darker), &v), "darker");
+        assert_eq!(immersion_reply(Low), "immersion low");
+        // The agent's actions have no immersion (the on-device model's
+        // kinds are a closed set): its kind misses.
+        let action = AgentAction {
+            kind: "immersion".to_owned(),
+            target: String::new(),
+            value: "full".to_owned(),
+        };
+        assert_eq!(
+            Intent::from_json(&action, &v).map_err(|m| m.reason),
+            Err(Reason::NoMatch)
         );
     }
 
@@ -2544,6 +2737,7 @@ mod tests {
             ),
             Intent::Describe(t) => ("describe", target(t), String::new()),
             Intent::Help => unreachable!("the agent's actions have no help"),
+            Intent::Immersion(_) => unreachable!("the agent's actions have no immersion"),
         };
         AgentAction {
             kind: kind.to_owned(),

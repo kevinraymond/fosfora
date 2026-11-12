@@ -4501,6 +4501,13 @@ fn apply_intent(
         Intent::Rescan => actions.push(Action::RescanRoom),
         Intent::Recenter => actions.push(Action::Recenter),
         Intent::AllNone => actions.push(Action::AllNone),
+        // Board #5384: a step from the depth the control shows; the label
+        // names where it came to.
+        Intent::Immersion(step) => {
+            controls.immerse = step.resolve(controls.immerse);
+            actions.push(Action::SetImmersion(controls.immerse));
+            return crate::intent::immersion_reply(controls.immerse);
+        }
         _ => {}
     }
     crate::intent::apply(intent, vocab, lanes, boxes)
