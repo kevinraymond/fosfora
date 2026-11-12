@@ -3135,3 +3135,32 @@ launches, at the same places in the camera's frame within a few centimeters.
 The cold desk launch's changes after 1 s are a box-top piece at 3.0 s and the
 settling at 11.7 s, after which it swaps a plane on the left for the one the
 warm launch has had from the start.
+
+## Edge bars: the room's outline as the spectrum (board #5420)
+
+Quest 3, OS v209, 31 h since the last boot, unworn on the desk, seated launch
+in the scanned room (21 anchors replayed), world mode, 72 Hz, the governor
+off, music playing, immersion held at 1 (`immersefix 1`, the outline at its
+brightest). The room outlined 10 planes and 14 volumes with 164 strips. The
+pipeline built on the first frame with strips and logged no validation error.
+
+Render stages (`scripts/xr/gpu-stages.sh`, 25 s per launch, the profiler adds
+about 10 %):
+
+| Condition | sim med / p90 | eye binning | eye render | App | alive |
+|---|---|---|---|---|---|
+| off | 3.16 / 3.82 ms | 1.73 ms | 0.72 ms | 10.10 ms | 299K |
+| off | 3.08 / 3.40 | 1.73 | 0.73 | 10.76 | 299K |
+| `edgebars 1` (on the face) | 3.14 / 3.67 | 1.74 | 0.79 | 10.75 | 299K |
+| `edgebars 2` (standing) | 3.00 / 3.51 | 1.72 | 0.79 | 10.52 | 299K |
+| off | 3.11 / 3.56 | 1.74 | 0.71 | 10.76 | 299K |
+
+The bars add 0.07 ms to the eye surface's render and nothing to its binning.
+App moves 0.66 ms between the three launches with the bars off, so their cost
+is inside that. The absolute App numbers are high for this build because of
+the uptime and the profiler; only the differences count.
+
+Screen captures at the same spot with the bars off, on the face and standing
+show the walls outlined in their colors and the scanned furniture in its own,
+the bars meeting on the same band at the corners, and furniture in front
+hiding the wall's bars behind it. Not yet worn.
