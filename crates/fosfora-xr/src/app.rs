@@ -431,6 +431,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the sensor's noise at its range, 0..0.5; live)
     //   adb shell setprop debug.fosfora.geomfirstshow 0|1        (diagnostic: the eye pass's depth map occluder drawn with a magenta tint where it still
     //       occludes, still writing depth, geometry first on or off, for an unworn screencap; live)
+    //   adb shell setprop debug.fosfora.edgebars 0|1|2           (board #5420, edge_bars.rs: the room's outline drawn as the spectrum, bars along the edges of
+    //       every plane and box drawn as an occluder (hidden walls and the stage floor left out), in the surface's color, while music
+    //       plays; 1 the bars lie on each face and grow in from its edges, 2 they stand off each edge along the face's normal; default 0;
+    //       live: polled once a second)
+    //   adb shell setprop debug.fosfora.edgebarsgain 1           (edge bars: brightness multiplier, 0..4; 1 = peak alpha 0.25 with the room plain, 0.7 at full
+    //       immersion; live)
+    //   adb shell setprop debug.fosfora.edgebarsheight 0.12      (edge bars: the tallest bar as a fraction of its face's smaller side, 0..0.5, then clamped
+    //       to 2..20 cm; live)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
     //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 0 reads texture row 0 as the bottom of the view, the default; the
     //       runtime renders the map in GL order, verified by envdepthcheck against the room's boxes; 1 as the top)
@@ -884,6 +892,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     if let Some(g) = geom_first {
         info!("{}", g.line(occluders));
     }
+    // Board #5420: the edge bars (`edge_bars.rs`), the room's outline drawn
+    // as the spectrum; the knobs are polled once a second below.
+    let mut edge_bars = crate::edge_bars::EdgeBarsOptions::from_knobs(debug_prop);
+    info!("{}", edge_bars.line(occluders));
     let hand_pad = debug_prop("debug.fosfora.handpad")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(if world {
@@ -1497,14 +1509,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     );
     // Board #3327: the wall spectrum, on the wall the wearer faces.
     let canvas_ceiling = debug_prop("debug.fosfora.canvastest").as_deref() == Some("ceiling");
+    let canvas_bars = debug_prop("debug.fosfora.canvasbars")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(crate::canvas::DEFAULT_BARS);
     let mut canvas = toggle("debug.fosfora.canvas", mixed).then(|| {
-        crate::canvas::Canvas::new(
-            debug_prop("debug.fosfora.canvasbars")
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(crate::canvas::DEFAULT_BARS),
-            knob("debug.fosfora.canvasgain", 1.0).max(0.0),
-        )
+        crate::canvas::Canvas::new(canvas_bars, knob("debug.fosfora.canvasgain", 1.0).max(0.0))
     });
+    // Board #5420: the edge bars show the wall spectrum's bars; with the
+    // wall spectrum off they keep bars of their own, the same count,
+    // updated only while they are on. Whether music plays, the strips and
+    // their rows (reused each frame), and what was last logged.
+    let mut edge_canvas = canvas
+        .is_none()
+        .then(|| crate::canvas::Canvas::new(canvas_bars, 1.0));
+    let mut edge_presence = crate::edge_bars::Presence::default();
+    let mut edge_strips: Vec<crate::edge_bars::Strip> = Vec::new();
+    let mut edge_rows: Vec<[f32; 4]> = Vec::new();
+    let mut edge_logged: Option<(usize, usize, bool)> = None;
     info!(
         "wall spectrum {}",
         canvas.as_ref().map_or("off".to_owned(), |c| format!(
@@ -4018,14 +4039,29 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         band,
                     });
                 }
+                // Board #5420: an outlined scanned box's color index is its
+                // lane's, whatever its behavior draws (a live shape takes
+                // its kind's palette color, below).
+                let edge_growth = edge_bars.mode.growth();
+                let lane_color = |k: usize| {
+                    lane_rows.get(k).map_or(0, |&r| {
+                        crate::surfaces::lane_params(r, surface_lanes.behavior(k)).0
+                    })
+                };
+                let edge_key = edge_growth.is_some()
+                    && occluders
+                    && (0..scanned_n).any(|k| {
+                        !room_boxes[k].hidden && lane_color(k) == crate::surfaces::COLOR_KEY
+                    });
                 // The key's tint only when a lit face asks for it (a
-                // ported one too, since D3): the desktop's key hue from
-                // core's binding sources, which builds a map of every
-                // source.
+                // ported one too, since D3, and an edge bar's outline):
+                // the desktop's key hue from core's binding sources, which
+                // builds a map of every source.
                 if slots.iter().any(|s| s.color == crate::surfaces::COLOR_KEY)
                     || ported
                         .iter()
                         .any(|&(.., color)| color == crate::surfaces::COLOR_KEY)
+                    || edge_key
                 {
                     let hue = fosfora_app::bindings::sources::collect_audio(&f)
                         .get("audio.key_hue")
@@ -4099,6 +4135,87 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 gfx.set_surfaces(&faces);
                 gfx.set_surface_ports(&port_faces);
+                // Board #5420: the edge bars. Off, nothing: no strips, no
+                // buffer write, no draw. On, the shapes are the boxes the
+                // obstacle block holds this frame, in its order, taken here
+                // because its uniform carries neither the hidden flag nor
+                // the live fade: the scanned boxes (a hidden wall occludes
+                // but is not outlined), the live planes and closed boxes at
+                // their fade, and the stage floor, never outlined. None
+                // while the boxes are not occluders; nothing in silence.
+                if let Some(growth) = edge_growth {
+                    if let Some(c) = edge_canvas.as_mut() {
+                        c.update(dt, &hop.frame.mel);
+                    }
+                    let presence = edge_presence.step(
+                        dt,
+                        music.analysis.is_some() || live_audio.is_some(),
+                        f.loudness_m,
+                    );
+                    let heights = canvas
+                        .as_ref()
+                        .or(edge_canvas.as_ref())
+                        .map_or(&[][..], crate::canvas::Canvas::heights);
+                    let mut drawn = crate::edge_bars::Drawn::default();
+                    edge_strips.clear();
+                    if occluders && presence > 0.0 {
+                        use crate::edge_bars::{Look, Shape};
+                        let shape = |b: &ObstacleBox, look: Option<Look>| Shape {
+                            center: glam::Vec3::from(b.center),
+                            rot: glam::Quat::from_array(b.rot),
+                            half: glam::Vec3::from(b.half),
+                            look,
+                        };
+                        let shapes: Vec<Shape> = room_boxes
+                            .iter()
+                            .enumerate()
+                            .map(|(k, b)| {
+                                let look = (!b.hidden).then(|| match k.checked_sub(scanned_n) {
+                                    None => Look {
+                                        color: crate::surfaces::surface_color(
+                                            lane_color(k),
+                                            b.kind,
+                                            audio.key_tint,
+                                        ),
+                                        fade: 1.0,
+                                    },
+                                    Some(i) => Look {
+                                        color: crate::surfaces::palette(b.kind),
+                                        fade: live_levels.get(i).copied().unwrap_or(1.0),
+                                    },
+                                });
+                                shape(b, look)
+                            })
+                            .chain(floor_box.iter().map(|b| shape(b, None)))
+                            .collect();
+                        drawn = crate::edge_bars::strips(
+                            &shapes,
+                            head,
+                            growth,
+                            edge_bars.height,
+                            heights.len(),
+                            crate::edge_bars::peak_alpha(immerse_level, edge_bars.gain) * presence,
+                            &mut edge_strips,
+                        );
+                    }
+                    if edge_strips.is_empty() {
+                        gfx.set_edge_bars(&[], 0);
+                    } else {
+                        crate::edge_bars::rows(heights, &edge_strips, &mut edge_rows);
+                        gfx.set_edge_bars(&edge_rows, edge_strips.len());
+                    }
+                    // Logged when what is outlined changes; the strip count
+                    // follows the head, so it is only reported.
+                    let silent = presence <= 0.0;
+                    let now = (drawn.planes, drawn.volumes, silent);
+                    if edge_logged != Some(now) {
+                        info!("{}", crate::edge_bars::drawn_line(drawn, silent));
+                        edge_logged = Some(now);
+                    }
+                } else if edge_logged.take().is_some() {
+                    gfx.set_edge_bars(&[], 0);
+                    edge_presence = crate::edge_bars::Presence::default();
+                }
             }
             if let Some(scene) = scene {
                 match music.analysis.as_mut().or(live_audio.as_mut()) {
@@ -4475,6 +4592,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     geom_first = Some(now);
                     session.set_env_depth_geom(now);
                 }
+            }
+            // Board #5420: the edge bars' knobs, live.
+            let now = crate::edge_bars::EdgeBarsOptions::from_knobs(system_prop);
+            if now != edge_bars {
+                info!("{}", now.change_line(&edge_bars, occluders));
+                edge_bars = now;
             }
             if let Some(scene) = &scene {
                 info!(

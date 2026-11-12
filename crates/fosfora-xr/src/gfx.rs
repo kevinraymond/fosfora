@@ -108,6 +108,13 @@ pub struct Gfx {
     /// the first `live_outline_count` drawn after the highlight.
     live_outlines: Option<(wgpu::RenderPipeline, Vec<QuadBinding>)>,
     live_outline_count: std::cell::Cell<usize>,
+    /// The edge bars (board #5420, `set_edge_bars`, `edge_bars.rs`): the
+    /// surfaces pass's pipeline state with one uniform of strips, the first
+    /// `edge_bar_count` drawn instanced after the live outlines. Built the
+    /// first time there are strips to draw; `None` inside when its
+    /// pipeline did not validate.
+    edge_bars: std::cell::OnceCell<Option<(wgpu::RenderPipeline, QuadBinding)>>,
+    edge_bar_count: std::cell::Cell<u32>,
     /// The eye camera's bind group layout, for pipelines built later.
     eye_layout: wgpu::BindGroupLayout,
     /// Whether the eye pass draws the world effect (`set_world_visible`;
@@ -510,6 +517,8 @@ impl Gfx {
             highlight_pipeline,
             live_outlines: None,
             live_outline_count: std::cell::Cell::new(0),
+            edge_bars: std::cell::OnceCell::new(),
+            edge_bar_count: std::cell::Cell::new(0),
             eye_layout,
             ghost,
             ghost_count: std::cell::Cell::new(0),
@@ -912,13 +921,69 @@ impl Gfx {
         self.live_outline_count.set(n);
     }
 
+    /// The edge bars for this frame (board #5420): `rows` from
+    /// `edge_bars::rows`, of which the first `strips` strips draw, in one
+    /// instanced draw per eye. The pipeline and its uniform are built the
+    /// first time there are strips; only the rows in use are written. No
+    /// strips writes nothing and hides them.
+    pub fn set_edge_bars(&self, rows: &[[f32; 4]], strips: usize) {
+        use crate::edge_bars::{HEAD_ROWS, MAX_STRIPS, STRIP_ROWS};
+        let n = strips
+            .min(MAX_STRIPS)
+            .min(rows.len().saturating_sub(HEAD_ROWS) / STRIP_ROWS);
+        if n > 0
+            && let Some((_, binding)) = self.edge_bars.get_or_init(|| self.build_edge_bars())
+        {
+            let used = &rows[..HEAD_ROWS + n * STRIP_ROWS];
+            self.queue
+                .write_buffer(&binding.uniform, 0, bytemuck::cast_slice(used));
+            self.edge_bar_count.set(n as u32);
+        } else {
+            self.edge_bar_count.set(0);
+        }
+    }
+
+    /// The edge bars' pipeline and uniform, inside an error scope: on a
+    /// validation error (logged) they stay off, as an invalid pipeline in
+    /// the eye pass would lose the whole frame.
+    fn build_edge_bars(&self) -> Option<(wgpu::RenderPipeline, QuadBinding)> {
+        self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let built = build_surface_pipeline(
+            &self.device,
+            &self.eye_layout,
+            crate::edge_bars::EDGE_BARS_WGSL,
+            "xr-edge-bars",
+            crate::edge_bars::UNIFORM_ROWS,
+        );
+        // wgpu's native futures are ready on the first poll.
+        let scope = std::pin::pin!(self.device.pop_error_scope());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::future::Future::poll(scope, &mut cx) {
+            std::task::Poll::Ready(None) => {
+                info!(
+                    "edge bars: pipeline built, a {}-byte uniform",
+                    crate::edge_bars::UNIFORM_BYTES
+                );
+                Some(built)
+            }
+            std::task::Poll::Ready(Some(e)) => {
+                error!("edge bars: off, the pipeline did not validate: {e}");
+                None
+            }
+            std::task::Poll::Pending => {
+                warn!("edge bars: the error scope did not answer");
+                Some(built)
+            }
+        }
+    }
+
     /// Whether the eye pass draws the world effect from this frame on
     /// (`room_edit::Cloud::visible`; on at start). Hidden, `render` skips
     /// its `prepare_world` and `draw_world` for every eye, but still
     /// dispatches its sim, so showing it again is instant and the cloud
     /// is as it would have been. Everything else still draws: the depth
-    /// occluders, the surfaces pass (the wall spectrum in it), the highlight, the beams,
-    /// the panel and the label. The pitcher's pour and the throw's bursts
+    /// occluders, the surfaces pass (the wall spectrum in it), the highlight,
+    /// the edge bars, the beams, the panel and the label. The pitcher's pour and the throw's bursts
     /// are particles of the world effect, so they hide with it.
     pub fn set_world_visible(&self, visible: bool) {
         self.world_visible.set(visible);
@@ -1294,6 +1359,18 @@ impl Gfx {
                     pass.set_bind_group(1, &b.bind_group, &[]);
                     pass.draw(0..6, 0..1);
                 }
+            }
+            // Board #5420: the edge bars, on the surfaces' terms, after
+            // every occluder and the lit faces: one instanced draw, a quad
+            // per strip.
+            let strips = self.edge_bar_count.get();
+            if strips > 0
+                && let Some(Some((pipeline, binding))) = self.edge_bars.get()
+            {
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                pass.set_bind_group(1, &binding.bind_group, &[]);
+                pass.draw(0..6, 0..strips);
             }
             if let Some(p) = particles {
                 p.draw(&mut pass, i);
