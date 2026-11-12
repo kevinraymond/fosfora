@@ -913,3 +913,91 @@ head". The fill "roam: nothing in reach emits on 'Embers': 'Flux Cloud'
 fills the space" and "roam off: back to 'Embers'". Once a second in roam
 while walking counts, "roam: head speed 0.62 m/s · immersion x0.36 (level
 0.30 of 0.84) · passthrough floor 0.50".
+
+## Live planes (board #5391)
+
+The effects draw on the room's surfaces, and today those come only from the
+room scan. A wearer who walks somewhere the scan never covered has nothing to
+draw on. The live depth map works anywhere but sees only the current view and
+keeps nothing. `live_planes.rs` turns it into a small, stable set of planes in
+world space. It is plain numbers with desktop tests. Nothing on the device
+calls it yet.
+
+**What it takes.** One observation per update: the depth camera's pose and
+fov, and a row-major grid of world points, row 0 at the top, `None` where the
+map has no depth. `unproject_grid` builds that grid from stored depth values
+the way the 40x40 read-back samples them, with `texel_dir` and
+`decode_distance`, so it reads the texture as the occluder does. The grid size
+is a parameter. Points nearer than 0.3 m (hands, the wearer's body) or farther
+than 4.5 m are ignored.
+
+**The fit.** Region growing over the grid, not RANSAC. The grid already says
+which samples touch, so a hand in front of a wall does not join it and two
+coplanar surfaces with a gap between them stay apart. It is one pass with no
+random sampling and gives the same answer for the same input. The noise model
+is one deviation along the ray of 1% of the range at 1 m and 4% at 4 m, and
+every distance threshold scales with it. Each cell gets a normal from a window
+as wide as that noise needs: 3x3 to 1.6 m, 5x5 to 3.8 m, 7x7 beyond on the
+40x40 grid. A cell beside a crease or a silhouette takes the window on its own
+surface. A region takes a neighbor within 30 degrees of its normal and 2.5
+noise deviations of its plane. A patch needs 10 cells, 0.05 m² and about 3
+cells of width. Cells that hold a blend of two depths at a silhouette are left
+out first. The plane fit takes the model's noise out of the scatter, because
+noise along slanted rays tilts a small far plane: a 0.5 m panel at 3.3 m seen
+at 45 degrees leans 12.4 degrees in a plain fit and 0.8 in this one.
+
+**Tracking.** A patch joins a tracked plane when the normals agree within 10
+degrees, the plane passes within 8 cm of the patch and the rectangles overlap
+or come within 5 cm. The plane is the weighted fit of every point it has taken,
+near points counting more. Its rectangle is upright on a wall. Each edge
+follows the median of its last 8 observations and moves only by more than a
+cell's width at its range. An edge shrinks only while it is in view, since an
+edge out of view is where the view ended. Planes that come to overlap merge.
+Ids are never reused. A plane farther than 8 m from the camera is dropped.
+
+**Stability.** A plane is reported once it had patches in 70% of its updates
+over its first 0.5 s. A candidate that misses is held back, still taking
+patches, until the camera moves 0.5 m or turns 30 degrees, so a surface found
+only now and then does not pop in while the wearer stands still. A plane first
+seen after the camera has been still for half a second needs patches in 90% of
+its updates over 2 s. The reported rectangle follows the estimate behind a
+dead band (a cell's width for an edge, 0.5 degrees, 5 mm) at up to 1 m/s and
+10 degrees/s while the camera moves, and 8 mm/s and 0.5 degrees/s while it is
+still. Each update checks a 4x4 grid of points on every plane against the map.
+A plane in view that the map sees through, with no patch, for 2 s is dropped.
+A plane out of view or behind something nearer is kept as it was. At most 24
+are reported, by confidence, area and nearness, and a reported plane keeps its
+place unless a newcomer scores twice as high.
+
+**Kinds.** Normal within 15 degrees of up: the floor within 15 cm of the floor
+estimate, a table 0.3 to 1.3 m above it, else other. Normal down, 1.9 m above
+the floor: the ceiling. Normal within 15 degrees of horizontal: a wall when its
+top reaches 1.2 m above the floor, else other (a box side, a cabinet front).
+The floor estimate follows the lowest large upward plane at least 0.9 m below
+the camera, because `y = 0` need not be the floor when the wearer roams. A
+reported plane changes kind only after the new kind has held for 1 s.
+`to_obstacle_box` gives an `ObstacleBox`'s fields as a plain `PlaneBox`
+(`particles3d` is Android-only), half thickness 2 cm like a scene plane. Its
+UUID starts with `fslive` and two zero bytes and ends with the id. The zero
+version and variant bits are a layout no runtime anchor has, and it is never
+the stage floor's all-zero UUID.
+
+**Measured on the desktop.** An update on the 40x40 grid takes 0.34 ms (0.36
+at most) on one core of an i9-13900K, and 1.3 ms on 80x80. After warm-up its
+buffers do not grow. Standing still, the floor, the walls and the table are
+reported at 0.6 s at 5 updates a second and at the second update at 2 and 1,
+within 1.2 degrees and 1.7 cm. With noise alone for 10 s the ids hold from the
+first second and no center moves faster than 0.1 cm/s. A box taken away in
+view is dropped after 1.8 s. Over 100 noise seeds the scripted tests failed
+once in 900 runs: on the 80x80 grid, one of 40 panels was reported 10.5
+degrees off.
+
+**Not yet.** Nothing feeds it from the device, and the read-back runs once a
+second today. At 40x40 a cell is 8 cm at 1.5 m and 16 cm at 3 m, so a table
+top 2.3 m from a standing wearer spans two rows and is not found, and 40
+separate patches in one view need the 80x80 grid. The noise model is assumed, not measured. On
+noise-free depth the correction leans slanted walls 2.5 degrees the other way,
+so the Quest's real noise has to be measured before the model is trusted.
+Planes are not saved, and their ids last one session, so the room file must
+not key behaviors to them. Horizontal planes take their yaw from their first
+patch, not from the walls. No meshes, no curved surfaces.
