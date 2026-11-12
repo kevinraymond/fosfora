@@ -716,7 +716,7 @@ lower the strength, relaunch and find it kept), the screencaps of the
 rows and the cost of tinted ports against untinted in `MEASURED.md` are
 the reviewer's, on the device.
 
-## Immersion (Nov 12, board #5384)
+## Immersion (Nov 12, board #5384; reworked, board #5409)
 
 **Why.** The lit surfaces were light at half coverage at most over a
 passthrough image at full brightness, so the room always won and the
@@ -724,40 +724,117 @@ surfaces looked washed out. Nothing set a passthrough style. Now the room
 gives way to the music: it shows while the song is quiet, it goes dark
 while the song is full, and the surfaces glow at their own colors then.
 
-**The level** (`immerse.rs`). A number from 0 (the plain room) to 1 (as
-dark as allowed). It follows `loudness_s`, the 3 s short-term loudness,
-so it moves with the sections and not the beats. The map is a smoothstep
-from 0.55 (−27 LUFS) to 0.75 (−15 LUFS), plus half the `buildup`, so a
-riser darkens the room ahead of the drop. A `drop` holds it at 1 for 8 s.
-One pole smooths it: 2 s rising, 4 s falling, 0.25 s after a drop. The
-bundled clip reads 0.71 to 0.73 on `loudness_s` for its whole length and
-0.14 to 0.46 on `buildup`, and no drop fires in it (the core's
-`--signal-dump`), so it plays at the full depth. A quieter intro at −22
-LUFS lands about a third of the way.
+**Why the rework.** Worn seated for 13 minutes with real songs, the first
+version's dimming was there but not visible as it happened. In the log of
+that sitting the level was over 0.8 for 721 of 789 s, between 0.2 and 0.8
+for 55 s and under 0.2 for 13 s. `loudness_s` averaged 0.79, and the first map was
+full at 0.75. Mastered music is loud all the way through, so an absolute
+map saturates: the room went dark in the first seconds and stayed dark.
+Its constants came from the bundled clip, which reads flat for its whole
+length. The rework follows the song against its own recent range, with
+constants chosen from signal dumps of real songs (`--signal-dump
+--feat-bus`); the tests pin the shapes with synthetic traces.
+
+**The opening** (`immerse::Opening`). At launch the level is 0: the room
+fully visible. When real audio first drives the analysis (the music's tap
+or the microphones, heard: `loudness_m` over the quiet threshold) the
+in-world label says "Sit back and relax" for `OPEN_HOLD_S` (4 s) with the
+room still plain, then the level glides to `OPEN_LEVEL` (0.35) over
+`OPEN_GLIDE_S` (3 s), a smoothstep. That is the start of the show; from
+there the level follows the song from 0.35, blending into the followed
+level as the history fills. It plays once per launch. If the music stops
+during the message it starts over at the next play; after it, a stop, a
+silence or a pause of the session brings no message, and the level
+glides from where the room is to the song's level in about 2 s
+(`RESUME_S`: the time constant is a third of it). On the synthetic groove
+nothing shows and the room stays plain until the music first plays.
+
+The message is the label's last choice. It shows where the scan label
+does, 1.2 m ahead at eye height, only while no other label is up: the
+voice's, then the editor's, then the scan's and the permission's ("Allow
+spatial data to see the room"). It waits while any of them shows, and its
+4 s hold counts only while it is the one shown, so a scan that ends with
+"Room: 17 surfaces" plays out first and a fist mid-message covers it
+without eating it. `debug.fosfora.immerseopen 0`, a pinned level
+(`immersefix`) and a launch without passthrough skip it; the music's
+start then glides to 0.35 in about 2 s. At depth off there is no message
+and no dimming; at low the opening settles at 0.175.
+
+**The level: the song against itself** (`immerse::History`, `position`,
+`follow`). The history keeps `loudness_s` at `HISTORY_HZ` (4 Hz) over
+`WINDOW_S` (30 s), recorded only while the song is heard and from
+`LOUDNESS_WARM_S` (3 s) after it came back: the 3 s window reads low until
+it holds the song again. Its range is the 10th and 90th percentiles, so a
+few seconds of a spike or a dip do not stretch it. Where the song is in
+that range is the position:
+
+- The range is at least `MIN_SPAN` (0.05, 3 dB) wide, widened downward
+  from its high, so a flat song sits at the top of its range and parks
+  closed, and the noise within a section is a small share of the span.
+- The top `TOP_SHARE` (a quarter) of the range counts as full, so the
+  wobble within a full section keeps the room closed.
+- The position maps onto `LOW_LEVEL` (0.2) to 1. A breakdown falls under
+  the range's low, which follows it down within about 3 s, so the song
+  sits at the bottom and the room opens to about three quarters, for as
+  long as the full section's high stays in the window (27 s).
+- `buildup` over `BUILD_FROM` (0.4) adds up to `BUILDUP_LIFT` (1) to the
+  level, scaled by the position. Measured on real songs, `buildup` is high
+  wherever the bass is out, in breakdowns as much as before drops, and
+  added as the first version did it held breakdowns closed. Scaled by
+  the position it adds nothing at the bottom of the range and closes the
+  room in on the climb out of a breakdown toward the drop.
+- A `drop` holds the target at 1 for `DROP_HOLD_S` (8 s), reached with
+  `DROP_ATTACK_S` (0.25 s), as before.
+
+One pole smooths it: `ATTACK_S` 2 s rising, `RELEASE_S` 4 s falling, the
+first version's values. On the real songs they open a breakdown well
+before its middle, let a short dip before a drop open the room only part
+way, and close it within a few seconds of the full section's return. Nothing forces movement: a song that stays full
+stays closed. At launch the history is empty, so the target blends from
+0.35 into the followed level as it fills over `HISTORY_FILL_S` (15 s). On
+a track change (the player counts tracks put on the speakers from their
+top; a resume of the same track is not one) the history carries over,
+but the range takes only the samples since the change, and at least the
+latest `TRACK_ADAPT_S` (4 s), until the window is the new song's: a
+quieter song after a loud one closes again within 12 s in the tests
+instead of sitting open for half a minute.
 
 **Quiet.** The level follows the song only while real audio drives the
-analysis: the music's tap or the microphones. The synthetic groove has no
-`loudness_s`, and a stopped clip over it brings the room back. So does an
-rms under 0.02 for 0.3 s (the analysis's silence gate puts it at 0). Then
-the level falls with 0.35 s, and the room is back in about 1.35 s.
-`loudness_s` alone would take its window to fall.
+analysis. Stopped music, or `loudness_m` under `QUIET_LOUDNESS` (0.15,
+−51 LUFS, 4 dB over the analysis's silence gate) for 0.3 s, brings the
+room back: the level falls with 0.35 s and the room is back within about
+1.35 s. The first version read the `rms` under 0.02, but the `rms` is
+auto-leveled and dips under any fixed threshold between hits inside real
+music, so it snapped the room open mid-song. `loudness_m` under 0.15 for
+0.3 s happens in the dumps only before a song starts and after it ends.
 
 **The room.** Each frame the passthrough layer's opacity is
 `1 - level * (1 - floor)`, through `xrPassthroughLayerSetStyleFB` with
-the edges off. The floor, 0.15, is the darkest the room gets; it is a
-field of the type, so a mode that needs more of the room can raise it.
-The `openxr` 0.22 wrapper has no style call, so `room.rs` calls the
-extension's function pointer. The call goes out after the frame, only
-when the opacity moves by a 1/64 step, the first one only once the level
-leaves 0, so a run that stays quiet makes no call and looks exactly as
-before. The passthrough layer
-is the bottom of `[passthrough, faces, main]` (D2c) and the blend mode is
-OPAQUE, so what shows under a dimmed image is the compositor's black.
-That is the layer order's reading; the device confirms it. While the
-image is dimmed the passthrough layer goes out with
-`BLEND_TEXTURE_SOURCE_ALPHA`, so the composition reads its opacity; the
-spec does not say whether the opacity blends without it. At full opacity
-its flags stay empty, as they have been since S7.
+the edges off. The seated floor (`IMMERSE_FLOOR`) is now 0: level 1 at
+full depth is a black room behind the visuals. It stays a field of the
+type, and roam keeps its own floor, 0.5, and its walk rule. The `openxr`
+0.22 wrapper has no style call, so `room.rs` calls the extension's
+function pointer. The call goes out after the frame, only when the
+opacity moves by a 1/64 step, the first one only once the level leaves 0,
+so a run that stays quiet makes no call and looks exactly as before. The
+passthrough layer is the bottom of `[passthrough, faces, main]` (D2c) and
+the blend mode is OPAQUE, so what shows under a dimmed image is the
+compositor's black. While the image is dimmed the passthrough layer goes
+out with `BLEND_TEXTURE_SOURCE_ALPHA`, so the composition reads its
+opacity. At full opacity its flags stay empty, as they have been since S7.
+
+**The hands at opacity 0.** The app draws no hands. The hand occluders
+(the runtime's skinned hand mesh, or joint spheres with
+`debug.fosfora.handmesh 0`) write depth only, with color writes off, over
+a frame cleared to transparent, so where a hand is the passthrough image
+shows: the wearer sees their own hands in the camera image. At opacity 0
+that image is black. Against the dark room the hands vanish entirely;
+in front of the particles, a lit surface or the hand menu they show as
+black silhouettes cut out of the light. The hand menu itself, its cursor,
+the beams and the labels are the app's own quads and stay visible. With
+the old floor the hands kept 15 % of the image. This is the first thing
+to check worn: whether the wearer can still find and press the hand menu
+with hands they cannot see.
 
 **The surfaces.** Every lit face's peak alpha rises with the same level.
 A port's goes from its 0.5 to 1.0, `0.5 + 0.5 * level`. The built-in
@@ -771,34 +848,66 @@ look. The lane's strength still multiplies it. Without passthrough
 room to dim.
 
 **The depth.** How far the wearer lets it go: off (0), low (0.5) or full
-(1), full by default. It multiplies the level, and a change glides over
-0.5 s. The hand menu's Agent row holds it in its right cell, "Immersion:
-full", each press the next of off, low and full; a new row would push the
-debug panel's fullest block past its header. It is saved in
-`hand_menu.json` as `"immerse"`. By voice, "darker" and "lighter" step it
-("dim the lights", "lights down", "lights up", "more immersion"), "lights
-on" sets it off, "lights off", "lights out" and "full dark" full, and
-"immersion low" (or off, full) sets that depth. The label says where it
-came to: "immersion full". "darker" alone is the room's now; "the desk
-darker" still dims the desk. The agent and the on-device model have no
-immersion action: the model's kinds are a closed set.
+(1), full by default. It multiplies the level, the opening's included,
+and a change glides over 0.5 s. The hand menu's Agent row holds it in its
+right cell, "Immersion: full", each press the next of off, low and full;
+a new row would push the debug panel's fullest block past its header. It
+is saved in `hand_menu.json` as `"immerse"`. By voice, "darker" and
+"lighter" step it ("dim the lights", "lights down", "lights up", "more
+immersion"), "lights on" sets it off, "lights off", "lights out" and
+"full dark" full, and "immersion low" (or off, full) sets that depth. The
+label says where it came to: "immersion full". "darker" alone is the
+room's now; "the desk darker" still dims the desk. The agent and the
+on-device model have no immersion action: the model's kinds are a closed
+set.
+
+**A song plan, not built.** `immerse::SongPlan` (a range and a sorted
+list of timed cues: build start, drop, breakdown start and end) is the
+seam for a pass over the whole track before it plays. The step takes
+`Option<&SongPlan>` and the track's position; a plan's range replaces
+the history's. Nothing makes a plan yet, nothing reads the cues, and
+`app.rs` passes none.
 
 **The knobs** (read at launch). `debug.fosfora.immerse 0..1` is the depth
 for this launch, not saved; a press takes over. `debug.fosfora.immersefloor`
-sets the floor. `debug.fosfora.immersefix 0..1` pins the level whatever
-the audio and the depth, for unworn screencaps (on this OS version
-`adb exec-out screencap -p` includes the passthrough behind the app's
-layers).
+sets the seated floor (default 0). `debug.fosfora.immersefix 0..1` pins
+the level whatever the audio and the depth, and skips the opening, for
+unworn screencaps (on this OS version `adb exec-out screencap -p`
+includes the passthrough behind the app's layers).
+`debug.fosfora.immerseopen 0` skips the opening.
 
-**Logs.** At launch: `immersion: full · floor 0.15 · attack 2.0 s ·
-release 4.0 s`, with the knob, the pinned level and a missing
-passthrough said when they apply. On a change of the depth: `immersion:
-low (depth 1.00 -> 0.50)`, then the menu file's save line. Once a second
-while the room is dimmed, and once when it is back: the level, the
-passthrough opacity, `loudness_s`, `buildup` and the depth. A failed
-style call warns once.
+**Measurement runs.** A launch with the music on now spends about 7 s on
+the opening and fills the history for about 15 s more: on the bundled
+clip, a flat loud master, the level reaches 0.96 20 s after the music
+starts and 1 by 30 s, where the first version was at 1 by 7 s. `worn-ab.sh` (20 s warmup) and
+`gpu-stages.sh` (25 s) start capturing after both; `sweep.sh` in mr or
+world mode with the music on measures from 5 s and sees the ramp. For a
+level that matches the first version's runs, set `immersefix=1` through
+their `--with` or `--set`; `immerseopen=0` alone saves the 7 s but not
+the fill.
 
-**Not yet.** The device: what shows under the dimmed image (expected
-black), the screencaps at `immersefix` 0, 0.5 and 1, the worn verdict on
-the clip, the cost of the style calls, and `loudness_s` on the
-microphones, whose level depends on the room and may never reach the map.
+**Logs.** At launch: `immersion: full · floor 0.00 · opening "Sit back
+and relax" 4.0 s, then 0.35 over 3.0 s · follows loudness_s within its
+last 30 s (p10..p90, span 0.05 at least) onto 0.20..1 · attack 2.0 s ·
+release 4.0 s`, with the knob, a skipped opening ("no opening
+(debug.fosfora.immerseopen 0)"), the pinned level and a missing
+passthrough said when they apply. When the message goes up:
+`immersion: opening, "Sit back and relax" for 4.0 s, then 0.35 over 3.0
+s`; at depth off `immersion: no opening, the depth is off`. When the
+glide ends: `immersion: the show starts at 0.35 · history 4.0 s`. On a
+drop: `immersion: drop, to 1 for 8.0 s · loudness_s 0.81 in 0.62..0.80`.
+On a change of the depth: `immersion: low (depth 1.00 -> 0.50)`, then the
+menu file's save line. Once a second while the room is dimmed, and once
+when it is back: `immersion: level 0.62 · passthrough 0.38 · loudness_s
+0.74 in 0.70..0.80 at 0.53 · buildup 0.30 · depth 1.00`, the range and
+the song's position in it, and "opening: the glide" while it runs. A
+failed style call warns once.
+
+**Not yet.** The device: the worn verdict on the opening and on the
+relative level with the owner's songs (does it open visibly at
+breakdowns and close at drops, and is the parking on loud masters
+welcome), the hands at opacity 0 with the hand menu, the label order at
+launch with a scan and a permission prompt, what shows under the dimmed
+image (expected black), the cost of the style calls, and the
+microphones, whose quiet room may sit over the quiet threshold, so a
+stopped speaker leaves the room at the low level instead of fully back.

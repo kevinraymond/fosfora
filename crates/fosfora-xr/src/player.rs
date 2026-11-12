@@ -253,6 +253,10 @@ pub struct Music {
     pub(crate) analysis: Option<LiveAudio>,
     /// Swaps of the playback seen so far.
     swaps_seen: u32,
+    /// Tracks put on the speakers from their top this launch (a step, the
+    /// next one playing through, a play after a step), for immersion's
+    /// history (board #5409).
+    track_starts: u32,
     /// Where the next play starts, in clip frames.
     resume: usize,
     /// The row's state: play asked for (the clip may still be decoding).
@@ -295,6 +299,7 @@ impl Music {
             playback: None,
             analysis: None,
             swaps_seen: 0,
+            track_starts: 0,
             resume: 0,
             want: false,
             saved_file,
@@ -380,6 +385,12 @@ impl Music {
     /// Whether play is asked for (the row's state).
     pub fn wanted(&self) -> bool {
         self.want
+    }
+
+    /// How many tracks went on the speakers from their top: a change of
+    /// it is a new track (a resume of the same one is not).
+    pub fn track_starts(&self) -> u32 {
+        self.track_starts
     }
 
     /// Whether the music is on the speakers.
@@ -625,6 +636,7 @@ impl Music {
             self.on_fallback = true;
         }
         p.set_looping(self.loops(&q.path));
+        self.track_starts += 1;
         info!(
             "{}",
             playlist::start_line(&title_of(&q.path), clip_secs(&q.clip), q.took.as_secs_f32())
@@ -784,6 +796,7 @@ impl Music {
                         self.resume as f32 / clip.sample_rate.max(1) as f32
                     );
                 } else {
+                    self.track_starts += 1;
                     info!(
                         "{}",
                         playlist::start_line(
