@@ -42,7 +42,7 @@
 use crate::lanes::{LaneBox, Param, ParamEdit, RoomLanes, Target as LaneTarget};
 use crate::surfaces::{
     COLOR_KEY, KIND_CEILING, KIND_FLOOR, KIND_FRAME, KIND_OTHER, KIND_TABLE, KIND_WALL,
-    SurfaceBehavior, color_name, friendly_name, kind_name,
+    SurfaceBehavior, color_name, friendly_name, friendly_names, kind_name,
 };
 
 /// How long the label shows a reply, and a miss (s).
@@ -63,9 +63,10 @@ pub struct Surface {
 pub fn surfaces(boxes: &[LaneBox<'_>]) -> Vec<Surface> {
     boxes
         .iter()
+        .zip(friendly_names(boxes))
         .enumerate()
-        .map(|(k, b)| Surface {
-            name: friendly_name(k, boxes),
+        .map(|(k, (b, name))| Surface {
+            name,
             kind: b.kind,
             index: k,
         })
@@ -180,6 +181,15 @@ pub enum Reason {
     Ambiguous(Vec<String>),
     /// More clauses in one sentence than [`MAX_CLAUSES`]: how many (V4).
     TooMany(usize),
+}
+
+impl Reason {
+    /// Whether the miss was on a surface's name: one the room lacks, or
+    /// one several surfaces share. The surface labels show for a while
+    /// after one, so the wearer can read the names (board #5378).
+    pub fn names_surfaces(&self) -> bool {
+        matches!(self, Self::UnknownSurface(_) | Self::Ambiguous(_))
+    }
 }
 
 /// A sentence that did nothing, and what was heard.
@@ -687,7 +697,8 @@ fn effect(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<usize> {
     })
 }
 
-/// The surface templates, in order: "what is {target}", "clear
+/// The surface templates, in order: "what is {target}" (and "what are",
+/// "list", "what {target} exist", "which {target} are there"), "clear
 /// {target}", `{x} on {target}` and `{target} on {band}`, `{target} in
 /// {color}`, `{target} follows {band}`, then `{target} {x}` with the
 /// target possibly absent (the pointed surface). The first that fits
@@ -695,19 +706,33 @@ fn effect(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<usize> {
 /// not gives the reason, the first such one being the answer when nothing
 /// fits.
 fn surface(ts: &[&str], vocab: &Vocabulary<'_>) -> Result<Intent, Reason> {
-    match ts {
-        ["what", "is" | "s", rest @ ..] | ["whats" | "describe", rest @ ..] => {
-            let rest = rest.strip_prefix(&["on"]).unwrap_or(rest);
-            return match aim(rest, vocab) {
-                Aim::Hit(t) => Ok(Intent::Describe(t)),
-                Aim::Several(ks) => Err(Reason::Ambiguous(names(&ks, vocab))),
-                Aim::Miss(r) => Err(r),
-            };
+    // Board #5378: "what are the walls", "list the tables", "what walls
+    // exist", "which tables are there" ask for a kind's list as "describe"
+    // does.
+    let asked = match ts {
+        ["what", "is" | "s" | "are", rest @ ..] | ["whats" | "describe" | "list", rest @ ..] => {
+            Some(rest)
         }
-        ["clear", rest @ ..] if !rest.is_empty() => {
-            return fill(Slot::Behavior(SurfaceBehavior::None), rest, vocab);
+        ["what" | "which", rest @ .., "exist" | "exists"]
+        | ["what" | "which", rest @ .., "are" | "is", "there"]
+            if !rest.is_empty() =>
+        {
+            Some(rest)
         }
-        _ => {}
+        _ => None,
+    };
+    if let Some(rest) = asked {
+        let rest = rest.strip_prefix(&["on"]).unwrap_or(rest);
+        return match aim(rest, vocab) {
+            Aim::Hit(t) => Ok(Intent::Describe(t)),
+            Aim::Several(ks) => Err(Reason::Ambiguous(names(&ks, vocab))),
+            Aim::Miss(r) => Err(r),
+        };
+    }
+    if let ["clear", rest @ ..] = ts
+        && !rest.is_empty()
+    {
+        return fill(Slot::Behavior(SurfaceBehavior::None), rest, vocab);
     }
     let ts = match ts {
         [v, rest @ ..] if SURFACE_VERBS.contains(v) && !rest.is_empty() => rest,
@@ -1123,7 +1148,9 @@ pub fn respond(
     let mut parts: Vec<String> = Vec::new();
     let mut extra: Vec<String> = Vec::new();
     let mut to_agent: Vec<&str> = Vec::new();
-    let (mut missed, mut helped) = (false, false);
+    // Board #5378: a reply of several lines (a kind's list) shows as long
+    // as the help, to be read.
+    let (mut missed, mut helped, mut listed) = (false, false, false);
     for c in clauses {
         match &c.outcome {
             Ok(Intent::Help) => {
@@ -1131,7 +1158,11 @@ pub fn respond(
                 *help_page = help_page.wrapping_add(1);
                 helped = true;
             }
-            Ok(intent) => parts.push(apply(intent)),
+            Ok(intent) => {
+                let text = apply(intent);
+                listed |= text.contains('\n');
+                parts.push(text);
+            }
             Err(_) if goes(c) => {
                 to_agent.push(&c.text);
                 if !parts.iter().any(|p| p == crate::agent::THINKING_LABEL) {
@@ -1164,7 +1195,7 @@ pub fn respond(
         .join("\n");
     let seconds = if agent_text.is_some() {
         crate::agent::THINKING_S
-    } else if helped {
+    } else if helped || listed {
         HELP_S
     } else if missed {
         MISS_S
@@ -1540,9 +1571,17 @@ pub fn apply(
     Some(reply(intent, vocab))
 }
 
+/// The widest line of a kind's list on the voice label (characters): two
+/// names with their behaviors after the kind's word. The label shrinks a
+/// line this long from its 64 px to about 52 (`label.rs`), still well
+/// above its 40 px floor.
+const LIST_LINE_CHARS: usize = 36;
+
 /// What `target` runs, for "what is this": one surface's behavior, color,
-/// band and strength (`label::param_text`); a kind's behaviors, "all
-/// tables: streamlines, curls".
+/// band and strength (`label::param_text`); a kind's surfaces by the
+/// grammar's names, each with its behavior (`label::behavior_word`),
+/// wrapped onto the label's lines ([`wrap_list`], board #5378): "walls:
+/// wall 1 aurora · wall 6 aurora" over "wall 8 none · wall 14 none".
 fn describe(
     target: Target,
     ks: &[usize],
@@ -1552,28 +1591,88 @@ fn describe(
 ) -> String {
     let name = target_name(target, vocab);
     match (target, ks) {
-        (Target::Kind(_), _) | (_, [] | [_, _, ..]) => {
-            let mut runs: Vec<&str> = Vec::new();
-            for &k in ks {
-                let b = lanes.effective(k, boxes).map_or("none", |(b, _)| b.name());
-                if !runs.contains(&b) {
-                    runs.push(b);
-                }
-            }
-            if runs.is_empty() {
-                format!("{name}: none in the room")
-            } else {
-                format!("{name}: {}", runs.join(", "))
-            }
-        }
-        (_, &[k]) => {
+        (Target::Pointed | Target::Surface(_), &[k]) => {
             let behavior = lanes
                 .effective(k, boxes)
                 .map(|(b, _)| b)
                 .unwrap_or_default();
             crate::label::param_text(&name, behavior, lanes.params_of(k, boxes))
         }
+        _ => {
+            let head = match target {
+                Target::Kind(kind) => format!("{}:", crate::label::kind_plural(kind)),
+                _ => format!("{name}:"),
+            };
+            let items: Vec<String> = ks
+                .iter()
+                .map(|&k| {
+                    let name = vocab
+                        .surface(k)
+                        .map_or_else(|| friendly_name(k, boxes), |s| s.name.clone());
+                    let runs = crate::label::behavior_word(lanes.effective(k, boxes));
+                    format!("{name} {runs}")
+                })
+                .collect();
+            if items.is_empty() {
+                format!("{head} none in the room")
+            } else {
+                wrap_list(&head, &items, LIST_LINE_CHARS, crate::label::MAX_LINES)
+            }
+        }
     }
+}
+
+/// `head` and `items` on lines of at most `width` characters, as the
+/// help puts its examples a line each: `head` starts the first line, the
+/// items follow joined with " · ", never split (one wider than a line has
+/// a line of its own). At most `max_lines`: the items past the last line
+/// are counted at its end, "· 3 more".
+fn wrap_list(head: &str, items: &[String], width: usize, max_lines: usize) -> String {
+    // A line of items by index, the first after `head`, with `more` at
+    // its end.
+    let render = |k: usize, line: &[usize], more: usize| -> String {
+        let mut words: Vec<String> = line.iter().map(|&i| items[i].clone()).collect();
+        if more > 0 {
+            words.push(format!("{more} more"));
+        }
+        let body = words.join(" \u{b7} ");
+        if k == 0 {
+            format!("{head} {body}")
+        } else {
+            body
+        }
+    };
+    let fits =
+        |k: usize, line: &[usize], more: usize| render(k, line, more).chars().count() <= width;
+    let mut lines: Vec<Vec<usize>> = vec![Vec::new()];
+    for i in 0..items.len() {
+        let k = lines.len() - 1;
+        let mut with = lines[k].clone();
+        with.push(i);
+        if lines[k].is_empty() || fits(k, &with, 0) {
+            lines[k] = with;
+        } else {
+            lines.push(vec![i]);
+        }
+    }
+    let max_lines = max_lines.max(1);
+    let mut more = 0;
+    if lines.len() > max_lines {
+        more = lines[max_lines..].iter().map(Vec::len).sum();
+        lines.truncate(max_lines);
+        let k = max_lines - 1;
+        while !lines[k].is_empty() && !fits(k, &lines[k], more) {
+            lines[k].pop();
+            more += 1;
+        }
+    }
+    let last = lines.len() - 1;
+    lines
+        .iter()
+        .enumerate()
+        .map(|(k, line)| render(k, line, if k == last { more } else { 0 }))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The `debug.fosfora.say` knob (board #3751): a sentence fed to the
@@ -1835,8 +1934,186 @@ mod tests {
                 ("What's the lamp?", Intent::Describe(Target::Surface(7))),
                 ("describe the ceiling", Intent::Describe(Target::Surface(6))),
                 ("what is on wall 4", Intent::Describe(Target::Surface(4))),
+                // Board #5378: a kind's list, asked the ways a wearer
+                // asks it.
+                (
+                    "Describe the tables.",
+                    Intent::Describe(Target::Kind(KIND_TABLE)),
+                ),
+                (
+                    "What are the walls?",
+                    Intent::Describe(Target::Kind(KIND_WALL)),
+                ),
+                (
+                    "What walls exist?",
+                    Intent::Describe(Target::Kind(KIND_WALL)),
+                ),
+                (
+                    "which tables are there",
+                    Intent::Describe(Target::Kind(KIND_TABLE)),
+                ),
+                ("List the walls.", Intent::Describe(Target::Kind(KIND_WALL))),
+                (
+                    "what is every table",
+                    Intent::Describe(Target::Kind(KIND_TABLE)),
+                ),
             ],
         );
+        // "What exists" names nothing: no match, not the pointed surface.
+        missed(
+            &v,
+            &[
+                ("what exists", Reason::NoMatch),
+                (
+                    "What shelves are there?",
+                    Reason::UnknownSurface("shelves".to_owned()),
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_miss_on_a_name_is_one_the_surface_labels_answer() {
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, None);
+        let reason = |sentence: &str| parse(sentence, &v).unwrap_err().reason;
+        // A name the room lacks, and a name two tables share.
+        assert!(reason("the shelf in blue").names_surfaces());
+        assert!(reason("table in amber").names_surfaces());
+        assert_eq!(
+            reason("table in amber"),
+            Reason::Ambiguous(vec!["table 1".to_owned(), "table 2".to_owned()])
+        );
+        // Not about a name.
+        for sentence in [
+            "flibber jabber",
+            "in amber",
+            "embers on wall 3",
+            "fire on the desk",
+        ] {
+            assert!(!reason(sentence).names_surfaces(), "{sentence}");
+        }
+    }
+
+    #[test]
+    fn a_list_wraps_onto_lines_and_counts_what_does_not_fit() {
+        let items =
+            |n: usize| -> Vec<String> { (0..n).map(|k| format!("wall {k} none")).collect() };
+        assert_eq!(wrap_list("walls:", &items(1), 36, 6), "walls: wall 0 none");
+        assert_eq!(
+            wrap_list("walls:", &items(5), 36, 6),
+            "walls: wall 0 none \u{b7} wall 1 none\nwall 2 none \u{b7} wall 3 none\nwall 4 none"
+        );
+        // Every line within the width.
+        let wrapped = wrap_list("walls:", &items(9), 36, 6);
+        assert!(
+            wrapped.lines().all(|l| l.chars().count() <= 36),
+            "{wrapped}"
+        );
+        // An item wider than a line has one of its own.
+        let long = vec![
+            "a very long name for a surface aurora".to_owned(),
+            "b none".to_owned(),
+        ];
+        assert_eq!(
+            wrap_list("others:", &long, 20, 6),
+            "others: a very long name for a surface aurora\nb none"
+        );
+        // More than the lines hold: the rest counted at the end, within
+        // the width.
+        let wrapped = wrap_list("walls:", &items(40), 36, 3);
+        let lines: Vec<&str> = wrapped.lines().collect();
+        assert_eq!(lines.len(), 3, "{wrapped}");
+        assert!(lines.iter().all(|l| l.chars().count() <= 36), "{wrapped}");
+        assert!(lines[2].ends_with(" more"), "{wrapped}");
+        let shown = wrapped.matches(" none").count();
+        let more: usize = lines[2]
+            .rsplit(" \u{b7} ")
+            .next()
+            .and_then(|m| m.strip_suffix(" more"))
+            .and_then(|n| n.parse().ok())
+            .unwrap();
+        assert_eq!(shown + more, 40, "{wrapped}");
+    }
+
+    #[test]
+    fn describe_a_kind_lists_its_surfaces_by_name() {
+        let dir = std::env::temp_dir().join(format!("fosfora-intent-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Kevin's room on Nov 12, as far as its walls go: walls 1, 6, 8 and
+        // 14 among a desk, tables, storage and a couch.
+        let mut boxes: Vec<LaneBox<'static>> = (0..15u8)
+            .map(|n| match n {
+                0 => lane(n, KIND_TABLE, "DESK"),
+                1 | 6 | 8 | 14 => lane(n, KIND_WALL, "WALL_FACE"),
+                2..=4 => lane(n, KIND_TABLE, "TABLE"),
+                5 => lane(n, KIND_OTHER, "COUCH"),
+                7 => lane(n, KIND_FLOOR, "FLOOR"),
+                9 => lane(n, KIND_CEILING, "CEILING"),
+                _ => lane(n, KIND_OTHER, "STORAGE"),
+            })
+            .collect();
+        boxes.push(LaneBox {
+            uuid: STAGE_FLOOR_UUID,
+            kind: KIND_FLOOR,
+            label: "",
+        });
+        let e = effects();
+        let id = room_id(boxes.iter().map(|b| b.uuid));
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        let v = vocab(&e, &boxes, None);
+        let say = |lanes: &mut RoomLanes, sentence: &str| {
+            let intent = parse(sentence, &v).unwrap();
+            apply(&intent, &v, lanes, &boxes).unwrap()
+        };
+        say(&mut lanes, "every wall aurora");
+        say(&mut lanes, "nothing on wall 8");
+        say(&mut lanes, "wall 14 off");
+        assert_eq!(
+            say(&mut lanes, "What walls exist?"),
+            "walls: wall 1 aurora \u{b7} wall 6 aurora\nwall 8 none \u{b7} wall 14 none"
+        );
+        // The names are the grammar's: each one names its wall.
+        for name in ["wall 1", "wall 6", "wall 8", "wall 14"] {
+            assert!(parse(&format!("what is {name}"), &v).is_ok(), "{name}");
+        }
+        // The scene floor and the stage floor, both named.
+        assert_eq!(
+            say(&mut lanes, "describe the floors"),
+            "floors: floor 7 rings\nfloor 15 rings"
+        );
+        assert_eq!(
+            say(&mut lanes, "list the tables"),
+            "tables: desk streamlines\ntable 2 streamlines\ntable 3 streamlines\ntable 4 streamlines"
+        );
+        // A kind the room lacks.
+        assert_eq!(
+            say(&mut lanes, "describe the frames"),
+            "frames: none in the room"
+        );
+        // A list shows as long as the help; one line as a reply.
+        let mut page = 0;
+        let (r, _) = respond_on(
+            "what are the walls",
+            &v,
+            &mut lanes,
+            &boxes,
+            false,
+            &mut page,
+        );
+        assert_eq!(r.label.lines().count(), 2, "{}", r.label);
+        assert_close!(r.seconds, HELP_S);
+        let (r, _) = respond_on(
+            "describe the ceiling",
+            &v,
+            &mut lanes,
+            &boxes,
+            false,
+            &mut page,
+        );
+        assert_close!(r.seconds, REPLY_S);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2194,7 +2471,7 @@ mod tests {
         }
         assert_eq!(
             say(&mut lanes, "what is every table").as_deref(),
-            Some("all tables: pulse, curls")
+            Some("tables: desk pulse \u{b7} table 1 curls\ntable 2 curls")
         );
         assert_eq!(
             say(&mut lanes, "lamp strength off").as_deref(),

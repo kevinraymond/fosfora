@@ -562,6 +562,25 @@ pub fn friendly_name(k: usize, boxes: &[crate::lanes::LaneBox<'_>]) -> String {
     }
 }
 
+/// [`friendly_name`] of every box of `boxes`, in order, each box's name
+/// worked out once: the grammar's vocabulary (`intent::surfaces`) and the
+/// surface labels (board #5378), which take all of them, every frame the
+/// labels show.
+pub fn friendly_names(boxes: &[crate::lanes::LaneBox<'_>]) -> Vec<String> {
+    let bases: Vec<String> = boxes.iter().map(base_name).collect();
+    bases
+        .iter()
+        .enumerate()
+        .map(|(k, name)| {
+            if bases.iter().enumerate().any(|(i, o)| i != k && o == name) {
+                format!("{name} {k}")
+            } else {
+                name.clone()
+            }
+        })
+        .collect()
+}
+
 /// [`friendly_name`] without the disambiguation.
 fn base_name(b: &crate::lanes::LaneBox<'_>) -> String {
     if b.uuid == crate::room_file::STAGE_FLOOR_UUID {
@@ -1159,6 +1178,8 @@ mod tests {
         for (k, (_, name)) in singles.iter().enumerate() {
             assert_eq!(friendly_name(k, &boxes), *name, "{}", singles[k].0);
         }
+        let all: Vec<_> = (0..boxes.len()).map(|k| friendly_name(k, &boxes)).collect();
+        assert_eq!(friendly_names(&boxes), all);
         // The stage floor alone is "floor".
         assert_eq!(friendly_name(singles.len(), &boxes), "floor");
         assert_eq!(friendly_name(99, &boxes), "");
@@ -1181,6 +1202,9 @@ mod tests {
                 "table 0", "wall 1", "table 2", "desk", "wall 4", "floor 5", "table 6", "floor 7"
             ]
         );
+        // All at once, the same names.
+        assert_eq!(friendly_names(&room), names);
+        assert!(friendly_names(&[]).is_empty());
     }
 
     #[test]

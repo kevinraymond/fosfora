@@ -70,6 +70,11 @@ pub struct Gfx {
     /// The room editor's label (`set_label`, `set_label_pose`, `label.rs`):
     /// another posed quad, drawn right after the panel.
     label: PosedQuad,
+    /// The surface labels (`set_surface_labels`, `set_surface_label_poses`,
+    /// `surface_labels.rs`, board #5378): a posed quad per cell of one
+    /// atlas, the first `surface_label_count` drawn, before the panel.
+    surface_labels: Vec<QuadBinding>,
+    surface_label_count: std::cell::Cell<usize>,
     panel_pipeline: wgpu::RenderPipeline,
     panel_layout: wgpu::BindGroupLayout,
     /// Beams (`set_beam`): the debug panel's pointer, one per hand for
@@ -165,6 +170,9 @@ pub const BEAM_REACH: [usize; 2] = [1, 2];
 pub const BEAM_PICK: usize = 3;
 /// Bytes per beam in the uniform: four corners and a color.
 const BEAM_BYTES: u64 = 80;
+/// Bytes of a posed quad's uniform (`PANEL_WGSL`'s `Panel`): its center,
+/// right and up, and the rect of its texture it shows.
+const POSED_BYTES: u64 = 64;
 /// Ghost sprites the uniform holds (both hands' 26 joints fit).
 pub const GHOST_MAX: usize = 64;
 const GHOST_BYTES: u64 = 32 + 16 * GHOST_MAX as u64;
@@ -190,7 +198,8 @@ pub struct PanelPose {
     pub right: [f32; 3],
     pub up: [f32; 3],
     /// How much of the texture's height the panel shows, from the top
-    /// (0..1): the hand menu uses only its top strip.
+    /// (0..1): the hand menu uses only its top strip. A surface label
+    /// shows its cell instead ([`Gfx::set_surface_label_poses`]).
     pub v_max: f32,
 }
 
@@ -460,6 +469,8 @@ impl Gfx {
             quad_layout,
             panel: PosedQuad::default(),
             label: PosedQuad::default(),
+            surface_labels: Vec::new(),
+            surface_label_count: std::cell::Cell::new(0),
             panel_pipeline,
             panel_layout,
             beam,
@@ -572,19 +583,58 @@ impl Gfx {
         self.place_posed(&self.label, pose);
     }
 
+    /// The texture the surface labels show (`surface_labels.rs`, board
+    /// #5378): an atlas of `cells` cells, a posed quad for each, all
+    /// hidden until [`Self::set_surface_label_poses`] places them.
+    pub fn set_surface_labels(&mut self, view: &wgpu::TextureView, cells: usize) {
+        let sampler = self.posed_sampler("xr-surface-label");
+        let bindings = (0..cells)
+            .map(|_| self.posed_binding_with("xr-surface-label", view, &sampler))
+            .collect();
+        self.surface_labels = bindings;
+        self.surface_label_count.set(0);
+    }
+
+    /// Place this frame's surface labels, each a pose and the rect of the
+    /// atlas it shows (its cell: left, top, width, height, in texture
+    /// coordinates); drawn in this order, at most as many as the atlas has
+    /// cells. Empty hides them all.
+    pub fn set_surface_label_poses(&self, labels: &[(PanelPose, [f32; 4])]) {
+        for (binding, (pose, cell)) in self.surface_labels.iter().zip(labels) {
+            self.write_posed(binding, *pose, *cell);
+        }
+        self.surface_label_count
+            .set(labels.len().min(self.surface_labels.len()));
+    }
+
     /// A posed quad's uniform and bind group for `view`, named `name`.
     fn posed_binding(&self, name: &str, view: &wgpu::TextureView) -> QuadBinding {
-        let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(&format!("{name}-uniform")),
-            size: 48,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = self.posed_sampler(name);
+        self.posed_binding_with(name, view, &sampler)
+    }
+
+    /// A posed quad's sampler, named after `name`.
+    fn posed_sampler(&self, name: &str) -> wgpu::Sampler {
+        self.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some(&format!("{name}-sampler")),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
+        })
+    }
+
+    /// [`Self::posed_binding`] with a sampler of the caller's.
+    fn posed_binding_with(
+        &self,
+        name: &str,
+        view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+    ) -> QuadBinding {
+        let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("{name}-uniform")),
+            size: POSED_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(name),
@@ -600,7 +650,7 @@ impl Gfx {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],
         });
@@ -610,19 +660,27 @@ impl Gfx {
         }
     }
 
-    /// Place a posed quad for this frame, or hide it with `None`.
+    /// Place a posed quad for this frame, or hide it with `None`: the
+    /// texture's whole width and its top `v_max`.
     fn place_posed(&self, quad: &PosedQuad, pose: Option<PanelPose>) {
         let (Some(binding), Some(pose)) = (&quad.binding, pose) else {
             quad.visible.set(false);
             return;
         };
+        self.write_posed(binding, pose, [0.0, 0.0, 1.0, pose.v_max]);
+        quad.visible.set(true);
+    }
+
+    /// A posed quad's uniform: its pose and the rect of its texture it
+    /// shows (left, top, width, height, in texture coordinates).
+    fn write_posed(&self, binding: &QuadBinding, pose: PanelPose, cell: [f32; 4]) {
         let (c, r, u) = (pose.center, pose.right, pose.up);
-        let data: [f32; 12] = [
-            c[0], c[1], c[2], pose.v_max, r[0], r[1], r[2], 0.0, u[0], u[1], u[2], 0.0,
+        let data: [f32; 16] = [
+            c[0], c[1], c[2], 0.0, r[0], r[1], r[2], 0.0, u[0], u[1], u[2], 0.0, cell[0], cell[1],
+            cell[2], cell[3],
         ];
         self.queue
             .write_buffer(&binding.uniform, 0, bytemuck::bytes_of(&data));
-        quad.visible.set(true);
     }
 
     /// Place beam `slot` (`BEAM_PANEL`, `BEAM_REACH[h]`, `BEAM_PICK`) for
@@ -1178,6 +1236,18 @@ impl Gfx {
                 pass.set_bind_group(1, &self.beam.bind_group, &[]);
                 pass.draw(0..6 * BEAM_SLOTS as u32, 0..1);
             }
+            // Board #5378: the surface labels, farthest first, on the
+            // panel's terms, before it and the editor's label (which are
+            // nearer the head).
+            let labels = self.surface_label_count.get();
+            if labels > 0 {
+                pass.set_pipeline(&self.panel_pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                for b in &self.surface_labels[..labels] {
+                    pass.set_bind_group(1, &b.bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
+            }
             // Last, over the sprites (which write no depth), so the panel
             // reads cleanly through the cloud; depth-tested against the
             // hand occluders, so a finger poking it shows in front. The
@@ -1435,8 +1505,10 @@ fn build_quad_pipeline(
 
 const PANEL_WGSL: &str = r"
 struct Eye { view_proj: mat4x4<f32> }
-// center.w: the fraction of the texture's height shown, from the top.
-struct Panel { center: vec4<f32>, right: vec4<f32>, up: vec4<f32> }
+// cell: the rect of the texture shown, its top-left corner and its size in
+// texture coordinates (the panel and the label: the whole width and the
+// top part; a surface label: its cell of the atlas, board #5378).
+struct Panel { center: vec4<f32>, right: vec4<f32>, up: vec4<f32>, cell: vec4<f32> }
 @group(0) @binding(0) var<uniform> eye: Eye;
 @group(1) @binding(0) var<uniform> panel: Panel;
 @group(1) @binding(1) var panel_tex: texture_2d<f32>;
@@ -1457,7 +1529,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
     let world = panel.center.xyz + corner.x * panel.right.xyz + corner.y * panel.up.xyz;
     var out: VsOut;
     out.pos = eye.view_proj * vec4<f32>(world, 1.0);
-    out.uv = vec2<f32>(corner.x * 0.5 + 0.5, (0.5 - corner.y * 0.5) * panel.center.w);
+    out.uv = panel.cell.xy + vec2<f32>(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5) * panel.cell.zw;
     return out;
 }
 
@@ -1856,9 +1928,9 @@ fn build_ghost_pipeline(
     )
 }
 
-/// The debug panel's pipeline (the room editor's label's too): a posed
-/// quad, premultiplied alpha over the eye target, depth-tested and
-/// depth-writing.
+/// The debug panel's pipeline (the room editor's label's and the surface
+/// labels' too): a posed quad, premultiplied alpha over the eye target,
+/// depth-tested and depth-writing.
 fn build_panel_pipeline(
     device: &wgpu::Device,
     eye_layout: &wgpu::BindGroupLayout,
@@ -1876,7 +1948,7 @@ fn build_panel_pipeline(
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(48),
+                    min_binding_size: wgpu::BufferSize::new(POSED_BYTES),
                 },
                 count: None,
             },

@@ -52,6 +52,11 @@
 //! `\n`s are lines, and the label grows down and up from its center by
 //! [`LINE_PX`] of the texture a line ([`tex_h`], [`Billboard::with_lines`]),
 //! up to [`MAX_LINES`].
+//!
+//! **The surface labels** (board #5378, `surface_labels.rs`) put every
+//! surface's name on the surface in this label's look, from one atlas
+//! drawn through the same `TextureCanvas`; their second line is the
+//! status cell's word for what the surface runs ([`behavior_word`]).
 
 use glam::{Quat, Vec3};
 
@@ -117,6 +122,23 @@ fn result(before: SurfaceBehavior, after: SurfaceBehavior) -> &'static str {
 /// and its new behavior, "desk: sparks".
 pub fn cycle_text(name: &str, before: SurfaceBehavior, after: SurfaceBehavior) -> String {
     format!("{name}: {}", result(before, after))
+}
+
+/// What a surface runs, in one word: its effective behavior's name
+/// (`lanes::RoomLanes::effective`), "?" for a box the lanes do not have.
+/// The editor's status cell ([`status_text`]) and the surface labels'
+/// second line (`surface_labels.rs`, board #5378) both read it.
+pub fn behavior_word(effective: Option<(SurfaceBehavior, f32)>) -> &'static str {
+    effective.map_or("?", |(b, _)| b.name())
+}
+
+/// The editor's status cell for the surface under the beam: its name
+/// (`surfaces::friendly_name`) and [`behavior_word`], with " · armed"
+/// while the class cycle is armed on it (board #3336): "desk: curls",
+/// "desk: curls · armed".
+pub fn status_text(name: &str, effective: Option<(SurfaceBehavior, f32)>, armed: bool) -> String {
+    let armed = if armed { " \u{b7} armed" } else { "" };
+    format!("{name}: {}{armed}", behavior_word(effective))
 }
 
 /// The label for a step of the hand menu's surface rows (board #3472,
@@ -239,7 +261,7 @@ pub fn scan_billboard(head: Vec3, head_rot: Quat) -> Billboard {
 }
 
 /// A label centered at `center` facing `head` turned by `head_rot`.
-fn facing(center: Vec3, head: Vec3, head_rot: Quat) -> Billboard {
+pub(crate) fn facing(center: Vec3, head: Vec3, head_rot: Quat) -> Billboard {
     let view = (center - head).normalize_or(head_rot * Vec3::NEG_Z);
     let head_right = head_rot * Vec3::X;
     // The head's right across the line of sight; with the label nearly
@@ -419,6 +441,8 @@ impl ScanLabel {
 
 #[cfg(target_os = "android")]
 pub use render::LabelTexture;
+#[cfg(target_os = "android")]
+pub(crate) use render::{PALETTE, TextureCanvas};
 
 #[cfg(target_os = "android")]
 mod render {
@@ -428,8 +452,9 @@ mod render {
     use super::{Billboard, GROUND_ALPHA, LABEL_TEX, LABEL_TEX_H_MAX, LINE_PX, lines, tex_h};
     use crate::gfx::{Gfx, PanelPose};
 
-    /// The label's colors: the hand menu's theme (board #3523).
-    const PALETTE: Palette = Palette::BLUE_ORANGE;
+    /// The label's colors: the hand menu's theme (board #3523). The
+    /// surface labels' too (board #5378).
+    pub(crate) const PALETTE: Palette = Palette::BLUE_ORANGE;
 
     /// The text's largest size and the margin it keeps from the ground's
     /// ends (px); a longer text shrinks to fit, down to [`MIN_FONT_PX`].
@@ -447,28 +472,29 @@ mod render {
     /// The ground's inset from the texture's edge (px).
     const INSET_PX: f32 = 4.0;
 
-    /// The label's texture and its egui renderer (`Hud::new`'s pattern: a
-    /// context and a renderer of its own), redrawn only while a label
-    /// shows and only when its text or its fade step changed.
-    pub struct LabelTexture {
+    /// A texture egui paints into, with a context and a renderer of its
+    /// own (`Hud::new`'s pattern): the label's, and the surface labels'
+    /// atlas (`surface_labels.rs`, board #5378).
+    pub(crate) struct TextureCanvas {
         ctx: egui::Context,
         renderer: egui_wgpu::Renderer,
-        /// Owns the image `Gfx`'s label bind group samples.
+        /// Owns the image the bind groups sample.
         _texture: wgpu::Texture,
-        view: wgpu::TextureView,
-        /// The text, the alpha (in 1/255) and the meter's width (in
-        /// 1/256) last drawn.
-        drawn: Option<(String, u8, Option<u16>)>,
+        pub(crate) view: wgpu::TextureView,
+        /// Its size (px), one egui point a pixel.
+        size: [u32; 2],
+        /// Its name in the GPU's labels.
+        name: &'static str,
     }
 
-    impl LabelTexture {
-        /// Build the texture and hand it to `gfx`; hidden until [`Self::show`].
-        pub fn new(gfx: &mut Gfx) -> Self {
+    impl TextureCanvas {
+        /// A transparent texture of `size`, named `name`.
+        pub(crate) fn new(gfx: &Gfx, name: &'static str, size: [u32; 2]) -> Self {
             let texture = gfx.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("xr-label"),
+                label: Some(name),
                 size: wgpu::Extent3d {
-                    width: LABEL_TEX[0],
-                    height: LABEL_TEX_H_MAX,
+                    width: size[0],
+                    height: size[1],
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -480,7 +506,6 @@ mod render {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            gfx.set_label(&view);
             let renderer = egui_wgpu::Renderer::new(
                 &gfx.device,
                 wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -493,6 +518,90 @@ mod render {
                 renderer,
                 _texture: texture,
                 view,
+                size,
+                name,
+            }
+        }
+
+        /// Clear the texture and paint it: `paint` draws on egui's
+        /// background layer over the whole texture, a point a pixel; one
+        /// render pass and one submission.
+        pub(crate) fn paint(&mut self, gfx: &Gfx, mut paint: impl FnMut(&egui::Painter)) {
+            let size = Vec2::new(self.size[0] as f32, self.size[1] as f32);
+            let mut raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                ..egui::RawInput::default()
+            };
+            raw.viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .native_pixels_per_point = Some(1.0);
+            let output = self.ctx.run(raw, |ctx| {
+                paint(&ctx.layer_painter(egui::LayerId::background()));
+            });
+            for (id, delta) in &output.textures_delta.set {
+                self.renderer
+                    .update_texture(&gfx.device, &gfx.queue, *id, delta);
+            }
+            let jobs = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+            let screen = egui_wgpu::ScreenDescriptor {
+                size_in_pixels: self.size,
+                pixels_per_point: output.pixels_per_point,
+            };
+            let mut encoder = gfx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some(self.name),
+                });
+            let user_buffers =
+                self.renderer
+                    .update_buffers(&gfx.device, &gfx.queue, &mut encoder, &jobs, &screen);
+            {
+                let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(self.name),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                self.renderer
+                    .render(&mut pass.forget_lifetime(), &jobs, &screen);
+            }
+            gfx.queue.submit(
+                user_buffers
+                    .into_iter()
+                    .chain(std::iter::once(encoder.finish())),
+            );
+            for id in &output.textures_delta.free {
+                self.renderer.free_texture(id);
+            }
+        }
+    }
+
+    /// The label's texture ([`TextureCanvas`]), redrawn only while a label
+    /// shows and only when its text or its fade step changed.
+    pub struct LabelTexture {
+        canvas: TextureCanvas,
+        /// The text, the alpha (in 1/255) and the meter's width (in
+        /// 1/256) last drawn.
+        drawn: Option<(String, u8, Option<u16>)>,
+    }
+
+    impl LabelTexture {
+        /// Build the texture and hand it to `gfx`; hidden until [`Self::show`].
+        pub fn new(gfx: &mut Gfx) -> Self {
+            let canvas = TextureCanvas::new(gfx, "xr-label", [LABEL_TEX[0], LABEL_TEX_H_MAX]);
+            gfx.set_label(&canvas.view);
+            Self {
+                canvas,
                 drawn: None,
             }
         }
@@ -536,21 +645,12 @@ mod render {
         /// time, shrunk to fit its width; with `meter` (0..1), a bar that
         /// long under a one-line text over its dim track.
         fn draw(&mut self, gfx: &Gfx, text: &str, alpha: f32, meter: Option<f32>) {
-            let size = Vec2::new(LABEL_TEX[0] as f32, LABEL_TEX_H_MAX as f32);
+            let tex_w = LABEL_TEX[0] as f32;
             let lines = lines(text);
             let shown_h = tex_h(lines.len()) as f32;
-            let mut raw = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
-                ..egui::RawInput::default()
-            };
-            raw.viewports
-                .entry(egui::ViewportId::ROOT)
-                .or_default()
-                .native_pixels_per_point = Some(1.0);
-            let output = self.ctx.run(raw, |ctx| {
-                let painter = ctx.layer_painter(egui::LayerId::background());
+            self.canvas.paint(gfx, |painter| {
                 let ground =
-                    Rect::from_min_size(Pos2::ZERO, Vec2::new(size.x, shown_h)).shrink(INSET_PX);
+                    Rect::from_min_size(Pos2::ZERO, Vec2::new(tex_w, shown_h)).shrink(INSET_PX);
                 painter.rect_filled(
                     ground,
                     CORNER_PX,
@@ -607,50 +707,6 @@ mod render {
                     }
                 }
             });
-            for (id, delta) in &output.textures_delta.set {
-                self.renderer
-                    .update_texture(&gfx.device, &gfx.queue, *id, delta);
-            }
-            let jobs = self.ctx.tessellate(output.shapes, output.pixels_per_point);
-            let screen = egui_wgpu::ScreenDescriptor {
-                size_in_pixels: [LABEL_TEX[0], LABEL_TEX_H_MAX],
-                pixels_per_point: output.pixels_per_point,
-            };
-            let mut encoder = gfx
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("xr-label"),
-                });
-            let user_buffers =
-                self.renderer
-                    .update_buffers(&gfx.device, &gfx.queue, &mut encoder, &jobs, &screen);
-            {
-                let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("xr-label"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                self.renderer
-                    .render(&mut pass.forget_lifetime(), &jobs, &screen);
-            }
-            gfx.queue.submit(
-                user_buffers
-                    .into_iter()
-                    .chain(std::iter::once(encoder.finish())),
-            );
-            for id in &output.textures_delta.free {
-                self.renderer.free_texture(id);
-            }
         }
     }
 }
@@ -694,6 +750,22 @@ mod tests {
             cycle_text("ceiling", B::Embers, B::Embers.next_for(KIND_CEILING)),
             "ceiling: rings"
         );
+    }
+
+    #[test]
+    fn the_status_cell_names_the_surface_and_what_it_runs() {
+        assert_eq!(behavior_word(Some((B::Aurora, 0.7))), "aurora");
+        assert_eq!(behavior_word(Some((B::None, 1.0))), "none");
+        assert_eq!(behavior_word(None), "?");
+        assert_eq!(
+            status_text("desk", Some((B::Curls, 1.0)), false),
+            "desk: curls"
+        );
+        assert_eq!(
+            status_text("desk", Some((B::Curls, 1.0)), true),
+            "desk: curls \u{b7} armed"
+        );
+        assert_eq!(status_text("wall 6", None, false), "wall 6: ?");
     }
 
     #[test]

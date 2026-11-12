@@ -182,6 +182,18 @@ agent is the grammar's consumer with a model in front of it.
 Everything is also in the log (`voice: heard "…" → <actions>`), as every
 gesture is.
 
+The names the wearer says are on the surfaces (board #5378, `ROOM_DESIGN.md`,
+"Surface labels"). While a voice window is open, for 4 s after it closes and
+for 4 s after a miss on a name ("No surface called …", "Which one: …?"),
+every surface shows its name as the grammar takes it, with what it runs under
+it. Describe on a kind lists the same names with their behaviors, two to a
+line, and stays up 4 s as the help does. "What walls exist", "describe the
+walls", "what are the walls", "list the walls" and "which walls are there"
+all answer "walls: wall 1 aurora · wall 6 aurora" over "wall 8 none · wall 14
+none".
+Past six lines the rest is counted at the end ("· 3 more"). Before, a kind's
+Describe gave its behaviors alone ("all walls: aurora, none").
+
 ## Steps
 
 1. **V1, the window and the text.** The fist opens a push-to-talk window

@@ -703,3 +703,77 @@ names the result in the editor's words ("desk: amber", "all tables:
 streamlines"). Nothing the voice does is out of the hands' reach: a
 behavior a kind does not cycle through is refused ("embers doesn't run on
 a wall").
+
+## Surface labels (board #5378)
+
+Voice commands name surfaces ("wall 6", "table 3", "desk"), but nothing in
+the room showed those names. In Kevin's worn pass on Nov 12, "make the wall
+blue" came back `Ambiguous(["wall 1", "wall 6", "wall 8", "wall 14"])` and
+"make wall 16 blue" came back "No surface called wall 16". The wearer had no
+way to see which wall was which. Kevin: "what I need is some way to see the
+registered surfaces, like labels on the walls." The code is
+`surface_labels.rs`.
+
+**What a label says.** Two lines on the editor's label's dark rounded
+ground. The first is the surface's name exactly as the grammar takes it, the
+`name` the voice vocabulary holds (`intent::surfaces`). The second is what
+the surface runs, in the status cell's word: "aurora", "embers", "none".
+The status cell and the labels read that word from one function
+(`label::behavior_word`).
+
+**Which surfaces.** Every lane box gets a label: the planes and volumes the
+scene query returned, then the stage floor. Next to a scene floor the stage
+floor is "floor N", as the grammar names it. The stage floor is a 10 cm
+slab, a volume, so its label floats over the stage's origin. A hidden wall
+(`INVISIBLE_WALL_FACE`) is labeled like any other, because the grammar takes
+its name. There are 32 cells, one per lane box, the same 32 boxes the lanes
+have rows for.
+
+**Where.** A plane's label lies flat on its face toward the head
+(`Face::facing`), centered on the rect and 8 cm out from it
+(`label::OUT_M`, as the editor's label). On a wall it stands upright. On a
+floor or a ceiling its top points the way a label facing the head would
+point, laid into the plane, so it reads the right way round from the chair.
+A volume's label floats over the center of its top face and faces the head,
+placed as the editor's label is over a hit (`label::billboard`, 8 cm out and
+6 cm up). Each label is `label::label_w_m` wide for its distance from the
+head, as the editor's label is, and 0.375 of that high (the cell's aspect).
+A label whose center is behind the head, or farther than 6 m from it, does
+not draw.
+
+**When.** While Edit room is on. While a voice window is open, listening or
+transcribing, and for 4 s after it closes. For 4 s after a miss on a name,
+`UnknownSurface` or `Ambiguous` (`Reason::names_surfaces`), whether the
+grammar, the agent's actions or the on-device provider missed. Always while
+`debug.fosfora.labels` is `1` (read at launch). They fade in over 0.4 s
+(`label::FADE_S`). When the last reason goes they fade out over 0.4 s, and a
+4 s hold fades over its last 0.4 s, as a label's life ends in
+`label::fade_for`. `SurfaceLabels` decides when they show, in plain numbers
+with desktop tests.
+
+**Rendering.** One 2048 x 1536 atlas, a 4 x 8 grid of 512 x 192 px cells.
+egui paints every label into its cell in one pass, through the
+`TextureCanvas` the editor's label now uses too. The atlas is redrawn only
+when a name, a behavior or the fade's stage changes. The fade has 8 stages,
+so a fade in or out redraws it 8 times. Each label is a posed quad of the
+panel's pipeline that reads its own cell. For that the panel's uniform gained
+a texture rect (64 bytes, was 48), which the hand menu and the editor's label
+set to the whole width and their top part. The labels draw farthest first,
+before the hand menu and the editor's label. Turning the head changes which
+quads draw and never redraws the atlas. With no label showing, the frame
+checks one counter and draws nothing, and the atlas is not touched.
+
+**Describe.** Asking for a kind now lists its surfaces by the same names,
+each with its behavior ("walls: wall 1 aurora · wall 6 aurora" over "wall 8
+none · wall 14 none"), so the voice label and the labels in the room agree
+(`VOICE_DESIGN.md`, "What the wearer sees").
+
+**Log.** "surface labels: shown (edit room) · 17 surfaces, 9 in view" when
+they appear, the reason being "edit room", "voice window", "a voice window
+closed", "a miss on a name" or "debug.fosfora.labels". "surface labels:
+hidden" when they go. A launch with the knob on says "surface labels: always
+shown (debug.fosfora.labels 1)".
+
+**Unworn check.** `debug.fosfora.say "make wall 16 blue"` on a room without a
+wall 16 misses on the name, so the labels show for 4 s, long enough for a
+screencap.

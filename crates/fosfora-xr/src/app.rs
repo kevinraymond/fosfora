@@ -1363,6 +1363,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #3488: the room scan's state on the same label while the
     // editor's shows nothing.
     let mut scan_label = crate::label::ScanLabel::default();
+    // Board #5378: every surface's voice name on the surface, while the
+    // editor is on, while a voice window is open and a while after, after
+    // a miss on a name, and always with `debug.fosfora.labels 1`
+    // (`surface_labels.rs`). Whether they showed last frame, for the log.
+    let labels_knob = debug_prop("debug.fosfora.labels").as_deref() == Some("1");
+    let mut surface_labels = crate::surface_labels::SurfaceLabels::default();
+    let mut label_atlas = crate::surface_labels::LabelAtlas::new(&mut gfx);
+    let mut labels_shown = false;
+    if labels_knob {
+        info!("surface labels: always shown (debug.fosfora.labels 1)");
+    }
     let mut scan_logged: Option<crate::label::ScanState> = None;
     let mut edit_was_on = false;
     let mut edit_status = String::from(EDIT_OFF);
@@ -2392,14 +2403,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     edit_status = if !edit_on {
                         EDIT_OFF.to_owned()
                     } else if let Some(h) = frame.hit {
-                        let behavior = surface_lanes
-                            .effective(h.index, &lane_boxes)
-                            .map_or("?", |(b, _)| b.name());
-                        // Board #3336: while the class cycle is armed on it.
-                        let armed = if frame.armed.is_some() { " · armed" } else { "" };
-                        format!(
-                            "{}: {behavior}{armed}",
-                            crate::surfaces::friendly_name(h.index, &lane_boxes)
+                        // Board #3336: " · armed" while the class cycle is
+                        // armed on it.
+                        crate::label::status_text(
+                            &crate::surfaces::friendly_name(h.index, &lane_boxes),
+                            surface_lanes.effective(h.index, &lane_boxes),
+                            frame.armed.is_some(),
                         )
                     } else {
                         "no surface".to_owned()
@@ -2876,6 +2885,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     "{}",
                     crate::intent::clauses_log_line(&sentence, &clauses, &response.label)
                 );
+                // Board #5378: a name the room lacks, or one several
+                // surfaces share, shows every surface's name for a while.
+                if clauses
+                    .iter()
+                    .any(|c| c.outcome.as_ref().is_err_and(|m| m.reason.names_surfaces()))
+                {
+                    surface_labels.miss();
+                }
                 voice_label.show_for(response.label, voice_at.0, voice_at.1, response.seconds);
             }
             // V5: the on-device provider loads once the speech model has
@@ -2959,6 +2976,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         Ok(crate::agent::Reply {
                             miss: Some(miss), ..
                         }) => {
+                            if miss.reason.names_surfaces() {
+                                surface_labels.miss();
+                            }
                             let vocab = crate::intent::Vocabulary {
                                 effects: &world_effects,
                                 behaviors: &crate::surfaces::SurfaceBehavior::ALL,
@@ -3014,6 +3034,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             if let Some(line) = crate::agent::dropped_line(&outcomes) {
                                 info!("{line}");
                             }
+                            if missed.iter().any(|m| m.reason.names_surfaces()) {
+                                surface_labels.miss();
+                            }
                             crate::agent::label(&reply.say, &applied, &missed)
                         }
                         Err(e) => {
@@ -3047,6 +3070,55 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         })
                     });
                 label_texture.show(&gfx, shown);
+                // Board #5378: the surface labels. Only while they show
+                // are the names, the behaviors and the poses worked out;
+                // the atlas is redrawn only when a tag or the fade's stage
+                // changed.
+                surface_labels.step(
+                    crate::surface_labels::Reasons {
+                        editing: controls.edit_room,
+                        listening: push_to_talk.window() != VoiceWindow::Closed,
+                        knob: labels_knob,
+                    },
+                    dt,
+                );
+                let stage = surface_labels.stage();
+                if stage > 0 {
+                    use crate::surface_labels::{MAX_LABELS, Tag, placed, pose};
+                    // The lane boxes' names as the grammar has them, and
+                    // their boxes in the same order.
+                    let tags: Vec<Tag> = crate::intent::surfaces(&lane_boxes)
+                        .into_iter()
+                        .take(MAX_LABELS)
+                        .map(|s| Tag {
+                            behavior: crate::label::behavior_word(
+                                surface_lanes.effective(s.index, &lane_boxes),
+                            ),
+                            name: s.name,
+                        })
+                        .collect();
+                    let boxes = input.room_boxes.iter().chain(floor_box.iter());
+                    let poses = boxes.enumerate().map(|(k, b)| {
+                        let (center, half) = (glam::Vec3::from(b.center), glam::Vec3::from(b.half));
+                        (k, pose(center, glam::Quat::from_array(b.rot), half, head, head_rot))
+                    });
+                    let in_view = placed(poses, head, head_rot);
+                    if !labels_shown {
+                        info!(
+                            "surface labels: shown ({}) \u{b7} {} surfaces, {} in view",
+                            surface_labels.why(),
+                            tags.len(),
+                            in_view.len()
+                        );
+                    }
+                    label_atlas.show(&gfx, &tags, stage, &in_view);
+                } else {
+                    if labels_shown {
+                        info!("surface labels: hidden");
+                    }
+                    label_atlas.hide(&gfx);
+                }
+                labels_shown = stage > 0;
             }
             // The Music row: a decode that finished starts the clip; a
             // failed decode or start turns the row back to "Music: play".

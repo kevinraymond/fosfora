@@ -9,9 +9,9 @@
 //! S4 one core effect on a world-locked quad, S5 world-space particles on
 //! the billboard path, S6 live audio, S7 passthrough, hands and room
 //! geometry as obstacles; the room's surfaces as emitters, the floor
-//! ripple, the wall spectrum, the hand instruments, the room editor, the
-//! thumb microgestures, and the voice path's push-to-talk window, its
-//! grammar, its agent and its on-device provider.
+//! ripple, the wall spectrum, the hand instruments, the room editor and
+//! the surface labels, the thumb microgestures, and the voice path's
+//! push-to-talk window, its grammar, its agent and its on-device provider.
 
 // Declared first: `assert_close!` is textually scoped to the modules after it.
 #[cfg(test)]
@@ -69,6 +69,7 @@ mod scene;
 pub mod sim_cut;
 pub mod space;
 pub mod surface_fx;
+pub mod surface_labels;
 pub mod surface_port;
 pub mod surfaces;
 pub mod voice;
