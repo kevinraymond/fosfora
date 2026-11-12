@@ -442,6 +442,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       live_planes::NOISE_K from; runs the read-back whatever roam is and creates the depth provider; default 0; read at launch)
     //   adb shell setprop debug.fosfora.liveplanesshow 0|1       (live planes: each reported plane's rectangle as an outline in its kind's color, for an
     //       unworn capture of what was found; default 0; live: polled once a second)
+    //   adb shell setprop debug.fosfora.liveplanesrec 30         (board #5400: live planes: the worker records the next N seconds of read-backs the finder
+    //       is given, as read back and before it takes them, to Android/data/<package>/files/debug/liveplanes-<time>-<n>.lprec for the
+    //       desktop replay (live_rec.rs); read at launch, so a recording starts with the finder's first update, then polled once a second:
+    //       a new value starts a new recording, unset or 0 stops one; at most 600 s; the path and count are logged when it closes)
     //   The envdepth and depthcollide knobs are read at startup (restart the app after a change), except envdepthhands; with envdepth,
     //   envdepthshow, envdepthcheck and depthcollide all 0 no depth provider is created, so the baseline is the app without it.
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
@@ -1026,6 +1030,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     {
         log::warn!("music: creating {}: {e}", own.display());
     }
+    // Board #5400: live planes recordings go in `debug/` beside the app's
+    // own `Music/` (`Android/data/<package>/files/debug`), where a USB pull
+    // reaches them without run-as. The worker creates it.
+    let live_rec_dir = own_music
+        .as_deref()
+        .and_then(std::path::Path::parent)
+        .map(|files| files.join(crate::live_rec::DIR));
     let shown = |p: &Option<std::path::PathBuf>| {
         p.as_ref()
             .map_or_else(|| "none".to_owned(), |p| p.display().to_string())
@@ -1713,6 +1724,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut live_snap: Option<crate::live_wire::Snapshot> = None;
     let mut live_fresh: Option<crate::live_wire::Snapshot> = None;
     let mut live_show = crate::live_wire::LiveShow::default();
+    // Board #5400: `debug.fosfora.liveplanesrec`, read here so a recording
+    // can start with the finder's first update, then polled once a second.
+    // Its ask rides on every job and the worker writes the file; unset, the
+    // jobs carry nothing.
+    let mut live_rec = crate::live_rec::RecKnob::default();
+    if let Some(line) = live_rec.poll(
+        debug_prop(crate::live_rec::KNOB).as_deref(),
+        live_rec_dir.as_deref(),
+    ) {
+        info!("{line}");
+    }
     // The updates count at the last status line and when, for its rate.
     let mut live_rate = (Instant::now(), 0u64);
     let mut live_unavailable_logged = false;
@@ -4040,6 +4062,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     reading: live_reading,
                     fit: live_on,
                     noise,
+                    record: live_rec.ask(),
                 });
             }
         }
@@ -4389,6 +4412,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     "live planes: outlines {} (debug.fosfora.liveplanesshow)",
                     if show { "on" } else { "off" }
                 );
+            }
+            if let Some(line) = live_rec.poll(
+                system_prop(crate::live_rec::KNOB).as_deref(),
+                live_rec_dir.as_deref(),
+            ) {
+                info!("{line}");
             }
             if live_on {
                 match &live_snap {
