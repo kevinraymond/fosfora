@@ -810,6 +810,15 @@ impl XrSession {
         self.passthrough.is_some()
     }
 
+    /// Board #5384: the passthrough image's opacity, for immersion
+    /// (`Passthrough::set_opacity`); nothing without passthrough.
+    pub fn set_passthrough_opacity(&self, opacity: f32) -> Result<()> {
+        match self.passthrough.as_ref() {
+            Some(p) => p.set_opacity(self.session.instance(), opacity),
+            None => Ok(()),
+        }
+    }
+
     pub fn has_hands(&self) -> bool {
         self.hands.is_some()
     }

@@ -332,6 +332,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.canvasbars 24            (wall spectrum bar count, 1..64; fewer when the mel spectrum is shorter)
     //   adb shell setprop debug.fosfora.canvastest ceiling       (diagnostic: the wall spectrum on the room's CEILING anchor instead of a wall,
     //       for an unworn screencap from a headset lying face up)
+    //   adb shell setprop debug.fosfora.immerse 0..1             (board #5384: the immersion depth for this launch, how dark the room may get with
+    //       the music, 0 off, 0.5 low, 1 full; unset, the hand menu's Immersion control as saved in hand_menu.json (full when never
+    //       pressed); not saved, a press on the control takes over; read at launch)
+    //   adb shell setprop debug.fosfora.immersefloor 0.15        (the passthrough image's opacity at the full level, the darkest the room gets,
+    //       0..1; read at launch)
+    //   adb shell setprop debug.fosfora.immersefix 0..1          (diagnostic: the immersion level pinned whatever the audio and the depth, for
+    //       an unworn screencap, which includes the passthrough behind the app's layers on this OS; read at launch)
     //   adb shell setprop debug.fosfora.surface "wall=none,#3=rings,1a2b3c4d=embers@0.5"   (board #3326: each room surface's behavior,
     //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[:<color>[:<band>]][@<strength>], target = an
     //       anchor UUID (32 hex, or a prefix of 8 or more unique in the room), #<k> a box by index (the log's "room <id>:" lane table;
@@ -1201,6 +1208,31 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             .and_then(XrScene::space)
             .map_or(cube_half, |(_, preset)| preset),
     );
+    // Board #5384: immersion (`immerse.rs`), the room dimming with the
+    // music. The depth is the hand menu's saved one unless the knob gives
+    // this launch another (not saved); the floor and a pinned level are
+    // knobs. Without passthrough it runs, but its level is taken as 0.
+    let unit_knob = |name: &str| {
+        debug_prop(name)
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .map(|v| v.clamp(0.0, 1.0))
+    };
+    let immerse_knob = unit_knob("debug.fosfora.immerse");
+    let mut immersion = crate::immerse::Immersion::new(
+        immerse_knob.unwrap_or(menu_saved.immerse.value()),
+        unit_knob("debug.fosfora.immersefloor").unwrap_or(crate::immerse::IMMERSE_FLOOR),
+    );
+    immersion.fix(unit_knob("debug.fosfora.immersefix"));
+    let immerse_room = session.has_passthrough();
+    info!(
+        "{}",
+        immersion.launch_line(immerse_knob.is_some(), immerse_room)
+    );
+    // What the runtime has for the passthrough style, and whether a call
+    // failed (logged once).
+    let mut immerse_style = crate::immerse::StyleGate::default();
+    let mut immerse_failed = false;
     let mut controls = Controls {
         gravity,
         near_fade: near_cull,
@@ -1490,6 +1522,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut downbeat_env = 0.0f32;
     let flash = debug_prop("debug.fosfora.flash").as_deref() == Some("1");
     let mut flash_frames = 0u32;
+    // Board #5384: the last frame's immersion level (0 without
+    // passthrough), with the `loudness_s` and `buildup` it followed, for the
+    // style call after the frame and the log; and whether the log's last
+    // line had the room dimmed.
+    let mut immerse_now: Option<(f32, f32, f32)> = None;
+    let mut immerse_logged = false;
 
     loop {
         // While the session is running, Android events are drained without
@@ -3245,6 +3283,24 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 None => None,
             };
+            // Board #5384: immersion. The level follows the song while real
+            // audio drives the analysis (the music's tap or the
+            // microphones; the synthetic groove is no music); it dims the
+            // passthrough after the frame and lifts the surfaces' alpha
+            // below. Without passthrough there is no room to dim, and the
+            // surfaces stay as they were.
+            let immerse_level = immersion.step(
+                dt,
+                crate::immerse::Input {
+                    loudness_s: f.loudness_s,
+                    buildup: f.buildup,
+                    drop: f.drop > 0.5,
+                    rms: f.rms,
+                    playing: music.analysis.is_some() || live_audio.is_some(),
+                },
+            );
+            let immerse_level = if immerse_room { immerse_level } else { 0.0 };
+            immerse_now = Some((immerse_level, f.loudness_s, f.buildup));
             // Board #3472, D1: the surfaces pass. Every box whose behavior
             // is a surface shader (the rings, the streamlines, since D2,
             // board #3488, the curls and the pulse, and since D2b, board
@@ -3397,12 +3453,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                         face.half,
                                         effect.params(),
                                     ),
-                                    rows: crate::surface_port::rows(
-                                        &face,
-                                        strength,
-                                        effect.overlay,
-                                        behavior.id(),
-                                        crate::surface_port::tint(color, kind, audio.key_tint),
+                                    rows: crate::immerse::lift_rows(
+                                        crate::surface_port::rows(
+                                            &face,
+                                            strength,
+                                            effect.overlay,
+                                            behavior.id(),
+                                            crate::surface_port::tint(color, kind, audio.key_tint),
+                                        ),
+                                        immerse_level,
                                     ),
                                 }
                             })
@@ -3416,6 +3475,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let faces: Vec<_> = slots
                     .iter()
                     .map(|slot| crate::surface_fx::rows(slot, audio, ripple.as_ref(), spectrum, t))
+                    .map(|rows| crate::immerse::lift_rows(rows, immerse_level))
                     .collect();
                 // One budget: a ported face and a `SurfaceFx` face both
                 // count against the pass's slots, the ported ones last.
@@ -3470,6 +3530,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         frame_index += 1;
         if rescan {
             session.rescan_room();
+        }
+        // Board #5384: the passthrough style, only when the opacity moves
+        // by a step (the gate), and never without passthrough; a failed
+        // call is logged once.
+        if immerse_room
+            && let Some((level, ..)) = immerse_now
+            && let Some(opacity) = immerse_style.update(immersion.opacity(level))
+            && let Err(e) = session.set_passthrough_opacity(opacity)
+            && !immerse_failed
+        {
+            immerse_failed = true;
+            log::warn!("immersion: the passthrough style failed (logged once): {e:#}");
         }
         let perf_want = gov_on || hud.as_ref().is_some_and(Hud::debug);
         if perf_want != perf_on {
@@ -3740,6 +3812,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     scene.alive_count(),
                     scene.emitter_weight()
                 );
+            }
+            // Board #5384: the immersion level once a second while the room
+            // is dimmed, and once when it is back.
+            if let Some((level, loudness_s, buildup)) = immerse_now {
+                let dimmed = level > 0.005;
+                if dimmed || immerse_logged {
+                    info!(
+                        "immersion: level {level:.2} · passthrough {:.2} · loudness_s {loudness_s:.2} · buildup {buildup:.2} · depth {:.2}",
+                        immersion.opacity(level),
+                        immersion.depth()
+                    );
+                }
+                immerse_logged = dimmed;
             }
             if session.has_hands() || session.has_room() {
                 info!(
@@ -4501,8 +4586,8 @@ fn system_prop(name: &str) -> Option<String> {
 const HAND_MENU_FILE: &str = "hand_menu.json";
 
 /// The saved hand menu's toggles (`palm_panel::MenuFile`): the debug
-/// panel off, voice on and no agent pick when there is no file, it does
-/// not parse, or a field is missing.
+/// panel off, voice on, no agent pick and immersion full when there is no
+/// file, it does not parse, or a field is missing.
 fn load_hand_menu(path: &std::path::Path) -> crate::palm_panel::MenuFile {
     std::fs::read_to_string(path)
         .map(|s| crate::palm_panel::MenuFile::parse(&s))
@@ -4514,12 +4599,13 @@ fn save_hand_menu(path: &std::path::Path, menu: crate::palm_panel::MenuFile) {
     let on_off = |on: bool| if on { "on" } else { "off" };
     match std::fs::write(path, menu.to_json()) {
         Ok(()) => info!(
-            "hand menu: debug panel {} · voice {}{} (saved)",
+            "hand menu: debug panel {} · voice {}{} · immersion {} (saved)",
             on_off(menu.debug),
             on_off(menu.voice),
             menu.agent
                 .map(|p| format!(" · agent {}", p.name()))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            menu.immerse.name()
         ),
         Err(e) => log::warn!("hand menu: saving {}: {e}", path.display()),
     }

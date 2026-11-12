@@ -361,7 +361,8 @@ impl PalmPanel {
 /// the debug panel (off unless saved on), the voice path (board #3751,
 /// V4: on unless saved off, so a file from before the toggle keeps voice
 /// on) and the agent's provider (board #3776: none saved until the Agent
-/// control is first pressed). A missing or broken file is the defaults.
+/// control is first pressed), and the immersion depth (board #5384: full
+/// unless saved otherwise). A missing or broken file is the defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuFile {
     pub debug: bool,
@@ -369,6 +370,8 @@ pub struct MenuFile {
     /// The Agent control's pick (board #3776), `None` until the wearer
     /// first presses it: the launch then takes the V5 rule's.
     pub agent: Option<crate::agent::Pick>,
+    /// The Immersion control's depth (board #5384).
+    pub immerse: crate::immerse::Depth,
 }
 
 impl Default for MenuFile {
@@ -377,6 +380,7 @@ impl Default for MenuFile {
             debug: false,
             voice: true,
             agent: None,
+            immerse: crate::immerse::Depth::default(),
         }
     }
 }
@@ -384,7 +388,8 @@ impl Default for MenuFile {
 impl MenuFile {
     /// The file's text read leniently: a field that is missing or not a
     /// boolean keeps its default; an `agent` that is missing or names no
-    /// pick is no saved choice.
+    /// pick is no saved choice; an `immerse` that is missing or names no
+    /// depth is full.
     pub fn parse(json: &str) -> Self {
         let value = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default();
         let field = |name: &str, default: bool| {
@@ -401,13 +406,22 @@ impl MenuFile {
                 .get("agent")
                 .and_then(serde_json::Value::as_str)
                 .and_then(crate::agent::Pick::from_name),
+            immerse: value
+                .get("immerse")
+                .and_then(serde_json::Value::as_str)
+                .and_then(crate::immerse::Depth::from_name)
+                .unwrap_or(d.immerse),
         }
     }
 
-    /// The file's text: `{"debug":false,"voice":true}`, with
-    /// `"agent":"local"` (`anthropic`, `openai`, `off`) once picked.
+    /// The file's text: `{"debug":false,"immerse":"full","voice":true}`,
+    /// with `"agent":"local"` (`anthropic`, `openai`, `off`) once picked.
     pub fn to_json(self) -> String {
-        let mut json = serde_json::json!({ "debug": self.debug, "voice": self.voice });
+        let mut json = serde_json::json!({
+            "debug": self.debug,
+            "voice": self.voice,
+            "immerse": self.immerse.name(),
+        });
         if let Some(pick) = self.agent {
             json["agent"] = pick.name().into();
         }
@@ -426,11 +440,13 @@ mod tests {
                 debug: true,
                 voice: false,
                 agent: None,
+                ..MenuFile::default()
             },
             MenuFile {
                 debug: false,
                 voice: true,
                 agent: None,
+                ..MenuFile::default()
             },
         ] {
             assert_eq!(MenuFile::parse(&file.to_json()), file);
@@ -442,6 +458,7 @@ mod tests {
                 debug: true,
                 voice: true,
                 agent: None,
+                ..MenuFile::default()
             }
         );
         assert!(!MenuFile::parse(r#"{"voice": false}"#).voice);
@@ -469,6 +486,7 @@ mod tests {
                 debug: true,
                 voice: false,
                 agent: Some(pick),
+                ..MenuFile::default()
             };
             let json = file.to_json();
             assert!(
@@ -479,7 +497,7 @@ mod tests {
         }
         assert_eq!(
             MenuFile::default().to_json(),
-            r#"{"debug":false,"voice":true}"#
+            r#"{"debug":false,"immerse":"full","voice":true}"#
         );
         // V5's file: no saved choice, the rest as written.
         let v5 = MenuFile::parse(r#"{"debug":false,"voice":false}"#);
@@ -500,6 +518,36 @@ mod tests {
             MenuFile::parse(r#"{"agent": "openai"}"#).agent,
             Some(Pick::Network(ProviderKind::OpenAi))
         );
+    }
+
+    /// Board #5384: the Immersion control's depth round-trips; a file
+    /// without it (every one before), or naming something unknown, is full.
+    #[test]
+    fn the_menu_file_saves_the_immersion_depth_and_reads_full_when_absent_or_unknown() {
+        use crate::immerse::Depth;
+        for depth in Depth::ALL {
+            let file = MenuFile {
+                immerse: depth,
+                ..MenuFile::default()
+            };
+            let json = file.to_json();
+            assert!(
+                json.contains(&format!(r#""immerse":"{}""#, depth.name())),
+                "{json}"
+            );
+            assert_eq!(MenuFile::parse(&json), file);
+        }
+        for json in [
+            r#"{"debug": true, "voice": false}"#,
+            r#"{"debug": true, "voice": false, "immerse": "dark"}"#,
+            r#"{"debug": true, "voice": false, "immerse": 0.5}"#,
+            r#"{"debug": true, "voice": false, "immerse": "Low"}"#,
+        ] {
+            let file = MenuFile::parse(json);
+            assert_eq!(file.immerse, Depth::Full, "{json}");
+            assert!(file.debug && !file.voice, "{json}");
+        }
+        assert_eq!(MenuFile::parse(r#"{"immerse": "off"}"#).immerse, Depth::Off);
     }
 
     const HEAD: Vec3 = Vec3::new(0.0, 1.6, 0.0);

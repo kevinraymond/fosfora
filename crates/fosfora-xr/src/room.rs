@@ -51,6 +51,40 @@ impl Passthrough {
             _passthrough: passthrough,
         })
     }
+
+    /// Board #5384: the layer's style, the camera image at `opacity`
+    /// (0..1) with no edges (`xrPassthroughLayerSetStyleFB`; the `openxr`
+    /// 0.22 wrapper has no style call, so through the extension's function
+    /// pointer). No color map is chained, so the image keeps its colors.
+    /// The layer is the bottom of the frame's layers and the blend mode is
+    /// OPAQUE, so under an opacity below 1 the compositor's black shows
+    /// through: the room dims toward black.
+    pub fn set_opacity(&self, instance: &xr::Instance, opacity: f32) -> Result<()> {
+        let fp = instance
+            .exts()
+            .fb_passthrough
+            .as_ref()
+            .ok_or_else(|| anyhow!("XR_FB_passthrough is not enabled"))?;
+        let style = sys::PassthroughStyleFB {
+            ty: sys::PassthroughStyleFB::TYPE,
+            next: ptr::null(),
+            texture_opacity_factor: opacity.clamp(0.0, 1.0),
+            // Alpha 0: edge rendering off.
+            edge_color: sys::Color4f {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            },
+        };
+        // SAFETY: the layer handle is live as long as `self` (destroyed on
+        // drop, before the session); `style` is a complete
+        // XrPassthroughStyleFB with a null `next`, its opacity in 0..1, and
+        // outlives the call; `fp` was loaded for the instance the layer's
+        // session belongs to, with XR_FB_passthrough enabled.
+        check(unsafe { (fp.passthrough_layer_set_style)(self.layer.as_raw(), &style) })
+            .context("xrPassthroughLayerSetStyleFB")
+    }
 }
 
 /// What `debug.fosfora.rescan` asks for once the room is in.
