@@ -9,7 +9,9 @@
 //! the particle pitcher's on/off toggle and the debug panel's under it,
 //! then the room editor's toggle beside its status ("desk: embers",
 //! board #3326), under that the cloud's toggle (`room_edit::Cloud`), and
-//! at the bottom the music's play/stop (`music.rs`, board #3472). With
+//! at the bottom the music's play/stop (`music.rs`, board #3472), with the
+//! track's title and `<` `>` for the previous and the next track around
+//! it (board #5385, `playlist.rs`). With
 //! Edit room on, three more rows under the editor's (board #3472, D3):
 //! the color, the band and the strength of the surface under the beam,
 //! each stepped with `<` and `>`, the menu growing upward to hold them.
@@ -158,8 +160,17 @@ pub enum Action {
     SetEditRoom(bool),
     /// The hand menu's Cloud toggle changed (not saved).
     SetCloud(bool),
-    /// The hand menu's Music row changed: play or stop (not saved).
+    /// The hand menu's Music row changed: play or stop (saved in
+    /// `music.json` since board #5385).
     SetMusic(bool),
+    /// The Music row's `<` and `>`: the previous or the next track
+    /// (board #5385).
+    PrevTrack,
+    NextTrack,
+    /// The voice's "play {song}": the playlist's track at this index.
+    PlayTrack(usize),
+    /// The voice's "scan my music": the music folders scanned again.
+    ScanMusic,
     /// The hand menu's Voice toggle changed (saved; board #3751, V4).
     SetVoice(bool),
     /// The hand menu's Agent control asked for this provider (saved;
@@ -204,6 +215,9 @@ enum Target {
     ToggleEdit,
     ToggleCloud,
     ToggleMusic,
+    /// The Music cell's `<` and `>` (board #5385).
+    PrevTrack,
+    NextTrack,
     ToggleVoice,
     /// The Agent control: the next provider in its cycle.
     CycleAgent,
@@ -248,6 +262,9 @@ pub struct View<'a> {
     pub bass: f32,
     pub beat: f32,
     pub audio: &'a str,
+    /// The Music row's title: the playlist's track, or the bundled clip's
+    /// (board #5385).
+    pub track: &'a str,
     /// Seated reach per hand: (real, virtual) shoulder-to-palm meters.
     pub reach: [Option<(f32, f32)>; 2],
     /// Each hand's pose and hold (Murmur), shown in place of "open" while
@@ -654,6 +671,8 @@ impl Hud {
                 controls.music = !controls.music;
                 actions.push(Action::SetMusic(controls.music));
             }
+            Some(Target::PrevTrack) => actions.push(Action::PrevTrack),
+            Some(Target::NextTrack) => actions.push(Action::NextTrack),
             Some(Target::ToggleVoice) => {
                 controls.voice = !controls.voice;
                 actions.push(Action::SetVoice(controls.voice));
@@ -788,11 +807,16 @@ enum Cell<'a> {
     Button(Target, &'a str),
     /// Text only, no target: a status.
     Label(&'a str),
+    /// The Music cell (board #5385): `<` and `>` in its end boxes, the
+    /// previous and the next track, and between them play or stop, the
+    /// press's words over the track's title.
+    Music { playing: bool, title: &'a str },
 }
 
 impl Control<'_> {
-    /// The target at `hit` on this row.
-    fn target(&self, hit: grid::Hit) -> Option<Target> {
+    /// The target at `hit` on this row; `end` is the end box of the cell
+    /// under the pointer, if it is in one (`grid::end_box`).
+    fn target(&self, hit: grid::Hit, end: Option<bool>) -> Option<Target> {
         match self {
             Self::Wide { left, right, .. } => Some(if hit.col == 1 { right.0 } else { left.0 }),
             Self::Button(t, _) => Some(*t),
@@ -801,6 +825,11 @@ impl Control<'_> {
                 Cell::Stepper { index, .. } => Some(Target::Step(*index, hit.right)),
                 Cell::Button(t, _) => Some(*t),
                 Cell::Label(_) => None,
+                Cell::Music { .. } => Some(match end {
+                    Some(false) => Target::PrevTrack,
+                    Some(true) => Target::NextTrack,
+                    None => Target::ToggleMusic,
+                }),
             },
         }
     }
@@ -821,8 +850,11 @@ impl Rows<'_> {
             let k = n - 1 - i;
             let row = grid::row(bottom, k);
             let on = hit.filter(|h| h.row == k);
+            let end = on
+                .zip(self.cursor)
+                .and_then(|(h, c)| grid::end_box(grid::cell(row, h.col), c.x));
             if let Some(h) = on
-                && let Some(t) = control.target(h)
+                && let Some(t) = control.target(h, end)
             {
                 *self.hovered = Some(t);
             }
@@ -881,6 +913,10 @@ impl Rows<'_> {
                                 self.button(painter, area, *t, label, on.is_some());
                             }
                             Some(Cell::Label(text)) => label(painter, area, text),
+                            Some(Cell::Music { playing, title }) => {
+                                let under = on.and_then(|h| control.target(h, end));
+                                self.music(painter, area, *playing, title, under);
+                            }
                             None => {}
                         }
                     }
@@ -931,6 +967,72 @@ impl Rows<'_> {
                     egui::StrokeKind::Inside,
                 );
             }
+        }
+    }
+
+    /// The Music cell (board #5385) in `area`: `<` and `>` in the end
+    /// boxes, drawn as a stepper's -/+, and the play/stop button between
+    /// them, the press's words ("Music: stop") over the track's title cut
+    /// to fit. `under` is the part under the pointer, by its target.
+    fn music(
+        &self,
+        painter: &egui::Painter,
+        area: grid::Rect,
+        playing: bool,
+        title: &str,
+        under: Option<Target>,
+    ) {
+        let outline = |r: Rect| {
+            painter.rect_stroke(
+                r,
+                6.0,
+                Stroke::new(3.0_f32, PALETTE.accent),
+                egui::StrokeKind::Inside,
+            );
+        };
+        let colors = |t: Target| {
+            if self.locked == Some(t) {
+                (PALETTE.sel_bg, PALETTE.sel_fg, PALETTE.sel_fg)
+            } else {
+                (PALETTE.rule, PALETTE.text, PALETTE.sub)
+            }
+        };
+        painter.rect_filled(rect(area), 6.0, PALETTE.well);
+        let (lb, rb) = area.end_boxes();
+        for (target, glyph, boxed) in [(Target::PrevTrack, "<", lb), (Target::NextTrack, ">", rb)] {
+            let (fill, text, _) = colors(target);
+            let r = rect(boxed);
+            painter.rect_filled(r, 6.0, fill);
+            painter.text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                glyph,
+                egui::FontId::proportional(FONT_END),
+                text,
+            );
+            if under == Some(target) {
+                outline(r);
+            }
+        }
+        let mid = rect(area.middle()).shrink2(Vec2::new(2.0, 0.0));
+        let (fill, text, sub) = colors(Target::ToggleMusic);
+        painter.rect_filled(mid, 6.0, fill);
+        painter.text(
+            Pos2::new(mid.center().x, mid.top() + 2.0),
+            egui::Align2::CENTER_TOP,
+            crate::music::label(playing),
+            egui::FontId::proportional(FONT_LABEL),
+            sub,
+        );
+        painter.text(
+            Pos2::new(mid.center().x, mid.bottom() - 1.0),
+            egui::Align2::CENTER_BOTTOM,
+            fitted(painter, title, FONT_VALUE, mid.width() - 6.0),
+            egui::FontId::proportional(FONT_VALUE),
+            text,
+        );
+        if under == Some(Target::ToggleMusic) {
+            outline(mid);
         }
     }
 
@@ -998,6 +1100,26 @@ fn label(painter: &egui::Painter, area: grid::Rect, text: &str) {
         egui::FontId::proportional(size),
         PALETTE.text,
     );
+}
+
+/// `text` at `size` cut with an ellipsis (`playlist::truncate`) to the
+/// longest that fits `width` points.
+fn fitted(painter: &egui::Painter, text: &str, size: f32, width: f32) -> String {
+    let fits = |s: &str| {
+        painter
+            .layout_no_wrap(s.to_owned(), egui::FontId::proportional(size), PALETTE.text)
+            .size()
+            .x
+            <= width
+    };
+    if fits(text) {
+        return text.to_owned();
+    }
+    (1..text.chars().count())
+        .rev()
+        .map(|n| crate::playlist::truncate(text, n))
+        .find(|s| fits(s))
+        .unwrap_or_default()
 }
 
 /// The debug panel: the header top down, the controls at the bottom.
@@ -1142,7 +1264,7 @@ fn panel_ui(
         block.extend(surface_rows(view.surface_params));
     }
     block.push(cloud_row(controls.cloud, controls.edit_room));
-    block.push(music_row(controls.music, controls.voice));
+    block.push(music_row(controls.music, view.track, controls.voice));
     let bottom = grid::PANEL_H;
     rows.block(ui, bottom, &block);
     header_end > grid::block_top(bottom, block.len())
@@ -1163,7 +1285,7 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Ro
         block.extend(surface_rows(view.surface_params));
     }
     block.push(cloud_row(controls.cloud, editing));
-    block.push(music_row(controls.music, controls.voice));
+    block.push(music_row(controls.music, view.track, controls.voice));
     debug_assert_eq!(block.len(), grid::menu_rows(editing));
     rows.block(ui, grid::menu_h(block.len()), &block);
 }
@@ -1219,14 +1341,13 @@ fn effect_row(effect: Option<(&str, usize, usize)>) -> Control<'static> {
 }
 
 /// The music's row, the bottom row in both layouts: play or stop (board
-/// #3472), and the voice path's toggle in the right cell (board #3751, V4),
-/// so no row count changes. The state is in the words, not a color.
-fn music_row(playing: bool, voice: bool) -> Control<'static> {
+/// #3472) with the track's `title` and `<` `>` around it (board #5385,
+/// [`Cell::Music`]), and the voice path's toggle in the right cell (board
+/// #3751, V4), so no row count changes. The state is in the words, not a
+/// color.
+fn music_row(playing: bool, title: &str, voice: bool) -> Control<'_> {
     Control::Pair([
-        Some(Cell::Button(
-            Target::ToggleMusic,
-            crate::music::label(playing),
-        )),
+        Some(Cell::Music { playing, title }),
         Some(Cell::Button(
             Target::ToggleVoice,
             if voice { "Voice: on" } else { "Voice: off" },

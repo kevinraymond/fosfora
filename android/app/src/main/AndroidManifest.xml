@@ -18,6 +18,15 @@
     <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
     <uses-permission android:name="com.oculus.permission.USE_SCENE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- The wearer's own music (crates/fosfora-xr/src/playlist.rs, board
+         #5385): the shared Music/ folder is read by file path, a runtime
+         permission asked for at launch like the two above. With targetSdk
+         32 the app asks for READ_EXTERNAL_STORAGE, which Android 13 and
+         later grant as the READ_MEDIA_* permissions; READ_MEDIA_AUDIO is
+         the name once the target reaches 33 (permissions::storage). The
+         app's own Android/data/dev.fosfora.xr/files/Music needs neither. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <!-- The voice path's agent (crates/fosfora-xr/src/agent.rs, board #3751):
          a sentence the grammar cannot match goes to the language model that
          files/config/voice.json names, hosted or on the LAN. A normal

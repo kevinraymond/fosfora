@@ -3,17 +3,20 @@
 //! `debug.fosfora.audio` the app launched with. Plain data, so the row's
 //! words and the source each state puts the analysis on build and test on
 //! the desktop; `app.rs` owns the playback (`playback.rs`) and the analysis
-//! (`audio.rs`).
+//! (`audio.rs`). Board #5385: the row plays the wearer's own music
+//! folders (`playlist.rs`, `player.rs`), and the bundled clip only while
+//! they are empty.
 //!
-//! Playing, the clip loops on the speakers and the analysis follows its
+//! Playing, the music is on the speakers (the tracks play through; one
+//! track, or the bundled clip, loops) and the analysis follows its
 //! tap, as `debug.fosfora.audio file` does from launch. Stopped, the
 //! analysis goes back to what the app launched with: the synthetic groove,
 //! or the microphones, whose stream stays open across a play so a stop is
 //! instant. `loop` is the exception: it measures the microphones hearing
 //! the clip, so its analysis stays on them either way.
 
-/// The bundled clip the row plays (`assets/xr/audio/`, staged under the
-/// app's assets dir as `audio/`).
+/// The bundled clip the row falls back to (`assets/xr/audio/`, staged
+/// under the app's assets dir as `audio/`).
 pub const CLIP: &str = "ember_glow_excerpt.ogg";
 
 /// What the analysis runs on.
@@ -46,9 +49,13 @@ impl Analysis {
 /// source; before board #4191 a first launch on it heard nothing and saw
 /// a synthetic beat until the wearer found the Music row. A microphone is
 /// chosen on purpose, to measure what it hears, and the clip on the
-/// speakers would be in it.
-pub fn plays_at_launch(audio_source: &str, knob: Option<bool>) -> bool {
-    knob.unwrap_or(!matches!(audio_source, "mic" | "micxr" | "aaudio"))
+/// speakers would be in it. Board #5385: over the other sources the
+/// wearer's last play or stop decides (`saved`, from `music.json`; `None`
+/// before the first press), so a launch resumes the music, or stays quiet
+/// after a stop.
+pub fn plays_at_launch(audio_source: &str, knob: Option<bool>, saved: Option<bool>) -> bool {
+    let mic = matches!(audio_source, "mic" | "micxr" | "aaudio");
+    knob.unwrap_or_else(|| !mic && saved.unwrap_or(true))
 }
 
 /// Whether the launch source keeps microphones open (what a stop goes back
@@ -130,11 +137,11 @@ mod tests {
         // The clip sources, and synth (the default) or an unknown name,
         // which run the synthetic groove: no real source to keep quiet for.
         for source in ["file", "loop", "synth", "anything"] {
-            assert!(plays_at_launch(source, None), "{source}");
+            assert!(plays_at_launch(source, None, None), "{source}");
         }
         // A microphone is a measurement setup: the clip would be in it.
         for source in ["mic", "micxr", "aaudio"] {
-            assert!(!plays_at_launch(source, None), "{source}");
+            assert!(!plays_at_launch(source, None, None), "{source}");
         }
     }
 
@@ -143,8 +150,21 @@ mod tests {
         for source in [
             "synth", "file", "loop", "mic", "micxr", "aaudio", "anything",
         ] {
-            assert!(plays_at_launch(source, Some(true)), "{source}");
-            assert!(!plays_at_launch(source, Some(false)), "{source}");
+            for saved in [None, Some(true), Some(false)] {
+                assert!(plays_at_launch(source, Some(true), saved), "{source}");
+                assert!(!plays_at_launch(source, Some(false), saved), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn unset_the_wearers_last_press_decides_but_not_over_a_microphone() {
+        for source in ["synth", "file", "loop"] {
+            assert!(plays_at_launch(source, None, Some(true)), "{source}");
+            assert!(!plays_at_launch(source, None, Some(false)), "{source}");
+        }
+        for source in ["mic", "micxr", "aaudio"] {
+            assert!(!plays_at_launch(source, None, Some(true)), "{source}");
         }
     }
 

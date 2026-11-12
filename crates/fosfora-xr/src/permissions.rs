@@ -5,7 +5,9 @@
 //! it the scene query returns nothing and the room is the stage floor) and
 //! `RECORD_AUDIO` (without it the microphones do not open and the analysis
 //! runs on the synthetic groove, and the voice path's window stays closed,
-//! board #3751). At launch the app checks both, asks for
+//! board #3751). Board #5385 adds a third, reading the shared `Music/`
+//! folder ([`storage`]); without it the app's own music folder still
+//! plays. At launch the app checks them, asks for
 //! the missing ones in one `Activity.requestPermissions` call (the OS shows
 //! one dialog per permission it has not decided) and carries on; the result
 //! callback never reaches native code, so the frame loop polls the grants
@@ -22,6 +24,27 @@
 pub const USE_SCENE: &str = "com.oculus.permission.USE_SCENE";
 /// The microphones.
 pub const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
+/// Other apps' audio files in the shared storage, for an app that targets
+/// API 33 or higher (board #5385).
+pub const READ_MEDIA_AUDIO: &str = "android.permission.READ_MEDIA_AUDIO";
+/// The shared storage, for an app that targets API 32 or lower.
+pub const READ_EXTERNAL_STORAGE: &str = "android.permission.READ_EXTERNAL_STORAGE";
+
+/// The permission that reads the shared `Music/` folder (board #5385), on
+/// a device at API `device_sdk` for an app that targets `target_sdk`:
+/// `READ_MEDIA_AUDIO` when both are 33 or higher; else
+/// `READ_EXTERNAL_STORAGE`. Android 13 and later grant the `READ_MEDIA_*`
+/// permissions along with `READ_EXTERNAL_STORAGE` to an app that targets
+/// 32 or lower, which this one does (`targetSdk` 32, Meta's documented
+/// value), so on the Quest 3's Android 14 it asks for the older name. The
+/// manifest declares both.
+pub fn storage(device_sdk: u32, target_sdk: u32) -> &'static str {
+    if device_sdk >= 33 && target_sdk >= 33 {
+        READ_MEDIA_AUDIO
+    } else {
+        READ_EXTERNAL_STORAGE
+    }
+}
 
 /// How long after the ask the frame loop keeps polling for a grant (s).
 pub const WATCH_S: f32 = 120.0;
@@ -127,6 +150,8 @@ pub use device::Permissions;
 
 #[cfg(target_os = "android")]
 mod device {
+    use std::path::PathBuf;
+
     use android_activity::AndroidApp;
     use anyhow::{Context, Result};
     use jni::objects::{GlobalRef, JObject, JString, JValue};
@@ -246,6 +271,82 @@ mod device {
             })
             .context("ApplicationInfo.nativeLibraryDir")
         }
+
+        /// The app's target SDK (`ApplicationInfo.targetSdkVersion`), which
+        /// picks the storage permission's name (`storage`).
+        pub fn target_sdk(&self) -> Result<u32> {
+            let mut env = self
+                .vm
+                .attach_current_thread()
+                .context("attaching to the VM")?;
+            let sdk = call(&mut env, |env| {
+                let info = env
+                    .call_method(
+                        self.activity.as_obj(),
+                        "getApplicationInfo",
+                        "()Landroid/content/pm/ApplicationInfo;",
+                        &[],
+                    )?
+                    .l()?;
+                env.get_field(&info, "targetSdkVersion", "I")?.i()
+            })
+            .context("ApplicationInfo.targetSdkVersion")?;
+            u32::try_from(sdk).context("a negative targetSdkVersion")
+        }
+
+        /// The two music folders (board #5385), as the platform names
+        /// them: the shared one,
+        /// `Environment.getExternalStoragePublicDirectory(DIRECTORY_MUSIC)`
+        /// (`/storage/emulated/0/Music`), and the app's own,
+        /// `Context.getExternalFilesDir(DIRECTORY_MUSIC)`
+        /// (`.../Android/data/<package>/files/Music`), which Android
+        /// creates when it hands it over. `None` for one the platform has
+        /// none for (the storage not mounted).
+        pub fn music_dirs(&self) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
+            let mut env = self
+                .vm
+                .attach_current_thread()
+                .context("attaching to the VM")?;
+            call(&mut env, |env| {
+                let kind = env
+                    .get_static_field(
+                        "android/os/Environment",
+                        "DIRECTORY_MUSIC",
+                        "Ljava/lang/String;",
+                    )?
+                    .l()?;
+                let shared = env
+                    .call_static_method(
+                        "android/os/Environment",
+                        "getExternalStoragePublicDirectory",
+                        "(Ljava/lang/String;)Ljava/io/File;",
+                        &[JValue::Object(&kind)],
+                    )?
+                    .l()?;
+                let own = env
+                    .call_method(
+                        self.activity.as_obj(),
+                        "getExternalFilesDir",
+                        "(Ljava/lang/String;)Ljava/io/File;",
+                        &[JValue::Object(&kind)],
+                    )?
+                    .l()?;
+                Ok((path_of(env, &shared)?, path_of(env, &own)?))
+            })
+            .context("the music folders")
+        }
+    }
+
+    /// A `java.io.File`'s absolute path; `None` for a null one.
+    fn path_of(env: &mut JNIEnv<'_>, file: &JObject<'_>) -> jni::errors::Result<Option<PathBuf>> {
+        if file.is_null() {
+            return Ok(None);
+        }
+        let path = env
+            .call_method(file, "getAbsolutePath", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let path: String = env.get_string(&JString::from(path))?.into();
+        Ok(Some(PathBuf::from(path)))
     }
 
     /// Run `f` in a local frame of its own and clear any Java exception it
@@ -322,6 +423,20 @@ mod tests {
         for source in ["synth", "mic", "micxr", "aaudio", "loop", "file"] {
             assert!(to_ask(source, false, true, true).is_empty(), "{source}");
         }
+    }
+
+    #[test]
+    fn the_music_folder_asks_by_the_target_sdks_name() {
+        // The Quest 3 (Android 14) and this app's targetSdk 32: the older
+        // name, which Android splits into the media grants.
+        assert_eq!(storage(34, 32), READ_EXTERNAL_STORAGE);
+        // Before Android 13 there is no READ_MEDIA_AUDIO.
+        assert_eq!(storage(32, 34), READ_EXTERNAL_STORAGE);
+        assert_eq!(storage(29, 29), READ_EXTERNAL_STORAGE);
+        // Targeting 33 or higher on 13 or later: the granular one.
+        assert_eq!(storage(33, 33), READ_MEDIA_AUDIO);
+        assert_eq!(storage(34, 34), READ_MEDIA_AUDIO);
+        assert_eq!(short(storage(34, 32)), "READ_EXTERNAL_STORAGE");
     }
 
     #[test]

@@ -85,6 +85,20 @@ pub struct Vocabulary<'a> {
     pub surfaces: Vec<Surface>,
     /// The lane box under the room editor's beam, if any.
     pub pointed: Option<usize>,
+    /// The music folders' tracks (board #5385).
+    pub tracks: Tracks<'a>,
+}
+
+/// The music folders' tracks as the grammar names them (board #5385,
+/// `playlist.rs`): their titles in the playlist's order, the one the
+/// Music row shows (`None` on the bundled clip) and whether the music
+/// plays. The default is no tracks, for the agent's vocabularies, whose
+/// actions name none.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Tracks<'a> {
+    pub titles: &'a [String],
+    pub current: Option<usize>,
+    pub playing: bool,
 }
 
 impl Vocabulary<'_> {
@@ -159,6 +173,17 @@ pub enum Intent {
     Pitcher(bool),
     /// The hand menu's Music row: play or stop.
     Music(bool),
+    /// The Music row's `>`: the next track (board #5385).
+    NextTrack,
+    /// The Music row's `<`: the previous track.
+    PrevTrack,
+    /// The track at this index of the playlist, played: stepping the
+    /// Music row to it and pressing play.
+    Track(usize),
+    /// What the Music row shows: the track, and whether it plays.
+    NowPlaying,
+    /// The music folders scanned again for files added since the launch.
+    ScanMusic,
     /// The hand menu's "Rescan the room".
     Rescan,
     /// The hand menu's "Recenter".
@@ -208,6 +233,10 @@ pub enum Reason {
     Ambiguous(Vec<String>),
     /// More clauses in one sentence than [`MAX_CLAUSES`]: how many (V4).
     TooMany(usize),
+    /// A song name no track's title holds (board #5385).
+    NoTrack(String),
+    /// A song name several tracks' titles hold: their titles.
+    AmbiguousTrack(Vec<String>),
 }
 
 impl Reason {
@@ -360,6 +389,67 @@ const ALL_NONE: [&str; 6] = [
     "all none",
     "everything none",
     "everything off",
+];
+/// The Music row's steps by voice (board #5385), as [`normalize`] leaves
+/// them ("skip to the next song" is "skip next song").
+const NEXT_TRACK: [&str; 9] = [
+    "next song",
+    "next track",
+    "skip",
+    "skip song",
+    "skip track",
+    "skip this song",
+    "skip next song",
+    "play next song",
+    "play next track",
+];
+const PREV_TRACK: [&str; 8] = [
+    "previous song",
+    "previous track",
+    "last song",
+    "last track",
+    "play previous song",
+    "play previous track",
+    "play last song",
+    "go back song",
+];
+/// "What is playing" (board #5385). "What is this" stays the pointed
+/// surface's.
+const NOW_PLAYING: [&str; 11] = [
+    "what is playing",
+    "whats playing",
+    "what song is this",
+    "what song is playing",
+    "what track is this",
+    "what track is playing",
+    "whats this song",
+    "what is this song",
+    "which song is this",
+    "what am i listening",
+    "what music is playing",
+];
+/// The music folders scanned again (board #5385).
+const SCAN_MUSIC: [&str; 9] = [
+    "scan music",
+    "rescan music",
+    "scan my music",
+    "rescan my music",
+    "refresh music",
+    "reload music",
+    "update music",
+    "look for new songs",
+    "find new songs",
+];
+/// What "play" asks for when it names no song: the music on.
+const PLAY_ANY: [&str; 8] = [
+    "some music",
+    "my music",
+    "something",
+    "anything",
+    "song",
+    "songs",
+    "some songs",
+    "my songs",
 ];
 /// What a sentence opens with to switch effects: "switch to embers",
 /// "show flock".
@@ -707,6 +797,18 @@ fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
     if let Some(step) = immersion(ts) {
         return Some(Intent::Immersion(step));
     }
+    if any(ts, &NEXT_TRACK) {
+        return Some(Intent::NextTrack);
+    }
+    if any(ts, &PREV_TRACK) {
+        return Some(Intent::PrevTrack);
+    }
+    if any(ts, &NOW_PLAYING) {
+        return Some(Intent::NowPlaying);
+    }
+    if any(ts, &SCAN_MUSIC) {
+        return Some(Intent::ScanMusic);
+    }
     if let Some(t) = toggle(ts) {
         return Some(t);
     }
@@ -781,6 +883,29 @@ fn immersion(ts: &[&str]) -> Option<ImmersionStep> {
         _ => return None,
     };
     Some(ImmersionStep::To(depth))
+}
+
+/// "play {song}" (board #5385; also "play song …", "play track …"): the
+/// track whose title the name finds (`playlist::find`), or why none.
+/// "play some music" and the like name no song and turn the music on.
+/// `None` for a sentence that does not open with "play" and a name.
+fn track(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Result<Intent, Reason>> {
+    let rest = match ts {
+        ["play", "song" | "track", rest @ ..] | ["play", rest @ ..] if !rest.is_empty() => rest,
+        _ => return None,
+    };
+    let name = rest.join(" ");
+    if PLAY_ANY.contains(&name.as_str()) {
+        return Some(Ok(Intent::Music(true)));
+    }
+    let titles = vocab.tracks.titles;
+    Some(match crate::playlist::find(titles, &name) {
+        crate::playlist::Found::One(i) => Ok(Intent::Track(i)),
+        crate::playlist::Found::Several(is) => Err(Reason::AmbiguousTrack(
+            is.iter().filter_map(|&i| titles.get(i).cloned()).collect(),
+        )),
+        crate::playlist::Found::Nothing => Err(Reason::NoTrack(name)),
+    })
 }
 
 /// A world effect by name, alone or after a switching verb.
@@ -933,6 +1058,9 @@ pub fn parse(sentence: &str, vocab: &Vocabulary<'_>) -> Result<Intent, Miss> {
     if let Some(intent) = menu(&ts, vocab) {
         return Ok(intent);
     }
+    if let Some(outcome) = track(&ts, vocab) {
+        return outcome.map_err(miss);
+    }
     surface(&ts, vocab).map_err(miss)
 }
 
@@ -971,7 +1099,8 @@ pub fn split_clauses(sentence: &str, vocab: &Vocabulary<'_>) -> Vec<String> {
         .cloned()
         .chain(vocab.surfaces.iter().map(|x| x.name.clone()))
         .chain(vocab.behaviors.iter().map(|b| b.name().to_owned()))
-        .chain((1..=COLOR_KEY).map(|i| color_name(i).to_owned()));
+        .chain((1..=COLOR_KEY).map(|i| color_name(i).to_owned()))
+        .chain(vocab.tracks.titles.iter().cloned());
     let mut guarded: Vec<(usize, usize)> = Vec::new();
     for name in names {
         let name = name.to_ascii_lowercase();
@@ -1087,6 +1216,8 @@ fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
         "music stop",
         "recenter the cloud",
         "rescan the room",
+        "next song",
+        "what is playing",
     ]
     .map(str::to_owned)
     .to_vec();
@@ -1487,6 +1618,22 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         Intent::Cloud(on) => format!("particles {}", on_off(on)),
         Intent::Pitcher(on) => format!("pitcher {}", on_off(on)),
         Intent::Music(on) => format!("music {}", on_off(on)),
+        Intent::NextTrack => track_step(vocab, 1, "next"),
+        Intent::PrevTrack => track_step(vocab, -1, "previous"),
+        Intent::Track(i) => format!(
+            "playing {}",
+            vocab.tracks.titles.get(i).map_or("", String::as_str)
+        ),
+        Intent::NowPlaying => {
+            let t = vocab.tracks;
+            match (t.current.and_then(|i| t.titles.get(i)), t.playing) {
+                (Some(title), true) => format!("playing: {title}"),
+                (Some(title), false) => format!("stopped: {title}"),
+                (None, true) => "playing the bundled clip".to_owned(),
+                (None, false) => "music off".to_owned(),
+            }
+        }
+        Intent::ScanMusic => "looking for new music".to_owned(),
         Intent::Rescan => "rescanning the room".to_owned(),
         Intent::Recenter => "cloud recentered".to_owned(),
         Intent::AllNone => "every surface: none".to_owned(),
@@ -1517,6 +1664,17 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
 /// full", where "darker" would promise a change).
 pub fn immersion_reply(depth: crate::immerse::Depth) -> String {
     format!("immersion {}", depth.name())
+}
+
+/// The reply to a track step `by` (1 next, -1 previous): the track the
+/// Music row steps to, "next: One More Time", as `playlist::stepped`
+/// finds it; with no tracks, where to put some.
+fn track_step(vocab: &Vocabulary<'_>, by: isize, word: &str) -> String {
+    let t = vocab.tracks;
+    match crate::playlist::stepped(t.titles.len(), t.current, by) {
+        Some(i) => format!("{word}: {}", t.titles[i]),
+        None => "no songs: put files in Music/".to_owned(),
+    }
 }
 
 /// How many names an ambiguity lists before "or N more".
@@ -1557,6 +1715,8 @@ pub fn miss_text(miss: &Miss) -> String {
         }
         Reason::Ambiguous(names) => format!("Which one: {}?", listed(names)),
         Reason::TooMany(_) => TOO_MANY_LABEL.to_owned(),
+        Reason::NoTrack(name) => format!("No song called \"{name}\""),
+        Reason::AmbiguousTrack(titles) => format!("Which one: {}?", listed(titles)),
     }
 }
 
@@ -1863,6 +2023,7 @@ mod tests {
             behaviors: &SurfaceBehavior::ALL,
             surfaces: surfaces(boxes),
             pointed,
+            tracks: Tracks::default(),
         }
     }
 
@@ -2030,6 +2191,146 @@ mod tests {
             Intent::from_json(&action, &v).map_err(|m| m.reason),
             Err(Reason::NoMatch)
         );
+    }
+
+    /// The music folders' titles of the track tests (board #5385).
+    fn songs() -> Vec<String> {
+        [
+            "One More Time",
+            "Harder, Better, Faster, Stronger",
+            "Don't Stop Me Now",
+            "Stop and Stare",
+            "Rock and Roll",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    }
+
+    #[test]
+    fn the_music_rows_steps_and_a_song_by_name() {
+        let (e, boxes, titles) = (effects(), room(), songs());
+        let mut v = vocab(&e, &boxes, Some(0));
+        v.tracks = Tracks {
+            titles: &titles,
+            current: Some(0),
+            playing: true,
+        };
+        check(
+            &v,
+            &[
+                ("Next song.", Intent::NextTrack),
+                ("skip", Intent::NextTrack),
+                ("Skip to the next song.", Intent::NextTrack),
+                ("next track please", Intent::NextTrack),
+                ("Previous song.", Intent::PrevTrack),
+                ("last track", Intent::PrevTrack),
+                ("Go back a song.", Intent::PrevTrack),
+                ("What's playing?", Intent::NowPlaying),
+                ("What is playing", Intent::NowPlaying),
+                ("What song is this?", Intent::NowPlaying),
+                ("What am I listening to?", Intent::NowPlaying),
+                ("Scan my music.", Intent::ScanMusic),
+                ("look for new songs", Intent::ScanMusic),
+                ("Play One More Time.", Intent::Track(0)),
+                ("play harder better faster stronger", Intent::Track(1)),
+                ("Play the song Don't Stop Me Now", Intent::Track(2)),
+                ("play stare", Intent::Track(3)),
+                ("Play rock and roll.", Intent::Track(4)),
+                // The toggle and "play" naming no song keep the music's.
+                ("play music", Intent::Music(true)),
+                ("Play some music.", Intent::Music(true)),
+                ("play something", Intent::Music(true)),
+                // The effect row and the surface question are unchanged.
+                ("next", Intent::NextEffect),
+                ("last effect", Intent::PrevEffect),
+                ("what is this", Intent::Describe(Target::Pointed)),
+            ],
+        );
+        missed(
+            &v,
+            &[
+                ("play stairway", Reason::NoTrack("stairway".to_owned())),
+                (
+                    "play stop",
+                    Reason::AmbiguousTrack(vec![
+                        "Don't Stop Me Now".to_owned(),
+                        "Stop and Stare".to_owned(),
+                    ]),
+                ),
+            ],
+        );
+        // No tracks: a name finds none, and the steps still parse.
+        v.tracks = Tracks::default();
+        missed(
+            &v,
+            &[(
+                "play one more time",
+                Reason::NoTrack("1 more time".to_owned()),
+            )],
+        );
+        check(&v, &[("next song", Intent::NextTrack)]);
+    }
+
+    #[test]
+    fn the_music_replies_name_the_track() {
+        let (e, boxes, titles) = (effects(), room(), songs());
+        let mut v = vocab(&e, &boxes, Some(0));
+        v.tracks = Tracks {
+            titles: &titles,
+            current: Some(0),
+            playing: true,
+        };
+        assert_eq!(
+            reply(&Intent::NextTrack, &v),
+            "next: Harder, Better, Faster, Stronger"
+        );
+        assert_eq!(reply(&Intent::PrevTrack, &v), "previous: Rock and Roll");
+        assert_eq!(reply(&Intent::Track(2), &v), "playing Don't Stop Me Now");
+        assert_eq!(reply(&Intent::NowPlaying, &v), "playing: One More Time");
+        v.tracks.playing = false;
+        assert_eq!(reply(&Intent::NowPlaying, &v), "stopped: One More Time");
+        // On the bundled clip.
+        v.tracks.current = None;
+        assert_eq!(reply(&Intent::NowPlaying, &v), "music off");
+        assert_eq!(reply(&Intent::NextTrack, &v), "next: One More Time");
+        v.tracks.playing = true;
+        assert_eq!(reply(&Intent::NowPlaying, &v), "playing the bundled clip");
+        v.tracks = Tracks::default();
+        assert_eq!(
+            reply(&Intent::NextTrack, &v),
+            "no songs: put files in Music/"
+        );
+        assert_eq!(
+            miss_text(&Miss {
+                reason: Reason::AmbiguousTrack(vec!["A".to_owned(), "B".to_owned()]),
+                heard: "play x".to_owned(),
+            }),
+            "Which one: A or B?"
+        );
+        assert_eq!(
+            miss_text(&Miss {
+                reason: Reason::NoTrack("stairway".to_owned()),
+                heard: "play stairway".to_owned(),
+            }),
+            "No song called \"stairway\""
+        );
+        // A song's miss is not a surface's: the surface labels stay down.
+        assert!(!Reason::NoTrack(String::new()).names_surfaces());
+        assert!(!Reason::AmbiguousTrack(Vec::new()).names_surfaces());
+    }
+
+    #[test]
+    fn a_title_with_and_in_it_does_not_split_its_sentence() {
+        let (e, boxes, titles) = (effects(), room(), songs());
+        let mut v = vocab(&e, &boxes, Some(0));
+        v.tracks = Tracks {
+            titles: &titles,
+            current: Some(0),
+            playing: true,
+        };
+        let clauses = parse_clauses("play Rock and Roll and next effect", &v);
+        let outcomes: Vec<_> = clauses.into_iter().map(|c| c.outcome).collect();
+        assert_eq!(outcomes, [Ok(Intent::Track(4)), Ok(Intent::NextEffect)]);
     }
 
     #[test]
@@ -2738,6 +3039,11 @@ mod tests {
             Intent::Describe(t) => ("describe", target(t), String::new()),
             Intent::Help => unreachable!("the agent's actions have no help"),
             Intent::Immersion(_) => unreachable!("the agent's actions have no immersion"),
+            Intent::NextTrack
+            | Intent::PrevTrack
+            | Intent::Track(_)
+            | Intent::NowPlaying
+            | Intent::ScanMusic => unreachable!("the agent's actions name no tracks"),
         };
         AgentAction {
             kind: kind.to_owned(),

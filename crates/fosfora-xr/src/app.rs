@@ -16,7 +16,8 @@ use crate::gfx::Gfx;
 use crate::hud::{Action, Controls, FrameWindow, Hud, View};
 use crate::particles3d::{ObstacleBox, ObstacleSet, Params, Particles3d};
 use crate::permissions::{Change, Permissions, RECORD_AUDIO, USE_SCENE, Watch};
-use crate::playback::{Clip, Playback, PlaybackOptions};
+use crate::playback::{Playback, PlaybackOptions};
+use crate::player::Music;
 use crate::pose::{Behavior, HandInput, HoldTrack, Plan, Pose, Poses, Tuning};
 use crate::scene::{WorldOptions, XrScene};
 use crate::surfaces::SurfaceWeights;
@@ -183,11 +184,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       file = the test clip looping on the speakers, analysis on its tap;
     //       loop = the clip on the speakers, analysis on the AAudio microphones (acoustic loopback))
     //   adb shell setprop debug.fosfora.ask 0|1        (board #3264: ask for the missing runtime permissions at launch, USE_SCENE and,
-    //       for the sources that open the microphones, RECORD_AUDIO; default 1. 0 for unworn runs, where the OS dialog would sit
+    //       for the sources that open the microphones, RECORD_AUDIO, and the shared Music/ folder's storage permission (board
+    //       #5385, permissions::storage); default 1. 0 for unworn runs, where the OS dialog would sit
     //       over the view: the app still checks and logs them and picks up a later `pm grant` within 120 s)
     //   adb shell setprop debug.fosfora.file <path>   (.ogg/.mp3/.wav/.flac decoded by the core, or a raw
     //       48 kHz stereo f32 file ending in .f32, or "click" / "click:100" for a click track at that BPM;
-    //       default: the bundled CC0 track under assets/audio/)
+    //       default: the bundled CC0 track under assets/audio/; board #5385: set, it is also what the Music row plays
+    //       at launch on any source, looped, over the music folders and the saved track, until the row steps to a track)
     //   adb shell setprop debug.fosfora.flash 1        (whole view white for 2 frames on each beat: the
     //       audio-to-photon measurement, filmed with a phone)
     //   adb shell setprop debug.fosfora.playperf lowlatency|none   (AAudio performance mode of the playback
@@ -201,7 +204,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       plays it: on the speakers, the analysis on its tap; the row's stop puts the analysis back on the launch source, synth or
     //       the microphones, and a play resumes where it stopped; board #4191: unset, it plays unless the source is mic, micxr or
     //       aaudio (synth, the default, file and loop play); 1 plays it over any source, 0 over none, file's and loop's clip
-    //       included, so a quiet run needs 0; not saved)
+    //       included, so a quiet run needs 0; not saved; board #5385: the row plays the wearer's music folders, the bundled
+    //       clip only while they are empty (or debug.fosfora.file), and unset, over a source that is no microphone, the
+    //       wearer's last play or stop decides, saved in music.json under the config dir with the track)
     //   adb shell setprop debug.fosfora.quality low|medium|high|ultra|max
     //   adb shell setprop debug.fosfora.scene 1280x720
     //   adb shell setprop debug.fosfora.effect "Flux"            (mode quad; any effect)
@@ -473,6 +478,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     };
     let scene_granted = granted_at_launch(USE_SCENE);
     let mic_granted = granted_at_launch(RECORD_AUDIO);
+    // Board #5385: the shared Music/ folder's permission, named by the
+    // app's target SDK (`permissions::storage`).
+    let storage_permission = crate::permissions::storage(
+        sdk_version,
+        permissions.as_ref().map_or(0, |p| {
+            p.target_sdk()
+                .inspect_err(|e| log::warn!("permissions: {e:#}"))
+                .unwrap_or(0)
+        }),
+    );
+    let storage_granted = granted_at_launch(storage_permission);
     let ask = debug_prop("debug.fosfora.ask").as_deref() != Some("0");
     for (name, needed, granted) in [
         (USE_SCENE, true, scene_granted),
@@ -481,6 +497,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             voice_on || crate::permissions::wants_mic(&audio_source),
             mic_granted,
         ),
+        (storage_permission, true, storage_granted),
     ] {
         info!(
             "permission {}: {}",
@@ -495,7 +512,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
         );
     }
-    let missing = crate::permissions::to_ask(&audio_source, voice_on, scene_granted, mic_granted);
+    let mut missing =
+        crate::permissions::to_ask(&audio_source, voice_on, scene_granted, mic_granted);
+    if !storage_granted {
+        missing.push(storage_permission);
+    }
     if ask
         && !missing.is_empty()
         && let Some(p) = &permissions
@@ -919,16 +940,84 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         tap_delay_ms: debug_prop("debug.fosfora.tapdelay").and_then(|v| v.parse::<f32>().ok()),
         buffer_ms: debug_prop("debug.fosfora.playbuf").and_then(|v| v.parse::<f32>().ok()),
         start_frame: 0,
+        looping: true,
     };
     // Board #3472: the clip on the speakers, the `file` and `loop` sources'
     // from launch, the hand menu's Music row's at runtime. Board #4191: at
     // launch unless the source is a microphone or `debug.fosfora.music 0`
     // forbids it (`music::plays_at_launch`), which holds for `file` and
     // `loop` too, so the knob's 0 means no clip whatever the source.
+    // Board #5385: the row plays the wearer's music folders (`player.rs`),
+    // the saved track first and the bundled clip only while they are
+    // empty; `debug.fosfora.file` wins when set; unset, the knob leaves the
+    // launch to the wearer's last play or stop.
     let bundled_clip = dirs.assets.join("audio").join(crate::music::CLIP);
-    let mut music = Music::new(bundled_clip.clone(), &audio_source, playback_options);
+    let file_knob = debug_prop("debug.fosfora.file").map(std::path::PathBuf::from);
+    let fallback = file_knob.clone().unwrap_or_else(|| bundled_clip.clone());
+    let (shared_music, own_music) = permissions.as_ref().map_or((None, None), |p| {
+        p.music_dirs()
+            .inspect_err(|e| error!("music: {e:#}; no music folders"))
+            .unwrap_or((None, None))
+    });
+    if let Some(own) = &own_music
+        && let Err(e) = std::fs::create_dir_all(own)
+    {
+        log::warn!("music: creating {}: {e}", own.display());
+    }
+    let shown = |p: &Option<std::path::PathBuf>| {
+        p.as_ref()
+            .map_or_else(|| "none".to_owned(), |p| p.display().to_string())
+    };
+    info!(
+        "music: folders {} ({}) and {} (the app's own)",
+        shown(&shared_music),
+        if storage_granted {
+            "readable".to_owned()
+        } else {
+            format!(
+                "{} missing: not scanned until it is granted",
+                crate::permissions::short(storage_permission)
+            )
+        },
+        shown(&own_music)
+    );
+    let saved_file = dirs.config.join(crate::playlist::SAVED_FILE);
+    let saved = crate::player::load_saved(&saved_file);
+    let saved_playing = saved.playing;
+    let mut music = Music::new(
+        fallback.clone(),
+        file_knob.is_some(),
+        &audio_source,
+        playback_options,
+        crate::player::Folders {
+            shared: shared_music,
+            own: own_music,
+            shared_readable: storage_granted,
+        },
+        saved_file,
+        saved,
+    );
+    let (music_scan, resumed) = music.scan_at_launch();
     let music_at_launch =
-        crate::music::plays_at_launch(&audio_source, switch("debug.fosfora.music"));
+        crate::music::plays_at_launch(&audio_source, switch("debug.fosfora.music"), saved_playing);
+    if file_knob.is_some() {
+        info!(
+            "music: {} tracks in the folders; debug.fosfora.file plays first: {}",
+            music_scan.tracks.len(),
+            fallback.display()
+        );
+    } else {
+        info!(
+            "{}",
+            crate::playlist::launch_line(
+                &music_scan,
+                music.track_title(),
+                resumed,
+                music_at_launch
+            )
+        );
+    }
+    drop(music_scan);
     // Board #3264: the microphones open only with RECORD_AUDIO granted;
     // without it the synthetic groove runs (as with `synth`) and the frame
     // loop opens them, the same way, when the grant arrives.
@@ -943,47 +1032,32 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     }
     match audio_source.as_str() {
         "loop" if music_at_launch => {
-            let clip = Clip::decode(&bundled_clip)?;
+            let clip = std::sync::Arc::new(crate::playback::Clip::decode(&bundled_clip)?);
             let unused_tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-            let p = Playback::start(std::sync::Arc::new(clip), unused_tap, playback_options)
+            let p = Playback::start(clip.clone(), unused_tap, playback_options)
                 .context("starting playback")?;
-            music.adopt(p, None, crate::music::CLIP.to_owned());
+            music.adopt(p, clip, None, bundled_clip.clone());
         }
         "file" if music_at_launch => {
-            let path = debug_prop("debug.fosfora.file")
-                .map_or_else(|| bundled_clip.clone(), std::path::PathBuf::from);
-            let name = path
-                .file_name()
-                .map_or_else(|| path.display().to_string(), |n| n.display().to_string());
-            let clip = if let Some(bpm) = path
-                .to_str()
-                .and_then(|p| p.strip_prefix("click"))
-                .map(|rest| rest.trim_start_matches(':').parse::<f32>().unwrap_or(120.0))
-            {
-                Clip::click(bpm, 30.0, 48_000)
-            } else if path.extension().is_some_and(|e| e == "f32") {
-                Clip::from_raw_f32_stereo(&path, 48_000)?
-            } else {
-                Clip::decode(&path)?
-            };
+            let clip = std::sync::Arc::new(crate::player::load_clip(&fallback)?);
             let tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-            let p = Playback::start(std::sync::Arc::new(clip), tap.clone(), playback_options)
+            let p = Playback::start(clip.clone(), tap.clone(), playback_options)
                 .context("starting playback")?;
             let analysis = LiveAudio::from_ring(tap, p.output_rate(), p.callback_count())
                 .context("analysis over the playback tap")?;
-            music.adopt(p, Some(analysis), name);
+            music.adopt(p, clip, Some(analysis), fallback.clone());
         }
         "file" | "loop" => info!(
-            "music: debug.fosfora.music 0: {audio_source} starts without its clip, the analysis on {} (the Music row plays the bundled clip)",
+            "music: debug.fosfora.music 0: {audio_source} starts without its clip, the analysis on {} (the Music row plays the music folders, else the bundled clip)",
             crate::music::analysis(false, &audio_source).name()
         ),
         _ => {}
     }
     // The Music row's play at launch over the sources that start no clip
     // of their own, synth by default or any with `debug.fosfora.music 1`
-    // (the clip decodes in the background; the frame loop starts it).
+    // (the track decodes on the music thread; the frame loop starts it).
     if music_at_launch && !music.wanted() {
-        music.set(true);
+        music.play_at_launch();
     }
     // The world effects the hand menu's effect row cycles through: every
     // `*_xr_world*.pfx` staged into the effects dir, in file-name order,
@@ -1830,6 +1904,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         bass: last_bass,
                         beat: beat_env,
                         audio: crate::music::header(music.playing(), &audio_source),
+                        track: music.title(),
                         reach: reach_now.map(|r| r.map(|r| (r.real_m, r.virtual_m))),
                         pose: &pose_text,
                         edit_status: &edit_status,
@@ -1968,6 +2043,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     Action::AllNone => all_none = true,
                     Action::SurfaceParam(param, up) => surface_step = Some((param, up)),
                     Action::SetMusic(on) => music.set(on),
+                    // Board #5385: the Music row's `<` `>` and the voice's
+                    // songs.
+                    Action::PrevTrack => music.step(-1),
+                    Action::NextTrack => music.step(1),
+                    Action::PlayTrack(i) => music.play_track(i),
+                    Action::ScanMusic => music.rescan(),
                     // Board #3789: the wearer's own density is the
                     // governor's new ceiling, its debt cleared.
                     Action::SetDensity => {
@@ -2875,6 +2956,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .hit()
                         .filter(|_| controls.edit_room)
                         .map(|h| h.index),
+                    tracks: music.tracks(),
                 };
                 // V4: the sentence as clauses ("amber on the desk and the
                 // walls on the bass"), applied in order; "what can I say"
@@ -3045,6 +3127,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 behaviors: &crate::surfaces::SurfaceBehavior::ALL,
                                 surfaces: crate::intent::surfaces(&lane_boxes),
                                 pointed,
+                                tracks: crate::intent::Tracks::default(),
                             };
                             let text = format!(
                                 "{}\n{}",
@@ -3065,6 +3148,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 behaviors: &crate::surfaces::SurfaceBehavior::ALL,
                                 surfaces: crate::intent::surfaces(&lane_boxes),
                                 pointed,
+                                tracks: crate::intent::Tracks::default(),
                             };
                             let outcomes: Vec<Result<crate::intent::Intent, crate::intent::Miss>> =
                                 reply
@@ -3765,6 +3849,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         };
                         info!("permission USE_SCENE granted after {after_s:.0} s: {then}");
                     }
+                    // Board #5385: the shared Music/ folder joins the
+                    // playlist.
+                    Change::Granted { name, after_s } if name == storage_permission => {
+                        info!(
+                            "permission {} granted after {after_s:.0} s: scanning Music/",
+                            crate::permissions::short(name)
+                        );
+                        music.storage_granted();
+                    }
                     Change::Granted { name, after_s } => {
                         // Board #3751: the voice window's stream needs only
                         // the grant.
@@ -4028,176 +4121,6 @@ fn static_quad_texture(
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
-}
-
-/// The clip on the speakers (board #3472): the `file` and `loop` sources'
-/// from launch, the hand menu's Music row's at runtime (`music.rs` has the
-/// row's words and where the analysis goes).
-///
-/// The bundled clip is decoded on a worker thread at the first play (45 s
-/// of Vorbis would stall the frame loop) and kept, and every stopped
-/// playback hands its clip back, so a play after a stop starts at once, at
-/// the frame the stop left it on. The stop drops the output stream and the
-/// tap's analysis; the launch source's analysis (`live_audio` in `run`)
-/// was never closed, so it takes over the next frame.
-struct Music {
-    /// What a first play decodes: the bundled clip.
-    path: std::path::PathBuf,
-    /// The launch `debug.fosfora.audio` (where a stop puts the analysis).
-    source: String,
-    options: PlaybackOptions,
-    /// The clip's file name, for the log.
-    name: String,
-    /// The clip, decoded or handed back by a stopped playback, kept for the
-    /// next play.
-    clip: Option<std::sync::Arc<Clip>>,
-    decoding: Option<std::thread::JoinHandle<Result<Clip>>>,
-    /// Declared before `analysis` so the stream stops feeding the tap
-    /// before its analysis thread is joined.
-    playback: Option<Playback>,
-    /// The analysis on the tap (`None` with `loop`, whose analysis stays
-    /// on the microphones).
-    analysis: Option<LiveAudio>,
-    /// Where the next play starts, in clip frames.
-    resume: usize,
-    /// The row's state: play asked for (the clip may still be decoding).
-    want: bool,
-}
-
-impl Music {
-    fn new(path: std::path::PathBuf, source: &str, options: PlaybackOptions) -> Self {
-        Self {
-            path,
-            source: source.to_owned(),
-            options,
-            name: crate::music::CLIP.to_owned(),
-            clip: None,
-            decoding: None,
-            playback: None,
-            analysis: None,
-            resume: 0,
-            want: false,
-        }
-    }
-
-    /// Take over a playback the launch source started (with its tap's
-    /// analysis, if any): the row starts on "Music: stop".
-    fn adopt(&mut self, playback: Playback, analysis: Option<LiveAudio>, name: String) {
-        self.name = name;
-        self.playback = Some(playback);
-        self.analysis = analysis;
-        self.want = true;
-        info!("{}", crate::music::log_line(true, &self.source, &self.name));
-    }
-
-    /// Whether play is asked for (the row's state).
-    fn wanted(&self) -> bool {
-        self.want
-    }
-
-    /// Whether the clip is on the speakers.
-    fn playing(&self) -> bool {
-        self.playback.is_some()
-    }
-
-    /// The Music row's press: play (from the cached clip at once, else
-    /// after the decode, `poll`) or stop.
-    fn set(&mut self, on: bool) {
-        self.want = on;
-        if on {
-            if self.playback.is_some() {
-                return;
-            }
-            if self.clip.is_some() {
-                self.start();
-            } else if self.decoding.is_none() {
-                info!("music: decoding {}", self.path.display());
-                let path = self.path.clone();
-                self.decoding = std::thread::Builder::new()
-                    .name("fosfora-music-decode".to_owned())
-                    .spawn(move || Clip::decode(&path))
-                    .map_err(|e| error!("music: decode thread: {e}"))
-                    .ok();
-                if self.decoding.is_none() {
-                    self.want = false;
-                }
-            }
-        } else {
-            if let Some(p) = self.playback.take() {
-                self.resume = p.resume_frame();
-                self.clip = Some(p.clip().clone());
-            }
-            self.analysis = None;
-            info!(
-                "{}",
-                crate::music::log_line(false, &self.source, &self.name)
-            );
-        }
-    }
-
-    /// Once per frame: collect a finished decode and start the clip if play
-    /// is still asked for. A failed decode or start turns play back off
-    /// (`wanted`), which the row shows.
-    fn poll(&mut self) {
-        let Some(decoding) = self.decoding.take_if(|d| d.is_finished()) else {
-            return;
-        };
-        match decoding.join() {
-            Ok(Ok(clip)) => {
-                self.name = crate::music::CLIP.to_owned();
-                self.clip = Some(std::sync::Arc::new(clip));
-            }
-            Ok(Err(e)) => error!("music: decoding {}: {e:#}", self.path.display()),
-            Err(_) => error!("music: the decode thread panicked"),
-        }
-        if self.want {
-            if self.clip.is_some() {
-                self.start();
-            } else {
-                self.want = false;
-            }
-        }
-    }
-
-    /// Start the kept clip where the last stop left it, the analysis on its
-    /// tap (as the `file` source does at launch).
-    fn start(&mut self) {
-        let Some(clip) = self.clip.clone() else {
-            return;
-        };
-        let tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-        let options = PlaybackOptions {
-            start_frame: self.resume,
-            ..self.options
-        };
-        match Playback::start(clip, tap.clone(), options) {
-            Ok(p) => {
-                info!(
-                    "music: from {:.1} s into the clip",
-                    self.resume as f32 / p.clip().sample_rate.max(1) as f32
-                );
-                let analysis = crate::music::tap_analyzed(&self.source)
-                    .then(|| LiveAudio::from_ring(tap, p.output_rate(), p.callback_count()))
-                    .transpose();
-                self.analysis = match analysis {
-                    Ok(a) => a,
-                    Err(e) => {
-                        // Playback without its analysis would play to effects that
-                        // never hear it; treat it like a failed start.
-                        error!("music: analysis over the tap: {e:#}");
-                        self.want = false;
-                        return;
-                    }
-                };
-                self.playback = Some(p);
-                info!("{}", crate::music::log_line(true, &self.source, &self.name));
-            }
-            Err(e) => {
-                error!("music: starting playback: {e:#}");
-                self.want = false;
-            }
-        }
-    }
 }
 
 /// The S4 synthetic groove as a hop, for the particles mode without a
@@ -4498,6 +4421,14 @@ fn apply_intent(
             controls.music = on;
             actions.push(Action::SetMusic(on));
         }
+        // Board #5385: the Music row's steps and the songs by name.
+        Intent::NextTrack => actions.push(Action::NextTrack),
+        Intent::PrevTrack => actions.push(Action::PrevTrack),
+        Intent::Track(i) => {
+            controls.music = true;
+            actions.push(Action::PlayTrack(i));
+        }
+        Intent::ScanMusic => actions.push(Action::ScanMusic),
         Intent::Rescan => actions.push(Action::RescanRoom),
         Intent::Recenter => actions.push(Action::Recenter),
         Intent::AllNone => actions.push(Action::AllNone),

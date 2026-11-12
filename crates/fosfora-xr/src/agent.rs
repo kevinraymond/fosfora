@@ -1309,6 +1309,7 @@ mod tests {
             behaviors: &SurfaceBehavior::ALL,
             surfaces: surfaces(boxes),
             pointed,
+            tracks: crate::intent::Tracks::default(),
         }
     }
 
