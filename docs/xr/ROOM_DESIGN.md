@@ -938,16 +938,19 @@ than 4.5 m are ignored.
 which samples touch, so a hand in front of a wall does not join it and two
 coplanar surfaces with a gap between them stay apart. It is one pass with no
 random sampling and gives the same answer for the same input. The noise model
-is one deviation along the ray of 1% of the range at 1 m and 4% at 4 m, and
-every distance threshold scales with it. Each cell gets a normal from a window
-as wide as that noise needs: 3x3 to 1.6 m, 5x5 to 3.8 m, 7x7 beyond on the
-40x40 grid. A cell beside a crease or a silhouette takes the window on its own
-surface. A region takes a neighbor within 30 degrees of its normal and 2.5
+(`NoiseModel`, a config value) is one deviation along the ray of 0.002 times
+the squared range, never under 0.5 cm: 0.5 cm to 1.6 m, 1.8 cm at 3 m, 3.2 cm
+at 4 m. That is the headset's own figure (board #5400, "Live planes on the
+headset" in `MEASURED.md`), and every distance threshold scales with it. Each
+cell gets a normal from a window as wide as that noise needs, 3x3 across the
+whole range at this figure; a noisier model widens it to 5x5 and 7x7. A cell
+beside a crease or a silhouette takes the window on its own surface. A region takes a neighbor within 30 degrees of its normal and 2.5
 noise deviations of its plane. A patch needs 10 cells, 0.05 m² and about 3
 cells of width. Cells that hold a blend of two depths at a silhouette are left
 out first. The plane fit takes the model's noise out of the scatter, because
-noise along slanted rays tilts a small far plane: a 0.5 m panel at 3.3 m seen
-at 45 degrees leans 12.4 degrees in a plain fit and 0.8 in this one.
+noise along slanted rays tilts a small far plane: with a noisy sensor (0.01
+times the squared range) a 0.5 m panel at 3.3 m seen at 45 degrees leans 12.4
+degrees in a plain fit and 0.8 in this one.
 
 **Tracking.** A patch joins a tracked plane when the normals agree within 10
 degrees, the plane passes within 8 cm of the patch and the rectangles overlap
@@ -958,6 +961,41 @@ cell's width at its range. An edge shrinks only while it is in view, since an
 edge out of view is where the view ended. Planes that come to overlap merge.
 Ids are never reused. A plane farther than 8 m from the camera is dropped.
 
+**One surface, one plane** (board #5400). A large surface seen at a slant,
+like a ceiling from the floor or a far wall, can come apart into pieces whose
+fits differ by up to 15 degrees and 20 cm, and each would be drawn over the
+other. Two planes are one surface when their normals are within 15 degrees,
+each center is within 20 cm of the other's plane (15 cm for planes within 5
+degrees of parallel, so a shelf 20 cm over a table stays apart) and more than
+30% of the smaller's rectangle lies over the bigger's. A patch that nests in a
+plane that way joins it, two planes that do merge, and a candidate merges
+into a plane it touches within those limits. A candidate first seen with the
+camera still that lies over a reported plane within 15 degrees and 30 cm does
+not appear beside it. These are the limits `live_rec::doubles` names a double
+by, so no reported pair is one surface twice. A shallow crease, such as a
+vaulted ceiling's slope and its flat part, becomes one plane.
+
+**A surface that moves** (board #5400). A surface can move past the merge
+window while the camera is still, or the sensor's view of it can: on a cold
+start the headset's depth beyond 2.5 m came up to 15 cm nearer at once, about
+11 s in. A plane whose patches for 0.5 s all came from outside its merge
+window takes their estimate. One that has had no patch for 0.5 s while a
+candidate on its surface has takes the candidate's. Either way it keeps its
+id, and its rectangle catches up at the moving camera's rates.
+
+**Tracking corrections** (board #5400). The runtime can correct its tracking
+with the headset still: on the headset every pose, the depth layer's among
+them, jumped 0.30 m and 31 degrees in one read-back two seconds after a
+launch, and every point of the map with it. Once the pose has moved 2 cm or 1
+degree from a reference view, each update compares the range along each
+cell's ray with it. The same ranges (a median change of 2 cm at most), when
+the reference's points seen from the new pose miss the map by 5 cm or more and
+four times the change, mean the world moved and the camera did not: every
+plane, the floor estimate and the held candidates move with it at once. A
+view that fits neither a still camera nor the pose's move (on the headset, the
+read-back in the middle of the jump) is left out, four in a row at most. A
+slow drift adds up against the reference until it shows.
+
 **Stability.** A plane is reported once it had patches in 70% of its updates
 over its first 0.5 s. A candidate that misses is held back, still taking
 patches, until the camera moves 0.5 m or turns 30 degrees, so a surface found
@@ -966,8 +1004,9 @@ seen after the camera has been still for half a second needs patches in 90% of
 its updates over 2 s. The reported rectangle follows the estimate behind a
 dead band (a cell's width for an edge, 0.5 degrees, 5 mm) at up to 1 m/s and
 10 degrees/s while the camera moves, and 8 mm/s and 0.5 degrees/s while it is
-still. Each update checks a 4x4 grid of points on every plane against the map.
-A plane in view that the map sees through, with no patch, for 2 s is dropped.
+still. Each update checks a 4x4 grid of points on every plane against the map,
+within 3 noise deviations (4 cm at least). A plane in view that the map sees
+through, with no patch, for 2 s is dropped.
 A plane out of view or behind something nearer is kept as it was. At most 24
 are reported, by confidence, area and nearness, and a reported plane keeps its
 place unless a newcomer scores twice as high.
@@ -976,31 +1015,38 @@ place unless a newcomer scores twice as high.
 estimate, a table 0.3 to 1.3 m above it, else other. Normal down, 1.9 m above
 the floor: the ceiling. Normal within 15 degrees of horizontal: a wall when its
 top reaches 1.2 m above the floor, else other (a box side, a cabinet front).
-The floor estimate follows the lowest large upward plane at least 0.9 m below
-the camera, because `y = 0` need not be the floor when the wearer roams. A
-reported plane changes kind only after the new kind has held for 1 s.
+The floor estimate follows the lowest large upward plane (1 m² or more) at
+least 0.3 m below the camera, whatever the eye height: a seated wearer's eye
+is 1.1 to 1.2 m up, a child's or a low seat's 0.5 m, and a headset set down on
+a desk 0.76 m. `y = 0` need not be the floor (on the headset the tracking
+origin's was 1.2 to 1.9 m off it). A large table seen before the floor gives
+way once the floor shows below it, since the estimate follows a lower
+candidate at once and a higher one only up to 30 cm. A reported plane changes
+kind only after the new kind has held for 1 s, so the kinds follow the
+estimate when it arrives or moves.
 `to_obstacle_box` gives an `ObstacleBox`'s fields as a plain `PlaneBox`
 (`particles3d` is Android-only), half thickness 2 cm like a scene plane. Its
 UUID starts with `fslive` and two zero bytes and ends with the id. The zero
 version and variant bits are a layout no runtime anchor has, and it is never
 the stage floor's all-zero UUID.
 
-**Measured on the desktop.** An update on the 40x40 grid takes 0.34 ms (0.36
-at most) on one core of an i9-13900K, and 1.3 ms on 80x80. After warm-up its
+**Measured on the desktop.** An update on the 40x40 grid takes 0.32 ms (0.34
+at most) on one core of an i9-13900K, and 1.2 ms on 80x80. After warm-up its
 buffers do not grow. Standing still, the floor, the walls and the table are
 reported at 0.6 s at 5 updates a second and at the second update at 2 and 1,
-within 1.2 degrees and 1.7 cm. With noise alone for 10 s the ids hold from the
+within 0.2 degrees and 0.2 cm on the headset's noise. With noise alone for 10 s the ids hold from the
 first second and no center moves faster than 0.1 cm/s. A box taken away in
-view is dropped after 1.8 s. Over 100 noise seeds the scripted tests failed
-once in 900 runs: on the 80x80 grid, one of 40 panels was reported 10.5
-degrees off.
+view is dropped after 1.8 s. With the headset's noise model the scripted
+tests pass on 20 noise seeds. Replayed from the headset's own recordings,
+the set holds and no surface is reported twice ("Live planes on the headset"
+in `MEASURED.md`).
 
 **Not yet.** The wiring reads 64x64 by default (below). At 40x40 a cell is
 8 cm at 1.5 m and 16 cm at 3 m, so a table
 top 2.3 m from a standing wearer spans two rows and is not found, and 40
-separate patches in one view need the 80x80 grid. The noise model is assumed, not measured. On
-noise-free depth the correction leans slanted walls 2.5 degrees the other way,
-so the Quest's real noise has to be measured before the model is trusted.
+separate patches in one view need the 80x80 grid. A table top seen within
+about 15 degrees of edge-on is not found: its rows change range by more than
+a depth jump, and the silhouette filter takes them for one.
 Planes are not saved, and their ids last one session, so the room file must
 not key behaviors to them. Horizontal planes take their yaw from their first
 patch, not from the walls. No meshes, no curved surfaces.
@@ -1106,11 +1152,34 @@ step, to be set from those lines.
 every reported plane's rectangle in its kind's color, the ones left out on
 scanned boxes too, with the room editor's highlight shader.
 
+**Recording (board #5400).** The finder's tests use a synthetic sensor,
+and the headset's depth is quieter and smoother than that sensor.
+`debug.fosfora.liveplanesrec <seconds>` has the worker append each
+read-back it is given, before the finder takes it, to one file in
+`Android/data/<package>/files/debug/`, beside the app's own `Music/`, so a
+USB pull reaches it without run-as. The file holds a header (magic,
+version, the grid's size, the reading) and, per read-back, its time, the
+layer's pose and fov, near and far, the map's size and the depth values as
+read back. `live_rec.rs` has the layout. The knob is read at launch, so a
+recording can start with the finder's first update, and then polled once
+a second. A new value starts a recording of that many seconds (at most
+600), counted from the first read-back written; unset or 0 stops it. A
+recording is of one run of the finder and closes when the finder starts
+over. Unset, the jobs carry nothing and the worker only checks that.
+`live_rec::replay` runs a recording through the worker's own `Fitter`.
+`live_rec::doubles` names pairs of reported planes that are one surface
+twice: normals within 15 degrees, each center within 20 cm of the other's
+plane, and more than 30% of the smaller rectangle over the other.
+Recordings are of real rooms and stay out of the repository. The ignored
+test `replay_the_recording_in_live_planes_rec` reads one from
+`LIVE_PLANES_REC`.
+
 **Knobs.** `debug.fosfora.liveplanes 0|1` (polled once a second, so on and
 off can be compared in one launch; 1 at launch also creates the depth
 provider), `liveplanesgrid` 40..80 (default 64, at launch), `liveplaneshz`
-1..10 (default 4, at launch), `liveplanesnoise 0|1` (at launch) and
-`liveplanesshow 0|1` (polled once a second).
+1..10 (default 4, at launch), `liveplanesnoise 0|1` (at launch),
+`liveplanesshow 0|1` (polled once a second) and `liveplanesrec <seconds>`
+(at launch, then polled once a second).
 
 **Log.** At start "live planes: on · grid 64 · 4 Hz · layer left", and
 "live planes: off (roam off)" when it stops. Once a second while it runs
@@ -1118,12 +1187,20 @@ provider), `liveplanesgrid` 40..80 (default 64, at launch), `liveplaneshz`
 floor y -0.02 · update 1.9 ms (max 3.4) · 4.0 Hz · 3 shown, 2 on scanned
 boxes, 1 on the stage floor, 0 over budget". A line when a plane is first
 reported, "live planes: + #12 wall 1.20 x 2.10 m, 1.8 m away", and the
-same with "-" when it leaves. When the count past the budget changes, "live
-planes: 2 over budget (the room's 29 boxes and the stage floor leave 2 of
-32)". The stage floor's height when it moves 5 cm,
+same with "-" when it leaves. When the runtime corrects its tracking, "live
+planes: the tracking origin moved 0.30 m and turned 30.8°; the planes moved
+with it". When the count past the budget changes, "live planes: 2 over budget
+(the room's 29 boxes and the stage floor leave 2 of 32)". The stage floor's height when it moves 5 cm,
 "roam: the stage floor at height -0.02, the live planes' floor". The noise
 line, "live planes noise: 20 reads, error along the ray (cm) by range (m),
-over 30° off grazing: 0.5 n 210 med +0.40 sd 0.60 k 0.0107 · ...".
+over 30° off grazing: 0.5 n 210 med +0.40 sd 0.60 k 0.0107 · ...". A
+recording's lines: "live planes rec: 30 s asked for
+(debug.fosfora.liveplanesrec), from the next read-back the finder is
+given, into .../files/debug" when the knob changes, "live planes rec:
+recording 30 s to .../liveplanes-1762950000-1.lprec (grid 64, rows
+bottom-up)" when the file opens, and "live planes rec: closed
+.../liveplanes-1762950000-1.lprec · 120 read-backs over 29.8 s, 1.9 MiB
+(its time is up)" when it closes.
 
 **Not measured yet.** The read-back's cost, the update's time on the Quest
 and the depth noise are for the device.

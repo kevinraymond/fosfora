@@ -45,6 +45,7 @@ pub mod intent;
 pub mod label;
 pub mod lanes;
 pub mod live_planes;
+pub mod live_rec;
 pub mod live_wire;
 pub mod local;
 pub mod math;

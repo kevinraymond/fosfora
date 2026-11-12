@@ -51,3 +51,6 @@ __pycache__/
 # The voice path's agent config (board #3751): it holds an API key and lives
 # on the headset (files/config/voice.json); a local copy is never committed.
 voice.json
+# Live planes recordings (board #5400): the headset's depth of a real room,
+# replayed on the desktop through LIVE_PLANES_REC; never committed.
+*.lprec

@@ -19,7 +19,9 @@
 //! `floor_y`, the `Stats` and the update's time with a running mean and
 //! max. The frame loop never waits: it hands a job over only when the slot
 //! is free of the thread (`try_lock`, else it keeps the job a frame), and
-//! drains the results with `try_recv`.
+//! drains the results with `try_recv`. With `debug.fosfora.liveplanesrec`
+//! set, the thread also appends each read-back to a recording before the
+//! finder takes it (`live_rec.rs`, board #5400).
 //!
 //! **When it runs** ([`runs`]). While roam is on and the depth provider
 //! runs; `debug.fosfora.liveplanes 0|1` overrides, 1 also with roam off (a
@@ -73,9 +75,10 @@ use crate::env_depth::{DepthView, Obb, Reading, decode_distance, ray_obb, texel_
 use crate::intent::Surface;
 use crate::lanes::LaneBox;
 use crate::live_planes::{
-    DepthCamera, LivePlane, LivePlanes, Observation, PlaneBox, Stats, grid_texel, plane_id,
-    to_obstacle_box, unproject_grid,
+    Correction, DepthCamera, LivePlane, LivePlanes, Observation, PlaneBox, Stats, grid_texel,
+    plane_id, to_obstacle_box, unproject_grid,
 };
+use crate::live_rec::{Ask, Recorder};
 use crate::surfaces::{
     KIND_CEILING, KIND_FLOOR, KIND_OTHER, KIND_TABLE, KIND_WALL, SURFACE_LANE_ROWS, kind_name,
 };
@@ -189,7 +192,7 @@ pub fn on_box(p: &PlaneBox, b: &Obb) -> bool {
 }
 
 /// A polygon's area (either winding).
-fn area(poly: &[Vec2]) -> f32 {
+pub(crate) fn area(poly: &[Vec2]) -> f32 {
     let n = poly.len();
     (0..n)
         .map(|i| poly[i].perp_dot(poly[(i + 1) % n]))
@@ -200,7 +203,7 @@ fn area(poly: &[Vec2]) -> f32 {
 
 /// The area of the convex polygon `poly` inside the rectangle
 /// `[-hx, hx] x [-hy, hy]` (Sutherland-Hodgman, one edge at a time).
-fn clipped_area(poly: &[Vec2], hx: f32, hy: f32) -> f32 {
+pub(crate) fn clipped_area(poly: &[Vec2], hx: f32, hy: f32) -> f32 {
     let mut cur: Vec<Vec2> = poly.to_vec();
     // Each edge: the inside test's axis (0 x, 1 y), its sign and limit.
     for (axis, sign, limit) in [(0, 1.0, hx), (0, -1.0, hx), (1, 1.0, hy), (1, -1.0, hy)] {
@@ -766,6 +769,9 @@ pub struct Job {
     pub fit: bool,
     /// The room's boxes for the noise calibration, when it is on.
     pub noise: Option<Vec<Obb>>,
+    /// The recording asked for (`debug.fosfora.liveplanesrec`), if any:
+    /// the worker appends this read-back to it before the finder takes it.
+    pub record: Option<Arc<Ask>>,
 }
 
 /// What one update of the finder reported.
@@ -781,14 +787,17 @@ pub struct Snapshot {
     pub max_ms: f32,
     /// Updates in this epoch so far, this one included.
     pub updates: u64,
+    /// The tracking correction this update's planes followed, if any.
+    pub correction: Option<Correction>,
 }
 
 /// Updates the running mean and max cover.
 pub const TIMES: usize = 16;
 
 /// The worker's state: the finder of the current epoch, its buffers, its
-/// timings and the noise bins. Plain, so the desktop tests drive it
-/// without a thread.
+/// timings, the noise bins and the recording. Plain, so the desktop tests
+/// drive it without a thread, and the replay (`live_rec::replay`) runs a
+/// recording through it.
 #[derive(Debug, Default)]
 pub struct Fitter {
     epoch: Option<u64>,
@@ -797,21 +806,26 @@ pub struct Fitter {
     times: [f32; TIMES],
     updates: u64,
     noise: NoiseBins,
+    rec: Recorder,
 }
 
 impl Fitter {
     /// Run `job`: a new epoch first starts the finder (and the noise bins)
-    /// fresh; the noise bins take the read-back when it carries boxes, and
-    /// log their report when due; with `fit`, the finder takes it and the
-    /// snapshot is returned.
+    /// fresh and closes an open recording, which is of one run of the
+    /// finder; the recording asked for takes the read-back as it is; the
+    /// noise bins take it when it carries boxes, and log their report when
+    /// due; with `fit`, the finder takes it and the snapshot is returned.
     pub fn run(&mut self, job: &Job) -> Option<Snapshot> {
         if self.epoch != Some(job.epoch) {
+            self.rec.close("the finder started over");
             *self = Self {
                 epoch: Some(job.epoch),
                 points: std::mem::take(&mut self.points),
+                rec: std::mem::take(&mut self.rec),
                 ..Self::default()
             };
         }
+        self.rec.step(job);
         if let Some(boxes) = &job.noise {
             self.noise.add_grid(&job.grid, job.reading, boxes);
             if self.noise.due(job.time_s) {
@@ -854,6 +868,11 @@ impl Fitter {
             mean_ms: held.iter().sum::<f32>() / held.len() as f32,
             max_ms: held.iter().copied().fold(0.0, f32::max),
             updates: self.updates,
+            correction: if stats.corrected {
+                self.planes.last_correction()
+            } else {
+                None
+            },
         })
     }
 }
@@ -993,7 +1012,7 @@ fn work(shared: &Shared, tx: &Sender<Snapshot>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Duration;
 
     use super::*;
@@ -1442,7 +1461,7 @@ mod tests {
     }
 
     /// The test lens, about the depth camera's: 100 degrees wide.
-    const FOV: Fov = Fov {
+    pub(crate) const FOV: Fov = Fov {
         left: -0.873,
         right: 0.873,
         up: 0.785,
@@ -1451,7 +1470,7 @@ mod tests {
     const SIZE: [u32; 2] = [320, 320];
     const NEAR: f32 = 0.1;
 
-    fn view(position: Vec3, pitch_deg: f32, fov: Fov) -> DepthView {
+    pub(crate) fn view(position: Vec3, pitch_deg: f32, fov: Fov) -> DepthView {
         DepthView {
             orientation: Quat::from_rotation_x(pitch_deg.to_radians()).to_array(),
             position: position.to_array(),
@@ -1463,7 +1482,7 @@ mod tests {
     /// along -Z of the nearest hit along each texel's ray, or none), in
     /// the self-check's layout, read bottom-up as on the Quest 3, encoded
     /// with an infinite far plane; `error` adds that much along the ray.
-    fn grid_of(
+    pub(crate) fn grid_of(
         scene: impl Fn(Vec3, Vec3) -> Option<f32>,
         view: &DepthView,
         n: usize,
@@ -1497,7 +1516,7 @@ mod tests {
 
     /// A room's floor (y = 0) and front wall (z = -2.5): the depth along
     /// `d` (z = -1 in the camera) from `o`.
-    fn floor_and_wall(o: Vec3, d: Vec3) -> Option<f32> {
+    pub(crate) fn floor_and_wall(o: Vec3, d: Vec3) -> Option<f32> {
         let floor = (d.y < -1e-6).then(|| -o.y / d.y).filter(|&t| {
             let p = o + d * t;
             t > 0.0 && p.x.abs() < 3.0 && p.z > -2.5 && p.z < 2.0
@@ -1576,6 +1595,7 @@ mod tests {
             reading: Reading::RowBottom,
             fit: true,
             noise: None,
+            record: None,
         }
     }
 

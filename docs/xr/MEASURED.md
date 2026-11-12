@@ -3072,3 +3072,66 @@ about 1.5 s. The `voicefile` knob takes an absolute path.
 (`com.oculus.firsttimenux`) sat on top after the v209 reboot and every
 `am start` timed out at window placement with no process started; `adb shell
 am force-stop com.oculus.firsttimenux` cleared it.
+
+## Live planes on the headset's own depth (board #5400)
+
+Quest 3 on Horizon OS v209, Nov 12, 2026, unworn and still, roam on, no
+scanned room, grid 64 at 4 Hz. Four 45 s recordings with
+`debug.fosfora.liveplanesrec 45` on 494a33a, replayed on the desktop through
+the worker's own path (`live_rec::replay`). Two with the headset on the floor
+looking up at about 43 degrees, a minute apart, and two on a desk 0.76 m up,
+looking level into the same room, a minute apart. The first launch of each
+pair was a cold one. The recordings stay off the repository.
+
+**The replay is the headset.** Each replay reports the same ids at the same
+updates as the headset's log over the recorded 45 s, and the tracked counts
+the log shows.
+
+**The depth.** Real surfaces scatter about 0.5 cm off their planes near, 0.5
+to 0.8 cm at 1.2 to 1.8 m and under 1 cm at 3 to 4 m. Once settled, most cells
+read exactly the same from one read-back to the next. The noise model is now
+0.002 times the squared range, never under 0.5 cm (it was 0.01, 9 cm at 3 m).
+
+**A cold start settles.** About 11.5 s after each cold launch the whole map
+changed in one read-back: beyond 2.5 m it came 1 to 15 cm nearer by range
+(medians), 17 to 45 cm at the 90th percentile. Frame-to-frame changes fell
+from about 0.2 cm to 0.01 to 0.03 cm. The launches a minute later started
+settled.
+
+**A tracking correction.** 1.7 s into the first floor launch every pose
+jumped 0.30 m and 30.8 degrees about the vertical in one read-back, with the
+headset still. Against the view before, the image changed 0.37 cm (median per
+cell), and that view seen from the new pose missed the map by 83 cm: the
+world moved, not the camera. The read-back at the jump fit neither (46 cm and
+83 cm). The tracking origin's `y = 0` was 1.2 to 1.3 m above the real floor on
+the floor launches and 1.17 m above it on the desk launches.
+
+**Before and after, replayed.** Reported and tracked planes at 1 s, at 10 s
+and at the end; when the reported set last changed; the most doubles
+(`live_rec::doubles`) any update had; ids created in 45 s; the update's time
+on one core of an i9-13900K (the headset's log gave 3.2 ms before).
+
+| Recording | 1 s | 10 s | end | last change | doubles | ids | update |
+|---|---|---|---|---|---|---|---|
+| floor, cold, before | 10/23 | 18/29 | 18/35 | 3.8 s | 1 | 178 | 0.83 ms |
+| floor, cold, after | 8/15 | 8/14 | 8/18 | 0.70 s | 0 | 123 | 0.87 ms |
+| floor, warm, before | 11/23 | 11/23 | 11/23 | 0.66 s | 0 | 134 | 0.83 ms |
+| floor, warm, after | 11/15 | 11/14 | 11/17 | 0.92 s | 0 | 91 | 0.84 ms |
+| desk, cold, before | 14/26 | 14/26 | 14/30 | 0.95 s | 0 | 131 | 0.81 ms |
+| desk, cold, after | 9/14 | 10/20 | 10/16 | 14.3 s | 0 | 65 | 0.82 ms |
+| desk, warm, before | 11/23 | 11/24 | 11/24 | 0.68 s | 0 | 100 | 0.82 ms |
+| desk, warm, after | 9/13 | 9/15 | 9/15 | 0.68 s | 0 | 40 | 0.81 ms |
+
+Before, the cold floor launch kept all 8 of its first planes where the frame
+before the correction put them, 30 cm and 31 degrees off, and found the same
+surfaces again beside them 0.8 s later. The doubles test counts few of these
+pairs because the copies are turned 31 degrees. After, the planes move with
+the world and the set does not change from its first report. On the desk the
+carpet was a table and `floor y` never came; after, it is the floor. Two
+planes over the clutter, a tilted 1.1 x 1.0 m one at 2.4 m and a tilted 1.8 x
+1.0 m one at 3.7 m, and two overlapping walls are gone. The floor, the
+ceiling, the far wall and the storage box's faces and top are in both desk
+launches, at the same places in the camera's frame within a few centimeters.
+The cold desk launch's changes after 1 s are a box-top piece at 3.0 s and the
+settling at 11.7 s, after which it swaps a plane on the left for the one the
+warm launch has had from the start.
