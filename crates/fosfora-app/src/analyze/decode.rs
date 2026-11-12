@@ -13,7 +13,7 @@ use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, TrackType};
+use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
@@ -39,10 +39,44 @@ impl DecodedAudio {
     }
 }
 
-/// Decode `path` in full. Mono is duplicated to both channels; anything above 2 channels keeps
-/// the first two (the front pair in canonical order) rather than downmixing, so the A13 stereo
-/// image stays the one the mix was authored with.
-pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
+/// What a song file's container says about it, read without decoding any audio.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AudioProbe {
+    /// Playable frames in the track, when the container states or can estimate it. `None` for
+    /// a stream with no length in its headers; the caller then has only the file size to go by.
+    pub frames: Option<u64>,
+    /// The file's own sample rate (before the analysis decimation `decode_file` applies).
+    pub sample_rate: Option<u32>,
+}
+
+impl AudioProbe {
+    /// The track's length, when both the frame count and the rate are known.
+    pub fn duration_secs(&self) -> Option<f64> {
+        let rate = self.sample_rate.filter(|&r| r > 0)?;
+        Some(self.frames? as f64 / f64::from(rate))
+    }
+}
+
+/// Read `path`'s length from its container without decoding it, so a caller that holds a whole
+/// decoded song in memory (`decode_file` costs 8 bytes per frame) can refuse one that is too long
+/// before paying for it. Opens the file and reads its headers only.
+pub fn probe_file(path: &Path) -> Result<AudioProbe> {
+    let format = open_format(path)?;
+    let track = format
+        .first_track_known_codec(TrackType::Audio)
+        .ok_or_else(|| anyhow!("{} has no audio track with a known codec", path.display()))?;
+    let sample_rate = match track.codec_params.as_ref() {
+        Some(symphonia::core::codecs::CodecParameters::Audio(p)) => p.sample_rate,
+        _ => bail!("{} track {} is not audio", path.display(), track.id),
+    };
+    Ok(AudioProbe {
+        frames: track.num_frames,
+        sample_rate,
+    })
+}
+
+/// Open `path` and find its container, hinted by the file's extension.
+fn open_format(path: &Path) -> Result<Box<dyn FormatReader>> {
     let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -51,14 +85,21 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
         hint.with_extension(ext);
     }
 
-    let mut format = symphonia::default::get_probe()
+    symphonia::default::get_probe()
         .probe(
             &hint,
             mss,
             FormatOptions::default(),
             MetadataOptions::default(),
         )
-        .with_context(|| format!("probing {} (unsupported container?)", path.display()))?;
+        .with_context(|| format!("probing {} (unsupported container?)", path.display()))
+}
+
+/// Decode `path` in full. Mono is duplicated to both channels; anything above 2 channels keeps
+/// the first two (the front pair in canonical order) rather than downmixing, so the A13 stereo
+/// image stays the one the mix was authored with.
+pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
+    let mut format = open_format(path)?;
 
     let track = format
         .first_track_known_codec(TrackType::Audio)
@@ -242,5 +283,71 @@ mod tests {
             "decoded {:.3} s, want ~{want:.3} s",
             audio.duration_secs()
         );
+    }
+
+    fn with_temp_file<T>(name: &str, bytes: &[u8], f: impl FnOnce(&Path) -> T) -> T {
+        let path = std::env::temp_dir().join(format!("fosfora_{}_{name}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let out = f(&path);
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    /// A 16-bit PCM WAV of `frames` silent stereo frames at `rate`.
+    fn silent_wav(frames: u32, rate: u32) -> Vec<u8> {
+        let data = frames * 4;
+        let mut w = b"RIFF".to_vec();
+        w.extend_from_slice(&(36 + data).to_le_bytes());
+        w.extend_from_slice(b"WAVEfmt ");
+        w.extend_from_slice(&16u32.to_le_bytes());
+        w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        w.extend_from_slice(&2u16.to_le_bytes()); // channels
+        w.extend_from_slice(&rate.to_le_bytes());
+        w.extend_from_slice(&(rate * 4).to_le_bytes()); // byte rate
+        w.extend_from_slice(&4u16.to_le_bytes()); // block align
+        w.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        w.extend_from_slice(b"data");
+        w.extend_from_slice(&data.to_le_bytes());
+        w.resize(w.len() + data as usize, 0);
+        w
+    }
+
+    /// The probe reads a WAV's length from its header, and it is the length the decode gives.
+    #[test]
+    fn the_probe_reads_a_wav_length_the_decode_agrees_with() {
+        let bytes = silent_wav(24_000, 48_000);
+        let (probe, audio) = with_temp_file("probe.wav", &bytes, |p| {
+            (
+                probe_file(p).expect("probes"),
+                decode_file(p).expect("decodes"),
+            )
+        });
+        assert_eq!(probe.sample_rate, Some(48_000));
+        assert_eq!(probe.frames, Some(24_000));
+        assert_eq!(probe.duration_secs(), Some(0.5));
+        assert_eq!(audio.frames(), 24_000);
+    }
+
+    /// A constant-bitrate MP3 with no length header: the container reader estimates the length
+    /// from the file's size, which is what lets a caller refuse a long, small file undecoded.
+    #[test]
+    fn the_probe_estimates_a_headerless_mp3() {
+        let frames = 200;
+        let bytes: Vec<u8> = (0..frames).flat_map(|_| silent_mp3_frame()).collect();
+        let probe = with_temp_file("probe.mp3", &bytes, |p| probe_file(p).expect("probes"));
+        assert_eq!(probe.sample_rate, Some(44_100));
+        let want = f64::from(frames * 1152) / 44_100.0;
+        let secs = probe.duration_secs().expect("an estimated length");
+        assert!(
+            (secs - want).abs() < 0.2,
+            "probed {secs:.3} s, want ~{want:.3} s"
+        );
+    }
+
+    /// A file that is not audio is an error, not a zero length.
+    #[test]
+    fn the_probe_refuses_what_is_not_audio() {
+        let err = with_temp_file("probe.txt", b"not a song", probe_file);
+        assert!(err.is_err());
     }
 }
