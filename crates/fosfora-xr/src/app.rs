@@ -539,8 +539,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .filter(|q| q.is_finite() && *q > 0.0)
         .unwrap_or(crate::voice::QUIET_LEVEL);
     info!(
-        "voice: openers the left fist (closes on release) and a thumb tap (closes after {} s under {voice_quiet:.4} RMS, debug.fosfora.voicequiet)",
-        crate::voice::QUIET_S
+        "voice: openers the left fist (the next fist closes it, or {} s) and a thumb tap (closes after {} s under {voice_quiet:.4} RMS, debug.fosfora.voicequiet, a second tap, or {} s)",
+        crate::voice::FIST_MAX_S,
+        crate::voice::QUIET_S,
+        crate::voice::MAX_S
     );
     let mut push_to_talk = PushToTalk::new(voice_quiet);
     // V4: whether the flock last saw the left fist masked for voice, for
@@ -2078,9 +2080,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let poses_apply = poses_on
                     && world
                     && POSE_EFFECTS.contains(&world_effects[world_index].as_str());
-                // Board #3751, V4: with voice on the left fist is the voice
-                // opener everywhere, so the flock sees an open left hand;
-                // the right fist keeps its predator. Logged once per change.
+                // Board #3751, V4: with voice on the left fist toggles the
+                // voice window everywhere (board #5380), so the flock sees
+                // an open left hand; the right fist keeps its predator.
+                // Logged once per change.
                 let voice_fist = controls.voice && voice.is_some();
                 let flock_rule = poses_apply && voice_fist;
                 if flock_rule != flock_rule_logged {
@@ -2088,7 +2091,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     info!(
                         "{}",
                         if flock_rule {
-                            "pose: voice on, the left fist opens the voice window and is no predator; the right fist is"
+                            "pose: voice on, the left fist toggles the voice window and is no predator; the right fist is"
                         } else {
                             "pose: the left fist is a predator again"
                         }
@@ -2639,8 +2642,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // head: "Scanning the room…" until the query returns anchors,
             // "Room: 17 surfaces" when it does, "No room found..." when
             // the retries give up.
-            // Board #3751: the voice path's push-to-talk window on the left
-            // fist (hand 0), or (V4) a thumb tap on either hand, while the
+            // Board #3751: the voice path's window, toggled by the left
+            // fist (hand 0, board #5380: a fist opens it, the next closes
+            // it), or (V4) opened by a thumb tap on either hand, while the
             // hand menu's Voice toggle is on. It opens whatever else the
             // hands are doing: with Edit room on, with the hand menu up, on
             // Flock, where the left fist is then no predator (above).
@@ -2689,11 +2693,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                         };
                         match v.open(&how) {
+                            // Up for the whole window: a fist's runs to
+                            // 20 s (board #5380).
                             Ok(()) => voice_label.show_for(
                                 crate::voice::LISTENING_LABEL.to_owned(),
                                 voice_at.0,
                                 voice_at.1,
-                                crate::voice::MAX_S + 1.0,
+                                crate::voice::max_s(opener) + 1.0,
                             ),
                             Err(e) => {
                                 log::warn!("voice: the window's microphone did not open: {e:#}");
@@ -3051,7 +3057,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             (e.label().to_owned(), crate::agent::LABEL_S)
                         }
                     };
-                    voice_label.show_for(text, at.0, at.1, seconds);
+                    // Board #5380: a fist window runs to 20 s, and
+                    // "Listening…" stays up all of it. A reply that lands
+                    // meanwhile is in the log above, not on the label.
+                    if matches!(push_to_talk.window(), VoiceWindow::Open { .. }) {
+                        info!("voice agent: the reply's label is skipped, a voice window is open");
+                    } else {
+                        voice_label.show_for(text, at.0, at.1, seconds);
+                    }
                 }
             }
             scan_label.step(scan_state, dt);

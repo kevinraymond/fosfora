@@ -1,8 +1,8 @@
 //! The voice path, V1: the window and the text (board #3751,
-//! `docs/xr/VOICE_DESIGN.md`). Hold the left fist and the headset listens;
-//! release it (or [`MAX_S`] pass) and what was said is transcribed on the
-//! headset and shown on the in-world label and in the log. Nothing acts on
-//! the words yet (V2 is the grammar).
+//! `docs/xr/VOICE_DESIGN.md`). Make a fist with the left hand and the
+//! headset listens; make the next one (or let [`FIST_MAX_S`] pass) and what
+//! was said is transcribed on the headset and shown on the in-world label
+//! and in the log. Nothing acts on the words yet (V2 is the grammar).
 //!
 //! **The pure part** (every target, desktop-tested): the push-to-talk window
 //! ([`PushToTalk`]), the stream's 48 kHz stereo to whisper's 16 kHz mono
@@ -12,17 +12,19 @@
 //! for the unworn test path and the window dumps ([`parse_wav`],
 //! [`wav_16k_mono`]).
 //!
-//! **The window.** A fist opens it only once it has lasted [`DWELL_S`] (a
-//! shorter one is a tracking glitch or a grab, not a press); release closes
-//! it, and so does [`MAX_S`] of holding, after which the fist has to open
-//! before it can press again. V4: a thumb tap on the index (either hand,
-//! `microgestures.rs`) opens one too, which closes on silence: once speech
-//! has been heard and [`MIN_SPEECH_S`] has passed, [`QUIET_S`] under the
-//! quiet level closes it ([`level`], the RMS of the stream's last
-//! [`LEVEL_S`]), and so do [`MAX_S`] and a second tap. A closed window is
-//! [`Window::Closing`] until its transcription returns
-//! ([`PushToTalk::finish`]): a fist or a tap then is ignored, so two windows
-//! never overlap and one transcription runs at a time.
+//! **The window.** The left fist toggles it (board #5380). A fist counts
+//! once it has lasted [`DWELL_S`] (a shorter one is a tracking glitch or a
+//! grab, not a press), and only once: the hand has to open before the next
+//! fist counts, so a held fist neither closes the window it opened nor
+//! reopens the one it closed. [`FIST_MAX_S`] closes a fist window too. It
+//! has no quiet closer, so a pause mid-sentence does not cut it off. V4: a
+//! thumb tap on the index (either hand, `microgestures.rs`) opens one too,
+//! which closes on silence: once speech has been heard and [`MIN_SPEECH_S`]
+//! has passed, [`QUIET_S`] under the quiet level closes it ([`level`], the
+//! RMS of the stream's last [`LEVEL_S`]), and so do [`MAX_S`] and a second
+//! tap. A closed window is [`Window::Closing`] until its transcription
+//! returns ([`PushToTalk::finish`]): a fist or a tap then is ignored, so
+//! two windows never overlap and one transcription runs at a time.
 //!
 //! **The device part** (Android, [`Voice`]): whisper.cpp through
 //! `whisper-rs` on one worker thread that loads `ggml-base.en.bin` at launch
@@ -33,10 +35,13 @@
 //! input stream (the voice recognition preset, 48 kHz stereo, opened when
 //! the window opens and closed when it closes), never the music path's.
 
-/// Seconds a fist has to last before it opens the window.
+/// Seconds a fist has to last before it opens or closes the window.
 pub const DWELL_S: f32 = 0.15;
-/// The longest window (s): holding past it closes the window.
+/// The longest tap window (s).
 pub const MAX_S: f32 = 6.0;
+/// The longest fist window (s, board #5380): long enough for a sentence
+/// with pauses, under whisper's 30 s window ([`audio_ctx`]).
+pub const FIST_MAX_S: f32 = 20.0;
 /// A tap window (V4) closes once the level has stayed under the quiet
 /// level for this long (s)...
 pub const QUIET_S: f32 = 0.8;
@@ -68,12 +73,20 @@ pub const NOTHING_LABEL: &str = "Didn't catch that";
 pub const LISTENING_LABEL: &str = "Listening…";
 pub const WAITING_LABEL: &str = "…";
 
-/// What opened a window: the left fist held (closes on release), or a
+/// What opened a window: the left fist (the next fist closes it), or a
 /// thumb tap (closes on silence).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opener {
     Fist,
     Tap,
+}
+
+/// The longest window `opener` opens (s): [`FIST_MAX_S`] or [`MAX_S`].
+pub fn max_s(opener: Opener) -> f32 {
+    match opener {
+        Opener::Fist => FIST_MAX_S,
+        Opener::Tap => MAX_S,
+    }
 }
 
 /// The push-to-talk window.
@@ -92,13 +105,13 @@ pub enum Window {
 /// Why a window closed, for the log.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Close {
-    /// The fist opened.
-    Release,
+    /// The next fist after the one that opened it.
+    Fist,
     /// A tap window's silence: the level under the quiet level for
     /// `quiet_s`, `level` the last frame's.
     Quiet { quiet_s: f32, level: f32 },
-    /// [`MAX_S`] passed.
-    Max,
+    /// The opener's longest window passed ([`max_s`]).
+    Max(Opener),
     /// A second tap.
     Tap,
 }
@@ -127,10 +140,11 @@ pub struct Press {
 #[derive(Debug, Clone)]
 pub struct PushToTalk {
     window: Window,
-    /// How long the current fist has lasted while closed (s).
+    /// How long the current fist has lasted (s), toward [`DWELL_S`].
     held_s: f32,
-    /// [`MAX_S`] closed the window under a fist still held: it has to
-    /// open before the next press counts.
+    /// The fist that last counted (or one held through a tap window or
+    /// when a window closed) is still held: it has to open before the next
+    /// fist counts.
     wait_release: bool,
     /// A tap window's silence: whether speech has been heard (a frame at
     /// or over the quiet level), and how long the level has been under it
@@ -183,8 +197,9 @@ impl PushToTalk {
 
     /// Advance by one frame of `dt` seconds with this frame's `press`. A
     /// tap opens a window at once (it is an edge, not a hold); a fist
-    /// after [`DWELL_S`]. A fist window ignores taps and the level; a tap
-    /// window ignores the fist.
+    /// after [`DWELL_S`]. A fist window closes on the next fist, after the
+    /// one that opened it has opened, and ignores taps and the level; a
+    /// tap window ignores the fist.
     pub fn step_with(&mut self, press: Press, dt: f32) -> Option<Event> {
         let dt = dt.max(0.0);
         let fist = press.fist;
@@ -211,6 +226,9 @@ impl PushToTalk {
                 self.held_s += dt;
                 if self.held_s >= DWELL_S - 1e-6 {
                     self.held_s = 0.0;
+                    // Board #5380: this fist has to open before the one
+                    // that closes the window counts.
+                    self.wait_release = true;
                     self.window = Window::Open {
                         since_s: 0.0,
                         opener: Opener::Fist,
@@ -223,13 +241,22 @@ impl PushToTalk {
                 since_s,
                 opener: Opener::Fist,
             } => {
-                if !fist {
-                    return Some(self.close(since_s, Close::Release));
-                }
                 let since_s = since_s + dt;
-                if since_s >= MAX_S - 1e-6 {
-                    self.wait_release = true;
-                    return Some(self.close(since_s, Close::Max));
+                if !fist {
+                    self.held_s = 0.0;
+                    self.wait_release = false;
+                } else if !self.wait_release {
+                    self.held_s += dt;
+                    if self.held_s >= DWELL_S - 1e-6 {
+                        self.held_s = 0.0;
+                        self.wait_release = true;
+                        return Some(self.close(since_s, Close::Fist));
+                    }
+                }
+                if since_s >= FIST_MAX_S - 1e-6 {
+                    self.held_s = 0.0;
+                    self.wait_release |= fist;
+                    return Some(self.close(since_s, Close::Max(Opener::Fist)));
                 }
                 self.window = Window::Open {
                     since_s,
@@ -262,7 +289,7 @@ impl PushToTalk {
                     return Some(self.close(since_s, why));
                 }
                 if since_s >= MAX_S - 1e-6 {
-                    return Some(self.close(since_s, Close::Max));
+                    return Some(self.close(since_s, Close::Max(Opener::Tap)));
                 }
                 self.window = Window::Open {
                     since_s,
@@ -363,13 +390,13 @@ pub fn meter_width(level: f32) -> f32 {
     ((20.0 * level.log10() + METER_DB) / METER_DB).clamp(0.0, 1.0)
 }
 
-/// The close's log words: `(release)`, `(quiet 0.8 s at 0.004)`, `(6 s)`,
-/// `(second tap)`.
+/// The close's log words: `(fist)`, `(quiet 0.8 s at 0.004)`, `(20 s)`
+/// or `(6 s)`, `(second tap)`.
 pub fn close_text(why: Close) -> String {
     match why {
-        Close::Release => "(release)".to_owned(),
+        Close::Fist => "(fist)".to_owned(),
         Close::Quiet { quiet_s, level } => format!("(quiet {quiet_s:.1} s at {level:.3})"),
-        Close::Max => format!("({MAX_S:.0} s)"),
+        Close::Max(opener) => format!("({:.0} s)", max_s(opener)),
         Close::Tap => "(second tap)".to_owned(),
     }
 }
@@ -393,9 +420,9 @@ pub fn label_anchor(
 }
 
 /// The poses Murmur (the Flock effect) reads (V4): with voice on the left
-/// fist is the voice opener everywhere, so it is an open hand to the
-/// flock; the right fist keeps its predator. With voice off, the poses as
-/// they are.
+/// fist toggles the voice window everywhere (board #5380), so it is an
+/// open hand to the flock; the right fist keeps its predator. With voice
+/// off, the poses as they are.
 pub fn flock_poses(frame: &crate::pose::PoseFrame, voice_on: bool) -> crate::pose::PoseFrame {
     let mut out = *frame;
     if voice_on && out.pose[0] == Some(crate::pose::Pose::Fist) {
@@ -751,8 +778,9 @@ mod device {
             let rate = u32::try_from(stream.sample_rate()).unwrap_or(MIC_RATE);
             self.captured.clear();
             self.level = 0.0;
+            // Room for the longest window, a fist's.
             self.captured
-                .reserve((super::MAX_S * rate as f32 * 2.0) as usize + 8192);
+                .reserve((super::FIST_MAX_S * rate as f32 * 2.0) as usize + 8192);
             self.mic = Some(Mic {
                 _stream: stream,
                 ring,
@@ -1039,58 +1067,124 @@ mod tests {
     }
 
     #[test]
-    fn a_held_fist_opens_after_the_dwell_and_closes_on_release() {
+    fn a_fist_opens_after_the_dwell_and_the_next_fist_closes_it() {
         let mut ptt = PushToTalk::default();
         let dwell_frames = (DWELL_S / DT).ceil() as usize;
         for _ in 0..dwell_frames - 1 {
             assert_eq!(ptt.step(true, DT), None);
         }
         assert_eq!(ptt.step(true, DT), Some(Event::Opened(Opener::Fist)));
+        // Held on, then let go: still listening.
         assert!(hold(&mut ptt, true, 2.0).is_empty());
-        assert!(matches!(ptt.window(), Window::Open { .. }));
+        assert!(hold(&mut ptt, false, 1.0).is_empty());
+        assert!(matches!(
+            ptt.window(),
+            Window::Open {
+                opener: Opener::Fist,
+                ..
+            }
+        ));
+        // The next fist closes it once it has lasted the dwell.
+        for _ in 0..dwell_frames - 1 {
+            assert_eq!(ptt.step(true, DT), None);
+        }
         let Some(Event::Closed {
             seconds,
-            why: Close::Release,
-        }) = ptt.step(false, DT)
+            why: Close::Fist,
+        }) = ptt.step(true, DT)
         else {
-            panic!("no close on release");
+            panic!("no close on the second fist");
         };
-        assert!((seconds - 2.0).abs() < 1e-3, "{seconds}");
+        assert!((seconds - (3.0 + DWELL_S)).abs() < 2.0 * DT, "{seconds}");
         assert_eq!(ptt.window(), Window::Closing);
+        assert_eq!(close_text(Close::Fist), "(fist)");
     }
 
     #[test]
-    fn six_seconds_close_it_and_the_fist_must_open_first() {
+    fn a_held_fist_neither_closes_its_window_nor_reopens_it() {
         let mut ptt = PushToTalk::default();
-        let events = hold(&mut ptt, true, DWELL_S + MAX_S + 1.0);
-        assert_eq!(events.len(), 2, "{events:?}");
-        assert_eq!(events[0], Event::Opened(Opener::Fist));
-        let Event::Closed {
-            seconds,
-            why: Close::Max,
-        } = events[1]
-        else {
+        // The opening fist held well past the dwell: one open, no close.
+        assert_eq!(hold(&mut ptt, true, 3.0), vec![Event::Opened(Opener::Fist)]);
+        assert!(matches!(ptt.window(), Window::Open { .. }));
+        // Opened and made again: it closes, once.
+        assert!(hold(&mut ptt, false, 0.3).is_empty());
+        let events = hold(&mut ptt, true, 2.0);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [Event::Closed {
+                    why: Close::Fist,
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
+        // The transcription back, the closing fist still held: closed.
+        ptt.finish();
+        assert!(hold(&mut ptt, true, 2.0).is_empty());
+        assert_eq!(ptt.window(), Window::Closed);
+        // Opened, the next fist opens a window again.
+        assert!(hold(&mut ptt, false, 0.3).is_empty());
+        assert_eq!(hold(&mut ptt, true, 0.5), vec![Event::Opened(Opener::Fist)]);
+    }
+
+    #[test]
+    fn a_flicker_of_a_fist_does_not_close_the_window() {
+        let mut ptt = PushToTalk::default();
+        hold(&mut ptt, true, 0.5);
+        hold(&mut ptt, false, 0.5);
+        assert!(hold(&mut ptt, true, 0.1).is_empty());
+        assert!(hold(&mut ptt, false, 0.5).is_empty());
+        assert!(matches!(ptt.window(), Window::Open { .. }));
+    }
+
+    #[test]
+    fn twenty_seconds_close_a_fist_window_and_silence_does_not() {
+        let mut ptt = PushToTalk::default();
+        let open = hold(&mut ptt, true, 0.5);
+        assert_eq!(open, vec![Event::Opened(Opener::Fist)]);
+        let since = 0.5 - DWELL_S;
+        // Silence well past a tap window's quiet and cap: still open.
+        let mut events = Vec::new();
+        for _ in 0..((FIST_MAX_S - since - 1.0) / DT).round() as usize {
+            events.extend(ptt.step_with(Press::default(), DT));
+        }
+        assert!(events.is_empty(), "{events:?}");
+        assert!(matches!(ptt.window(), Window::Open { .. }));
+        // A fist made just before the cap, not yet past its dwell.
+        assert!(hold(&mut ptt, false, 0.9).is_empty());
+        let events = hold(&mut ptt, true, 0.5);
+        let [Event::Closed { seconds, why }] = events.as_slice() else {
             panic!("{events:?}");
         };
-        assert!((seconds - MAX_S).abs() < DT, "{seconds}");
+        assert_eq!(*why, Close::Max(Opener::Fist));
+        assert!((seconds - FIST_MAX_S).abs() < DT, "{seconds}");
+        assert_eq!(close_text(*why), "(20 s)");
+        assert_eq!(close_text(Close::Max(Opener::Tap)), "(6 s)");
+        // That fist still held after the transcription: nothing.
         ptt.finish();
-        // Still the same fist: nothing.
         assert!(hold(&mut ptt, true, 1.0).is_empty());
         assert!(hold(&mut ptt, false, 0.1).is_empty());
         assert_eq!(hold(&mut ptt, true, 0.5), vec![Event::Opened(Opener::Fist)]);
+        assert_close!(max_s(Opener::Fist), FIST_MAX_S);
+        assert_close!(max_s(Opener::Tap), MAX_S);
     }
 
     #[test]
     fn a_fist_while_closing_is_ignored_and_opens_after() {
         let mut ptt = PushToTalk::default();
         hold(&mut ptt, true, 1.0);
-        assert!(matches!(ptt.step(false, DT), Some(Event::Closed { .. })));
-        // A new fist while the transcription runs: nothing.
+        hold(&mut ptt, false, 0.3);
+        assert!(matches!(
+            hold(&mut ptt, true, 0.5).as_slice(),
+            [Event::Closed { .. }]
+        ));
+        // Opened and made again while the transcription runs: nothing.
         assert!(hold(&mut ptt, false, 0.2).is_empty());
         assert!(hold(&mut ptt, true, 1.0).is_empty());
         assert_eq!(ptt.window(), Window::Closing);
-        // The transcription is back: the fist, still held, opens after the
-        // dwell.
+        // The transcription is back: that fist, still held, opens after
+        // the dwell.
         ptt.finish();
         assert_eq!(ptt.window(), Window::Closed);
         assert_eq!(hold(&mut ptt, true, 0.5), vec![Event::Opened(Opener::Fist)]);
@@ -1104,8 +1198,11 @@ mod tests {
         ptt.cancel();
         assert_eq!(ptt.window(), Window::Closed);
         // A closing window keeps waiting for its transcription.
-        hold(&mut ptt, true, 1.0);
-        ptt.step(false, DT);
+        hold(&mut ptt, false, 0.3);
+        hold(&mut ptt, true, 0.5);
+        hold(&mut ptt, false, 0.3);
+        hold(&mut ptt, true, 0.5);
+        assert_eq!(ptt.window(), Window::Closing);
         ptt.cancel();
         assert_eq!(ptt.window(), Window::Closing);
     }
@@ -1204,7 +1301,7 @@ mod tests {
         let [Event::Closed { seconds, why }] = events.as_slice() else {
             panic!("{events:?}");
         };
-        assert_eq!(*why, Close::Max);
+        assert_eq!(*why, Close::Max(Opener::Tap));
         assert!((seconds - MAX_S).abs() < DT, "{seconds}");
         // Speech that never stops: MAX_S closes it too.
         ptt.finish();
@@ -1214,7 +1311,7 @@ mod tests {
             matches!(
                 events.as_slice(),
                 [Event::Closed {
-                    why: Close::Max,
+                    why: Close::Max(Opener::Tap),
                     ..
                 }]
             ),
@@ -1268,13 +1365,30 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(
-            ptt.step_with(Press::default(), DT),
-            Some(Event::Closed {
-                why: Close::Release,
-                ..
-            })
-        ));
+        // Opened, silent and tapped for longer than a tap window's cap:
+        // still open. The next fist closes it.
+        let open = |tap: bool| Press {
+            tap,
+            ..Press::default()
+        };
+        for i in 0..((MAX_S + 1.0) / DT) as usize {
+            events.extend(ptt.step_with(open(i % 30 == 29), DT));
+        }
+        assert_eq!(events.len(), 1, "{events:?}");
+        let mut closed = Vec::new();
+        for i in 0..(0.5 / DT) as usize {
+            closed.extend(ptt.step_with(fist(i % 30 == 29, 0.0), DT));
+        }
+        assert!(
+            matches!(
+                closed.as_slice(),
+                [Event::Closed {
+                    why: Close::Fist,
+                    ..
+                }]
+            ),
+            "{closed:?}"
+        );
     }
 
     #[test]
@@ -1456,6 +1570,8 @@ mod tests {
         assert_eq!(audio_ctx(f32::NAN), 64);
         assert_eq!(audio_ctx(2.61), 195);
         assert_eq!(audio_ctx(MAX_S), 364);
+        // A fist window's longest, well inside whisper's 30 s.
+        assert_eq!(audio_ctx(FIST_MAX_S), 1064);
         assert_eq!(audio_ctx(29.0), 1500);
         assert_eq!(audio_ctx(60.0), 1500);
     }

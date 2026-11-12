@@ -31,8 +31,9 @@ only in who turns words into actions.
 
 ```
 mic (AAudio, VOICE_RECOGNITION preset)
-  → push-to-talk window (the left fist held, or a thumb tap on the index)
-  → 16 kHz mono buffer, 1 to 6 s
+  → voice window (a left fist opens it and the next closes it, or a thumb
+    tap on the index opens it)
+  → 16 kHz mono buffer, 1 to 20 s
   → speech to text on the headset (Whisper tiny.en or base.en)
   → the sentence
   → the intent layer
@@ -56,22 +57,26 @@ is on (`permissions.rs`), with the same pickup as the mic source.
 
 An open microphone that transcribes everything is wrong for a room with
 other people in it, costs CPU all the time, and makes the wearer wonder
-what was heard. Push to talk: the window opens on a gesture and closes
-when it ends or at 6 s. Candidates, in the vocabulary of the gesture map
+what was heard. The window opens on a gesture and closes on the next one,
+on silence, or at a cap. Candidates, in the vocabulary of the gesture map
 (`XR_DESIGN.md`, "Hands: the gesture vocabulary"):
 
-- **The left fist, held.** Already a pose (`pose.rs`, Murmur's hold). In
-  Flux effects it is unassigned. Clear to see, easy to hold for a
-  sentence, hard to make by accident.
+- **The left fist.** Already a pose (`pose.rs`, Murmur's hold). In Flux
+  effects it is unassigned. Clear to see and hard to make by accident. It
+  toggles the window (board #5380): a fist opens it, and the next fist
+  closes it, or 20 s does. The hand has to open between the two. There is
+  no quiet closer, so a pause mid-sentence does not cut the window off.
+  Until Nov 12 the window was open only while the fist was held, and closed
+  on release or at 6 s. Kevin, worn: "make it so making a fist is like a
+  toggle: turn listening on/off, instead of a one-shot thing".
 - **A thumb tap on the index** (`XR_META_hand_tracking_microgestures`, the
   `tap_thumb` action is wired and reserved). Starts a window that closes
-  on silence or at 6 s. Lighter than a held fist; needs the tap to be
-  learned.
+  on silence or at 6 s. Lighter than a fist; needs the tap to be learned.
 
-Recommendation: the fist to open, release to close, with the thumb tap as
-a second opener once the fist has proven itself worn. While the window is
-open the in-world label reads "Listening…" and the beat pulse pauses on
-the label, so the wearer sees the microphone is live.
+Recommendation: the fist to open and the next fist to close, with the
+thumb tap as a second opener once the fist has proven itself worn. While
+the window is open the in-world label reads "Listening…" and the beat
+pulse pauses on the label, so the wearer sees the microphone is live.
 
 ### Speech to text on the headset
 
@@ -172,6 +177,9 @@ agent is the grammar's consumer with a model in front of it.
 
 - Window open: "Listening…" on the label in front of the far hand, the
   mic's level as a thin bar under it (the wearer sees the headset hears).
+  Both stay up the whole time the window is open, up to 20 s for a fist
+  window. An agent reply that lands while a window is open goes to the
+  log, not the label.
 - Transcribed: the sentence on the label for 1.5 s.
 - Acted: the same text the hands' actions show ("desk: streamlines ·
   amber · mid"), after the sentence.
@@ -723,6 +731,8 @@ level starts at 0.01 RMS on the ±1 scale (-40 dBFS); the knob
 logs the threshold, and each close its cause: `voice: window closed after
 2.40 s (quiet 0.8 s at 0.004)`, `(release)`, `(6 s)`, `(second tap)`.
 A fist held through a tap window has to open before it presses again.
+Board #5380 later made the fist a toggle with a 20 s cap ("The fist
+toggles the window" below).
 
 **The meter.** While a window is open, a thin bar under "Listening…"
 whose length is the level, log-scaled over 40 dB (`voice::meter_width`:
@@ -1147,6 +1157,46 @@ either, but its close line still has the peak and RMS. A dump is a WAV
 the `voicefile` knob reads, so the logged path set as `voicefile`
 transcribes that window again unworn. To pull one: `adb exec-out "run-as
 dev.fosfora.xr cat files/voice/window-001.wav" > window-001.wav`.
+
+## The fist toggles the window (board #5380)
+
+Kevin wore the voice path on Nov 12 and asked for the fist to toggle
+listening instead of holding the window open. The rules, in `PushToTalk`:
+
+- A fist counts once it has lasted 0.15 s (`DWELL_S`), for opening and
+  closing alike. A shorter one is a tracking glitch or a grab.
+- A fist opens the window, and the next fist closes it (`Close::Fist`).
+  The hand has to open between the two.
+- A fist counts once. The fist that opened the window does not close it
+  while it is held. The fist that closed it does not reopen it while it is
+  held, even after the transcription has returned.
+- A fist window closes at 20 s (`FIST_MAX_S`). Whisper takes 30 s chunks,
+  and the encoder window for 20 s is 1064 frames (`audio_ctx`), inside its
+  1500.
+- A fist window has no quiet closer and ignores taps, so a pause
+  mid-sentence does not cut it off.
+- A tap window is unchanged. It closes after 0.8 s under the quiet level
+  once speech has been heard, on a second tap, or at 6 s (`MAX_S`).
+- "Listening…" and its meter stay up for the whole window, its cap plus
+  1 s (`voice::max_s`). An agent reply that lands while a window is open is
+  logged as before and skips the label, with `voice agent: the reply's
+  label is skipped, a voice window is open`.
+- With voice on, Murmur still sees the left fist as an open hand, since a
+  fist is still the voice gesture everywhere.
+
+**Log.** The launch line reads `voice: openers the left fist (the next
+fist closes it, or 20 s) and a thumb tap (closes after 0.8 s under 0.0100
+RMS, debug.fosfora.voicequiet, a second tap, or 6 s)`. A fist's close line
+gives `(fist)` where it gave `(release)`, as in `voice: window closed after
+4.20 s (fist) · …`. A cap gives `(20 s)` for a fist window and `(6 s)` for
+a tap window. The flock line reads `pose: voice on, the left fist toggles
+the voice window and is no predator; the right fist is`.
+
+**Cost.** A fist window holds up to 20 s of audio where it held 6 s. The
+capture buffer reserves room for 20 s of 48 kHz stereo (7.7 MB) when a
+window opens. A long window takes longer to transcribe, and that is still
+to measure worn. The decode still stops at 64 tokens, about 45 words in
+one window.
 
 ## Open questions for Kevin
 

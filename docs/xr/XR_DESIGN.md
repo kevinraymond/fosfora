@@ -361,8 +361,9 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   Voice bullet below). The decision (`consume`) is plain data with desktop
   tests. Knob `debug.fosfora.micro 0|1`, default 1; 0 creates no action set.
 - **Voice (board #3751, `VOICE_DESIGN.md`, "V1 as built" to "V4 as built").** The left fist
-  held is a push-to-talk window, and (V4) a thumb tap on either hand opens
-  one that closes on silence; the transcription shows on the label. The
+  toggles a voice window (board #5380: a fist opens it, the next fist or
+  20 s closes it), and (V4) a thumb tap on either hand opens one that
+  closes on silence; the transcription shows on the label. The
   hand menu's Voice toggle (the Music row's right cell) turns it on and
   off, saved in `hand_menu.json`. The Agent row (board #3776, under the
   effect's) picks the agent's provider among what the headset has (local,
@@ -694,7 +695,7 @@ beyond raw tip distance, and a proposal. Steps 1, 3 and 5 are built (see
   curl under 55 mm), palm up (normal within 37° of up), open; hands together
   under 0.30 m. Murmur's hand behaviors read them; the Flux lift reads an
   open far palm held still, facing down. With voice on (board #3751, V4)
-  the left fist is the voice path's opener everywhere, so Murmur sees an
+  the left fist toggles the voice window everywhere, so Murmur sees an
   open left hand and only the right fist is a predator; with voice off,
   either fist is.
 
