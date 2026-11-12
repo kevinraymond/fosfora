@@ -358,6 +358,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.immerseopen 0            (board #5409: no opening this launch, neither "Sit back and relax" nor its
     //       7 s at the plain room and the glide, for measurement runs and captures; the music's start glides to the show in about 2 s;
     //       unset or 1, the opening; read at launch)
+    //   adb shell setprop debug.fosfora.immerselow 0.42          (board #5409: the immersion level at the bottom of the song's range, a breakdown,
+    //       0..1; live: polled once a second and logged on a change, the level moving to it over the attack or the release; "" back
+    //       to the default, 0.42)
     //   adb shell setprop debug.fosfora.surface "wall=none,#3=rings,1a2b3c4d=embers@0.5"   (board #3326: each room surface's behavior,
     //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[:<color>[:<band>]][@<strength>], target = an
     //       anchor UUID (32 hex, or a prefix of 8 or more unique in the room), #<k> a box by index (the log's "room <id>:" lane table;
@@ -1381,6 +1384,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         crate::roam::immerse_floor(roam.now().is_on(), seated_floor),
     );
     immersion.fix(unit_knob("debug.fosfora.immersefix"));
+    // Board #5409: the low level, live (polled with the once-a-second line).
+    let mut immerse_low =
+        crate::immerse::low_knob(debug_prop("debug.fosfora.immerselow").as_deref());
+    if let Some(low) = immerse_low {
+        immersion.set_low(low);
+    }
     let immerse_room = session.has_passthrough();
     // Board #5409: the opening, once per launch, unless the knob says no;
     // without passthrough there is no room for it to dim.
@@ -4499,6 +4508,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                     None => info!("live planes: on, no update yet"),
                 }
+            }
+            // Board #5409: the immersion low level's knob, live.
+            let low = crate::immerse::low_knob(system_prop("debug.fosfora.immerselow").as_deref());
+            if low.map(f32::to_bits) != immerse_low.map(f32::to_bits) {
+                immerse_low = low;
+                immersion.set_low(low.unwrap_or(crate::immerse::LOW_LEVEL));
+                info!("{}", immersion.low_line(low.is_some()));
             }
             // Board #5384: the immersion level once a second while the room
             // is dimmed, and once when it is back; board #5409: with the
