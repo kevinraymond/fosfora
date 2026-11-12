@@ -67,13 +67,22 @@ pub fn load_clip(path: &Path) -> Result<Clip> {
 /// longer than the cap. A decoder that panics is a refusal too, so the
 /// music thread lives on.
 ///
-/// The length is known only once the whole file is decoded: the core's
-/// decoder has no probe yet, so a long file small enough to pass the size
-/// check (a two-hour MP3) is decoded in full before it is refused.
+/// The core's probe reads the length from the container first (board
+/// #5394), so a long file small enough to pass the size check (a two-hour
+/// MP3, 115 MB on disk and about 1.4 GB decoded) is refused without being
+/// decoded. A file the probe cannot read or that states no length goes on
+/// to the decode, which reports its own error or is checked afterwards.
 fn decode_track(path: &Path) -> Result<Clip, String> {
     if let Some(why) = std::fs::metadata(path)
         .ok()
         .and_then(|m| playlist::too_large(m.len()))
+    {
+        return Err(why);
+    }
+    if let Some(why) = fosfora_app::decode::probe_file(path)
+        .ok()
+        .and_then(|p| p.duration_secs())
+        .and_then(|secs| playlist::too_long(secs as f32))
     {
         return Err(why);
     }
