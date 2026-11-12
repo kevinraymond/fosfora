@@ -53,6 +53,7 @@ every native library under `arm64-v8a`, with no 32-bit-only dependencies.
 | Main (android_main) | Android event polling, OpenXR frame loop, all wgpu submission |
 | `fosfora-audio` (existing) | Analysis chain; hands `AudioFrame` to the render side through the existing bounded channel |
 | AAudio callbacks | Capture and playback; write only to the SPSC ring buffer (no DSP in callbacks, as on desktop) |
+| `fosfora-music` (board #5385) | The Music row's tracks: decodes each whole, walks the music folders, and frees the clips the frame loop lets go of; results back over a channel the frame loop polls ("Your music") |
 | `fosfora-voice` (board #3751) | Loads the speech model at launch, then transcribes each closed push-to-talk window; results back over a channel the frame loop polls |
 | `fosfora-agent` (board #3751, V3) | One per sentence the grammar cannot match: the HTTPS call to the language model `voice.json` names and its parse; the answer back over a channel the frame loop polls |
 | `fosfora-local` (board #3751, V5) | The on-device provider: loads the decision model's spec, tokenizer and ONNX Runtime session after the speech model, then runs the cascade for each sentence the grammar misses (ONNX Runtime's intra-op threads under it, `debug.fosfora.localthreads`); answers over a per-sentence channel the frame loop polls. Never at the same time as a transcription: no voice window opens while it decides, and a sentence waits while a window is open or transcribing. Its session is parked for the process when the app goes away, never released |
@@ -294,6 +295,72 @@ renderer takes; `recording_ring.peek_latest` feeds the waveform texture.
   under "Android manifest essentials"). Later: AEC when the
   headset both plays and listens, and a real render-thread split only if the
   measurements say the CPU side is the bottleneck (it is under 1 ms now).
+
+### Your music (board #5385)
+
+*As built (`playlist.rs`, `player.rs`, `playback.rs`).* The Music row plays
+the wearer's own files. The bundled clip plays only while the music folders
+are empty.
+
+- **The two folders.** The shared `Music/` folder
+  (`/storage/emulated/0/Music`) and the app's own folder
+  (`Android/data/dev.fosfora.xr/files/Music`). The app asks Android for both
+  paths through JNI (`Environment.getExternalStoragePublicDirectory` and
+  `Context.getExternalFilesDir` with `DIRECTORY_MUSIC`) and creates its own
+  folder at launch. Each is walked four folders deep, 2000 tracks at most,
+  hidden files skipped.
+- **Putting files there.** Plug the headset into a computer over USB and
+  allow file access in the headset. Copy the files into `Music` at the top of
+  the headset's storage, or into `Android/data/dev.fosfora.xr/files/Music`.
+  The files the app reads are `.mp3`, `.ogg`, `.flac`, `.wav` and `.m4a`.
+- **The permission.** Reading `Music/` needs a runtime permission, asked for
+  at launch with the room's and the microphone's. The app targets SDK 32, so
+  it asks for `READ_EXTERNAL_STORAGE`, which Android 13 and later grant as
+  `READ_MEDIA_AUDIO` and the other media permissions. The name follows the
+  target SDK (`permissions::storage`), and the manifest declares both.
+  Without the grant the app's own folder still plays, and the launch log says
+  `Music/` was not scanned. A grant within 120 s scans it without a relaunch.
+- **The order.** The shared folder's tracks come first, then the app
+  folder's. In each, a folder's own files come before its subfolders', and
+  names sort the way people read them ("Track 2" before "Track 10"). The
+  title is the file name without its extension and its leading track number
+  ("01 - One More Time.mp3" is "One More Time"). Tags are not read.
+- **The hand menu.** The Music cell keeps play and stop in its middle, with
+  the press's words over the track's title, cut to fit. Its end boxes are
+  `<` and `>`, the previous and the next track, wrapping. A step while the
+  music plays decodes the new track while the old one plays on. Stopped, a
+  step only picks the track for the next play.
+- **The words.** "next song" (also "skip", "next track"), "previous song"
+  ("last song"), "play {song}" ("play the song {song}"), "what is playing",
+  and "scan my music" to pick up files added since the launch. A song is
+  found by its title with case and punctuation folded: the whole title wins,
+  else a unique run of its words. Several matches get a "Which one: …?"
+  reply that names them. These are grammar phrases only. The on-device
+  decision model's label set is closed, so it still knows only "music on"
+  and "music off".
+- **Play through.** With two tracks or more, the next one decodes 30 s
+  before the playing one ends, and the playback swaps it in where the last
+  one ends. One track, or the bundled clip, loops. The stream, its tap and
+  the analysis on the tap carry on across a swap.
+- **The limits.** A track is decoded whole on the music thread, about 23 MB a
+  minute (48 kHz stereo f32; a 5-minute track measured 115.2 MB on the
+  desktop, decoded in 0.21 s). While the next track waits, both are in
+  memory. A track longer than 15 minutes is refused and skipped, and so is a
+  file that does not decode. A file larger than any 15-minute track can be
+  (518 MB, 96 kHz 24-bit) is refused before its decode. The core's decoder has
+  no length probe yet, so a long but small file (a two-hour MP3) is decoded in
+  full before the length check refuses it. Streaming decode is a later step.
+- **Remembered.** The current track and the last play or stop are saved in
+  `music.json` under the config dir, beside `hand_menu.json`. A launch
+  resumes that track from its top, or stays quiet after a stop.
+  `debug.fosfora.music` overrides the saved state at launch.
+  `debug.fosfora.file`, when set, plays at launch in place of the saved track,
+  so the measurement scripts get the same clip whatever the folders hold.
+- **The log.** At launch, `music: 14 tracks (12 in Music, 2 in the app
+  folder) · resuming "<title>"`, or `music: no tracks found, playing the
+  bundled clip (put files in Music/)`. Then one line per track start with its
+  length and decode time: `music: playing "<title>" · 3:42 · decoded in
+  1.8 s`.
 
 ## Mixed reality (S7)
 
@@ -820,6 +887,8 @@ moved to `android/app/build.gradle.kts` (`namespace` / `applicationId`).
   <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API"/>
   <uses-permission android:name="com.oculus.permission.USE_SCENE"/>
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+  <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
   <uses-permission android:name="android.permission.INTERNET"/>
   <uses-permission android:name="org.khronos.openxr.permission.OPENXR"/>
   <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM"/>
@@ -886,6 +955,13 @@ unworn runs, where the dialog would sit over the view; the checks, the log and
 the pickup stay. `scripts/xr/sweep.sh` and `soak.sh` set it for their runs
 and clear it afterwards. Should the JNI layer fail, the app takes everything
 as granted and runs as it did before it asked.
+
+Board #5385 adds a third, the shared `Music/` folder's storage permission
+(`READ_EXTERNAL_STORAGE` at `targetSdk` 32, see "Your music"). It is asked for
+with the others whatever the audio source, and its log line reads like
+theirs. A grant within the 120 s logs `permission READ_EXTERNAL_STORAGE
+granted after N s: scanning Music/` and adds that folder's tracks without a
+relaunch. Denied, the app's own music folder still plays.
 
 Device check (the reviewer's recipe):
 
