@@ -106,7 +106,9 @@ pub const PORTS: [Port; 8] = [
 ];
 /// The catalogue id of the first port (`SurfaceBehavior::Aurora`).
 pub const FIRST_ID: u32 = 8;
-/// A port's light at full strength and full coverage.
+/// A port's light at full strength and full coverage, at immersion level
+/// 0; the level raises it to `immerse::ALPHA_FULL` (`immerse::peak_alpha`,
+/// board #5384).
 pub const PEAK_ALPHA: f32 = 0.5;
 /// The virtual resolution: pixels per meter of the face, and each axis'
 /// bounds.

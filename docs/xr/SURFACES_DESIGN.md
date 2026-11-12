@@ -715,3 +715,86 @@ similar). The worn gate (point at the desk, step it to amber on the mid,
 lower the strength, relaunch and find it kept), the screencaps of the
 rows and the cost of tinted ports against untinted in `MEASURED.md` are
 the reviewer's, on the device.
+
+## Immersion (Nov 12, board #5384)
+
+**Why.** The lit surfaces were light at half coverage at most over a
+passthrough image at full brightness, so the room always won and the
+surfaces looked washed out. Nothing set a passthrough style. Now the room
+gives way to the music: it shows while the song is quiet, it goes dark
+while the song is full, and the surfaces glow at their own colors then.
+
+**The level** (`immerse.rs`). A number from 0 (the plain room) to 1 (as
+dark as allowed). It follows `loudness_s`, the 3 s short-term loudness,
+so it moves with the sections and not the beats. The map is a smoothstep
+from 0.55 (−27 LUFS) to 0.75 (−15 LUFS), plus half the `buildup`, so a
+riser darkens the room ahead of the drop. A `drop` holds it at 1 for 8 s.
+One pole smooths it: 2 s rising, 4 s falling, 0.25 s after a drop. The
+bundled clip reads 0.71 to 0.73 on `loudness_s` for its whole length and
+0.14 to 0.46 on `buildup`, and no drop fires in it (the core's
+`--signal-dump`), so it plays at the full depth. A quieter intro at −22
+LUFS lands about a third of the way.
+
+**Quiet.** The level follows the song only while real audio drives the
+analysis: the music's tap or the microphones. The synthetic groove has no
+`loudness_s`, and a stopped clip over it brings the room back. So does an
+rms under 0.02 for 0.3 s (the analysis's silence gate puts it at 0). Then
+the level falls with 0.35 s, and the room is back in about 1.35 s.
+`loudness_s` alone would take its window to fall.
+
+**The room.** Each frame the passthrough layer's opacity is
+`1 - level * (1 - floor)`, through `xrPassthroughLayerSetStyleFB` with
+the edges off. The floor, 0.15, is the darkest the room gets; it is a
+field of the type, so a mode that needs more of the room can raise it.
+The `openxr` 0.22 wrapper has no style call, so `room.rs` calls the
+extension's function pointer. The call goes out after the frame, only
+when the opacity moves by a 1/64 step, the first one only once the level
+leaves 0, so a run that stays quiet makes no call and looks exactly as
+before. The passthrough layer
+is the bottom of `[passthrough, faces, main]` (D2c) and the blend mode is
+OPAQUE, so what shows under a dimmed image is the compositor's black.
+That is the layer order's reading; the device confirms it.
+
+**The surfaces.** Every lit face's peak alpha rises with the same level.
+A port's goes from its 0.5 to 1.0, `0.5 + 0.5 * level`. The built-in
+behaviors rise by the same ratio, capped at 1: the streamlines' and the
+curls' 0.55 reach 1.0, the pulse's 0.45 reaches 0.9, the rings' and the
+spectrum's 0.25 times their gain reach 0.5 times it. One helper
+(`immerse::lift_rows`) applies it to the `color` row of both blocks, so
+the constants stay the level-0 values and level 0 is bit for bit the old
+look. The lane's strength still multiplies it. Without passthrough
+(the quad and particles test modes) the level is taken as 0: there is no
+room to dim.
+
+**The depth.** How far the wearer lets it go: off (0), low (0.5) or full
+(1), full by default. It multiplies the level, and a change glides over
+0.5 s. The hand menu's Agent row holds it in its right cell, "Immersion:
+full", each press the next of off, low and full; a new row would push the
+debug panel's fullest block past its header. It is saved in
+`hand_menu.json` as `"immerse"`. By voice, "darker" and "lighter" step it
+("dim the lights", "lights down", "lights up", "more immersion"), "lights
+on" sets it off, "lights off", "lights out" and "full dark" full, and
+"immersion low" (or off, full) sets that depth. The label says where it
+came to: "immersion full". "darker" alone is the room's now; "the desk
+darker" still dims the desk. The agent and the on-device model have no
+immersion action: the model's kinds are a closed set.
+
+**The knobs** (read at launch). `debug.fosfora.immerse 0..1` is the depth
+for this launch, not saved; a press takes over. `debug.fosfora.immersefloor`
+sets the floor. `debug.fosfora.immersefix 0..1` pins the level whatever
+the audio and the depth, for unworn screencaps (on this OS version
+`adb exec-out screencap -p` includes the passthrough behind the app's
+layers).
+
+**Logs.** At launch: `immersion: full · floor 0.15 · attack 2.0 s ·
+release 4.0 s`, with the knob, the pinned level and a missing
+passthrough said when they apply. On a change of the depth: `immersion:
+low (depth 1.00 -> 0.50)`, then the menu file's save line. Once a second
+while the room is dimmed, and once when it is back: the level, the
+passthrough opacity, `loudness_s`, `buildup` and the depth. A failed
+style call warns once.
+
+**Not yet.** The device: what shows under the dimmed image (expected
+black), the screencaps at `immersefix` 0, 0.5 and 1, the worn verdict on
+the clip, the cost of the style calls, and `loudness_s` on the
+microphones, whose level depends on the room and may never reach the map.
