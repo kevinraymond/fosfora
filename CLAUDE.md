@@ -3,9 +3,7 @@
 ## Attribution
 
 Commit under the git identity that is already configured. Never change `user.name` or
-`user.email`, and never put anyone else's name or email on a commit. Kevin's commits carry
-his name because his machine is set up that way. A contributor's commits carry the
-contributor's own name.
+`user.email`, and never put anyone else's name or email on a commit.
 
 Never add AI attribution to anything that reaches the repository or GitHub:
 
