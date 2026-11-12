@@ -2823,6 +2823,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .hit()
                         .filter(|_| controls.edit_room)
                         .map(|h| h.index),
+                    tracks: crate::intent::Tracks::default(),
                 };
                 // V4: the sentence as clauses ("amber on the desk and the
                 // walls on the bass"), applied in order; "what can I say"
@@ -2993,6 +2994,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 behaviors: &crate::surfaces::SurfaceBehavior::ALL,
                                 surfaces: crate::intent::surfaces(&lane_boxes),
                                 pointed,
+                                tracks: crate::intent::Tracks::default(),
                             };
                             let text = format!(
                                 "{}\n{}",
@@ -3013,6 +3015,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 behaviors: &crate::surfaces::SurfaceBehavior::ALL,
                                 surfaces: crate::intent::surfaces(&lane_boxes),
                                 pointed,
+                                tracks: crate::intent::Tracks::default(),
                             };
                             let outcomes: Vec<Result<crate::intent::Intent, crate::intent::Miss>> =
                                 reply

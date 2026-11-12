@@ -1022,6 +1022,7 @@ impl RoomVocabulary {
             behaviors: &SurfaceBehavior::ALL,
             surfaces: self.surfaces.clone(),
             pointed: self.pointed,
+            tracks: crate::intent::Tracks::default(),
         }
     }
 }
