@@ -3003,3 +3003,47 @@ Embers, Flock) build one after another for 2.6 to 3.7 s of that, about
 0.9 s each; the passthrough layer is up at +2.9 s; whisper and the local
 model load on their threads. Building only the launch effect up front
 would take 2 to 3 s off (board #4194).
+
+## The first worn voice windows, the window's audio in the log, and surface labels (board #5375, #5378)
+
+Quest 3, Nov 11 and 12, 2026. The headset upgraded itself from Horizon OS v207 to
+v209 (build Nov 3, incremental 52641960034500520) at 08:10 on Nov 11 and rebooted
+for it on its own. The version row at the top of this file was written on v207.
+
+**The live microphone to whisper, worn (Kevin).** V1 to V5 went through the
+`voicefile` and `say` knobs, so Nov 11 was the first time a spoken sentence
+reached whisper from the headset's microphones. The first three windows on v207
+(tip 2750d6b) all logged `heard nothing`, and the log could not say why: the raw
+text was not logged when it was an annotation, and nothing gave the window's
+level. 905567e adds both and a `debug.fosfora.voicedump` knob. On v209 with that
+build:
+
+| window | audio | peak | RMS | whisper |
+|---|---|---|---|---|
+| fist released at once | 0.64 s | 0.0008 | 0.0001 | `( ( ( ( (` (a hallucination on near-silence), NoMatch |
+| held, "Make the wall blue. Make the wall blue." | 5.9 s | 0.13 | 0.017 | exact, Ambiguous over walls 1, 6, 8, 14 |
+| held, "Make wall 16 blue." | 5.9 s | 0.13 | 0.017 | exact, "No surface called wall 16" |
+| held, "What walls exist?" | 5.9 s | 0.19 | 0.015 | exact, NoMatch to the grammar, the local agent answered Describe(Kind(walls)) in 366 ms |
+| held, silent | 5.9 s | 0.0007 | 0.0000 | `[ Silence ]`, logged as `heard nothing ("[ Silence ]")` |
+
+Speech at the visor reads peaks of 0.13 to 0.19 and transcribes exactly in
+460 to 530 ms for a 6 s window. A window the wearer closes before speaking reads
+under 0.001 and whisper invents punctuation for it. The `heard nothing` cases
+of Nov 11 were the fist released before the sentence: the window is open only
+while the fist is held, and nothing in the world said so. That is board #5377.
+The agent's answer to "what walls exist" listed behaviors, not names, which is
+part of #5378.
+
+**Surface labels (86db1ef), unworn, Nov 12 04:10, `debug.fosfora.labels 1`.**
+The live room (23 anchors returned, 21 kept, 17 lit) with the headset on the
+floor looking at the ceiling. A screen capture (which on v209 includes the
+passthrough image) shows the labels as blue pills with white text on their
+surfaces, "storage 15" readable at about 3 m, two more at a grazing angle.
+72 fps, 0 stale, App 5.46 ms, GPU 0.57, with the 2048 x 1536 atlas allocated
+(about 12.6 MB). Worn gates: the labels on a fist and for 4 s after a miss,
+legibility on the floor and ceiling from a chair, and whether hidden walls
+should be labeled.
+
+**Log capture.** The main logcat buffer (256 KiB) holds about 70 s of this
+app's output and reset to that size on the v209 reboot. A worn session streams
+`adb logcat -v time` to a file from the start.
