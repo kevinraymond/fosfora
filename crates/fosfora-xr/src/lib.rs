@@ -28,6 +28,7 @@ mod assets;
 mod audio;
 pub mod box_cells;
 pub mod canvas;
+pub mod edge_bars;
 pub mod env_depth;
 pub mod faces_layer;
 pub mod footprints;
