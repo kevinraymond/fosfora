@@ -30,6 +30,7 @@ pub mod box_cells;
 pub mod canvas;
 pub mod env_depth;
 pub mod faces_layer;
+pub mod footprints;
 pub mod gesture;
 #[cfg(target_os = "android")]
 mod gfx;
