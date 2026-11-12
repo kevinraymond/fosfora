@@ -23,7 +23,8 @@
 //! [`RANGE_LOW_P`] and [`RANGE_HIGH_P`] percentiles), at least [`MIN_SPAN`]
 //! apart, the span widened downward so a flat song sits at its top. The top
 //! [`TOP_SHARE`] of the range is full. The position maps onto
-//! [`LOW_LEVEL`]..1, and `buildup` over [`BUILD_FROM`] adds up to
+//! [`LOW_LEVEL`]..1 (`debug.fosfora.immerselow`, live: [`low_knob`]), and
+//! `buildup` over [`BUILD_FROM`] adds up to
 //! [`BUILDUP_LIFT`], scaled by the position, so a build closes the room in
 //! while a breakdown, whose missing bass also reads as tension, still opens
 //! it. A `drop` holds the target at 1 for [`DROP_HOLD_S`], reached with
@@ -161,9 +162,12 @@ pub const OPEN_LEVEL: f32 = 0.35;
 /// this (s): the time constant is a third of it, 95 % of the way.
 pub const RESUME_S: f32 = 2.0;
 
-/// The level of a song at the bottom of its own range, a breakdown: about
-/// three quarters of the room back, and still dimmer than the plain room.
-pub const LOW_LEVEL: f32 = 0.2;
+/// The level of a song at the bottom of its own range, a breakdown: a
+/// little more than half the room back, so a breakdown, after the release,
+/// sits about half dimmed (worn, 0.2 brought the room back too bright).
+/// Over [`OPEN_LEVEL`], so the music never shows the room as much as the
+/// opening does, and the blend from it after the opening only darkens.
+pub const LOW_LEVEL: f32 = 0.42;
 /// How far back the history looks (s): longer than a breakdown, so the
 /// range keeps the full section's high through one.
 pub const WINDOW_S: f32 = 30.0;
@@ -343,12 +347,23 @@ pub fn position(loudness_s: f32, range: (f32, f32)) -> f32 {
 }
 
 /// The level the song asks for at `position`, before the smoothing and the
-/// depth: [`LOW_LEVEL`] to 1 along it, plus [`BUILDUP_LIFT`] times the
-/// share of `buildup` over [`BUILD_FROM`], times the position; at most 1.
-pub fn follow(position: f32, buildup: f32) -> f32 {
+/// depth: `low` (the low level, [`LOW_LEVEL`] unless the knob says) to 1
+/// along it, plus [`BUILDUP_LIFT`] times the share of `buildup` over
+/// [`BUILD_FROM`], times the position; at most 1.
+pub fn follow(position: f32, buildup: f32, low: f32) -> f32 {
     let p = unit(position);
+    let low = unit(low);
     let tension = ((unit(buildup) - BUILD_FROM) / (1.0 - BUILD_FROM)).max(0.0);
-    (LOW_LEVEL + (1.0 - LOW_LEVEL) * p + BUILDUP_LIFT * tension * p).min(1.0)
+    (low + (1.0 - low) * p + BUILDUP_LIFT * tension * p).min(1.0)
+}
+
+/// `debug.fosfora.immerselow`'s value as the low level: a number, clamped
+/// to 0..1; `None` when it is unset or not a number (then [`LOW_LEVEL`]).
+pub fn low_knob(value: Option<&str>) -> Option<f32> {
+    value
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(0.0, 1.0))
 }
 
 /// `loudness_s` over the last [`WINDOW_S`], and its range.
@@ -462,6 +477,9 @@ pub struct Immersion {
     shown_depth: f32,
     /// The passthrough image's opacity at level 1.
     floor: f32,
+    /// The level at the bottom of the song's range ([`LOW_LEVEL`], or
+    /// `debug.fosfora.immerselow`).
+    low: f32,
     /// The music's level, smoothed, before the depth.
     music: f32,
     /// What [`Self::step`] returned last.
@@ -497,6 +515,7 @@ impl Immersion {
             depth,
             shown_depth: depth,
             floor: unit(floor),
+            low: LOW_LEVEL,
             music: 0.0,
             level: 0.0,
             drop_s: 0.0,
@@ -528,6 +547,28 @@ impl Immersion {
 
     pub fn set_floor(&mut self, floor: f32) {
         self.floor = unit(floor);
+    }
+
+    pub fn low(&self) -> f32 {
+        self.low
+    }
+
+    /// The level at the bottom of the song's range, 0..1 (the live knob):
+    /// the level moves to it over the attack or the release.
+    pub fn set_low(&mut self, low: f32) {
+        self.low = unit(low);
+    }
+
+    /// The log line for a change of the low level: "immersion: low level
+    /// 0.45 (debug.fosfora.immerselow)", or the constant's when the knob
+    /// went unset.
+    pub fn low_line(&self, from_knob: bool) -> String {
+        let why = if from_knob {
+            "debug.fosfora.immerselow"
+        } else {
+            "the default"
+        };
+        format!("immersion: low level {:.2} ({why})", self.low)
     }
 
     /// Pin the level (`Some`, 0..1) whatever the audio and the depth, or
@@ -630,7 +671,9 @@ impl Immersion {
         };
         self.range = range;
         self.position = range.map_or(0.0, |r| position(input.loudness_s, r));
-        let followed = range.map_or(OPEN_LEVEL, |_| follow(self.position, input.buildup));
+        let followed = range.map_or(OPEN_LEVEL, |_| {
+            follow(self.position, input.buildup, self.low)
+        });
         let target = OPEN_LEVEL + (followed - OPEN_LEVEL) * fill;
         self.music = match self.opening {
             Opening::Waiting => {
@@ -732,16 +775,22 @@ impl Immersion {
             .fixed
             .map(|l| format!(" \u{b7} pinned at {l:.2} (debug.fosfora.immersefix)"))
             .unwrap_or_default();
+        let low = if (self.low - LOW_LEVEL).abs() < 1e-6 {
+            ""
+        } else {
+            " (debug.fosfora.immerselow)"
+        };
         let room = if passthrough {
             ""
         } else {
             " \u{b7} no passthrough: the room and the surfaces stay as they are"
         };
         format!(
-            "immersion: {depth}{knob} \u{b7} floor {:.2} \u{b7} {opening} \u{b7} follows loudness_s within its last {WINDOW_S:.0} s (p{:.0}..p{:.0}, span {MIN_SPAN:.2} at least) onto {LOW_LEVEL:.2}..1 \u{b7} attack {ATTACK_S:.1} s \u{b7} release {RELEASE_S:.1} s{pinned}{room}",
+            "immersion: {depth}{knob} \u{b7} floor {:.2} \u{b7} {opening} \u{b7} follows loudness_s within its last {WINDOW_S:.0} s (p{:.0}..p{:.0}, span {MIN_SPAN:.2} at least) onto {:.2}..1{low} \u{b7} attack {ATTACK_S:.1} s \u{b7} release {RELEASE_S:.1} s{pinned}{room}",
             self.floor,
             RANGE_LOW_P * 100.0,
             RANGE_HIGH_P * 100.0,
+            self.low,
         )
     }
 
@@ -1064,13 +1113,14 @@ mod tests {
         );
         assert_close!(position(0.5, (0.4, 0.6)), 2.0 / 3.0);
         assert_close!(position(f32::NAN, (0.4, 0.6)), 0.0);
-        // The follow: LOW_LEVEL..1, the tension lifting it in proportion
-        // to the position, none at the bottom.
-        assert_close!(follow(0.0, 0.9), LOW_LEVEL);
-        assert_close!(follow(1.0, 0.0), 1.0);
-        assert_close!(follow(0.5, BUILD_FROM), 0.6);
-        assert_close!(follow(0.5, 0.7), 0.85);
-        assert_close!(follow(0.9, 1.0), 1.0);
+        // The follow: low..1, the tension lifting it in proportion to the
+        // position, none at the bottom.
+        assert_close!(follow(0.0, 0.9, LOW_LEVEL), LOW_LEVEL);
+        assert_close!(follow(1.0, 0.0, LOW_LEVEL), 1.0);
+        assert_close!(follow(0.5, BUILD_FROM, 0.2), 0.6);
+        assert_close!(follow(0.5, 0.7, 0.2), 0.85);
+        assert_close!(follow(0.5, BUILD_FROM, LOW_LEVEL), 0.71);
+        assert_close!(follow(0.9, 1.0, LOW_LEVEL), 1.0);
     }
 
     #[test]
@@ -1102,16 +1152,48 @@ mod tests {
         let levels = run(&mut im, 110.0, &|t| with_breakdown(60.0, 20.0, t));
         let at = |s: f32| (s * FPS) as usize;
         assert!(levels[at(59.0)] > 0.95, "{}", levels[at(59.0)]);
-        // Open within 8 s of its start, held open to its end, its high
-        // tension notwithstanding.
+        // Open (within 0.15 of the low level) within 8 s of its start,
+        // held open to its end, its high tension notwithstanding.
         let bd = &levels[at(60.0)..at(80.0)];
-        let open = first(bd, |l| l < 0.35).expect("open");
+        let open = first(bd, |l| l < LOW_LEVEL + 0.15).expect("open");
         assert!(open < 8.0, "{open}");
-        assert!(bd[at(open)..].iter().all(|&l| l < 0.35));
+        assert!(bd[at(open)..].iter().all(|&l| l < LOW_LEVEL + 0.15));
         assert!(spread(bd).0 < LOW_LEVEL + 0.03, "{:?}", spread(bd));
         // Closed within 7 s of its end.
         let closed = first(&levels[at(80.0)..], |l| l > 0.9).expect("closed");
         assert!(closed < 7.0, "{closed}");
+    }
+
+    #[test]
+    fn the_low_level_is_a_live_knob() {
+        for unset in [None, Some(""), Some("dark"), Some("nan")] {
+            assert_eq!(low_knob(unset), None, "{unset:?}");
+        }
+        assert_eq!(
+            [" 0.5 ", "1.7", "-1"].map(|v| low_knob(Some(v))),
+            [Some(0.5), Some(1.0), Some(0.0)]
+        );
+        // Changed 18 s into a breakdown: the room goes to the new low
+        // level over the attack.
+        let mut im = follower();
+        run(&mut im, 58.0, &|t| with_breakdown(40.0, 30.0, t));
+        assert!((im.level() - LOW_LEVEL).abs() < 0.05, "{}", im.level());
+        im.set_low(0.6);
+        run(&mut im, 8.0, &|t| with_breakdown(40.0, 30.0, 58.0 + t));
+        assert!((im.level() - 0.6).abs() < 0.05, "{}", im.level());
+        assert_eq!(
+            im.low_line(true),
+            "immersion: low level 0.60 (debug.fosfora.immerselow)"
+        );
+        assert!(
+            im.launch_line(false, true)
+                .contains(" onto 0.60..1 (debug.fosfora.immerselow) \u{b7} ")
+        );
+        im.set_low(LOW_LEVEL);
+        assert_eq!(
+            im.low_line(false),
+            "immersion: low level 0.42 (the default)"
+        );
     }
 
     /// After 40 s full and 8 s of breakdown, a 12 s build from the
@@ -1156,7 +1238,7 @@ mod tests {
         // back to the follow over the release.
         let mut im = follower();
         run(&mut im, 48.0, &|t| with_breakdown(40.0, 30.0, t));
-        assert!(im.level() < 0.35, "{}", im.level());
+        assert!(im.level() < LOW_LEVEL + 0.15, "{}", im.level());
         let levels = run(&mut im, DROP_HOLD_S, &|t| Input {
             drop: t < 0.5 / FPS,
             ..song(0.62, 0.75)
@@ -1165,7 +1247,11 @@ mod tests {
         assert!(at(0.75) > 0.9 && at(1.0) > 0.95, "{} {}", at(0.75), at(1.0));
         assert!(levels[FPS as usize..].iter().all(|&l| l > 0.95));
         let levels = run(&mut im, 2.0 * RELEASE_S, &|_| song(0.62, 0.75));
-        assert!(levels[levels.len() - 1] < 0.35, "{:?}", levels.last());
+        assert!(
+            levels[levels.len() - 1] < LOW_LEVEL + 0.1,
+            "{:?}",
+            levels.last()
+        );
     }
 
     #[test]
@@ -1188,7 +1274,7 @@ mod tests {
             let section = &levels[at(k as f32 * 20.0)..at((k + 1) as f32 * 20.0)];
             let (lo, hi) = spread(section);
             if k.is_multiple_of(2) {
-                assert!(lo < 0.3, "section {k}: {lo}");
+                assert!(lo < LOW_LEVEL + 0.1, "section {k}: {lo}");
             } else {
                 assert!(hi > 0.9, "section {k}: {hi}");
             }
@@ -1220,7 +1306,7 @@ mod tests {
         assert!(closed < 12.0, "{closed}");
         // Without the track change the louder song's range holds it open.
         let levels = quieter_after_louder(false);
-        assert!(levels[(20.0 * FPS) as usize] < 0.4);
+        assert!(levels[(20.0 * FPS) as usize] < LOW_LEVEL + 0.1);
     }
 
     #[test]
@@ -1279,9 +1365,9 @@ mod tests {
         let mut im = follower();
         run(&mut im, 30.0, &flat);
         assert!(im.level() > 0.95);
-        // The whole track's range puts 0.8 a third of the way up it.
+        // The whole track's range puts 0.8 a fifth of the way up it.
         let plan = SongPlan {
-            range: (0.7, 0.95),
+            range: (0.75, 1.0),
             cues: vec![Cue {
                 at_s: 90.0,
                 kind: CueKind::Drop,
@@ -1289,9 +1375,9 @@ mod tests {
         };
         run_plan(&mut im, 20.0, &|_| song(0.8, 0.2), Some(&plan));
         assert_eq!(im.range(), Some(plan.range));
-        let want = follow(position(0.8, plan.range), 0.2);
+        let want = follow(position(0.8, plan.range), 0.2, LOW_LEVEL);
         assert!((im.level() - want).abs() < 0.01, "{} vs {want}", im.level());
-        assert!(want < 0.7);
+        assert!(want < 0.65);
         // Without it, the history's range again: the top.
         run(&mut im, 20.0, &|_| song(0.8, 0.2));
         assert!(im.level() > 0.95);
@@ -1465,13 +1551,13 @@ mod tests {
         let im = Immersion::new(1.0, IMMERSE_FLOOR);
         assert_eq!(
             im.launch_line(false, true),
-            "immersion: full \u{b7} floor 0.00 \u{b7} opening \"Sit back and relax\" 4.0 s, then 0.35 over 3.0 s \u{b7} follows loudness_s within its last 30 s (p10..p90, span 0.05 at least) onto 0.20..1 \u{b7} attack 2.0 s \u{b7} release 4.0 s"
+            "immersion: full \u{b7} floor 0.00 \u{b7} opening \"Sit back and relax\" 4.0 s, then 0.35 over 3.0 s \u{b7} follows loudness_s within its last 30 s (p10..p90, span 0.05 at least) onto 0.42..1 \u{b7} attack 2.0 s \u{b7} release 4.0 s"
         );
         let mut im = Immersion::new(0.75, 0.3);
         im.fix(Some(0.8));
         assert_eq!(
             im.launch_line(true, false),
-            "immersion: 0.75 (debug.fosfora.immerse) \u{b7} floor 0.30 \u{b7} no opening (pinned) \u{b7} follows loudness_s within its last 30 s (p10..p90, span 0.05 at least) onto 0.20..1 \u{b7} attack 2.0 s \u{b7} release 4.0 s \u{b7} pinned at 0.80 (debug.fosfora.immersefix) \u{b7} no passthrough: the room and the surfaces stay as they are"
+            "immersion: 0.75 (debug.fosfora.immerse) \u{b7} floor 0.30 \u{b7} no opening (pinned) \u{b7} follows loudness_s within its last 30 s (p10..p90, span 0.05 at least) onto 0.42..1 \u{b7} attack 2.0 s \u{b7} release 4.0 s \u{b7} pinned at 0.80 (debug.fosfora.immersefix) \u{b7} no passthrough: the room and the surfaces stay as they are"
         );
         let mut im = Immersion::new(1.0, IMMERSE_FLOOR);
         im.skip_opening("debug.fosfora.immerseopen 0");
