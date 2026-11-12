@@ -102,15 +102,17 @@ impl ShaderWatcher {
             &assets_dir().join("shaders"),
             &assets_dir().join("effects"),
             &crate::trama::effect::trama_effects_dir(),
+            &crate::trama::dirs::extra_dirs(),
         )
     }
 
     /// The watcher over explicit directories, so a test can point it at a
     /// scratch tree instead of the real assets.
-    fn watching(
+    pub(crate) fn watching(
         shader_dir: &std::path::Path,
         effects_dir: &std::path::Path,
         trama_dir: &std::path::Path,
+        extra_trama: &[PathBuf],
     ) -> Self {
         // Absolute, all three. In the dev workflow `assets_dir()` is the
         // RELATIVE path `assets`, while notify reports absolute paths — so
@@ -122,6 +124,8 @@ impl ShaderWatcher {
             &absolute(effects_dir),
             &absolute(trama_dir),
         );
+        let extra_trama: Vec<PathBuf> = extra_trama.iter().map(|p| absolute(p)).collect();
+        let extra_route = extra_trama.clone();
         let (tx, rx): (Sender<PathBuf>, Receiver<PathBuf>) = crossbeam_channel::unbounded();
         let (pfx_tx, pfx_rx): (Sender<PathBuf>, Receiver<PathBuf>) = crossbeam_channel::unbounded();
         let (trama_tx, trama_rx): (Sender<PathBuf>, Receiver<PathBuf>) =
@@ -134,7 +138,12 @@ impl ShaderWatcher {
                     for event in events {
                         if event.kind == DebouncedEventKind::Any {
                             let path = event.path.clone();
-                            let _ = match route(&path) {
+                            let routed = if crate::trama::dirs::is_effect_in(&path, &extra_route) {
+                                Route::Trama
+                            } else {
+                                route(&path)
+                            };
+                            let _ = match routed {
                                 Route::Shader => tx.send(path),
                                 Route::Pfx => pfx_tx.send(path),
                                 Route::Trama => trama_tx.send(path),
@@ -149,7 +158,7 @@ impl ShaderWatcher {
         let mut failed: Vec<String> = Vec::new();
         let debouncer = match debouncer {
             Ok(mut debouncer) => {
-                for (dir, mode, what) in [
+                let mut dirs = vec![
                     (shader_dir, notify::RecursiveMode::Recursive, "shader"),
                     (effects_dir, notify::RecursiveMode::Recursive, ".pfx"),
                     (
@@ -157,7 +166,10 @@ impl ShaderWatcher {
                         notify::RecursiveMode::NonRecursive,
                         "trama effect",
                     ),
-                ] {
+                ];
+                let extra = notify::RecursiveMode::NonRecursive;
+                dirs.extend(extra_trama.iter().map(|d| (d, extra, "trama effect")));
+                for (dir, mode, what) in dirs {
                     if !dir.exists() {
                         continue;
                     }
@@ -190,6 +202,9 @@ impl ShaderWatcher {
         seed(shader_dir, true, &mut seen);
         seed(effects_dir, true, &mut seen);
         seed(trama_dir, false, &mut seen);
+        for dir in &extra_trama {
+            seed(dir, false, &mut seen);
+        }
 
         Self {
             _debouncer: debouncer,
@@ -281,8 +296,12 @@ mod tests {
             .collect();
         let relative = |abs: &Path| up.join(abs.strip_prefix("/").unwrap());
         assert!(relative(&trama).is_relative() && relative(&trama).is_dir());
-        let mut w =
-            ShaderWatcher::watching(&relative(&shaders), &relative(&effects), &relative(&trama));
+        let mut w = ShaderWatcher::watching(
+            &relative(&shaders),
+            &relative(&effects),
+            &relative(&trama),
+            &[],
+        );
 
         // Poll the way the app does. `quiet` waits out the whole window (the
         // debounce is 100 ms); `next` returns as soon as something arrives.
@@ -365,7 +384,7 @@ mod tests {
             return;
         }
 
-        let mut w = ShaderWatcher::watching(&shaders, &effects, &trama);
+        let mut w = ShaderWatcher::watching(&shaders, &effects, &trama, &[]);
         std::fs::set_permissions(&shaders, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let notice = w.take_degraded_notice();
