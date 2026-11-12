@@ -549,6 +549,76 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     box explains loses its occlusion for up to one mesh cell plus the
     margin, which matters only for what is behind that background. It
     does not sharpen an edge no box explains.
+- **Edge bars (board #5420, `edge_bars.rs`).** Bars rise and fall along
+  the edges of each plane and box, so the room's outline is drawn as the
+  spectrum. It is off until it has been worn (`debug.fosfora.edgebars 1`
+  turns it on).
+  - **What is drawn where.** The shapes are the boxes drawn as occluders
+    this frame: the scanned boxes, and the live planes and closed boxes
+    while they are shown, at their fade. Hidden walls and the stage floor
+    occlude but get no outline, the hands are not boxes, and with
+    `debug.fosfora.occluders 0` nothing is outlined. The occluder uniform
+    carries neither a hidden wall's flag nor a live shape's fade, so the
+    frame hands the boxes over where it assembles the obstacle block. A
+    plane outlines its face toward the head. A volume outlines the faces
+    turned toward the head, one to three. Each edge is a strip on its
+    face, lifted 1 cm as the surfaces are, and the bars grow in from the
+    edge. The strips of a face meet at its corners on a 45 degree miter,
+    so they never overlap. An edge two visible faces share gets bars on
+    both, which reads as the edge itself glowing. `edgebars 2` stands the
+    bars off the edge along the face's normal instead, a fence of light
+    on a table's rim.
+  - **The bars.** They are the wall spectrum's bars, normalized per bar,
+    running from an edge's low end to its high end. A box corner is a low
+    end when an even number of its signs along the box's axes is
+    positive. So the direction alternates around every face, the same
+    band meets itself at every corner, and an edge two faces share runs
+    the same way on both. An edge shows every bar the canvas has while
+    each stays at least 3 cm wide; a shorter edge merges neighbors by
+    their mean. With the default 24 bars an edge over 2.9 m gets bars
+    wider than 12 cm (16.7 cm on a 4 m wall). A line 4 mm wide runs along
+    the whole edge while music plays, so the outline stays when a band
+    is at zero. In silence (immersion's quiet) nothing draws. The look is
+    the wall spectrum's: brightest at the tip, a cap line, soft sides.
+  - **The scale rule.** The tallest bar is `edgebarsheight` (default
+    0.12) of the face's smaller side, clamped to 2 to 20 cm, so a 40 cm
+    box and a 4 m wall read alike: 4.8 cm on the box, 20 cm on the wall.
+    A face under 4.4 cm across gets strips half its width, which meet in
+    its middle.
+  - **Color and brightness.** The surface's own color, from its lane's
+    color index. A live shape takes its kind's palette color. The peak
+    alpha is 0.25 with the room plain and rises to 0.7 at full immersion,
+    times `edgebarsgain` and a live shape's fade.
+  - **Clear of the neighbors.** A scene plane is a 4 cm slab centered on
+    the surface. Where a wall meets the floor or another wall, the
+    neighbor's slab covers the first 2 cm of the face along that edge
+    and would hide the line. Each edge moves in along its face until it
+    is out of every other box grown by 5 mm, by at most 6 cm. At a wall's
+    junctions that is 2.5 cm.
+  - **Occlusion and cost.** The strips draw in the eye pass after every
+    occluder and the lit faces, before the sprites, with the surfaces'
+    pipeline state (depth-tested, no depth write, the same bias). The
+    face's own box never hides its strips: the 1 cm lift alone keeps a
+    strip over 400 float steps in front of the face's depth at 4 m, more
+    at grazing angles, and the bias only adds to that. One uniform of
+    31,008 bytes holds up to 384 strips. A frame writes only the rows it
+    uses, and each eye draws them in one instanced call. The strips cover
+    27 % of a 4 x 2.5 m wall, up to 46 % of a square face under 1.7 m,
+    and 24 % of a 4 x 4 x 2.5 m room's walls, floor and ceiling. The
+    fragment has no loop: a merged bar's mean comes from two running sums.
+  - **Knobs**, read at launch and polled once a second: `edgebars 0|1|2`
+    (default 0), `edgebarsgain` (0 to 4, default 1) and `edgebarsheight`
+    (0 to 0.5, default 0.12). The `edge bars:` log lines give the state at
+    launch, each change, and what is outlined.
+  - **What it does not do.** It is a layer over every shape, not a lane
+    behavior: the lanes keep drawing, and no room file or lane format
+    changes. Off, the frame is what it was, with no strips, no buffer
+    write and no draw. The outline is where the box is, so a box a few
+    centimeters off its object draws its outline that far off. Where
+    boxes overlap, an edge inside another box moves in by up to 6 cm and
+    is hidden if it is still inside. A face larger than the wall it sits
+    on draws its outline past the wall's edge, where a neighboring wall
+    hides it or it floats in the open.
 - **Sim.** An obstacle uniform block (64 spheres, 32 boxes, restitution,
   margin) read by `collide()` after integration: push out along the sphere
   normal or the nearest box face, reflect the inward velocity (restitution

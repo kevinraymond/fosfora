@@ -74,9 +74,9 @@
 //! each): [`UNIFORM_BYTES`] bytes, of which a frame writes 288 plus 80 per
 //! strip. A strip of length L and height h covers (L - h) h, so a face's
 //! strips cover 27 % of a 4 x 2.5 m wall, up to 46 % of a square face under
-//! 1.67 m, and all of a face under 4 cm; the walls, floor and ceiling of a
-//! 4 x 4 x 2.5 m room 24 %. Strips write no depth and never overlap on one
-//! face, so a pixel is shaded about once.
+//! 1.67 m, and all of a face under 4.4 cm across; the walls, floor and
+//! ceiling of a 4 x 4 x 2.5 m room 24 %. Strips write no depth and never
+//! overlap on one face, so a pixel is shaded about once.
 //!
 //! **Knobs**, read at launch and polled once a second
 //! ([`EdgeBarsOptions::from_knobs`]): `debug.fosfora.edgebars 0|1|2` (off,
