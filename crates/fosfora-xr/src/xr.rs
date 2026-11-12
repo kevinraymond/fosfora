@@ -870,6 +870,14 @@ impl XrSession {
         }
     }
 
+    /// Board #5416: geometry first's knobs, live
+    /// (`EnvDepthSlot::set_geom`). Nothing without the depth.
+    pub fn set_env_depth_geom(&mut self, geom: crate::geom_first::GeomFirstOptions) {
+        if let Some(slot) = self.env_depth.as_mut() {
+            slot.set_geom(geom);
+        }
+    }
+
     /// Board #5397: the live planes' read-back on at `hz` read-backs a
     /// second, or off with `None` (`EnvDepth::set_planes`, applied from the
     /// next frame). Off drops a grid not yet taken.
@@ -1083,6 +1091,18 @@ impl XrSession {
         // The faces layer's occluder runs at its own size (board #3793).
         let faces_extents: Vec<[u32; 2]> = self.faces.iter().map(Eye::size).collect();
         let faces_on = !self.faces.is_empty();
+        // Board #5416: geometry first tests the map against the boxes the
+        // occluders draw from this frame's obstacle block, written by
+        // `before_render`.
+        if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref()) {
+            e.prepare_geom(
+                &gfx.device,
+                &gfx.queue,
+                f,
+                particles.and_then(Particles3d::box_occluders),
+                faces_on,
+            );
+        }
         let env_passes = env
             .as_deref()
             .map_or_else(EnvDepthPasses::default, |e| EnvDepthPasses {
@@ -1097,6 +1117,7 @@ impl XrSession {
                 }),
                 atlas: e.atlas_pass(),
                 planes: e.planes_pass(),
+                geom: e.geom_pass(),
             });
         let planes_recorded = env_passes.planes.is_some();
 

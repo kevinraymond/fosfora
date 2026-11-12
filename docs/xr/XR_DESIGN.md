@@ -493,6 +493,61 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   room is never saved back. Off, only the save differs from before. The
   boxes are only as good as the stage space: a changed boundary moves
   them, so a worn launch refreshes the file.
+- **Geometry first (board #5416, `geom_first.rs`).** Two occluders write
+  depth in the eye pass: the live depth map (`env_depth.rs`, 320 x 320
+  stretched about five times over an eye and blended across silhouettes)
+  and the room's boxes. Where both cover a surface, the map's blended
+  silhouette spills past the box's exact edge, so even a scanned table
+  gets a soft, wandering edge. With `debug.fosfora.geomfirst 1` the map
+  stops occluding where a box explains what it sees, and the box's own
+  edge shows. The map keeps everything no box explains.
+  - **The rule.** A map sample is explained by a box when the ray from its
+    depth camera meets the box, or the box grown sideways by
+    `geomfirstmargin` texel widths at the sample's depth (default 1.5),
+    and the sample lies no more than `geomfirsttol` (default 4 cm) plus
+    the sensor's noise at its range (0.5 cm out to 1.6 m, 1.8 cm at 3 m)
+    in front of where the ray first meets it. A sample on the box, behind
+    it or in the blended fringe just outside its silhouette is the box's;
+    one clearly in front of it is not. A ray that meets the box itself is
+    held to the box's surface, so the margin never widens the tolerance
+    in front of a face.
+  - **Which boxes.** The ones drawn as occluders, read from the same
+    obstacle uniform the occluder draws from: the scanned boxes (hidden
+    walls included), the live planes and closed boxes, and the stage
+    floor. None with `debug.fosfora.occluders 0`. Hands are not tested.
+    The runtime removes them from the map, and the hand mesh, drawn
+    after, keeps its own edge.
+  - **Where it runs.** Per vertex of the occluder mesh, in a compute pass
+    over the eye mesh's vertices of both layers, once a frame in the
+    frame's one submission. In the vertex stage the box loop would run in
+    the binning pass and again for every bin a triangle touches. A second
+    small pass per target (the eye pass, and the faces pass at twice the
+    step) marks the explained vertices to drop, and the mesh's vertex
+    stage pushes those past the far plane, so the clipper removes every
+    triangle that has one before it is binned. One exception, the keep
+    rule: an explained vertex that shares a triangle with an unexplained,
+    nearer vertex stays where it is. That triangle is the soft edge of
+    something no box explains, a person in front of a scanned wall, and
+    cutting it would leave the mesh's grid as the edge. `geomfirst 2`
+    drops them all, for the A/B. The full-screen pass (`envdepthmesh 0`)
+    has no vertices to test, so the feature needs the mesh.
+  - **Knobs**, read at launch and polled once a second: `geomfirst 0|1|2`
+    (default 0), `geomfirstmargin` (texel widths, 0 to 8), `geomfirsttol`
+    (m, 0 to 0.5) and `geomfirstshow 1`, a magenta tint over the eye
+    pass's map occluder where it still occludes, on or off with the
+    feature, for an unworn screen capture (it includes the passthrough).
+    The `geometry first:` log line gives the state at launch and each
+    change.
+  - **What it does not do.** It never hides anything new: the boxes draw
+    as before and the map draws less. Off, the frame is what it was, with
+    no compute pass and the occluder's own pipeline and uniform bytes. A
+    box a few centimeters off its object gives a crisp edge in the wrong
+    place. Something real within the tolerance in front of a box, or
+    within the margin beside its silhouette (a phone on a table, a cable
+    along a wall), loses its occlusion. Past a box's edge, a background no
+    box explains loses its occlusion for up to one mesh cell plus the
+    margin, which matters only for what is behind that background. It
+    does not sharpen an edge no box explains.
 - **Sim.** An obstacle uniform block (64 spheres, 32 boxes, restitution,
   margin) read by `collide()` after integration: push out along the sphere
   normal or the nearest box face, reflect the inward velocity (restitution

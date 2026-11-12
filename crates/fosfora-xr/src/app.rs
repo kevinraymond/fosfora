@@ -423,6 +423,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       between them like envdepthfilter 2; the faces pass, at half the eye's resolution, at twice the step, capped at 8; default 2
     //       (faces 4), about 0.9 ms a frame under the full-screen pass, 4 about 1.3, 1 slower than it; 0 the full-screen pass, a
     //       per-pixel lookup)
+    //   adb shell setprop debug.fosfora.geomfirst 0|1|2          (board #5416, geom_first.rs: the depth map stops occluding where a room box drawn as an
+    //       occluder explains it, so the box's exact edge shows there; 1 on, 2 on without the keep rule (every explained mesh vertex
+    //       dropped, an unexplained edge against a box too); default 0; needs the mesh (envdepthmesh not 0); live: polled once a second)
+    //   adb shell setprop debug.fosfora.geomfirstmargin 1.5      (geometry first: the margin beside a box's silhouette, depth texel widths, 0..8; live)
+    //   adb shell setprop debug.fosfora.geomfirsttol 0.04        (geometry first: how far in front of a box's surface a sample is still the box's, m, plus
+    //       the sensor's noise at its range, 0..0.5; live)
+    //   adb shell setprop debug.fosfora.geomfirstshow 0|1        (diagnostic: the eye pass's depth map occluder drawn with a magenta tint where it still
+    //       occludes, still writing depth, geometry first on or off, for an unworn screencap; live)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
     //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 0 reads texture row 0 as the bottom of the view, the default; the
     //       runtime renders the map in GL order, verified by envdepthcheck against the room's boxes; 1 as the top)
@@ -788,11 +796,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     v.clamp(1, crate::env_depth::COLLIDE_EVERY_MAX)
                 }),
             planes_grid: if mixed { live_grid as u32 } else { 0 },
+            geom: crate::geom_first::GeomFirstOptions::from_knobs(debug_prop),
         }
     });
     // `envdepthhands` is live: polled once a second (below) and applied
-    // when it changes.
+    // when it changes; so are geometry first's knobs (board #5416).
     let mut env_hands = env_depth.map(|o| o.hand_removal);
+    let mut geom_first = env_depth.map(|o| o.geom);
     // Board #5393: Space Setup is asked for once, ever. The flag is saved
     // the first time this app launches it or its first scene query ends,
     // whatever the outcome (below, in the frame loop); after that only the
@@ -871,6 +881,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(if mixed { MR_FLOW } else { 1.0 });
     let occluders = toggle("debug.fosfora.occluders", mixed);
+    if let Some(g) = geom_first {
+        info!("{}", g.line(occluders));
+    }
     let hand_pad = debug_prop("debug.fosfora.handpad")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(if world {
@@ -4453,6 +4466,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 if now != was {
                     env_hands = Some(now);
                     session.set_env_depth_hand_removal(now);
+                }
+            }
+            if let Some(was) = geom_first {
+                let now = crate::geom_first::GeomFirstOptions::from_knobs(system_prop);
+                if now != was {
+                    info!("{}", now.change_line(&was, occluders));
+                    geom_first = Some(now);
+                    session.set_env_depth_geom(now);
                 }
             }
             if let Some(scene) = &scene {

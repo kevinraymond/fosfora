@@ -147,6 +147,10 @@ pub struct EnvDepthOptions {
     /// with the provider; it runs only while `EnvDepth::set_planes` has it
     /// on.
     pub planes_grid: u32,
+    /// Geometry first (board #5416, `geom_first.rs`): the map stops
+    /// occluding where the room's boxes explain it. The launch value;
+    /// `EnvDepth::set_geom` applies changes.
+    pub geom: crate::geom_first::GeomFirstOptions,
 }
 
 impl Default for EnvDepthOptions {
@@ -166,6 +170,7 @@ impl Default for EnvDepthOptions {
             collide_every: COLLIDE_EVERY,
             collide_upload: true,
             planes_grid: 0,
+            geom: crate::geom_first::GeomFirstOptions::default(),
         }
     }
 }
@@ -544,7 +549,9 @@ struct EnvEye {
     // z distance shown as white (m), w the filter's edge threshold (m; 0 =
     // the texel under the ray)
     misc: vec4<f32>,
-    // x the mesh's texels per vertex, y its vertices per row (0 without)
+    // x the mesh's texels per vertex, y its vertices per row (0 without),
+    // z geometry first's drops per layer, read by vs_mesh_geom alone
+    // (geom_first.rs; 0 off)
     mesh: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> env: EnvEye;
@@ -1243,6 +1250,7 @@ mod runtime {
         atlas_row_texels, check_layer, mesh_indices, mesh_indices_len, mesh_side, planes_bytes,
         planes_wgsl,
     };
+    use crate::geom_first::{Geom, GeomFirstOptions, GeomPass, set_drop_vertices};
     use crate::gfx::{EyeCamera, Gfx, SWAPCHAIN_FORMAT};
     use crate::live_wire::{DepthGrid, LAYER};
     use crate::math::Fov;
@@ -1367,6 +1375,17 @@ mod runtime {
                 ),
             }
         }
+
+        /// Geometry first's knobs (board #5416, polled while running):
+        /// applied now to a live provider, kept for a creation still being
+        /// retried; nothing once it gave up.
+        pub fn set_geom(&mut self, geom: GeomFirstOptions) {
+            match self {
+                Self::Ready(d) => d.set_geom(geom),
+                Self::Retry { opts, .. } => opts.geom = geom,
+                Self::GaveUp => {}
+            }
+        }
     }
 
     /// One acquired depth image: which swapchain image, its projection's
@@ -1393,9 +1412,10 @@ mod runtime {
     /// The occluder draw for one frame: its uniforms are written, the
     /// bind groups point at the acquired image.
     pub struct EnvDepthDraw<'a> {
-        pipeline: &'a wgpu::RenderPipeline,
-        /// Per target (`OccluderTarget`), per eye.
-        bind_groups: &'a [[wgpu::BindGroup; 2]; 2],
+        /// Per target (`OccluderTarget`): the pipeline and its per-eye bind
+        /// groups, the occluder's own or geometry first's
+        /// (`geom_first::Geom::draws`).
+        targets: [(&'a wgpu::RenderPipeline, &'a [wgpu::BindGroup; 2]); 2],
         /// Per target (`OccluderTarget`), the mesh's index buffer, `None`
         /// for the full-screen pass.
         meshes: [Option<&'a Mesh>; 2],
@@ -1406,10 +1426,11 @@ mod runtime {
         /// the mesh or one full-screen triangle; that target's uniforms
         /// must have been written (`EnvDepth::prepare`).
         pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, target: OccluderTarget, eye: usize) {
-            let Some(group) = self.bind_groups[target as usize].get(eye) else {
+            let (pipeline, groups) = self.targets[target as usize];
+            let Some(group) = groups.get(eye) else {
                 return;
             };
-            pass.set_pipeline(self.pipeline);
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, group, &[]);
             match self.meshes[target as usize] {
                 Some(mesh) => {
@@ -1489,6 +1510,10 @@ mod runtime {
         /// The depth atlas for the sim's collide
         /// (`debug.fosfora.depthcollide`), when asked for.
         atlas: Option<Atlas>,
+        /// Geometry first's passes and pipelines (board #5416), built with
+        /// the occluder mesh whatever the knob says; `None` with the
+        /// full-screen pass or no occluder draw.
+        geom: Option<Geom>,
         /// Per swapchain image, per target (`OccluderTarget`), per eye:
         /// that target's eye uniform and the image.
         bind_groups: Vec<[[wgpu::BindGroup; 2]; 2]>,
@@ -1725,6 +1750,32 @@ mod runtime {
                     })
                 })
                 .collect();
+            // Board #5416: geometry first needs the mesh's vertices.
+            let geom = if mesh_steps[0] > 0 && (opts.occlude || opts.show) {
+                let geom = Geom::build(
+                    &gfx.device,
+                    &images,
+                    &uniforms,
+                    [width, height],
+                    mesh_steps,
+                    opts.show,
+                    opts.geom,
+                );
+                if geom.is_none() {
+                    warn!(
+                        "geometry first: not available, the faces pass's mesh step {} is not a multiple of the eye pass's {}",
+                        mesh_steps[1], mesh_steps[0]
+                    );
+                }
+                geom
+            } else {
+                if opts.occlude || opts.show {
+                    info!(
+                        "geometry first: not available with the full-screen pass (envdepthmesh 0, or envdepthfilter 0 or 1): it needs the mesh's vertices"
+                    );
+                }
+                None
+            };
             info!(
                 "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · {} · filter {} · discard under {} m · v flip {} · self-check {} · depth collide {} · live planes read-back {}",
                 images.len(),
@@ -1790,6 +1841,7 @@ mod runtime {
                 check,
                 planes,
                 atlas,
+                geom,
                 bind_groups,
                 _images: images,
                 uniforms,
@@ -1821,6 +1873,9 @@ mod runtime {
             }
             if let Some(p) = self.planes.as_mut() {
                 p.image = None;
+            }
+            if let Some(g) = self.geom.as_mut() {
+                g.begin_frame();
             }
             if !self.provider.running {
                 self.start_retry_in = self.start_retry_in.saturating_sub(1);
@@ -1975,18 +2030,29 @@ mod runtime {
                 let Some(extents) = extents else {
                     continue;
                 };
-                self.write_uniforms(queue, frame, cameras, extents, target);
+                // Board #5416: geometry first's drops per layer, 0 unless
+                // its passes run this frame.
+                let drops = self
+                    .geom
+                    .as_ref()
+                    .map_or(0, |g| g.drop_vertices(target as usize));
+                self.write_uniforms(queue, frame, cameras, extents, target, drops);
             }
+            let own = &self.bind_groups[frame.index as usize];
+            let geom = self
+                .geom
+                .as_ref()
+                .map_or([None, None], |g| g.draws(frame.index));
             Some(EnvDepthDraw {
-                pipeline: &self.pipeline,
-                bind_groups: &self.bind_groups[frame.index as usize],
+                targets: [0, 1].map(|t| geom[t].unwrap_or((&self.pipeline, &own[t]))),
                 meshes: self
                     .mesh_steps
                     .map(|step| self.meshes.iter().find(|m| m.step == step)),
             })
         }
 
-        /// One target's per-eye uniforms for `frame` (`prepare`).
+        /// One target's per-eye uniforms for `frame` (`prepare`), with
+        /// geometry first's `drops` per layer when not 0.
         fn write_uniforms(
             &self,
             queue: &wgpu::Queue,
@@ -1994,6 +2060,7 @@ mod runtime {
             cameras: &[EyeCamera],
             extents: &[[u32; 2]],
             target: OccluderTarget,
+            drops: u32,
         ) {
             for (eye, (cam, extent)) in cameras.iter().zip(extents).enumerate().take(2) {
                 let depth = frame.views[eye];
@@ -2012,12 +2079,62 @@ mod runtime {
                     filter_edge_m: self.opts.filter_edge_m,
                     mesh_step: self.mesh_steps[target as usize],
                 };
+                let mut rows = r.uniform();
+                if drops > 0 {
+                    set_drop_vertices(&mut rows, drops);
+                }
                 queue.write_buffer(
                     &self.uniforms[target as usize][eye],
                     0,
-                    bytemuck::cast_slice(&r.uniform()),
+                    bytemuck::cast_slice(&rows),
                 );
             }
+        }
+
+        /// Board #5416: geometry first's knobs, live
+        /// (`debug.fosfora.geomfirst*`). With the full-screen pass there is
+        /// nothing to apply them to; that is logged once at creation.
+        pub fn set_geom(&mut self, opts: GeomFirstOptions) {
+            self.opts.geom = opts;
+            if let Some(g) = self.geom.as_mut() {
+                g.set_options(opts);
+            }
+        }
+
+        /// Board #5416: before the frame is recorded and after the obstacle
+        /// block is written, geometry first's params for `frame`, when its
+        /// knob is on and `obstacles` (`Particles3d::box_occluders`, the
+        /// block the box occluders draw from) is there; `faces`: whether a
+        /// faces layer draws this frame. Called after each acquire, before
+        /// [`Self::prepare`].
+        pub fn prepare_geom(
+            &mut self,
+            device: &wgpu::Device,
+            queue: &wgpu::Queue,
+            frame: &EnvDepthFrame,
+            obstacles: Option<&wgpu::Buffer>,
+            faces: bool,
+        ) {
+            let Some(g) = self.geom.as_mut() else {
+                return;
+            };
+            g.prepare(
+                device,
+                queue,
+                &self._images,
+                frame,
+                self.opts.near_cut_m,
+                self.opts.flip_v,
+                obstacles,
+                faces,
+            );
+        }
+
+        /// This frame's geometry-first passes (prepared by
+        /// [`Self::prepare_geom`]), for `Gfx::render` to record before the
+        /// eye passes; `None` without them.
+        pub fn geom_pass(&self) -> Option<GeomPass<'_>> {
+            self.geom.as_ref()?.pass()
         }
 
         /// The self-check, at most once a second: read a grid of both
@@ -2505,13 +2622,14 @@ mod runtime {
     }
 
     /// What `Gfx::render` records for the environment depth this frame:
-    /// the occluder draw, the atlas pass and the live planes' read-back,
-    /// each when there is one.
+    /// the occluder draw, the atlas pass, the live planes' read-back and
+    /// geometry first's passes (board #5416), each when there is one.
     #[derive(Default)]
     pub struct EnvDepthPasses<'a> {
         pub occluder: Option<EnvDepthDraw<'a>>,
         pub atlas: Option<AtlasPass<'a>>,
         pub planes: Option<PlanesPass<'a>>,
+        pub geom: Option<GeomPass<'a>>,
     }
 
     /// The depth atlas's GPU side.
