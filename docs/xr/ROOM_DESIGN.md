@@ -975,6 +975,56 @@ not appear beside it. These are the limits `live_rec::doubles` names a double
 by, so no reported pair is one surface twice. A shallow crease, such as a
 vaulted ceiling's slope and its flat part, becomes one plane.
 
+**Creases** (board #5401). Two surfaces meeting at a crease stay two planes,
+each fitted to its own part: a vaulted ceiling's slope and its flat part, from
+8 degrees on. A region grown across a shallow crease (each refit follows the
+bend a little) is cut where its two sides fit planes 5 degrees or more apart
+and leave under 40% of one plane's scatter, tried along its two in-plane axes
+at twentieths of its cells. Two well-supported sets (0.25 m² each, their
+rectangles overlapping by half at most) whose planes differ by 5 degrees and
+three standard errors, and which one plane through both would miss by 1 cm
+rms beyond their scatter, never merge. A 3 degree crease is one plane. Two
+faces side by side at depths a step apart (fronts of separate things on a
+shelf) stay apart too: a plane farther off than the 8 cm merge window joins
+another only when it nests in it, never when it merely touches.
+
+**Meeting along a line** (board #5401). In what is reported, never in the
+fit, two planes more than 5 degrees apart that both reach their line meet
+along it. A rectangle running on past the line is cut back to it (by 0.6 m at
+most, never to under half), at the moving camera's rates. Two room surfaces
+(wall, floor, ceiling, sloped or not) meeting concavely whose rectangles end
+within 0.25 m or two cells of the line are extended to it at the usual rates
+with a 5 mm dead band, unless the map sees past the plane in the added strip
+(probed where it is a cell wide or more). So a room's corners close with no
+seam and a crease's two sides end at it.
+
+**Boxes** (board #5401). Two reported planes 90 ± 12 degrees apart, convex
+(each behind the other's plane), each within 5 cm or three cells of their
+line and sharing half the shorter span along it, are faces of one object, and
+one box is reported in their place: axes from the better-supported face's
+normal, the other's made square, and their cross product. Along an axis with
+a face the box runs from it back to the other faces' far edge; along one
+without, over the faces' spans, upright faces first. A third face that meets
+both, or lies on the box's open face within 20 degrees (a soft top), joins
+it. A box is not formed, and is opened again after four updates in a row,
+when the map sees through 3 of 14 points inside it (at 60% of its half
+extents); that pair is not tried again. A box keeps its own id, outlives a
+face that has gone and goes with its last. Its `LivePlane` has `closed` set,
+its faces' ids and its half extents as its size; `PlaneBox::closed` carries
+it into the show. A table top with no side faces stays a plane.
+
+**The room's directions** (board #5401). The room's yaw comes from the
+reported walls of 1 m² or more (four directions folded into one, followed
+with a 2 s time constant). Floors and ceilings take their rectangles' axes
+from the nearest room direction, so their edges run along the walls'. A
+plane within 8 degrees of a room direction (up, down, or level at the room's
+yaw or a multiple of 90 degrees) turns toward it in what is reported, by the
+fit's standard error squared over that plus 2 degrees squared: a weight, not
+a snap. A candidate matching no room direction that is not a ceiling needs
+patches in 90% of its updates over 1.5 s and its points within one noise
+deviation of its plane (rms). A ramp, a cabinet set 30 degrees off and a
+sloped ceiling still appear.
+
 **A surface that moves** (board #5400). A surface can move past the merge
 window while the camera is still, or the sensor's view of it can: on a cold
 start the headset's depth beyond 2.5 m came up to 15 cm nearer at once, about
@@ -1012,8 +1062,9 @@ are reported, by confidence, area and nearness, and a reported plane keeps its
 place unless a newcomer scores twice as high.
 
 **Kinds.** Normal within 15 degrees of up: the floor within 15 cm of the floor
-estimate, a table 0.3 to 1.3 m above it, else other. Normal down, 1.9 m above
-the floor: the ceiling. Normal within 15 degrees of horizontal: a wall when its
+estimate, a table 0.3 to 1.3 m above it, else other. Normal down at any slope
+up to 60 degrees from level, 1.9 m above the floor: the ceiling, so a sloped
+or vaulted ceiling is a ceiling (board #5401). Normal within 15 degrees of horizontal: a wall when its
 top reaches 1.2 m above the floor, else other (a box side, a cabinet front).
 The floor estimate follows the lowest large upward plane (1 m² or more) at
 least 0.3 m below the camera, whatever the eye height: a seated wearer's eye
@@ -1044,9 +1095,9 @@ in `MEASURED.md`).
 **Not yet.** The wiring reads 64x64 by default (below). At 40x40 a cell is
 8 cm at 1.5 m and 16 cm at 3 m, so a table
 top 2.3 m from a standing wearer spans two rows and is not found, and 40
-separate patches in one view need the 80x80 grid. A table top seen within
-about 15 degrees of edge-on is not found: its rows change range by more than
-a depth jump, and the silhouette filter takes them for one.
+separate patches in one view need the 80x80 grid. A known limit: a table top
+seen within about 15 degrees of edge-on is not found, since its rows change
+range by more than a depth jump and the silhouette filter takes them for one.
 Planes are not saved, and their ids last one session, so the room file must
 not key behaviors to them. Horizontal planes take their yaw from their first
 patch, not from the walls. No meshes, no curved surfaces.
