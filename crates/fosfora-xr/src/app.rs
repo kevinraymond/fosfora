@@ -1252,6 +1252,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         music: music.wanted(),
         voice: menu_saved.voice,
         agent: available.control(agent_pick),
+        immerse: immerse_knob.map_or(menu_saved.immerse, crate::immerse::Depth::nearest),
     };
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
@@ -1986,6 +1987,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         controls.pitcher_rate,
                         pitcher.speed
                     ),
+                    // Board #5384: the Immersion control or a spoken
+                    // "darker", saved; the level glides to the new depth.
+                    Action::SetImmersion(depth) => {
+                        info!(
+                            "immersion: {} (depth {:.2} -> {:.2})",
+                            depth.name(),
+                            immersion.depth(),
+                            depth.value()
+                        );
+                        immersion.set_depth(depth.value());
+                        menu_saved.immerse = depth;
+                        save_hand_menu(&menu_file, menu_saved);
+                    }
                     _ => {}
                 }
             }

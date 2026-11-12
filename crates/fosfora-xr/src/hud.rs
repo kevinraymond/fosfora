@@ -133,6 +133,9 @@ pub struct Controls {
     /// press asks for, `None` with no provider to pick ("Agent: none").
     /// The app sets it; a press only asks.
     pub agent: Option<crate::agent::Control>,
+    /// How dark the room may get with the music (the hand menu's
+    /// Immersion control, saved in `hand_menu.json`; board #5384).
+    pub immerse: crate::immerse::Depth,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -168,6 +171,8 @@ pub enum Action {
     /// A surface row's `<` (false) or `>` (true) with Edit room on: step
     /// that parameter of the surface under the beam (board #3472, D3).
     SurfaceParam(crate::lanes::Param, bool),
+    /// The Immersion control changed (saved; board #5384).
+    SetImmersion(crate::immerse::Depth),
 }
 
 impl Controls {
@@ -210,6 +215,8 @@ enum Target {
     Color(bool),
     Band(bool),
     Strength(bool),
+    /// The Immersion control: the next depth (board #5384).
+    CycleImmersion,
 }
 
 /// Frame-loop numbers from the last one-second window.
@@ -669,6 +676,10 @@ impl Hud {
             Some(Target::Strength(up)) => {
                 actions.push(Action::SurfaceParam(crate::lanes::Param::Strength, up));
             }
+            Some(Target::CycleImmersion) => {
+                controls.immerse = controls.immerse.next();
+                actions.push(Action::SetImmersion(controls.immerse));
+            }
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
                 // A governed density steps from the value it shows.
@@ -1124,7 +1135,7 @@ fn panel_ui(
         block.push(Control::Pair([Some(left), steppers.next()]));
     }
     block.push(recenter_row(view.room));
-    block.push(agent_row(controls.agent));
+    block.push(agent_row(controls.agent, controls.immerse));
     block.push(menu_row(true, controls.pitcher));
     block.push(edit_row(controls.edit_room, view.edit_status));
     if controls.edit_room {
@@ -1145,7 +1156,7 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Ro
     let mut block = Vec::with_capacity(grid::menu_rows(editing));
     block.push(effect_row(view.effect));
     block.push(recenter_row(view.room));
-    block.push(agent_row(controls.agent));
+    block.push(agent_row(controls.agent, controls.immerse));
     block.push(menu_row(false, controls.pitcher));
     block.push(edit_row(editing, view.edit_status));
     if editing {
@@ -1252,9 +1263,20 @@ fn recenter_row(room: bool) -> Control<'static> {
 /// board #4192), so adding it moved no row the wearer already reaches for
 /// (the quad keeps its bottom edge and grows upward). The state is in the
 /// words, not a color; "Agent: none" with nothing to pick, and a press then
-/// does nothing.
-fn agent_row(agent: Option<crate::agent::Control>) -> Control<'static> {
-    Control::Button(Target::CycleAgent, crate::agent::control_label(agent))
+/// does nothing. Board #5384: the Agent control takes the left cell, and
+/// the Immersion control the right one, each press the next of off, low
+/// and full ("Immersion: full"), so the row count does not change.
+fn agent_row(
+    agent: Option<crate::agent::Control>,
+    immerse: crate::immerse::Depth,
+) -> Control<'static> {
+    Control::Pair([
+        Some(Cell::Button(
+            Target::CycleAgent,
+            crate::agent::control_label(agent),
+        )),
+        Some(Cell::Button(Target::CycleImmersion, immerse.label())),
+    ])
 }
 
 /// The cloud's row, over the music's in both layouts: its toggle, and
