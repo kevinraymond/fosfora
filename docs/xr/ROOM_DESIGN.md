@@ -1106,11 +1106,34 @@ step, to be set from those lines.
 every reported plane's rectangle in its kind's color, the ones left out on
 scanned boxes too, with the room editor's highlight shader.
 
+**Recording (board #5400).** The finder's tests use a synthetic sensor,
+and the headset's depth is quieter and smoother than that sensor.
+`debug.fosfora.liveplanesrec <seconds>` has the worker append each
+read-back it is given, before the finder takes it, to one file in
+`Android/data/<package>/files/debug/`, beside the app's own `Music/`, so a
+USB pull reaches it without run-as. The file holds a header (magic,
+version, the grid's size, the reading) and, per read-back, its time, the
+layer's pose and fov, near and far, the map's size and the depth values as
+read back. `live_rec.rs` has the layout. The knob is read at launch, so a
+recording can start with the finder's first update, and then polled once
+a second. A new value starts a recording of that many seconds (at most
+600), counted from the first read-back written; unset or 0 stops it. A
+recording is of one run of the finder and closes when the finder starts
+over. Unset, the jobs carry nothing and the worker only checks that.
+`live_rec::replay` runs a recording through the worker's own `Fitter`.
+`live_rec::doubles` names pairs of reported planes that are one surface
+twice: normals within 15 degrees, each center within 20 cm of the other's
+plane, and more than 30% of the smaller rectangle over the other.
+Recordings are of real rooms and stay out of the repository. The ignored
+test `replay_the_recording_in_live_planes_rec` reads one from
+`LIVE_PLANES_REC`.
+
 **Knobs.** `debug.fosfora.liveplanes 0|1` (polled once a second, so on and
 off can be compared in one launch; 1 at launch also creates the depth
 provider), `liveplanesgrid` 40..80 (default 64, at launch), `liveplaneshz`
-1..10 (default 4, at launch), `liveplanesnoise 0|1` (at launch) and
-`liveplanesshow 0|1` (polled once a second).
+1..10 (default 4, at launch), `liveplanesnoise 0|1` (at launch),
+`liveplanesshow 0|1` (polled once a second) and `liveplanesrec <seconds>`
+(at launch, then polled once a second).
 
 **Log.** At start "live planes: on · grid 64 · 4 Hz · layer left", and
 "live planes: off (roam off)" when it stops. Once a second while it runs
@@ -1123,7 +1146,14 @@ planes: 2 over budget (the room's 29 boxes and the stage floor leave 2 of
 32)". The stage floor's height when it moves 5 cm,
 "roam: the stage floor at height -0.02, the live planes' floor". The noise
 line, "live planes noise: 20 reads, error along the ray (cm) by range (m),
-over 30° off grazing: 0.5 n 210 med +0.40 sd 0.60 k 0.0107 · ...".
+over 30° off grazing: 0.5 n 210 med +0.40 sd 0.60 k 0.0107 · ...". A
+recording's lines: "live planes rec: 30 s asked for
+(debug.fosfora.liveplanesrec), from the next read-back the finder is
+given, into .../files/debug" when the knob changes, "live planes rec:
+recording 30 s to .../liveplanes-1762950000-1.lprec (grid 64, rows
+bottom-up)" when the file opens, and "live planes rec: closed
+.../liveplanes-1762950000-1.lprec · 120 read-backs over 29.8 s, 1.9 MiB
+(its time is up)" when it closes.
 
 **Not measured yet.** The read-back's cost, the update's time on the Quest
 and the depth noise are for the device.
