@@ -51,6 +51,9 @@ const DEFAULT_WORLD_EFFECT: &str = "Embers";
 /// for every hand (Flux Cloud's worn-approved pad and kick).
 const POSE_EFFECTS: [&str; 1] = ["Flock"];
 const NOMINAL_FPS: u32 = 72;
+/// Board #5409: a gap between frames longer than this (s) is a pause of the
+/// session, after which the immersion level glides back to the song's.
+const IMMERSE_PAUSE_S: f32 = 0.5;
 /// S5 defaults: the test sim fills a 2 m cube centered on the quad, so half
 /// the particles sit in front of it and half behind (the depth gate).
 const DEFAULT_COUNT: u32 = 500_000;
@@ -348,10 +351,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.immerse 0..1             (board #5384: the immersion depth for this launch, how dark the room may get with
     //       the music, 0 off, 0.5 low, 1 full; unset, the hand menu's Immersion control as saved in hand_menu.json (full when never
     //       pressed); not saved, a press on the control takes over; read at launch)
-    //   adb shell setprop debug.fosfora.immersefloor 0.15        (the passthrough image's opacity at the full level, the darkest the room gets,
-    //       0..1; read at launch)
+    //   adb shell setprop debug.fosfora.immersefloor 0           (the passthrough image's opacity at the full level, the darkest the room gets,
+    //       0..1; default 0, the room fully closed; read at launch)
     //   adb shell setprop debug.fosfora.immersefix 0..1          (diagnostic: the immersion level pinned whatever the audio and the depth, for
-    //       an unworn screencap, which includes the passthrough behind the app's layers on this OS; read at launch)
+    //       an unworn screencap, which includes the passthrough behind the app's layers on this OS; skips the opening; read at launch)
+    //   adb shell setprop debug.fosfora.immerseopen 0            (board #5409: no opening this launch, neither "Sit back and relax" nor its
+    //       7 s at the plain room and the glide, for measurement runs and captures; the music's start glides to the show in about 2 s;
+    //       unset or 1, the opening; read at launch)
     //   adb shell setprop debug.fosfora.surface "wall=none,#3=rings,1a2b3c4d=embers@0.5"   (board #3326: each room surface's behavior,
     //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[:<color>[:<band>]][@<strength>], target = an
     //       anchor UUID (32 hex, or a prefix of 8 or more unique in the room), #<k> a box by index (the log's "room <id>:" lane table;
@@ -1376,6 +1382,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     );
     immersion.fix(unit_knob("debug.fosfora.immersefix"));
     let immerse_room = session.has_passthrough();
+    // Board #5409: the opening, once per launch, unless the knob says no;
+    // without passthrough there is no room for it to dim.
+    if debug_prop("debug.fosfora.immerseopen")
+        .as_deref()
+        .map(str::trim)
+        == Some("0")
+    {
+        immersion.skip_opening("debug.fosfora.immerseopen 0");
+    } else if !immerse_room {
+        immersion.skip_opening("no passthrough");
+    }
     info!(
         "{}",
         immersion.launch_line(immerse_knob.is_some(), immerse_room)
@@ -1681,6 +1698,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // line had the room dimmed.
     let mut immerse_now: Option<(f32, f32, f32)> = None;
     let mut immerse_logged = false;
+    // Board #5409: whether another label held the in-world label this
+    // frame (the opening's message waits for it), and the player's track
+    // starts seen (a new one adapts the history).
+    let mut immerse_label_busy = false;
+    let mut track_starts = music.track_starts();
     // Board #5393: roam's rules (`roam.rs`): the cloud following the head,
     // the head's speed for immersion, the switch to the effect that fills
     // its volume, and the stage floor's center (x, z), under the head in
@@ -1814,6 +1836,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
 
         let t = started.elapsed().as_secs_f32();
+        // Board #5409: a gap in the frames is a pause of the session; the
+        // immersion level glides back to the song's.
+        if frame_index > 0 && t - last_t > IMMERSE_PAUSE_S {
+            immersion.resume();
+        }
         let dt = (t - last_t).clamp(1.0 / 120.0, 1.0 / 30.0);
         last_t = t;
         let queue = &gfx.queue;
@@ -3632,6 +3659,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             (text, alpha, None, crate::label::scan_billboard(head, head_rot))
                         })
                     });
+                // Board #5409: the opening's message last, where the scan
+                // label shows: it waits for the scan's and the permission's
+                // label, and the voice's and the editor's cover it (its
+                // hold counts only while it shows).
+                immerse_label_busy = shown.is_some();
+                let shown = shown.or_else(|| {
+                    immersion.message().map(|(text, alpha)| {
+                        (text, alpha, None, crate::label::scan_billboard(head, head_rot))
+                    })
+                });
                 label_texture.show(&gfx, shown);
                 // Board #5378: the surface labels. Only while they show
                 // are the names, the behaviors and the poses worked out;
@@ -3798,17 +3835,30 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // microphones; the synthetic groove is no music); it dims the
             // passthrough after the frame and lifts the surfaces' alpha
             // below. Without passthrough there is no room to dim, and the
-            // surfaces stay as they were.
+            // surfaces stay as they were. Board #5409: the level follows
+            // the song against its own recent range; the player's new track
+            // adapts that range; no song plan is made yet.
+            let starts = music.track_starts();
+            if starts != track_starts {
+                track_starts = starts;
+                immersion.new_track();
+            }
             let immerse_level = immersion.step(
                 dt,
                 crate::immerse::Input {
                     loudness_s: f.loudness_s,
+                    loudness_m: f.loudness_m,
                     buildup: f.buildup,
                     drop: f.drop > 0.5,
-                    rms: f.rms,
                     playing: music.analysis.is_some() || live_audio.is_some(),
+                    label_busy: immerse_label_busy,
+                    position_s: music.playback.as_ref().map_or(0.0, |p| p.position_secs()),
                 },
+                None,
             );
+            for event in immersion.take_events() {
+                info!("{}", immersion.event_line(event, f.loudness_s));
+            }
             // Board #5393: in roam the level gives way to walking: the
             // head's level speed, low-passed, scales it from all of it
             // under 0.3 m/s to none over 0.8 m/s (`roam::Walk`).
@@ -4451,15 +4501,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             // Board #5384: the immersion level once a second while the room
-            // is dimmed, and once when it is back.
+            // is dimmed, and once when it is back; board #5409: with the
+            // range it follows and the song's place in it.
             if let Some((level, loudness_s, buildup)) = immerse_now {
                 let dimmed = level > 0.005;
                 if dimmed || immerse_logged {
-                    info!(
-                        "immersion: level {level:.2} · passthrough {:.2} · loudness_s {loudness_s:.2} · buildup {buildup:.2} · depth {:.2}",
-                        immersion.opacity(level),
-                        immersion.depth()
-                    );
+                    info!("{}", immersion.second_line(level, loudness_s, buildup));
                 }
                 immerse_logged = dimmed;
             }
