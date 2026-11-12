@@ -1032,6 +1032,8 @@ pub(crate) mod tests {
             half: Vec3::new(half[0], half[1], PLANE_HALF_THICKNESS_M),
             confidence: 1.0,
             last_seen_s: 0.0,
+            closed: false,
+            faces: [0; 3],
         }
     }
 

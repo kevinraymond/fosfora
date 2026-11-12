@@ -57,8 +57,10 @@ use glam::{Quat, Vec2, Vec3};
 use log::{info, warn};
 
 use crate::env_depth::{DepthView, Reading, decode_distance};
-use crate::live_planes::{LivePlane, Stats};
-use crate::live_wire::{DepthGrid, Fitter, Job, area, clipped_area};
+use crate::live_planes::{
+    CREASE_MIN_DEG, LivePlane, NEST_PARALLEL_DEG, NEST_PARALLEL_M, Stats, box_faces,
+};
+use crate::live_wire::{DepthGrid, Fitter, Job, area};
 use crate::math::Fov;
 use crate::surfaces::kind_name;
 
@@ -619,6 +621,9 @@ pub const DOUBLE_OFFSET_M: f32 = 0.20;
 /// ...and their rectangles overlap by more than this share of the
 /// smaller's area.
 pub const DOUBLE_OVERLAP: f32 = 0.3;
+/// Two planes meeting along a line each keep their own side of it when
+/// their centers are at least this far from it (m).
+pub const DOUBLE_SIDE_M: f32 = 0.05;
 
 /// A pair of reported planes on one surface: their ids (the lower first),
 /// the angle between their normals (degrees), the farther of each center
@@ -635,7 +640,15 @@ pub struct Double {
 
 /// Whether `a` and `b` are one surface twice ([`DOUBLE_DEG`],
 /// [`DOUBLE_OFFSET_M`], [`DOUBLE_OVERLAP`]). The overlap is measured in
-/// `a`'s plane, with `b`'s rectangle seen along `a`'s normal.
+/// `a`'s plane, with `b`'s rectangle seen along `a`'s normal. Two planes
+/// more than `live_planes::CREASE_MIN_DEG` apart meet along a line: each
+/// rectangle counts only on its own side of it (the side its center is
+/// on), so two surfaces meeting at a crease are a double only where one
+/// runs on past the line over the other, by more than [`DOUBLE_OVERLAP`]
+/// of the smaller. Planes within
+/// `live_planes::NEST_PARALLEL_DEG` of parallel are one surface only
+/// within `live_planes::NEST_PARALLEL_M`, as the finder has them: a shelf
+/// 15 to 20 cm over a table is two surfaces.
 pub fn double(a: &LivePlane, b: &LivePlane) -> Option<Double> {
     let (na, nb) = (a.normal(), b.normal());
     let cos = na.dot(nb).clamp(-1.0, 1.0);
@@ -644,23 +657,64 @@ pub fn double(a: &LivePlane, b: &LivePlane) -> Option<Double> {
     }
     let d = b.center - a.center;
     let offset_m = na.dot(d).abs().max(nb.dot(d).abs());
-    if offset_m >= DOUBLE_OFFSET_M {
+    let parallel = cos >= NEST_PARALLEL_DEG.to_radians().cos();
+    let limit = if parallel {
+        NEST_PARALLEL_M
+    } else {
+        DOUBLE_OFFSET_M
+    };
+    if offset_m >= limit {
         return None;
     }
     let (ua, va) = (a.rot * Vec3::X, a.rot * Vec3::Y);
     let (ub, vb) = (b.rot * Vec3::X * b.half.x, b.rot * Vec3::Y * b.half.y);
-    let quad = [
+    let flat = |q: Vec3| Vec2::new((q - a.center).dot(ua), (q - a.center).dot(va));
+    let qb: Vec<Vec2> = [
         b.center - ub - vb,
         b.center + ub - vb,
         b.center + ub + vb,
         b.center - ub + vb,
     ]
-    .map(|q| Vec2::new((q - a.center).dot(ua), (q - a.center).dot(va)));
-    let smaller = (4.0 * a.half.x * a.half.y).min(area(&quad));
+    .map(flat)
+    .to_vec();
+    let (hx, hy) = (a.half.x, a.half.y);
+    let qa = vec![
+        Vec2::new(-hx, -hy),
+        Vec2::new(hx, -hy),
+        Vec2::new(hx, hy),
+        Vec2::new(-hx, hy),
+    ];
+    let smaller = area(&qa).min(area(&qb));
     if smaller <= 0.0 {
         return None;
     }
-    let overlap = clipped_area(&quad, a.half.x, a.half.y) / smaller;
+    if cos < CREASE_MIN_DEG.to_radians().cos() {
+        // Where `b`'s plane meets `a`'s, in `a`'s frame: g(s, t) = 0.
+        let g = Vec3::new(nb.dot(ua), nb.dot(va), nb.dot(a.center - b.center));
+        let reach = Vec2::new(g.x, g.y).length().max(1e-6);
+        let side = |p: Vec2| (g.x * p.x + g.y * p.y + g.z) / reach;
+        let (sa, sb) = (
+            side(Vec2::ZERO),
+            side(flat(b.center - na * na.dot(b.center - a.center))),
+        );
+        // Planes that cross near their centers are not meeting at an
+        // edge: no side is theirs. Planes meeting at one overlap only
+        // where one runs on past the line onto the other's side.
+        if sa.abs() >= DOUBLE_SIDE_M && sb.abs() >= DOUBLE_SIDE_M {
+            let (side_a, side_b) = (g * sa.signum(), g * sb.signum());
+            let past_b = convex_overlap(&clip_half(&qa, side_a), &clip_half(&qb, side_a));
+            let past_a = convex_overlap(&clip_half(&qb, side_b), &clip_half(&qa, side_b));
+            let overlap = past_a.max(past_b) / smaller;
+            return (overlap > DOUBLE_OVERLAP).then(|| Double {
+                a: a.id.min(b.id),
+                b: a.id.max(b.id),
+                angle_deg: cos.acos().to_degrees(),
+                offset_m,
+                overlap,
+            });
+        }
+    }
+    let overlap = convex_overlap(&qa, &qb) / smaller;
     (overlap > DOUBLE_OVERLAP).then(|| Double {
         a: a.id.min(b.id),
         b: a.id.max(b.id),
@@ -670,13 +724,75 @@ pub fn double(a: &LivePlane, b: &LivePlane) -> Option<Double> {
     })
 }
 
+/// The part of the convex polygon `poly` where `g.x x + g.y y + g.z >= 0`.
+fn clip_half(poly: &[Vec2], g: Vec3) -> Vec<Vec2> {
+    let f = |p: Vec2| g.x * p.x + g.y * p.y + g.z;
+    let mut out = Vec::with_capacity(poly.len() + 1);
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        let (fa, fb) = (f(a), f(b));
+        if fa >= 0.0 {
+            out.push(a);
+        }
+        if (fa >= 0.0) != (fb >= 0.0) {
+            out.push(a + (b - a) * (fa / (fa - fb)));
+        }
+    }
+    out
+}
+
+/// The area two convex polygons share.
+fn convex_overlap(a: &[Vec2], b: &[Vec2]) -> f32 {
+    if a.len() < 3 || b.len() < 3 {
+        return 0.0;
+    }
+    // Each edge of `a`, inside to the left when `a` winds counterclockwise.
+    let ccw = (0..a.len())
+        .map(|i| a[i].perp_dot(a[(i + 1) % a.len()]))
+        .sum::<f32>()
+        >= 0.0;
+    let mut cur = b.to_vec();
+    for i in 0..a.len() {
+        if cur.len() < 3 {
+            return 0.0;
+        }
+        let (p, q) = (a[i], a[(i + 1) % a.len()]);
+        let e = q - p;
+        let n = if ccw {
+            Vec2::new(-e.y, e.x)
+        } else {
+            Vec2::new(e.y, -e.x)
+        };
+        cur = clip_half(&cur, Vec3::new(n.x, n.y, -n.dot(p)));
+    }
+    if cur.len() < 3 { 0.0 } else { area(&cur) }
+}
+
 /// Every pair of `planes` that is one surface twice, by the lower id then
-/// the higher.
+/// the higher. A closed box counts by its six faces (`live_planes::
+/// box_faces`), so a plane lying on one of them is a double with the box.
 pub fn doubles(planes: &[LivePlane]) -> Vec<Double> {
-    let mut out = Vec::new();
-    for (i, a) in planes.iter().enumerate() {
-        for b in &planes[i + 1..] {
-            out.extend(double(a, b));
+    let flat: Vec<LivePlane> = planes
+        .iter()
+        .flat_map(|p| {
+            if p.closed {
+                box_faces(p).to_vec()
+            } else {
+                vec![*p]
+            }
+        })
+        .collect();
+    let mut out: Vec<Double> = Vec::new();
+    for (i, a) in flat.iter().enumerate() {
+        for b in &flat[i + 1..] {
+            if a.id == b.id {
+                continue;
+            }
+            if let Some(d) = double(a, b)
+                && !out.iter().any(|o| (o.a, o.b) == (d.a, d.b))
+            {
+                out.push(d);
+            }
         }
     }
     out.sort_by_key(|d| (d.a, d.b));
@@ -705,6 +821,27 @@ fn plane_line(s: &mut String, p: &LivePlane, run: &Replay, view: Option<&DepthVi
         let inv = Quat::from_xyzw(x, y, z, w).normalize().inverse();
         (inv * (p.center - Vec3::from(v.position)), inv * n)
     });
+    if p.closed {
+        let faces: Vec<String> = p
+            .faces
+            .iter()
+            .filter(|&&f| f != 0)
+            .map(|f| format!("#{f}"))
+            .collect();
+        let _ = writeln!(
+            s,
+            "  #{:<3} box     {:.2} x {:.2} x {:.2} m · center ({:5.2} {:5.2} {:5.2}) · faces {} · first reported {first:.2} s",
+            p.id,
+            2.0 * p.half.x,
+            2.0 * p.half.y,
+            2.0 * p.half.z,
+            c.x,
+            c.y,
+            c.z,
+            faces.join(" ")
+        );
+        return;
+    }
     let _ = writeln!(
         s,
         "  #{:<3} {:7} {:.2} x {:.2} m · center ({:5.2} {:5.2} {:5.2}) n ({:5.2} {:5.2} {:5.2}) · world offset {:6.2} m · first reported {first:.2} s",
@@ -1158,6 +1295,8 @@ mod tests {
             half: Vec3::new(0.5 * w, 0.5 * d, PLANE_HALF_THICKNESS_M),
             confidence: 1.0,
             last_seen_s: 0.0,
+            closed: false,
+            faces: [0; 3],
         }
     }
 
@@ -1171,6 +1310,8 @@ mod tests {
             half: Vec3::new(0.5 * w, 1.0, PLANE_HALF_THICKNESS_M),
             confidence: 1.0,
             last_seen_s: 0.0,
+            closed: false,
+            faces: [0; 3],
         }
     }
 
@@ -1204,9 +1345,10 @@ mod tests {
         // Normals 14 and 16 degrees apart, about the same center.
         assert!(double(&a, &wall(2, 0.0, -2.0, 14.0, 2.0)).is_some());
         assert!(double(&a, &wall(2, 0.0, -2.0, 16.0, 2.0)).is_none());
-        // 19 and 21 cm in front.
-        assert!(double(&a, &wall(2, 0.0, -1.81, 0.0, 2.0)).is_some());
-        assert!(double(&a, &wall(2, 0.0, -1.79, 0.0, 2.0)).is_none());
+        // Parallel, 14 and 16 cm in front: past 15 cm a parallel pair is
+        // two surfaces, as a shelf over a table is.
+        assert!(double(&a, &wall(2, 0.0, -1.86, 0.0, 2.0)).is_some());
+        assert!(double(&a, &wall(2, 0.0, -1.84, 0.0, 2.0)).is_none());
         // Side by side, 1 m apart, 2 m wide each: overlap 1 of 2.
         assert!(double(&a, &wall(2, 1.0, -2.0, 0.0, 2.0)).is_some());
         // 1.5 m apart: 0.5 of 2 is 25%; 1.3 m apart: 35%.
@@ -1236,6 +1378,39 @@ mod tests {
     /// The replay of a recording made on the headset: `LIVE_PLANES_REC`
     /// names the file. Recordings are of real rooms and are never
     /// committed.
+    /// A plane through `a` and `b` (on its ground line, `y` from 0.5 to
+    /// 2.5 m), turned `deg` from facing +z, as a crease's two sides are.
+    fn panel(id: u32, x: f32, z: f32, deg: f32, w: f32) -> LivePlane {
+        LivePlane {
+            center: Vec3::new(x, 1.5, z),
+            ..wall(id, x, z, deg, w)
+        }
+    }
+
+    #[test]
+    fn two_planes_meeting_at_a_crease_are_not_a_double() {
+        // Two 1.2 m panels meeting along x = 0 at 12 degrees, each on its
+        // side: not a double.
+        let deg = 12.0f32;
+        let h = 0.6;
+        let left = panel(1, -h, -2.0, 0.0, 2.0 * h);
+        let (s, c) = deg.to_radians().sin_cos();
+        let right = panel(2, h * c, -2.0 + h * s, -deg, 2.0 * h);
+        assert!(double(&left, &right).is_none());
+        assert!(double(&right, &left).is_none());
+        // The right one running 0.8 m on past the crease over the left: a
+        // double where it overlaps.
+        let past = LivePlane {
+            center: Vec3::new(0.1 * c, 1.5, -2.0 + 0.1 * s),
+            half: Vec3::new(0.7, 1.0, PLANE_HALF_THICKNESS_M),
+            ..right
+        };
+        let d = double(&left, &past).expect("a double past the crease");
+        assert!(d.overlap > DOUBLE_OVERLAP, "{d:?}");
+        // Crossing through each other's centers: a double.
+        assert!(double(&left, &panel(3, -h, -2.0, 12.0, 2.0 * h)).is_some());
+    }
+
     #[test]
     #[ignore = "needs a recording: LIVE_PLANES_REC=<file.lprec>"]
     fn replay_the_recording_in_live_planes_rec() {
