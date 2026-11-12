@@ -406,6 +406,9 @@ pub struct XrSession {
     // the session.
     env_depth: Option<EnvDepthSlot>,
     passthrough: Option<Passthrough>,
+    /// Board #5384: immersion has the passthrough image under full
+    /// opacity, so its layer goes alpha-blended.
+    passthrough_dimmed: bool,
     hands: Option<Hands>,
     room: Option<Room>,
     perf: Option<PerfMetrics>,
@@ -658,6 +661,7 @@ impl XrSession {
             env_depth,
             system: ctx.system,
             passthrough,
+            passthrough_dimmed: false,
             hands,
             room,
             perf,
@@ -811,12 +815,16 @@ impl XrSession {
     }
 
     /// Board #5384: the passthrough image's opacity, for immersion
-    /// (`Passthrough::set_opacity`); nothing without passthrough.
-    pub fn set_passthrough_opacity(&self, opacity: f32) -> Result<()> {
-        match self.passthrough.as_ref() {
-            Some(p) => p.set_opacity(self.session.instance(), opacity),
-            None => Ok(()),
-        }
+    /// (`Passthrough::set_opacity`); under 1 the next frames submit the
+    /// layer alpha-blended (`passthrough_layer`). Nothing without
+    /// passthrough.
+    pub fn set_passthrough_opacity(&mut self, opacity: f32) -> Result<()> {
+        let Some(p) = self.passthrough.as_ref() else {
+            return Ok(());
+        };
+        p.set_opacity(self.session.instance(), opacity)?;
+        self.passthrough_dimmed = opacity < 1.0;
+        Ok(())
     }
 
     pub fn has_hands(&self) -> bool {
@@ -1157,15 +1165,25 @@ impl XrSession {
 impl XrSession {
     /// The passthrough composition layer for this frame, if passthrough is
     /// on. The openxr crate does not re-export its builder, so the raw struct
-    /// is filled in directly (spec: `space` is null and `flags` empty for a
-    /// reconstruction layer).
+    /// is filled in directly (spec: `space` is null for a reconstruction
+    /// layer). Board #5384: while immersion dims the image the layer asks
+    /// for `BLEND_TEXTURE_SOURCE_ALPHA`, so the composition reads the image's
+    /// alpha (its opacity) over the compositor's black; at full opacity the
+    /// flags stay empty, as since S7. (The spec's valid usage asks for
+    /// non-empty flags on this layer; the empty ones are what has run on the
+    /// device.)
     fn passthrough_layer(&self) -> Option<xr::sys::CompositionLayerPassthroughFB> {
+        let flags = if self.passthrough_dimmed {
+            xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA
+        } else {
+            xr::CompositionLayerFlags::EMPTY
+        };
         self.passthrough
             .as_ref()
             .map(|p| xr::sys::CompositionLayerPassthroughFB {
                 ty: xr::sys::CompositionLayerPassthroughFB::TYPE,
                 next: std::ptr::null(),
-                flags: xr::CompositionLayerFlags::EMPTY,
+                flags,
                 space: xr::sys::Space::NULL,
                 layer_handle: p.layer.as_raw(),
             })

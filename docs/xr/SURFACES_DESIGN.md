@@ -753,7 +753,11 @@ leaves 0, so a run that stays quiet makes no call and looks exactly as
 before. The passthrough layer
 is the bottom of `[passthrough, faces, main]` (D2c) and the blend mode is
 OPAQUE, so what shows under a dimmed image is the compositor's black.
-That is the layer order's reading; the device confirms it.
+That is the layer order's reading; the device confirms it. While the
+image is dimmed the passthrough layer goes out with
+`BLEND_TEXTURE_SOURCE_ALPHA`, so the composition reads its opacity; the
+spec does not say whether the opacity blends without it. At full opacity
+its flags stay empty, as they have been since S7.
 
 **The surfaces.** Every lit face's peak alpha rises with the same level.
 A port's goes from its 0.5 to 1.0, `0.5 + 0.5 * level`. The built-in
