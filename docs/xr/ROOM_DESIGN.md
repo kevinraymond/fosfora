@@ -1157,3 +1157,210 @@ bottom-up)" when the file opens, and "live planes rec: closed
 
 **Not measured yet.** The read-back's cost, the update's time on the Quest
 and the depth noise are for the device.
+
+## Footprints (board #5403)
+
+The plane finder describes flat surfaces. A room also holds things that are
+not flat: a chair, a pile of boxes, toys, a person, a pet. No plane fits
+them, and a box around one is wrong everywhere above the floor. What can be
+measured from any viewpoint is where a thing stands on the floor. The show
+gives each such thing a low box around its footprint, and its real shape is
+left to particles landing on the depth surface. `footprints.rs` finds and
+tracks the footprints. It is plain numbers with desktop tests, and nothing
+draws them yet.
+
+**What it takes.** Per update the time, the finder's own `Observation`, the
+floor height and the reported planes as boxes (`Plane`, from a `LivePlane`
+or a `PlaneBox`). With no floor height (`None`) it uses a fallback the
+caller passes. The caller should pass the stage floor's current height, the
+one `live_wire::stage_floor_y` keeps: 0 in the floor-level space until the
+finder has a floor, and the live floor after.
+
+**Which points count.** Bare floor is within 6 cm of the floor height. Stuff
+is from 8 cm to 1.8 m above it, farther than 0.5 m (level) from the camera,
+within 4.5 m, and not on a reported plane. On a plane means within 6 cm of
+its box, or 3 noise deviations if more, and inside its rectangle grown by
+10 cm. Planes win, so a bookcase found as planes leaves no footprint, and a
+floor plane explains nothing. Both height bands widen by the noise's
+vertical part, since the noise runs along the ray: at 3.8 m stuff starts
+about 12 cm up, so far floor the noise lifts is not a thing. Three kinds of
+point are left out first:
+
+- Blends of two depths at a silhouette. A point is one when its neighbors
+  on one axis jump in range and it lies between them, and its neighbors on
+  the other axis do not agree with it. For a jump above and below, neither
+  neighbor left or right may agree; that keeps a top seen in a single row
+  from a low eye, which runs along the row. For a jump left and right, the
+  two neighbors above and below must both agree. A point near the floor
+  needs the plane finder's larger jump above and below, because a grazing
+  floor's rows are far apart.
+- Walls. An upright surface 2 m above the floor is a wall's, a wardrobe's
+  or a curtain's. Each grid column is followed down from there while its
+  points stay on that vertical plane. This keeps walls out before the
+  finder reports them, and where it misses them.
+- Stuff with no neighbor (not a blend) within two grid cells' width. A blend
+  that got through hangs alone in the air behind a silhouette.
+
+A stuff point stands for the level segment half way to its neighbors left
+and right on its surface, so the segment follows a turned face. On a top it
+also stands for the strip of the top its grid cell sees. The strip runs
+toward and away from the camera, up to 25 cm each way, never past the
+points of the grid cells above and below. At a top's back edge it runs at
+most 10 cm. From a low eye a top is one row of the grid, and the strip is
+what gives its depth. Bare floor is spread the same way, so far floor
+between sparse rows is seen.
+
+**The floor grid.** Cells of 10 cm in world x and z, made only by stuff.
+Each keeps an occupancy score, its lowest and highest stuff, its extreme
+samples in eight directions and a probe, a stuff point it held. The score
+rises by the update's time step for each update with stuff in it, up to
+1 s. A cell is occupied at 0.3 s, the second update at 4 Hz. Beside an
+occupied cell near a moving footprint it is occupied at once, which is the
+moving thing's leading edge. Elsewhere that would let a silhouette's blends
+join a thing. Stuff in a cell in an update wins over anything else in it.
+Without stuff, a cell is free at once in two cases:
+
+- A ray reached the floor in it lower than its lowest stuff. The floor seen
+  under a chair's seat says nothing about the seat.
+- The map is farther than its probe on all four grid cells around it. The
+  probe is seen through.
+
+Its score falls by the time step when points on a plane land in it, so a
+thing found later as planes leaves. It also falls when the map around its
+probe is farther on some grid cells and on it on none, unless the probe's
+own grid cell is a blend in that update. That is a blend that got through,
+hanging in the air. A cell not observed keeps its state. Cells farther than
+8 m are dropped, and free cells with no stuff for 5 s are recycled.
+
+**Groups.** Occupied cells join an 8-neighbor, or a cell one over across an
+empty one, when their samples come within 15 cm and their height ranges
+within 20 cm. Groups grow only from cells with stuff below 0.4 m. A hanging
+lamp or a wall shelf stands on nothing, and a shelf beside a low cabinet
+stays out of the cabinet's footprint. A group's rectangle is the
+minimum-area one over yaw of its cells' extreme samples. Every point it is
+fitted to is a sample, so a turned face does not add the corners a box
+around its samples would. It keeps the previous yaw unless another is 10%
+smaller, so a square thing does not spin.
+
+**Tracking.** A group goes to the footprint whose estimate, moved by its
+velocity and grown by 15 cm, holds most of its cells. A footprint is
+reported once it had a group in 70% of its updates over 0.5 s, with a
+rectangle of 0.04 m² whose short side counts as at least 15 cm. A thing
+seen from one side shows only its near surface: a person seen from the
+front is a thin arc, and anything standing has that much behind it. A
+table's leg is still far too small. Ids are never reused.
+
+Still, a reported footprint fits only the cells seen for 0.7 s, so a blend
+seen once or twice does not move it. Its rectangle follows inside dead
+bands and rate limits like the planes'. An edge moves only past 12 cm, at
+most 8 mm/s while the camera is still and 0.5 m/s while it moves. The yaw
+turns only past 3 degrees, at most 0.5 and 10 degrees/s.
+
+Moved and noise are told apart this way. A footprint has moved when its
+estimate is more than 15 cm from it and neither rectangle holds 75% of the
+other. It has also moved when its estimate's velocity, smoothed over 0.5 s,
+passes 0.2 m/s and it has left by 7.5 cm. Noise moves an estimate both ways
+by an edge cell at a time, so the smoothed velocity stays low. A growth or
+a shrink keeps one rectangle inside the other and follows at the still
+limits. A moving footprint follows fast (gain 8, up to 2 m/s) while its
+estimate keeps going and 0.5 s after. A moving footprint that found no
+group takes an untaken group within 30 cm of where its velocity puts it.
+The cells it leaves are cleared by bare floor or by being seen through. A
+footprint with no group for 0.5 s is dropped. Out of view its cells keep
+their state, so it is kept.
+
+**Budget.** At most 8 are reported. Over that, the nearest small neighbors
+are merged first, within 1 m, last update's pairs favored, under the larger
+one's id. The rest are ranked by area and nearness, reported ones favored.
+
+**Output.** `footprints()` gives each footprint's id, center on the floor,
+yaw, half extents, highest stuff above the floor, confidence, whether it is
+moving and when it was first reported. `to_obstacle_box` gives a
+`PlaneBox`: 12 cm tall, standing on the floor, kind other. Its UUID starts
+with `fsfoot` and two zero bytes and ends with the id. That is never a
+plane's `fslive`, the zero version and variant bits are a layout no
+runtime anchor has, and it is never the stage floor's all-zero UUID.
+`nearest(point)` answers from every footprint remembered, in view or not,
+with the id it is reported under (its own when it is over the budget) and
+its level distance (0 inside).
+
+**The synthetic sensor.** The tests' sensor is built on the headset's
+figures for the error along the ray: median +2 cm and spread 0.14 cm at
+2.5 m and nearer, +0.9 cm and 3 cm at 3.5 m, linear between, the spread
+growing at that rate beyond (5.9 cm at 4.5 m). The noise is smoothed over
+5x5 grid cells, as the runtime filters it. Silhouette cells are blended at
+a random fraction half the time, as in the finder's tests, and 2% of cells
+are holes. The camera is a 100 degree pinhole on a 64x64 grid at 4 Hz.
+
+**Measured on the desktop.** An update on the 64x64 grid takes 0.25 ms
+(0.26 at most) on one core of an i9-13900K, 0.12 ms on 40x40 and 0.36 ms on
+80x80. Its buffers do not grow after warm-up. The numbers below are for the
+default seeds.
+
+- A 0.5 m cube 2 m away is reported at 0.75 s. Square to the view it
+  measures 0.49 x 0.42, 0.51 x 0.48 and 0.47 x 0.53 m from eyes 0.76, 1.2
+  and 1.7 m. Turned 30 degrees: 0.48 x 0.50 (7.0 degrees off), 0.50 x 0.56
+  (4.1) and 0.54 x 0.53 m (0.0). Centers are within 3.3 cm. With no floor
+  height, on the fallback, square: 0.49 x 0.44, 0.44 x 0.51 and
+  0.48 x 0.59 m.
+- An L-shaped pile with a 1 x 1 m bound gives one footprint of
+  0.94 x 1.07 m, a corner at most 7.3 cm outside it.
+- Two 0.4 m cubes 0.5 m apart stay two. 0.1 m apart they become one of
+  0.85 to 0.88 x 0.37 to 0.38 m.
+- Noise alone for 10 s: ids hold from the first second and no center moves.
+- A 0.4 m box sliding at 0.5 m/s keeps one id. The footprint stays within
+  21 cm of it, and no cell is left more than 25 cm behind it. At 1 m/s: one
+  id, within 29 cm, cells up to 50 cm behind.
+- A box taken away in view is dropped 0.25 s later. Taken away out of view
+  it is kept, and dropped by the time the camera is back on its spot.
+- No footprint for a hanging cube and a wall shelf, a table whose top is a
+  plane, four bare legs, a bookcase whose front is a plane, the wearer's own
+  feet, or walls not passed as planes (a full turn at 1.6 and 1.2 m).
+- Turned away and back: the same id throughout, and `nearest` answers with
+  it at every update.
+- Ten 0.4 m boxes 0.5 m apart: 10 tracked, 8 reported with 2 merged pairs.
+- With the plane finder run on the same input: a person (a cylinder) is a
+  footprint of its visible front, and nothing is reported on the walls.
+
+Over 13 noise seeds (`FOOTPRINTS_SEED`), 8 of 273 test runs failed:
+
+- In 4 runs, two of the ten boxes, one behind the other as seen, joined
+  after 4 to 8 s. Blends between the near box's top edge and the far box's
+  face pile up in the gap the camera cannot see.
+- In 2 runs the L pile's rectangle came out diagonal, a corner 12 and 27 cm
+  outside.
+- In 1 run a table leg was reported for 0.75 s.
+- In 1 run the turned cube came out 20 degrees off from 0.76 and 1.2 m.
+
+**Not yet.** The thresholds are set for the synthetic sensor, whose blends
+are drawn fresh at every update. The headset's are filtered and may be
+steadier. The ignored test `replay_footprints_in_live_planes_rec` runs the
+finder and the footprints on a recording (`LIVE_PLANES_REC`), as the worker
+would, and has not been run on one yet. Other limits:
+
+- A thing seen from one side is only its visible part. A person seen from
+  the front is a 10 to 15 cm deep arc until the wearer walks around.
+- A box seen with almost no top (a 0.5 m cube from a 0.76 m eye) has its
+  depth from a single row of the grid, often 5 to 8 cm short.
+- A turned box seen as a V of two faces with little top fits the
+  rectangle along its faces or along the chord between them at the same
+  area, so its yaw can come out up to 45 degrees off.
+- A 0.3 m box 3.2 m away is about 2.5 grid columns wide on the 64x64 grid.
+  Its estimate is 0.14 to 0.24 m wide, under the minimum, and it is often
+  not reported.
+- A thing partly explained by planes (a box whose top is found but not its
+  sides) leaves a thin footprint along its unexplained faces.
+- A table whose top is not found as a plane is a footprint of the whole
+  table.
+
+**What the wiring needs.** The worker runs `Footprints::update` after
+`LivePlanes::update` on the same points. It passes the finder's planes
+(`Plane::from_live`) and, in a scanned room, the room's boxes
+(`Plane::from_box`). It also passes `floor_y()` and the stage floor's height
+as the fallback, and sends `footprints()` back with the planes. The frame
+loop draws each footprint as `to_obstacle_box`, with sides leaning inward
+and fading out above. Footprints and live planes share what the room's
+boxes leave of the 32. The stage floor's slot is kept first, then the
+planes in the finder's order, then the footprints by id, at most 8. Planes
+go first because they carry the surface effects, and a footprint is the
+fallback for what no plane fits.
