@@ -806,3 +806,110 @@ go. A launch with the knob on says "surface labels: always shown
 **Unworn check.** `debug.fosfora.say "make wall 16 blue"` on a room without a
 wall 16 misses on the name, so the labels show for 4 s, long enough for a
 screencap.
+
+## Roam (board #5393)
+
+The app works two ways: seated in a room the headset has scanned, or roaming
+through places it has not. Before roam the second way was broken at launch.
+With no room the default effect, Embers, had nothing to spawn from, Space
+Setup was pushed at the wearer on every launch that found no anchors, the
+cloud stayed where the wearer stood at launch, and the stage floor was a
+20 m slab around the stage origin. The rules are in `roam.rs`, with desktop
+tests.
+
+**When it is on.** `Roam { Off, On }`, with why: `Chosen` by the wearer or
+`NoRoom`. The wearer's choice is saved in `hand_menu.json` (`"roam": true`).
+In a scanned room the default is off. When the scene query ends with no
+anchors after its retries, roam goes on by itself, and the scan label reads
+"No room here: roaming. Rescan from the hand menu" for its usual 6 s. That
+one is not saved. A later scan that finds a room turns it off again. Only a
+change of the scan's state acts, so a wearer who turns roam off in a place
+with no room keeps it off until the next scan ends with none. With the room
+off (`debug.fosfora.room 0`) there is no scan, and roam is on only when
+chosen or forced.
+
+**Space Setup, once.** The app asks for Space Setup once, ever. The flag
+`"space_setup_asked": true` in `hand_menu.json` is saved the first time the
+app launches Space Setup or its first scene query ends, whatever the
+outcome. After that Space Setup opens only from the hand menu's Rescan and
+the spoken rescan. A headset with a `rooms/*.json` from before the flag
+counts as asked (`room_file::any_saved`). `debug.fosfora.scenecapture 0|1`
+still overrides for tests, and a run with it set leaves the flag alone.
+
+**The cloud follows.** In roam the cloud's center glides to the head when
+the head is more than `ROAM_FOLLOW_M` (1.0 m) from it, measured level. The
+glide takes `GLIDE_S` (1.5 s), eased in and out, and a new one starts at
+most every `FOLLOW_EVERY_S` (3 s). It goes where Recenter puts the center,
+at Recenter's height, by Recenter's path (the anchor moves, the test sim's
+cube and the world effect's anchor with it). The sim keeps its particles
+relative to the anchor, so they ride along: none jumps, none dies, and the
+bounds move with them. That reads as the cloud drifting after the wearer.
+Keeping the particles still in the world while the bounds move would take a
+change to the sim. Particles resting on the floor slide with the cloud. A
+drag or a Recenter during a glide ends it. With `debug.fosfora.cube` set
+the cloud stays where the knob puts it.
+
+**The floor follows.** The stage floor's slab is 20 m across. In roam it
+re-centers under the head whenever the head is more than `FLOOR_FOLLOW_M`
+(3 m) from its center, so the head always has at least 7 m of floor around
+it. The slab jumps, it does not glide. The floor is the same plane wherever
+its center is, so collisions and the depth occluder do not change, and the
+rings spread from under the head in the world. Only a pattern drawn in the
+face's own frame (streamlines, curls, a ported effect assigned to the stage
+floor) moves, and only at a jump. The height stays y = 0. Seated, the slab
+is at the stage's origin as before.
+
+**Something to see.** In roam, when the effect showing is the surface-born
+one (Embers) and nothing in reach carries emitter weight, the show switches
+to Flux Cloud, the effect that fills its volume. With no room found it
+switches at once. In a found room it waits `FILL_AFTER_S` (3 s) of zero
+weight, since anchors locate one by one, and a surface that emits keeps
+Embers. It switches once per roam. An effect change the rule did not make
+is the wearer's, and from then on the effect is theirs. Turning roam off
+switches back to the effect it left, unless the wearer picked another
+meanwhile. This was the smallest honest way: the effect row names what
+shows, nothing is written to the room file, and a scanned room with roam
+off looks as before. Giving the stage floor an emitting default in roam
+would have spawned sparks under a floor whose label says rings.
+
+**Immersion gives way to walking.** In roam the passthrough floor is
+`ROAM_FLOOR` (0.5), through `Immersion`'s floor, or the seated floor where
+that is lighter. The immersion level is scaled by head speed: all of it
+below `WALK_FULL_M_S` (0.3 m/s), none above `WALK_NONE_M_S` (0.8 m/s), a
+straight line between. The speed is the head's level travel per frame,
+taken as at most 2 m/s and low-passed with a 0.5 s time constant
+(`WALK_SMOOTH_S`). Walking at 1.2 m/s the room is back within about 0.6 s.
+Stopping, it dims again within about 0.7 s. Standing up is not walking, and
+a tracking jump does not lift the room. Seated, immersion is unchanged.
+
+**The control and the words.** The hand menu's Recenter row holds it, in
+both layouts: Recenter and Rescan share the left cell, a half each, and the
+right cell reads "Roam: off", "Roam: on" or "Roam: on (no room)". A press
+turns it off from on and on from off, and saves the choice. The debug
+panel's header leaves no room for another row, so no row was added. By
+voice, "roam", "roam mode", "follow me", "roam on" and "start roaming" turn
+it on; "stay here", "seated", "stop roaming", "roam off" and "seated mode"
+turn it off. These are grammar phrases only. The on-device model and the
+agents' actions do not know them.
+
+**Live planes.** A later step (board #5391) adds surface boxes found in the
+live depth map while roaming. In `app.rs` they are chained after the room's
+boxes once a frame, into the one list every reader of the room's boxes
+uses. The list is empty until then.
+
+**Knobs.** `debug.fosfora.roam 0|1` forces roam for a launch, not saved,
+for unworn tests where the head never moves; a press or a spoken roam takes
+over. `debug.fosfora.roamwalk <m/s>` fakes the head speed through the same
+low-pass, polled once a second, so the immersion rule can be captured
+unworn.
+
+**Log.** At launch "roam: off", "roam: on (chosen)" or "roam: on
+(debug.fosfora.roam, not saved)", and the Space Setup line ("scene: Space
+Setup not asked yet: an empty scan opens it, once"). On each change "roam:
+on (no room) · the scan found no room · passthrough floor 0.50". Per follow
+"roam: the cloud follows the wearer, 1.24 m from the head, gliding over
+1.5 s". Per floor jump "roam: the stage floor at (4.10, -2.30), under the
+head". The fill "roam: nothing in reach emits on 'Embers': 'Flux Cloud'
+fills the space" and "roam off: back to 'Embers'". Once a second in roam
+while walking counts, "roam: head speed 0.62 m/s · immersion x0.36 (level
+0.30 of 0.84) · passthrough floor 0.50".

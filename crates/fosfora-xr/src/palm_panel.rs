@@ -362,7 +362,9 @@ impl PalmPanel {
 /// V4: on unless saved off, so a file from before the toggle keeps voice
 /// on) and the agent's provider (board #3776: none saved until the Agent
 /// control is first pressed), and the immersion depth (board #5384: full
-/// unless saved otherwise). A missing or broken file is the defaults.
+/// unless saved otherwise). Board #5393: the wearer's Roam choice, and
+/// whether the app has asked for Space Setup, both off unless saved on. A
+/// missing or broken file is the defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuFile {
     pub debug: bool,
@@ -372,6 +374,12 @@ pub struct MenuFile {
     pub agent: Option<crate::agent::Pick>,
     /// The Immersion control's depth (board #5384).
     pub immerse: crate::immerse::Depth,
+    /// The wearer chose roam (board #5393, `roam::RoamState::chosen`).
+    pub roam: bool,
+    /// The app has launched Space Setup, or its first scene query has
+    /// ended, once (board #5393): from then on only the hand menu's Rescan
+    /// and the spoken rescan open Space Setup.
+    pub space_setup_asked: bool,
 }
 
 impl Default for MenuFile {
@@ -381,6 +389,8 @@ impl Default for MenuFile {
             voice: true,
             agent: None,
             immerse: crate::immerse::Depth::default(),
+            roam: false,
+            space_setup_asked: false,
         }
     }
 }
@@ -411,11 +421,14 @@ impl MenuFile {
                 .and_then(serde_json::Value::as_str)
                 .and_then(crate::immerse::Depth::from_name)
                 .unwrap_or(d.immerse),
+            roam: field("roam", d.roam),
+            space_setup_asked: field("space_setup_asked", d.space_setup_asked),
         }
     }
 
     /// The file's text: `{"debug":false,"immerse":"full","voice":true}`,
-    /// with `"agent":"local"` (`anthropic`, `openai`, `off`) once picked.
+    /// with `"agent":"local"` (`anthropic`, `openai`, `off`) once picked,
+    /// and `"roam":true` and `"space_setup_asked":true` only while true.
     pub fn to_json(self) -> String {
         let mut json = serde_json::json!({
             "debug": self.debug,
@@ -424,6 +437,12 @@ impl MenuFile {
         });
         if let Some(pick) = self.agent {
             json["agent"] = pick.name().into();
+        }
+        if self.roam {
+            json["roam"] = true.into();
+        }
+        if self.space_setup_asked {
+            json["space_setup_asked"] = true.into();
         }
         json.to_string()
     }
@@ -548,6 +567,41 @@ mod tests {
             assert!(file.debug && !file.voice, "{json}");
         }
         assert_eq!(MenuFile::parse(r#"{"immerse": "off"}"#).immerse, Depth::Off);
+    }
+
+    /// Board #5393: the Roam choice and the Space Setup flag round-trip,
+    /// are written only while on, and read off when absent or mistyped.
+    #[test]
+    fn the_menu_file_saves_roam_and_the_space_setup_flag_only_while_on() {
+        for (roam, space_setup_asked) in [(true, false), (false, true), (true, true)] {
+            let file = MenuFile {
+                roam,
+                space_setup_asked,
+                ..MenuFile::default()
+            };
+            let json = file.to_json();
+            assert_eq!(json.contains(r#""roam":true"#), roam, "{json}");
+            assert_eq!(
+                json.contains(r#""space_setup_asked":true"#),
+                space_setup_asked,
+                "{json}"
+            );
+            assert_eq!(MenuFile::parse(&json), file);
+        }
+        let off = MenuFile::default().to_json();
+        assert!(
+            !off.contains("roam") && !off.contains("space_setup"),
+            "{off}"
+        );
+        for json in [
+            r#"{"debug": true}"#,
+            r#"{"debug": true, "roam": "yes", "space_setup_asked": 1}"#,
+            r#"{"debug": true, "roam": false, "space_setup_asked": false}"#,
+        ] {
+            let file = MenuFile::parse(json);
+            assert!(!file.roam && !file.space_setup_asked, "{json}");
+            assert!(file.debug, "{json}");
+        }
     }
 
     const HEAD: Vec3 = Vec3::new(0.0, 1.6, 0.0);

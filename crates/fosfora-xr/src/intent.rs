@@ -193,6 +193,9 @@ pub enum Intent {
     /// The hand menu's Immersion control (board #5384): how dark the room
     /// may get with the music.
     Immersion(ImmersionStep),
+    /// The hand menu's Roam control (board #5393): the show follows the
+    /// wearer, or stays where it is.
+    Roam(bool),
     /// The editor's tap (one surface) or hold (the kind), set to this
     /// behavior instead of stepped.
     Behavior {
@@ -365,6 +368,23 @@ const EDIT_OFF: [&str; 6] = [
     "edit room off",
 ];
 const RESCAN: [&str; 3] = ["rescan room", "scan room", "rescan"];
+/// Board #5393: roam on and off, as [`normalize`] leaves them.
+const ROAM_ON: [&str; 6] = [
+    "roam",
+    "roam mode",
+    "follow me",
+    "roam on",
+    "roam mode on",
+    "start roaming",
+];
+const ROAM_OFF: [&str; 6] = [
+    "stay here",
+    "seated",
+    "stop roaming",
+    "roam off",
+    "roam mode off",
+    "seated mode",
+];
 const RECENTER: [&str; 6] = [
     "recenter cloud",
     "recenter particles",
@@ -790,6 +810,12 @@ fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
     }
     if any(ts, &RECENTER) {
         return Some(Intent::Recenter);
+    }
+    if any(ts, &ROAM_ON) {
+        return Some(Intent::Roam(true));
+    }
+    if any(ts, &ROAM_OFF) {
+        return Some(Intent::Roam(false));
     }
     if any(ts, &ALL_NONE) {
         return Some(Intent::AllNone);
@@ -1640,6 +1666,7 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         Intent::Immersion(ImmersionStep::To(depth)) => immersion_reply(depth),
         Intent::Immersion(ImmersionStep::Darker) => "darker".to_owned(),
         Intent::Immersion(ImmersionStep::Lighter) => "lighter".to_owned(),
+        Intent::Roam(on) => format!("roam {}", on_off(on)),
         Intent::Behavior { target, behavior } => of(target, behavior.name()),
         Intent::Color { target, color: 0 } => of(target, "own color"),
         Intent::Color { target, color } => of(target, color_name(color)),
@@ -2108,6 +2135,52 @@ mod tests {
                 ("all none", Intent::AllNone),
             ],
         );
+    }
+
+    /// Board #5393: roam on and off by voice, with the menu's other words
+    /// unchanged around them.
+    #[test]
+    fn roam_on_and_off() {
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        check(
+            &v,
+            &[
+                ("Roam.", Intent::Roam(true)),
+                ("Roam mode", Intent::Roam(true)),
+                ("Follow me.", Intent::Roam(true)),
+                ("Roam on", Intent::Roam(true)),
+                ("Start roaming.", Intent::Roam(true)),
+                ("Stay here.", Intent::Roam(false)),
+                ("Seated", Intent::Roam(false)),
+                ("Stop roaming.", Intent::Roam(false)),
+                ("Roam off", Intent::Roam(false)),
+                ("Seated mode.", Intent::Roam(false)),
+                ("Recenter the cloud.", Intent::Recenter),
+                ("Rescan the room.", Intent::Rescan),
+            ],
+        );
+        // In a sentence of clauses, beside the menu's.
+        let clauses = parse_clauses("Follow me and lights off.", &v);
+        let outcomes: Vec<_> = clauses.into_iter().map(|c| c.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [
+                Ok(Intent::Roam(true)),
+                Ok(Intent::Immersion(ImmersionStep::To(
+                    crate::immerse::Depth::Full
+                )))
+            ]
+        );
+        assert_eq!(reply(&Intent::Roam(true), &v), "roam on");
+        assert_eq!(reply(&Intent::Roam(false), &v), "roam off");
+        // Not the agent's: its actions have no roam.
+        let action = AgentAction {
+            kind: "roam".to_owned(),
+            target: String::new(),
+            value: "on".to_owned(),
+        };
+        assert!(Intent::from_json(&action, &v).is_err());
     }
 
     /// Board #5384: the room darker and lighter, the lights on and off;
@@ -3039,6 +3112,7 @@ mod tests {
             Intent::Describe(t) => ("describe", target(t), String::new()),
             Intent::Help => unreachable!("the agent's actions have no help"),
             Intent::Immersion(_) => unreachable!("the agent's actions have no immersion"),
+            Intent::Roam(_) => unreachable!("the agent's actions have no roam"),
             Intent::NextTrack
             | Intent::PrevTrack
             | Intent::Track(_)

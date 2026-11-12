@@ -35,7 +35,9 @@
 //! menu" for [`SCAN_NONE_S`] when the retries give up, each fading over
 //! [`FADE_S`]; re-posed every frame [`SCAN_DISTANCE_M`] in front of the
 //! head at eye height ([`scan_billboard`]). The editor's label, while one
-//! shows, takes its place.
+//! shows, takes its place. When the scan's end turns roam on (board
+//! #5393), the none reads "No room here: roaming. Rescan from the hand
+//! menu" instead (`roam::scan_text`, [`ScanLabel::step_with`]).
 //!
 //! **The permission** (board #3264). Without `USE_SCENE` the query returns
 //! nothing, so while the app waits for the grant (`permissions::Watch`)
@@ -424,9 +426,21 @@ impl ScanLabel {
     /// This frame's scan `state` (`None` without a room: nothing shows),
     /// `dt` seconds after the last.
     pub fn step(&mut self, state: Option<ScanState>, dt: f32) {
+        self.step_with(state, dt, scan_text);
+    }
+
+    /// [`Self::step`] with the words of a new state from `text` instead of
+    /// [`scan_text`] (board #5393: roam's "No room here: roaming…",
+    /// `roam::scan_text`).
+    pub fn step_with(
+        &mut self,
+        state: Option<ScanState>,
+        dt: f32,
+        text: impl FnOnce(ScanState) -> String,
+    ) {
         match (state, self.shown.as_mut()) {
             (Some(s), Some((was, _, age))) if *was == s => *age += dt.max(0.0),
-            (Some(s), _) => self.shown = Some((s, scan_text(s), 0.0)),
+            (Some(s), _) => self.shown = Some((s, text(s), 0.0)),
             (None, _) => self.shown = None,
         }
     }

@@ -138,6 +138,9 @@ pub struct Controls {
     /// How dark the room may get with the music (the hand menu's
     /// Immersion control, saved in `hand_menu.json`; board #5384).
     pub immerse: crate::immerse::Depth,
+    /// Whether the show follows the wearer, and why (the hand menu's Roam
+    /// control; board #5393). The app sets it; a press only asks.
+    pub roam: crate::roam::Roam,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -184,6 +187,8 @@ pub enum Action {
     SurfaceParam(crate::lanes::Param, bool),
     /// The Immersion control changed (saved; board #5384).
     SetImmersion(crate::immerse::Depth),
+    /// The Roam control asked for roam on or off (saved; board #5393).
+    SetRoam(bool),
 }
 
 impl Controls {
@@ -231,6 +236,8 @@ enum Target {
     Strength(bool),
     /// The Immersion control: the next depth (board #5384).
     CycleImmersion,
+    /// The Roam control: on from off, off from on (board #5393).
+    ToggleRoam,
 }
 
 /// Frame-loop numbers from the last one-second window.
@@ -699,6 +706,9 @@ impl Hud {
                 controls.immerse = controls.immerse.next();
                 actions.push(Action::SetImmersion(controls.immerse));
             }
+            // The app keeps roam's why (chosen, no room) and sets
+            // `controls.roam`.
+            Some(Target::ToggleRoam) => actions.push(Action::SetRoam(!controls.roam.is_on())),
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
                 // A governed density steps from the value it shows.
@@ -787,8 +797,6 @@ enum Control<'a> {
         right: (Target, &'a str),
         middle: String,
     },
-    /// One action across the row.
-    Button(Target, &'a str),
     /// Two cells side by side (`None`: an empty one).
     Pair([Option<Cell<'a>>; 2]),
     /// Text across the row, no target: a status.
@@ -811,6 +819,10 @@ enum Cell<'a> {
     /// previous and the next track, and between them play or stop, the
     /// press's words over the track's title.
     Music { playing: bool, title: &'a str },
+    /// Two actions, one in each half of the cell (board #5393: Recenter
+    /// and Rescan), picked by the half the pointer is on, as a stepper's
+    /// -/+ are.
+    Halves([(Target, &'a str); 2]),
 }
 
 impl Control<'_> {
@@ -819,7 +831,6 @@ impl Control<'_> {
     fn target(&self, hit: grid::Hit, end: Option<bool>) -> Option<Target> {
         match self {
             Self::Wide { left, right, .. } => Some(if hit.col == 1 { right.0 } else { left.0 }),
-            Self::Button(t, _) => Some(*t),
             Self::Text(_) => None,
             Self::Pair(cells) => match cells[hit.col].as_ref()? {
                 Cell::Stepper { index, .. } => Some(Target::Step(*index, hit.right)),
@@ -830,6 +841,7 @@ impl Control<'_> {
                     Some(true) => Target::NextTrack,
                     None => Target::ToggleMusic,
                 }),
+                Cell::Halves(halves) => Some(halves[usize::from(hit.right)].0),
             },
         }
     }
@@ -874,7 +886,6 @@ impl Rows<'_> {
                         PALETTE.text,
                     );
                 }
-                Control::Button(t, label) => self.button(painter, row, *t, label, on.is_some()),
                 Control::Text(text) => label(painter, row, text),
                 Control::Pair(cells) => {
                     for (col, cell) in cells.iter().enumerate() {
@@ -916,6 +927,30 @@ impl Rows<'_> {
                             Some(Cell::Music { playing, title }) => {
                                 let under = on.and_then(|h| control.target(h, end));
                                 self.music(painter, area, *playing, title, under);
+                            }
+                            Some(Cell::Halves(halves)) => {
+                                // A column's gap between the halves, so they
+                                // read as two buttons.
+                                let (left, right) = area.halves();
+                                let gap = grid::COL_GAP * 0.5;
+                                let left = grid::Rect::new(
+                                    left.min[0],
+                                    left.min[1],
+                                    left.max[0] - gap,
+                                    left.max[1],
+                                );
+                                let right = grid::Rect::new(
+                                    right.min[0] + gap,
+                                    right.min[1],
+                                    right.max[0],
+                                    right.max[1],
+                                );
+                                for (half, (t, text), is_right) in
+                                    [(left, halves[0], false), (right, halves[1], true)]
+                                {
+                                    let under = on.is_some_and(|h| h.right == is_right);
+                                    self.button(painter, half, t, text, under);
+                                }
                             }
                             None => {}
                         }
@@ -1256,7 +1291,7 @@ fn panel_ui(
     while let Some(left) = steppers.next() {
         block.push(Control::Pair([Some(left), steppers.next()]));
     }
-    block.push(recenter_row(view.room));
+    block.push(recenter_row(view.room, controls.roam));
     block.push(agent_row(controls.agent, controls.immerse));
     block.push(menu_row(true, controls.pitcher));
     block.push(edit_row(controls.edit_room, view.edit_status));
@@ -1277,7 +1312,7 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Ro
     let editing = controls.edit_room;
     let mut block = Vec::with_capacity(grid::menu_rows(editing));
     block.push(effect_row(view.effect));
-    block.push(recenter_row(view.room));
+    block.push(recenter_row(view.room, controls.roam));
     block.push(agent_row(controls.agent, controls.immerse));
     block.push(menu_row(false, controls.pitcher));
     block.push(edit_row(editing, view.edit_status));
@@ -1364,16 +1399,23 @@ fn music_row(playing: bool, title: &str, voice: bool) -> Control<'_> {
 /// in under the effect's row as the Agent row did, so no row the wearer
 /// already reaches for moved (the quad keeps its bottom edge and grows
 /// upward). Without the room there is nothing to rescan, and Recenter
-/// takes the row.
-fn recenter_row(room: bool) -> Control<'static> {
-    if room {
-        Control::Pair([
-            Some(Cell::Button(Target::Recenter, "Recenter the cloud")),
-            Some(Cell::Button(Target::Rescan, "Rescan the room")),
-        ])
+/// takes the cell.
+///
+/// Board #5393: the Roam control takes the right cell ("Roam: off", "Roam:
+/// on", "Roam: on (no room)" when the scan turned it on), and Recenter and
+/// Rescan share the left one, a half each, as a stepper's -/+ share theirs.
+/// The debug panel's header leaves no room for another row. The three all
+/// decide where the show sits, so they share one.
+fn recenter_row(room: bool, roam: crate::roam::Roam) -> Control<'static> {
+    let left = if room {
+        Cell::Halves([(Target::Recenter, "Recenter"), (Target::Rescan, "Rescan")])
     } else {
-        Control::Button(Target::Recenter, "Recenter the cloud")
-    }
+        Cell::Button(Target::Recenter, "Recenter the cloud")
+    };
+    Control::Pair([
+        Some(left),
+        Some(Cell::Button(Target::ToggleRoam, roam.label())),
+    ])
 }
 
 /// The agent's provider (board #3776), one action across the row, over
