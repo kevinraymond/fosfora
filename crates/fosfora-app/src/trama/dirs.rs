@@ -41,7 +41,9 @@ pub fn is_effect_in(path: &Path, dirs: &[PathBuf]) -> bool {
         && path.parent().is_some_and(|p| dirs.iter().any(|d| d == p))
 }
 
-fn parse(raw: Option<OsString>, home: Option<OsString>) -> Vec<PathBuf> {
+/// A `PATH`-style directory list: split, `~` expanded against `home`, made
+/// absolute. Shared with `effect::dirs` (`FOSFORA_EFFECT_DIRS`).
+pub(crate) fn parse(raw: Option<OsString>, home: Option<OsString>) -> Vec<PathBuf> {
     let Some(raw) = raw else {
         return Vec::new();
     };
@@ -183,8 +185,13 @@ mod tests {
         for d in [&shaders, &effects, &trama, &extra] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let mut w =
-            ShaderWatcher::watching(&shaders, &effects, &trama, std::slice::from_ref(&extra));
+        let mut w = ShaderWatcher::watching(
+            &shaders,
+            &effects,
+            &trama,
+            std::slice::from_ref(&extra),
+            &[],
+        );
         std::thread::sleep(Duration::from_millis(200));
 
         let file = extra.join("rings.wgsl");

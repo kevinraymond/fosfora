@@ -103,6 +103,7 @@ impl ShaderWatcher {
             &assets_dir().join("effects"),
             &crate::trama::effect::trama_effects_dir(),
             &crate::trama::dirs::extra_dirs(),
+            &crate::effect::dirs::extra_dirs(),
         )
     }
 
@@ -113,6 +114,7 @@ impl ShaderWatcher {
         effects_dir: &std::path::Path,
         trama_dir: &std::path::Path,
         extra_trama: &[PathBuf],
+        extra_effects: &[PathBuf],
     ) -> Self {
         // Absolute, all three. In the dev workflow `assets_dir()` is the
         // RELATIVE path `assets`, while notify reports absolute paths — so
@@ -126,6 +128,8 @@ impl ShaderWatcher {
         );
         let extra_trama: Vec<PathBuf> = extra_trama.iter().map(|p| absolute(p)).collect();
         let extra_route = extra_trama.clone();
+        // `.pfx` and their shaders: routed by extension, like assets/effects.
+        let extra_effects: Vec<PathBuf> = extra_effects.iter().map(|p| absolute(p)).collect();
         let (tx, rx): (Sender<PathBuf>, Receiver<PathBuf>) = crossbeam_channel::unbounded();
         let (pfx_tx, pfx_rx): (Sender<PathBuf>, Receiver<PathBuf>) = crossbeam_channel::unbounded();
         let (trama_tx, trama_rx): (Sender<PathBuf>, Receiver<PathBuf>) =
@@ -169,6 +173,8 @@ impl ShaderWatcher {
                 ];
                 let extra = notify::RecursiveMode::NonRecursive;
                 dirs.extend(extra_trama.iter().map(|d| (d, extra, "trama effect")));
+                let effect = notify::RecursiveMode::Recursive;
+                dirs.extend(extra_effects.iter().map(|d| (d, effect, "effect")));
                 for (dir, mode, what) in dirs {
                     if !dir.exists() {
                         continue;
@@ -204,6 +210,9 @@ impl ShaderWatcher {
         seed(trama_dir, false, &mut seen);
         for dir in &extra_trama {
             seed(dir, false, &mut seen);
+        }
+        for dir in &extra_effects {
+            seed(dir, true, &mut seen);
         }
 
         Self {
@@ -301,6 +310,7 @@ mod tests {
             &relative(&effects),
             &relative(&trama),
             &[],
+            &[],
         );
 
         // Poll the way the app does. `quiet` waits out the whole window (the
@@ -384,7 +394,7 @@ mod tests {
             return;
         }
 
-        let mut w = ShaderWatcher::watching(&shaders, &effects, &trama, &[]);
+        let mut w = ShaderWatcher::watching(&shaders, &effects, &trama, &[], &[]);
         std::fs::set_permissions(&shaders, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let notice = w.take_degraded_notice();
