@@ -22,6 +22,9 @@ pub struct OutputWindowInfo {
     pub displays: Vec<DisplayInfo>,
     /// The display the output window is open on, when one is open.
     pub open_on: Option<String>,
+    /// The size the output renders at, which is that window's while it is
+    /// open (GH #292).
+    pub render_size: (u32, u32),
     /// The display it was last opened on, from settings, to seed the picker.
     pub last_display: Option<String>,
 }
@@ -52,7 +55,9 @@ pub fn draw(ui: &mut Ui, info: &OutputWindowInfo) {
     let tc = theme_colors(ui.ctx());
 
     if let Some(name) = &info.open_on {
-        ui.label(egui::RichText::new(format!("On {name}")).size(SMALL_SIZE));
+        let (w, h) = info.render_size;
+        ui.label(egui::RichText::new(format!("On {name} · {w}×{h}")).size(SMALL_SIZE))
+            .on_hover_text("The output renders at this display's size and shape while it is open");
         if ui
             .button(egui::RichText::new("Close output window").size(SMALL_SIZE))
             .on_hover_text("Esc closes it too, from either window")
@@ -103,7 +108,10 @@ pub fn draw(ui: &mut Ui, info: &OutputWindowInfo) {
 
     if ui
         .button(egui::RichText::new("Send output here").size(SMALL_SIZE))
-        .on_hover_text("A borderless window on that display, with no interface on it")
+        .on_hover_text(
+            "A borderless window on that display, with no interface on it. \
+             The output renders at that display's size and shape while it is open.",
+        )
         .clicked()
     {
         ui.ctx().data_mut(|d| {

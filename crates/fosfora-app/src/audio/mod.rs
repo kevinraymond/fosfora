@@ -6,6 +6,7 @@ pub mod capture;
 pub mod chroma;
 pub mod decimate;
 pub mod downbeat;
+pub mod downbeat_sidecar;
 pub mod downmix;
 pub mod features;
 pub mod hop;
@@ -32,6 +33,7 @@ pub mod smoother;
 pub mod stereo;
 pub mod structure;
 pub mod structure_sidecar;
+mod sync_delay;
 pub mod timbre;
 #[cfg(target_os = "windows")]
 pub mod wasapi_capture;
@@ -56,12 +58,12 @@ pub enum AudioError {
 /// the existing bounded crossbeam channel — no extra handoff.
 pub struct AudioFrame {
     pub features: AudioFeatures,
-    /// Log-frequency magnitude spectrum, [`analyzer::SPECTRUM_BINS`] bins in 0..1
-    /// (fills the `audio_spectrum` texture).
-    pub spectrum: Box<[f32]>,
-    /// One mel-spectrogram column, [`analyzer::SPECTROGRAM_MELS`] bands in 0..1
-    /// (scrolls into the `audio_spectrogram` texture).
-    pub mel: Box<[f32]>,
+    /// Log-frequency magnitude spectrum, bins in 0..1 (fills the `audio_spectrum` texture).
+    /// Inline rather than boxed, so producing a frame allocates nothing (#75).
+    pub spectrum: [f32; analyzer::SPECTRUM_BINS],
+    /// One mel-spectrogram column, bands in 0..1 (scrolls into the `audio_spectrogram`
+    /// texture).
+    pub mel: [f32; analyzer::SPECTROGRAM_MELS],
     /// A16 (#1467): the 13 delta-MFCC slopes for this hop, feeding the bindings-only
     /// `audio.dmfcc.N` sources. Carried alongside `mel` (not in [`AudioFeatures`] — bindings-only,
     /// to save the uniform budget).
@@ -90,6 +92,10 @@ pub struct AudioFrame {
     /// scheduler's beat may belong to an instant earlier than the hop that emitted it;
     /// the Signal emitter stamps `/beat` and `/downbeat` with this, not the hop time.
     pub beat_time: Option<f64>,
+    /// #4473: the downbeat's event time, `Some` only on the hop `features.downbeat` pulses:
+    /// the settled beat's emitted time, so `/downbeat` carries the same clock as `/beat`
+    /// while the bar tracker itself decides on the instant.
+    pub downbeat_time: Option<f64>,
     /// Q4 (#2080): confidence 0..1 on the hop a section boundary is confirmed, `None`
     /// otherwise. Carried here rather than in [`AudioFeatures`] because it is a trigger no
     /// shader wants and the uniform ABI is the expensive place to spend a slot; the bindable
@@ -125,7 +131,9 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 
-pub use self::beat::{TempoCommand, TempoConfig, TempoControl, TempoPreset};
+pub use self::beat::{
+    SYNC_OFFSET_MAX_MS, SYNC_OFFSET_MIN_MS, TempoCommand, TempoConfig, TempoControl, TempoPreset,
+};
 use self::capture::{AudioCapture, RingBuffer};
 use self::hop::HopAnalyzer;
 use self::interp::FeatureInterpolator;
@@ -197,6 +205,10 @@ struct MeterState {
 
 /// How long `callback_count` may stay frozen before the watchdog calls it a stall.
 const STALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// #73: the longest the analysis thread parks waiting for a capture push before it re-checks
+/// for shutdown. Samples wake it sooner; this only matters when none arrive.
+const SAMPLE_WAIT: Duration = Duration::from_millis(20);
 
 /// A9b (#1617): how often to ask `pactl` which sink is default. Each poll forks a subprocess,
 /// so this is a cadence rather than a per-frame check; it matches `list_devices`' rescan gap.
@@ -311,7 +323,7 @@ pub struct AudioSystem {
     latest_spectrum: Vec<f32>,
     /// Mel-spectrogram columns received since the last `latest_features` poll, oldest
     /// first (A17 `audio_spectrogram`, #1468). Drained by the render thread each frame.
-    pending_mel: Vec<Box<[f32]>>,
+    pending_mel: Vec<[f32; analyzer::SPECTROGRAM_MELS]>,
     /// Newest mel-spectrogram column received (A1b, #1512). Held between polls (like
     /// `latest_spectrum`) so the binding bus can expose `audio.mel.N` sources without
     /// stealing columns from the draining spectrogram-texture path (`pending_mel`).
@@ -1179,7 +1191,7 @@ impl AudioSystem {
     /// Take the mel-spectrogram columns accumulated since the last call (oldest first),
     /// leaving the pending buffer empty (A17 `audio_spectrogram`, #1468). The render
     /// thread scrolls these into the spectrogram texture.
-    pub fn take_mel_columns(&mut self) -> Vec<Box<[f32]>> {
+    pub fn take_mel_columns(&mut self) -> Vec<[f32; analyzer::SPECTROGRAM_MELS]> {
         std::mem::take(&mut self.pending_mel)
     }
 
@@ -1515,7 +1527,12 @@ fn audio_thread(
     // #77: the latest snapshots of the shared config. Refreshed each hop when the lock is
     // free; while the UI holds it (it does for a whole panel draw) the hop reuses these
     // rather than waiting on the render thread.
-    let mut tempo_cfg = tempo.lock().unwrap_or_else(|e| e.into_inner()).config;
+    let (mut tempo_cfg, mut sync_offset_ms) = {
+        let t = tempo.lock().unwrap_or_else(|e| e.into_inner());
+        (t.config, t.sync_offset_ms())
+    };
+    // #80: hop outputs held back by a negative sync offset (a pass-through at 0 or above).
+    let mut delay = sync_delay::OutputDelay::new();
     let mut struct_cfg = *tuning.lock().unwrap_or_else(|e| e.into_inner());
     // #53: above 88.2 kHz the input is halved down to 44.1–88.2 kHz before analysis, so every
     // stage below runs at a rate it was tuned for. The recording mirror keeps the device rate.
@@ -1555,15 +1572,21 @@ fn audio_thread(
     let mut fifo_stereo: Vec<f32> = Vec::with_capacity((read_buf.len() + ANALYSIS_HOP) * 2);
     let mut samples_consumed: u64 = 0;
 
+    // #73: the capture callback's push wakes this thread, so a hop is analyzed as soon as its
+    // last sample lands rather than up to a 10 ms poll later.
+    ring.wake_on_push();
     loop {
         if shutdown.load(Ordering::Acquire) {
             log::info!("Audio thread shutting down");
             break;
         }
-        thread::sleep(Duration::from_millis(10));
 
         let available = ring.available();
         if available == 0 {
+            // A push between the check above and this park leaves the unpark token set, so
+            // the park returns at once. The timeout bounds how long a shutdown waits when no
+            // samples arrive (a stalled device, or one that never started).
+            thread::park_timeout(SAMPLE_WAIT);
             continue;
         }
 
@@ -1641,6 +1664,7 @@ fn audio_thread(
                         t.config.prior_center_bpm = hop_analyzer.prior_center_bpm();
                     }
                     tempo_cfg = t.config;
+                    sync_offset_ms = t.sync_offset_ms();
                     t.drain()
                 }
                 None => Vec::new(),
@@ -1651,24 +1675,31 @@ fn audio_thread(
                 struct_cfg = *cfg;
             }
 
+            // #80: a positive sync offset leads the beat grid; a negative one holds every
+            // output back, pulses included, until the audio clock has moved on that far.
+            let sync_secs = f64::from(sync_offset_ms) / 1000.0;
+            hop_analyzer.set_sync_lead(sync_secs.max(0.0));
             let out = hop_analyzer.process_hop(
                 hop, hop_stereo, timestamp, struct_cfg, tempo_cfg, tempo_cmds,
             );
+            delay.push(timestamp, out);
 
-            // Count the three 1-frame pulses in atomics so the consumer can't miss one when
-            // the channel overflows or it drains multiple frames at once (#1976).
-            if out.beat_fired {
-                beat_counter.fetch_add(1, Ordering::Relaxed);
-            }
-            if out.downbeat_fired {
-                downbeat_counter.fetch_add(1, Ordering::Relaxed);
-            }
-            if out.drop_fired {
-                drop_counter.fetch_add(1, Ordering::Relaxed);
-            }
+            while let Some(out) = delay.pop_due(timestamp, (-sync_secs).max(0.0)) {
+                // Count the three 1-frame pulses in atomics so the consumer can't miss one
+                // when the channel overflows or it drains multiple frames at once (#1976).
+                if out.beat_fired {
+                    beat_counter.fetch_add(1, Ordering::Relaxed);
+                }
+                if out.downbeat_fired {
+                    downbeat_counter.fetch_add(1, Ordering::Relaxed);
+                }
+                if out.drop_fired {
+                    drop_counter.fetch_add(1, Ordering::Relaxed);
+                }
 
-            // Non-blocking; if the main thread is behind, the oldest queued frame goes.
-            tx.send(out.frame);
+                // Non-blocking; if the main thread is behind, the oldest queued frame goes.
+                tx.send(out.frame);
+            }
         }
 
         // Drop the samples we consumed; keep the sub-hop remainder for next time.

@@ -255,13 +255,14 @@ impl LiveAudio {
         HopOutput {
             frame: AudioFrame {
                 features: f,
-                spectrum: self.system.latest_spectrum().into(),
-                mel: self.system.latest_mel().into(),
+                spectrum: bins(self.system.latest_spectrum()),
+                mel: bins(self.system.latest_mel()),
                 dmfcc: *self.system.latest_dmfcc(),
                 timestamp: ts,
                 phase_frozen: false,
                 bar_duration: f.beat_period_secs().map_or(2.0, |p| 4.0 * f64::from(p)),
                 beat_time: None,
+                downbeat_time: None,
                 section_boundary: None,
             },
             beat_fired,
@@ -358,4 +359,13 @@ pub fn open_input(
     }
     stream.request_start().context("AAudio request_start")?;
     Ok(stream)
+}
+
+/// The first `N` values of `s` as an array, zero past its end: the
+/// system's spectrum and mel slices into the frame's fixed-size fields.
+fn bins<const N: usize>(s: &[f32]) -> [f32; N] {
+    let mut out = [0.0; N];
+    let n = s.len().min(N);
+    out[..n].copy_from_slice(&s[..n]);
+    out
 }

@@ -757,20 +757,16 @@ pub fn synth_hop(frame: u32, fps: u32, ts: f64) -> HopOutput {
     f.beat_strength = 0.8;
     f.dominant_chroma = ((ts / 8.0) as f32).fract();
 
-    let spectrum: Box<[f32]> = (0..SPECTRUM_BINS)
-        .map(|i| {
-            let x = i as f32 / SPECTRUM_BINS as f32;
-            ((-x * 6.0).exp() * (0.4 + 0.6 * beat_env)
-                + 0.15 * slow * (-(x - 0.5).powi(2) * 40.0).exp())
-            .min(1.0)
-        })
-        .collect();
-    let mel: Box<[f32]> = (0..SPECTROGRAM_MELS)
-        .map(|i| {
-            let x = i as f32 / SPECTROGRAM_MELS as f32;
-            ((-x * 4.0).exp() * (0.4 + 0.6 * beat_env)).min(1.0)
-        })
-        .collect();
+    let spectrum: [f32; SPECTRUM_BINS] = std::array::from_fn(|i| {
+        let x = i as f32 / SPECTRUM_BINS as f32;
+        ((-x * 6.0).exp() * (0.4 + 0.6 * beat_env)
+            + 0.15 * slow * (-(x - 0.5).powi(2) * 40.0).exp())
+        .min(1.0)
+    });
+    let mel: [f32; SPECTROGRAM_MELS] = std::array::from_fn(|i| {
+        let x = i as f32 / SPECTROGRAM_MELS as f32;
+        ((-x * 4.0).exp() * (0.4 + 0.6 * beat_env)).min(1.0)
+    });
 
     HopOutput {
         frame: AudioFrame {
@@ -782,6 +778,7 @@ pub fn synth_hop(frame: u32, fps: u32, ts: f64) -> HopOutput {
             phase_frozen: false,
             bar_duration: 4.0 * 60.0 / BPM,
             beat_time: None,
+            downbeat_time: None,
             section_boundary: None,
         },
         beat_fired: f.beat > 0.5,

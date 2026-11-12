@@ -58,6 +58,10 @@ bench/
                          ALWAYS run --validate first: it replays the SHIPPED
                          config and diffs against cached run_bench results, and a
                          replay that has drifted makes every sweep number a lie
+  td_compare/            the TouchDesigner head-to-head behind docs/TOUCHDESIGNER.md's
+                         "What to expect": td_harness.py runs inside TouchDesigner,
+                         the rest turn its logs into dumps and score them against
+                         Fosfora's; each script's docstring says how to run it
   datasets/<ds>/         GITIGNORED: raw/ audio/ norm/ status.json
   out/                   GITIGNORED: dumps cache + results (regenerable)
 ```

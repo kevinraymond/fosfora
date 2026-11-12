@@ -2843,4 +2843,368 @@ mod tests {
         let err = pollster::block_on(device.pop_error_scope());
         assert!(err.is_none(), "validation error: {err:?}");
     }
+
+    // ---- Per-node behavior: Displace and Color Grade ----
+    //
+    // These render real chains of shipped nodes (sources feeding the node
+    // under test) and read the result back, so they test the WGSL, not a Rust
+    // model of it.
+
+    /// One node's params, by name, before the chain runs.
+    type Overrides<'a> = &'a [(&'a str, crate::params::ParamValue)];
+
+    struct NodeRig {
+        device: std::sync::Arc<wgpu::Device>,
+        queue: std::sync::Arc<wgpu::Queue>,
+        reg: TramaRegistry,
+        exec: TramaExecutor,
+        out: RenderTarget,
+        // Kept alive for `exec`, which binds them.
+        _placeholder: PlaceholderTexture,
+        _audio: AudioTextures,
+    }
+
+    impl NodeRig {
+        fn new() -> Self {
+            let (device, queue) = test_gpu();
+            let reg = registry(&device);
+            assert!(reg.errors.is_empty(), "{:?}", reg.errors);
+            let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
+            let audio = AudioTextures::new(&device, &queue);
+            let exec = TramaExecutor::new(&device, None, &placeholder, &audio, 64, 64);
+            let out = RenderTarget::new(
+                &device,
+                64,
+                64,
+                GpuContext::hdr_format(),
+                1.0,
+                "test-node-output",
+            );
+            Self {
+                device,
+                queue,
+                reg,
+                exec,
+                out,
+                _placeholder: placeholder,
+                _audio: audio,
+            }
+        }
+
+        fn add(&self, graph: &mut NodeGraph, id: &str, overrides: Overrides) -> NodeId {
+            let effect = self.reg.get(&EffectId(id.into())).unwrap();
+            let kind = if effect.inputs == 0 {
+                NodeKind::Source {
+                    effect: effect.id.clone(),
+                }
+            } else {
+                NodeKind::Effect {
+                    effect: effect.id.clone(),
+                }
+            };
+            let node = graph.add_node(kind, effect.inputs, &effect.params.clone());
+            let p = graph.params_mut(node).unwrap();
+            for (name, value) in overrides {
+                p.params.set(name, value.clone());
+            }
+            node
+        }
+
+        /// Render `graph` and decode the 64x64 Rgba16Float result.
+        fn render(&mut self, graph: &NodeGraph) -> Vec<[f32; 4]> {
+            let mut last_error = None;
+            self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let bytes = render_once(
+                &self.device,
+                &self.queue,
+                &mut self.exec,
+                &self.reg,
+                graph,
+                &self.out,
+                &mut last_error,
+            );
+            let err = pollster::block_on(self.device.pop_error_scope());
+            assert!(err.is_none(), "validation error: {err:?}");
+            assert!(last_error.is_none(), "{last_error:?}");
+            bytes
+                .chunks_exact(8)
+                .map(|px| {
+                    std::array::from_fn(|c| {
+                        f16_to_f32(u16::from_le_bytes([px[2 * c], px[2 * c + 1]]))
+                    })
+                })
+                .collect()
+        }
+
+        /// `node` fed by sources: `inputs[i]` (an effect id and its params)
+        /// is wired into input `i`; `None` leaves that input unwired.
+        fn render_node(
+            &mut self,
+            id: &str,
+            overrides: Overrides,
+            inputs: &[Option<(&str, Overrides)>],
+        ) -> Vec<[f32; 4]> {
+            let mut graph = NodeGraph::new_with_output();
+            let node = self.add(&mut graph, id, overrides);
+            for (slot, input) in inputs.iter().enumerate() {
+                if let Some((src_id, src_overrides)) = input {
+                    let src = self.add(&mut graph, src_id, src_overrides);
+                    graph.connect(src, node, slot as u8).unwrap();
+                }
+            }
+            let out = graph.output_node();
+            graph.connect(node, out, 0).unwrap();
+            self.render(&graph)
+        }
+
+        /// What the chain draws with `id` left out: the first input alone.
+        fn render_source(&mut self, id: &str, overrides: Overrides) -> Vec<[f32; 4]> {
+            let mut graph = NodeGraph::new_with_output();
+            let src = self.add(&mut graph, id, overrides);
+            let out = graph.output_node();
+            graph.connect(src, out, 0).unwrap();
+            self.render(&graph)
+        }
+    }
+
+    fn f16_to_f32(h: u16) -> f32 {
+        let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+        let exp = i32::from((h >> 10) & 0x1f);
+        let man = f32::from(h & 0x3ff);
+        sign * match exp {
+            0 => man * 2f32.powi(-24),
+            31 => f32::INFINITY,
+            _ => (1.0 + man / 1024.0) * 2f32.powi(exp - 15),
+        }
+    }
+
+    fn px(img: &[[f32; 4]], x: usize, y: usize) -> [f32; 4] {
+        img[y * 64 + x]
+    }
+
+    fn luma(c: [f32; 4]) -> f32 {
+        0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    }
+
+    fn color(rgba: [f32; 4]) -> crate::params::ParamValue {
+        crate::params::ParamValue::Color(rgba)
+    }
+
+    fn float(v: f32) -> crate::params::ParamValue {
+        crate::params::ParamValue::Float(v)
+    }
+
+    const RAMP: (&str, Overrides<'static>) = ("gradient", &[]);
+
+    // Run: cargo test -p fosfora-app -- --ignored trama_displace
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_displace_without_a_map_passes_the_picture_through() {
+        let _guard = gpu_guard();
+        let mut rig = NodeRig::new();
+        let ramp = rig.render_source(RAMP.0, RAMP.1);
+        for mode in [0.0, 1.0, 2.0] {
+            let got = rig.render_node(
+                "displace",
+                &[("amount", float(1.0)), ("mode", float(mode))],
+                &[Some(RAMP), None],
+            );
+            assert_eq!(got, ramp, "mode {mode}: an unwired map must not warp");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_displace_flat_map_leaves_the_push_mode_still() {
+        // Displace pushes along the map's slope; a flat white map has none.
+        let _guard = gpu_guard();
+        let mut rig = NodeRig::new();
+        let ramp = rig.render_source(RAMP.0, RAMP.1);
+        let got = rig.render_node(
+            "displace",
+            &[("amount", float(1.0)), ("mode", float(0.0))],
+            &[Some(RAMP), Some(("solid", &[]))],
+        );
+        assert_eq!(got, ramp);
+    }
+
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_displace_lens_bulges_and_negative_amount_pinches() {
+        // The ramp runs black (left) to orange (right). A bulge samples
+        // farther from the center, so left of center goes darker and right of
+        // center brighter; a pinch does the opposite. Both stay put at the
+        // center column, which the warp's radial offset is zero at.
+        let _guard = gpu_guard();
+        let mut rig = NodeRig::new();
+        let ramp = rig.render_source(RAMP.0, RAMP.1);
+        let lens = |rig: &mut NodeRig, amount: f32| {
+            rig.render_node(
+                "displace",
+                &[("amount", float(amount)), ("mode", float(2.0))],
+                &[Some(RAMP), Some(("solid", &[]))],
+            )
+        };
+        let bulge = lens(&mut rig, 1.0);
+        let pinch = lens(&mut rig, -1.0);
+        let (left, right, y) = (12, 52, 32);
+        assert!(luma(px(&bulge, left, y)) < luma(px(&ramp, left, y)) - 0.01);
+        assert!(luma(px(&bulge, right, y)) > luma(px(&ramp, right, y)) + 0.01);
+        assert!(luma(px(&pinch, left, y)) > luma(px(&ramp, left, y)) + 0.01);
+        assert!(luma(px(&pinch, right, y)) < luma(px(&ramp, right, y)) - 0.01);
+    }
+
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_displace_warp_follows_map_coverage() {
+        // The warp follows the map's coverage, as a displacement blend follows
+        // its layer's. A half-covered white map and an opaque mid-gray one are
+        // equally bright (both premultiply to 0.5), so only coverage tells
+        // them apart: the half-covered map must warp half as far toward the
+        // opaque map's result.
+        let _guard = gpu_guard();
+        let mut rig = NodeRig::new();
+        let ramp = rig.render_source(RAMP.0, RAMP.1);
+        let lens = |rig: &mut NodeRig, map: [f32; 4]| {
+            let map_params: Overrides = &[("color", color(map))];
+            let img = rig.render_node(
+                "displace",
+                &[("amount", float(1.0)), ("mode", float(2.0))],
+                &[Some(RAMP), Some(("solid", map_params))],
+            );
+            luma(px(&img, 12, 32))
+        };
+        let opaque = lens(&mut rig, [0.5, 0.5, 0.5, 1.0]);
+        let half = lens(&mut rig, [1.0, 1.0, 1.0, 0.5]);
+        let still = luma(px(&ramp, 12, 32));
+        assert!(
+            opaque < still - 0.005,
+            "the opaque map must warp: {opaque} vs {still}"
+        );
+        let midway = 0.5 * (opaque + still);
+        assert!(
+            (half - midway).abs() < 2e-3,
+            "half coverage must land halfway: {half} vs {midway}"
+        );
+    }
+
+    fn grade(rig: &mut NodeRig, overrides: Overrides, input: [f32; 4]) -> [f32; 4] {
+        let src: Overrides = &[("color", color(input))];
+        let img = rig.render_node("color_grade", overrides, &[Some(("solid", src))]);
+        px(&img, 32, 32)
+    }
+
+    fn assert_close(got: [f32; 4], want: [f32; 4], tol: f32, msg: &str) {
+        for c in 0..4 {
+            assert!(
+                (got[c] - want[c]).abs() <= tol,
+                "{msg}: got {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored trama_color_grade
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_color_grade_defaults_pass_through() {
+        let _guard = gpu_guard();
+        let mut rig = NodeRig::new();
+        for c in [
+            [0.5, 0.5, 0.5, 1.0],
+            [0.9, 0.2, 0.05, 1.0],
+            [0.0, 0.3, 1.0, 1.0],
+        ] {
+            assert_close(grade(&mut rig, &[], c), c, 2e-3, "defaults");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_color_grade_temperature_and_tint_keep_brightness() {
+        let _guard = gpu_guard();
+        let mut rig = NodeRig::new();
+        let gray = [0.5, 0.5, 0.5, 1.0];
+        let warm = grade(&mut rig, &[("temperature", float(1.0))], gray);
+        assert!(warm[0] > warm[1] && warm[1] > warm[2], "warm: {warm:?}");
+        let cool = grade(&mut rig, &[("temperature", float(-1.0))], gray);
+        assert!(cool[2] > cool[1] && cool[1] > cool[0], "cool: {cool:?}");
+        let magenta = grade(&mut rig, &[("tint", float(1.0))], gray);
+        assert!(
+            magenta[1] < magenta[0] && magenta[1] < magenta[2],
+            "{magenta:?}"
+        );
+        for c in [warm, cool, magenta] {
+            assert!((luma(c) - 0.5).abs() < 5e-3, "brightness moved: {c:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_color_grade_lift_raises_black_and_holds_white() {
+        let _guard = gpu_guard();
+        let mut rig = NodeRig::new();
+        let lift: Overrides = &[("lift", float(0.2))];
+        let black = grade(&mut rig, lift, [0.0, 0.0, 0.0, 1.0]);
+        assert_close(black, [0.2, 0.2, 0.2, 1.0], 2e-3, "black lifts by `lift`");
+        let white = grade(&mut rig, lift, [1.0, 1.0, 1.0, 1.0]);
+        assert_close(white, [1.0, 1.0, 1.0, 1.0], 2e-3, "white stays");
+    }
+
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_color_grade_wheels_push_their_end_only() {
+        // A blue `shadows` wheel tints black blue and leaves white white; an
+        // orange `highlights` wheel warms white and leaves black black. A gray
+        // wheel is neutral whatever its level.
+        let _guard = gpu_guard();
+        let mut rig = NodeRig::new();
+        let black = [0.0, 0.0, 0.0, 1.0];
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let blue: Overrides = &[("shadows", color([0.0, 0.3, 1.0, 1.0]))];
+        let b = grade(&mut rig, blue, black);
+        assert!(b[2] > 0.05 && b[2] > b[0], "blue shadows: {b:?}");
+        assert_close(
+            grade(&mut rig, blue, white),
+            white,
+            2e-3,
+            "shadows leave white",
+        );
+        let orange: Overrides = &[("highlights", color([1.0, 0.5, 0.0, 1.0]))];
+        let w = grade(&mut rig, orange, white);
+        assert!(w[0] > w[1] && w[1] > w[2], "orange highlights: {w:?}");
+        assert_close(
+            grade(&mut rig, orange, black),
+            black,
+            2e-3,
+            "highlights leave black",
+        );
+        let gray: Overrides = &[
+            ("shadows", color([0.3, 0.3, 0.3, 1.0])),
+            ("highlights", color([0.6, 0.6, 0.6, 1.0])),
+        ];
+        let mid = [0.4, 0.5, 0.6, 1.0];
+        assert_close(
+            grade(&mut rig, gray, mid),
+            mid,
+            2e-3,
+            "gray wheels are neutral",
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_color_grade_grades_coverage_not_premultiplied_color() {
+        // Half-covered mid gray (premultiplied 0.25 at alpha 0.5) under gain 2
+        // is half-covered white: 0.5 premultiplied, alpha unchanged. Grading
+        // the premultiplied value instead would give the same here, so lift
+        // is the discriminating case: it must raise the gray, not the 0.25.
+        let _guard = gpu_guard();
+        let mut rig = NodeRig::new();
+        let half = [0.5, 0.5, 0.5, 0.5];
+        let gained = grade(&mut rig, &[("gain", float(2.0))], half);
+        assert_close(gained, [0.5, 0.5, 0.5, 0.5], 2e-3, "gain");
+        // lift 0.5 on 0.5: 0.5 + 0.5 * (1 - 0.5) = 0.75, times coverage 0.5.
+        let lifted = grade(&mut rig, &[("lift", float(0.5))], half);
+        assert_close(lifted, [0.375, 0.375, 0.375, 0.5], 2e-3, "lift");
+    }
 }

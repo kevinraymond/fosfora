@@ -187,7 +187,13 @@ impl OutputPipeline {
         }
 
         // 2. Render composite to capture texture.
-        post_process.render_composite_to(device, encoder, source, &capture.view);
+        post_process.render_composite_to(
+            device,
+            encoder,
+            source,
+            &capture.view,
+            (capture.width, capture.height),
+        );
 
         // 3. Copy to staging.
         capture.copy_to_staging(encoder);

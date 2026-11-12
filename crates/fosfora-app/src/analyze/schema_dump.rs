@@ -133,8 +133,7 @@ pub struct Encoding {
 
 /// Serialize an enum through serde and unquote it, so the dump carries the wire
 /// spelling rather than the Rust identifier. The two differ: `EffectType` is
-/// `rename_all = "lowercase"`, and `BlendMode::Overlay` carries a `SoftLight`
-/// read alias.
+/// `rename_all = "lowercase"`.
 fn wire_name<T: Serialize + std::fmt::Debug>(value: &T) -> String {
     serde_json::to_string(value)
         .unwrap_or_else(|e| panic!("{value:?} does not serialize: {e}"))
@@ -142,18 +141,35 @@ fn wire_name<T: Serialize + std::fmt::Debug>(value: &T) -> String {
         .to_string()
 }
 
-/// Every audio source key this build emits.
+/// Every audio and LFO source key this build emits.
 ///
 /// Calls the real collectors over zeroed inputs and takes their keys. The values
 /// are irrelevant — the point is that the key *set* comes from the code that
 /// produces it at runtime, so it cannot describe a source that does not exist.
 pub fn source_keys() -> Vec<String> {
-    use crate::bindings::sources;
+    use crate::bindings::sources::{self, SourceSnapshot};
 
     let features = AudioFeatures::zeroed();
-    let mut keys: Vec<String> = sources::collect_audio(&features).into_keys().collect();
-    keys.extend(sources::collect_mel_bands(&vec![0.0; SPECTROGRAM_MELS]).into_keys());
-    keys.extend(sources::collect_dmfcc_bands(&[0.0; 13]).into_keys());
+    let mut keys: Vec<String> = sources::collect_audio(&features)
+        .into_keys()
+        .map(String::from)
+        .collect();
+    keys.extend(
+        sources::collect_mel_bands(&vec![0.0; SPECTROGRAM_MELS])
+            .into_keys()
+            .map(String::from),
+    );
+    keys.extend(
+        sources::collect_dmfcc_bands(&[0.0; 13])
+            .into_keys()
+            .map(String::from),
+    );
+    // The base tempo-synced LFOs (#129). Phase-offset variants
+    // (`lfo.{shape}.{division}.{degrees}`) are open-ended, so the validator
+    // accepts any key `bindings::lfo::parse` does.
+    let mut lfo = SourceSnapshot::new();
+    crate::bindings::lfo::collect_into(&mut lfo, 0.0, &[]);
+    keys.extend(lfo.into_keys().map(String::from));
     keys.sort();
     keys.dedup();
     keys
@@ -196,11 +212,11 @@ pub fn build(loader_effects: &[PfxEffect]) -> Capabilities {
                 "scene.transport.{action}",
                 "global.master_opacity",
             ],
-            postfx: catalog::POSTFX_TARGETS.to_vec(),
-            particle: catalog::PARTICLE_TARGETS.to_vec(),
-            uniform: catalog::UNIFORM_TARGETS.to_vec(),
+            postfx: catalog::postfx_targets(),
+            particle: catalog::particle_targets(),
+            uniform: catalog::uniform_targets(),
             layer_fields: catalog::layer_fields().to_vec(),
-            scene_transport: catalog::SCENE_TRANSPORT_ACTIONS.to_vec(),
+            scene_transport: catalog::scene_transport_actions(),
             global: vec!["global.master_opacity"],
         },
         limits: Limits {
@@ -279,6 +295,8 @@ mod tests {
             "audio.dmfcc.12",
             "audio.contrast_mean",
             "audio.key_hue",
+            "lfo.sine.bar",
+            "lfo.sh.16th",
         ] {
             assert!(
                 keys.iter().any(|k| k == expected),
@@ -297,18 +315,17 @@ mod tests {
         );
     }
 
-    /// `BlendMode::Overlay` carries a `SoftLight` alias, so the Rust identifier
-    /// and the wire name are not interchangeable in general. Dump the wire name.
+    /// The blend list is in wire order, so a mode's position in the dump is
+    /// the number OSC and the web remote send for it.
     #[test]
-    fn blend_modes_are_wire_names() {
+    fn blend_modes_are_wire_names_in_wire_order() {
         let caps = build(&[]);
         assert_eq!(caps.enums.blend_modes.len(), BlendMode::ALL.len());
-        assert_eq!(caps.enums.blend_modes[0], "Normal");
-        assert!(caps.enums.blend_modes.iter().any(|m| m == "Overlay"));
-        assert!(
-            !caps.enums.blend_modes.iter().any(|m| m == "SoftLight"),
-            "SoftLight is a read alias, not the name to write"
-        );
+        for (i, name) in caps.enums.blend_modes.iter().enumerate() {
+            let mode: BlendMode = serde_json::from_str(&format!("\"{name}\"")).unwrap();
+            assert_eq!(mode.as_u32() as usize, i, "{name}");
+        }
+        assert!(caps.enums.blend_modes.iter().any(|m| m == "SoftLight"));
     }
 
     /// Every transform type named in the dump must actually deserialize into a

@@ -176,7 +176,8 @@ impl ApplicationHandler for FosforaApp {
         // and handing its pointer, focus and resize events to egui would move
         // the overlay's input state from a window it is not drawn on. Its
         // frames are drawn from the main window's render, so a redraw request
-        // on it needs nothing.
+        // on it needs nothing. A resize does: the render takes this window's
+        // size while it is open (GH #292).
         if app
             .output_window
             .as_ref()
@@ -188,6 +189,7 @@ impl ApplicationHandler for FosforaApp {
                     if let Some(ow) = app.output_window.as_mut() {
                         ow.resize(&app.gpu.device, size.width, size.height);
                     }
+                    app.sync_render_size();
                 }
                 // Esc is the way out of a full-screen view everywhere else in
                 // the app; on a borderless window with no controls it is the
@@ -429,7 +431,7 @@ impl ApplicationHandler for FosforaApp {
                                 drag: ps.def.drag,
                                 live: ps.modulation,
                                 attraction_strength: ps.def.attraction_strength,
-                                blend_mode: ps.blend_mode.clone(),
+                                blend_mode: ps.blend_mode,
                                 has_flow_field: ps.def.flow_field,
                                 has_trails: ps.trail_length() >= 2,
                                 trail_length: ps.trail_length(),
@@ -695,7 +697,7 @@ impl ApplicationHandler for FosforaApp {
                                         live_enabled: ps.modulation.obstacle_enabled,
                                         live_threshold: ps.modulation.obstacle_threshold,
                                         live_elasticity: ps.modulation.obstacle_elasticity,
-                                        source: ps.obstacle_source.clone(),
+                                        source: ps.obstacle_source,
                                         image_path: ps.obstacle_image_path.clone(),
                                         has_particles,
                                         webcam_available,
@@ -736,7 +738,7 @@ impl ApplicationHandler for FosforaApp {
                                         live_enabled: None,
                                         live_threshold: None,
                                         live_elasticity: None,
-                                        source: String::new(),
+                                        source: None,
                                         image_path: None,
                                         has_particles,
                                         webcam_available,
@@ -980,6 +982,7 @@ impl ApplicationHandler for FosforaApp {
                         let info = crate::ui::panels::output_window_panel::OutputWindowInfo {
                             displays: app.displays.clone(),
                             open_on: app.output_window.as_ref().map(|ow| ow.display_name.clone()),
+                            render_size: app.render_size(),
                             last_display: app.settings.output_display.clone(),
                         };
                         crate::ui::panels::output_window_panel::publish(&ctx, info);
@@ -1633,6 +1636,16 @@ impl ApplicationHandler for FosforaApp {
                     app.settings.save();
                 }
 
+                // Persist the A/V sync offset (#80). The slider already set it live.
+                let set_sync_offset: Option<f32> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("set_sync_offset")));
+                if let Some(ms) = set_sync_offset {
+                    app.settings.sync_offset_ms = ms;
+                    app.settings.save();
+                }
+
                 // Handle auto-reconnect toggle from settings panel (A9 #1460)
                 let set_auto_reconnect: Option<bool> = app
                     .egui_overlay
@@ -1669,6 +1682,9 @@ impl ApplicationHandler for FosforaApp {
                             app.settings.output_display = Some(ow.display_name.clone());
                             app.settings.save();
                             app.output_window = Some(ow);
+                            // The render takes the output's size and shape
+                            // (GH #292).
+                            app.sync_render_size();
                         }
                         Err(e) => {
                             let msg = format!("Output window: {e}");
@@ -1892,8 +1908,8 @@ impl ApplicationHandler for FosforaApp {
                             enabled,
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -1907,8 +1923,8 @@ impl ApplicationHandler for FosforaApp {
                         app.ndi.restart(
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -1926,8 +1942,8 @@ impl ApplicationHandler for FosforaApp {
                         app.ndi.restart(
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -1953,8 +1969,8 @@ impl ApplicationHandler for FosforaApp {
                             enabled,
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -1968,8 +1984,8 @@ impl ApplicationHandler for FosforaApp {
                         app.v4l2.restart(
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -1987,8 +2003,8 @@ impl ApplicationHandler for FosforaApp {
                         app.v4l2.restart(
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -2006,8 +2022,8 @@ impl ApplicationHandler for FosforaApp {
                         app.v4l2.restart(
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -2032,8 +2048,8 @@ impl ApplicationHandler for FosforaApp {
                             enabled,
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -2047,8 +2063,8 @@ impl ApplicationHandler for FosforaApp {
                         app.spout.restart(
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -2066,8 +2082,8 @@ impl ApplicationHandler for FosforaApp {
                         app.spout.restart(
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
                 }
@@ -2084,8 +2100,8 @@ impl ApplicationHandler for FosforaApp {
                             enabled,
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -2099,8 +2115,8 @@ impl ApplicationHandler for FosforaApp {
                         app.syphon.restart(
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
 
@@ -2118,8 +2134,8 @@ impl ApplicationHandler for FosforaApp {
                         app.syphon.restart(
                             &app.gpu.device,
                             app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
+                            app.render_size().0,
+                            app.render_size().1,
                         );
                     }
                 }
@@ -2145,8 +2161,8 @@ impl ApplicationHandler for FosforaApp {
                             if let Err(e) = app.recording.start(
                                 &app.gpu.device,
                                 app.gpu.format,
-                                app.gpu.surface_config.width,
-                                app.gpu.surface_config.height,
+                                app.render_size().0,
+                                app.render_size().1,
                                 audio_source,
                             ) {
                                 log::error!("Failed to start recording: {e}");
@@ -2457,21 +2473,21 @@ impl ApplicationHandler for FosforaApp {
                 }
 
                 // Drain scene transport triggers from binding bus
-                let pending: Vec<String> = app.binding_bus.pending_triggers.drain(..).collect();
-                for trigger in &pending {
-                    match trigger.as_str() {
-                        "scene.transport.go" => {
+                let pending = std::mem::take(&mut app.binding_bus.pending_triggers);
+                for action in pending {
+                    use fosfora_app::bindings::types::TransportAction;
+                    match action {
+                        TransportAction::Go => {
                             let event = app.timeline.go_next();
                             app.process_timeline_event(event);
                         }
-                        "scene.transport.prev" => {
+                        TransportAction::Prev => {
                             let event = app.timeline.go_prev();
                             app.process_timeline_event(event);
                         }
-                        "scene.transport.stop" => {
+                        TransportAction::Stop => {
                             app.timeline.stop();
                         }
-                        _ => {}
                     }
                 }
 
@@ -2776,7 +2792,8 @@ impl ApplicationHandler for FosforaApp {
                                             {
                                                 obstacle_start_webcam = true;
                                                 ps.obstacle_enabled = true;
-                                                ps.obstacle_source = "webcam".to_string();
+                                                ps.obstacle_source =
+                                                    Some(gpu::particle::ObstacleSource::Webcam);
                                                 ps.obstacle_image_path = None;
                                             }
                                         }
@@ -2790,7 +2807,8 @@ impl ApplicationHandler for FosforaApp {
                                                 } else {
                                                     obstacle_start_depth = true;
                                                     ps.obstacle_enabled = true;
-                                                    ps.obstacle_source = "depth".to_string();
+                                                    ps.obstacle_source =
+                                                        Some(gpu::particle::ObstacleSource::Depth);
                                                     ps.obstacle_image_path = None;
                                                 }
                                             }

@@ -15,8 +15,11 @@ use super::render_target::RenderTarget;
 const BLOOM_EXTRACT_FS: &str =
     include_str!("../../../../assets/shaders/builtin/bloom_extract.wgsl");
 const BLOOM_BLUR_FS: &str = include_str!("../../../../assets/shaders/builtin/bloom_blur.wgsl");
-const POST_COMPOSITE_FS: &str =
-    include_str!("../../../../assets/shaders/builtin/post_composite.wgsl");
+/// The tonemap library rides in front: post_composite calls its ACES curve.
+const POST_COMPOSITE_FS: &str = concat!(
+    include_str!("../../../../assets/shaders/lib/tonemap.wgsl"),
+    include_str!("../../../../assets/shaders/builtin/post_composite.wgsl")
+);
 const BLIT_FS: &str = include_str!("../../../../assets/shaders/builtin/blit.wgsl");
 const FLASH_LIMIT_CS: &str = include_str!("../../../../assets/shaders/builtin/flash_limit.wgsl");
 
@@ -124,6 +127,10 @@ pub struct PostProcessChain {
     flash_state_bg: BindGroup,
     flash_state_buffer: wgpu::Buffer,
     flash_gain_buffer: wgpu::Buffer,
+    /// The alpha mode the last [`Self::render`] ran in, for the bars around a
+    /// letterboxed capture (GH #292): what black is in that mode, so opaque
+    /// under Opaque and transparent under Luma and Passthrough.
+    last_alpha_mode: std::cell::Cell<AlphaMode>,
     // Stored for potential resize rebuilds
     #[allow(dead_code)]
     surface_format: TextureFormat,
@@ -261,6 +268,7 @@ impl PostProcessChain {
             flash_state_bg,
             flash_state_buffer,
             flash_gain_buffer,
+            last_alpha_mode: std::cell::Cell::new(AlphaMode::Opaque),
             surface_format,
             hdr_format,
         }
@@ -288,6 +296,7 @@ impl PostProcessChain {
         overrides: &PostProcessDef,
         alpha_mode: AlphaMode,
     ) {
+        self.last_alpha_mode.set(alpha_mode);
         let limit = self.flash_budget > 0.0;
         if !self.enabled && limit {
             // Post off, limiter on: the composite with every effect neutral is
@@ -604,11 +613,12 @@ impl PostProcessChain {
     /// Copy an already-composited target onto a surface of a different shape,
     /// letterboxed rather than stretched.
     ///
-    /// The second output window (#3122) fills whatever display it was sent to,
-    /// and that display's aspect is rarely the render's — a projector at 16:10,
-    /// a monitor turned portrait. Stretching to fit would turn every circle in
-    /// the composite into an ellipse, so the frame keeps its shape and the
-    /// spare edge of the display stays black.
+    /// The render takes the second output window's shape while one is open
+    /// (GH #292), so this carries the main window's full output then. The
+    /// output window presents through it too, where the shapes agree unless
+    /// something has gone out of step. Stretching to fit would turn every
+    /// circle in the composite into an ellipse, so the frame keeps its shape
+    /// and the spare edge of the window stays black.
     pub fn blit_target_letterboxed(
         &self,
         device: &Device,
@@ -633,33 +643,28 @@ impl PostProcessChain {
             ],
         });
 
-        let (x, y, w, h) = letterbox_rect(source.width, source.height, dest_width, dest_height);
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("output-window-blit"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: dest_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    // Opaque black, not transparent: these are the bars beside
-                    // the picture on someone's second screen.
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        pass.set_viewport(x, y, w, h, 0.0, 1.0);
-        pass.set_pipeline(&self.blit_pipeline);
-        pass.set_bind_group(0, &bg, &[]);
-        pass.draw(0..3, 0..1);
+        // Opaque black, not transparent: these are the bars beside the
+        // picture on someone's screen.
+        run_letterboxed_pass(
+            encoder,
+            "letterboxed-blit",
+            &self.blit_pipeline,
+            &bg,
+            dest_view,
+            (source.width, source.height),
+            (dest_width, dest_height),
+            wgpu::Color::BLACK,
+        );
     }
 
     /// Render the final composite (or blit) to a secondary capture target.
     /// Reuses existing bloom results and uniform buffers — only runs the final pass.
+    ///
+    /// Letterboxed when the capture's shape is not the render's (GH #292): a
+    /// stream or recording at a fixed 16:9 size while the render is 4:3, or
+    /// one that cannot change size mid-stream (v4l2, a recording) after the
+    /// output window reshaped the render. Every output shows the same
+    /// picture; only the bars differ.
     #[allow(dead_code)]
     pub fn render_composite_to(
         &self,
@@ -667,7 +672,13 @@ impl PostProcessChain {
         encoder: &mut CommandEncoder,
         source: &RenderTarget,
         capture_view: &TextureView,
+        capture_size: (u32, u32),
     ) {
+        let bars = match self.last_alpha_mode.get() {
+            AlphaMode::Opaque => wgpu::Color::BLACK,
+            AlphaMode::Luma | AlphaMode::Passthrough => wgpu::Color::TRANSPARENT,
+        };
+        let source_size = (source.width, source.height);
         // With the flash limiter on, even a post-off frame goes through the
         // (neutral) composite, so captures carry the same gain as the display.
         if !self.enabled && self.flash_budget <= 0.0 {
@@ -685,23 +696,29 @@ impl PostProcessChain {
                     },
                 ],
             });
-            run_fullscreen_pass(
+            run_letterboxed_pass(
                 encoder,
                 "output-blit",
                 &self.blit_pipeline,
                 &bg,
                 capture_view,
+                source_size,
+                capture_size,
+                bars,
             );
             return;
         }
 
         let bg = self.composite_bind_group(device, source);
-        run_fullscreen_pass(
+        run_letterboxed_pass(
             encoder,
             "output-composite",
             &self.composite_pipeline,
             &bg,
             capture_view,
+            source_size,
+            capture_size,
+            bars,
         );
     }
 }
@@ -908,6 +925,43 @@ fn run_fullscreen_pass(
         timestamp_writes: None,
         occlusion_query_set: None,
     });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bind_group, &[]);
+    pass.draw(0..3, 0..1);
+}
+
+/// [`run_fullscreen_pass`] into the largest `source`-shaped rectangle that
+/// fits `target` ([`letterbox_rect`]), with the rest cleared to `bars`. The
+/// post shaders read only their interpolated uv, so they draw the same
+/// picture inside a viewport as they do full-frame.
+#[allow(clippy::too_many_arguments)]
+fn run_letterboxed_pass(
+    encoder: &mut CommandEncoder,
+    label: &str,
+    pipeline: &RenderPipeline,
+    bind_group: &BindGroup,
+    target: &TextureView,
+    source_size: (u32, u32),
+    target_size: (u32, u32),
+    bars: wgpu::Color,
+) {
+    let (x, y, w, h) = letterbox_rect(source_size.0, source_size.1, target_size.0, target_size.1);
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(bars),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_viewport(x, y, w, h, 0.0, 1.0);
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, bind_group, &[]);
     pass.draw(0..3, 0..1);
@@ -1523,6 +1577,151 @@ mod tests {
                     (a - b).abs() < 1.5 / 255.0,
                     "frame {i}: limited {a}, off {b}"
                 );
+            }
+        }
+    }
+
+    // ---- Captures of another shape (GH #292) ----
+
+    /// One captured row through a real chain: a white 4:3 render (48×36),
+    /// rendered once in `alpha_mode`, then captured at 16:9 (64×36) with post
+    /// on (`post_enabled`) or off. Returns the middle row's pixels.
+    fn capture_row_of_a_four_by_three_render(
+        alpha_mode: AlphaMode,
+        post_enabled: bool,
+    ) -> Vec<[u8; 4]> {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        let (rw, rh) = (48u32, 36u32);
+        // 64 px: one row is exactly the 256-byte copy alignment.
+        let (cw, ch) = (64u32, 36u32);
+        let fmt = TextureFormat::Rgba8Unorm;
+        let hdr = TextureFormat::Rgba16Float;
+        let mut chain = PostProcessChain::new(&device, fmt, hdr, rw, rh);
+        chain.flash_budget = 0.0;
+        chain.enabled = post_enabled;
+        let source = RenderTarget::new(&device, rw, rh, hdr, 1.0, "shape-probe-src");
+        let texture = |label, w, h| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: fmt,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let display = texture("shape-probe-display", rw, rh);
+        let display_view = display.create_view(&wgpu::TextureViewDescriptor::default());
+        let capture = texture("shape-probe-capture", cw, ch);
+        let capture_view = capture.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("shape-probe-readback"),
+            size: u64::from(cw * ch * 4),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("shape-probe-white"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &source.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        chain.render(
+            &device,
+            &queue,
+            &mut encoder,
+            &source,
+            &display_view,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            &plain_post(),
+            alpha_mode,
+        );
+        chain.render_composite_to(&device, &mut encoder, &source, &capture_view, (cw, ch));
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &capture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(cw * 4),
+                    rows_per_image: Some(ch),
+                },
+            },
+            wgpu::Extent3d {
+                width: cw,
+                height: ch,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let px = slice.get_mapped_range().to_vec();
+        readback.unmap();
+        let row = (ch / 2 * cw * 4) as usize;
+        px[row..row + (cw * 4) as usize]
+            .chunks_exact(4)
+            .map(|p| [p[0], p[1], p[2], p[3]])
+            .collect()
+    }
+
+    /// A 16:9 stream or recording of a 4:3 render shows the 4:3 picture with
+    /// bars, not the picture stretched: 48 white columns in the middle of 64,
+    /// 8 bars a side, whether post-processing is on or off. The bars are
+    /// opaque black under the Opaque alpha mode, and transparent under the
+    /// modes that carry alpha, where black reads as nothing.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn a_capture_of_another_shape_is_letterboxed_not_stretched() {
+        for post_enabled in [true, false] {
+            for (mode, bar) in [
+                (AlphaMode::Opaque, [0, 0, 0, 255]),
+                (AlphaMode::Passthrough, [0, 0, 0, 0]),
+            ] {
+                let row = capture_row_of_a_four_by_three_render(mode, post_enabled);
+                let lit: Vec<usize> = (0..row.len()).filter(|&x| row[x][0] > 200).collect();
+                let at = format!("{mode:?}, post {post_enabled}");
+                assert_eq!(
+                    (lit.first(), lit.last(), lit.len()),
+                    (Some(&8), Some(&55), 48),
+                    "{at}: the picture spans columns 8..56; lit {lit:?}"
+                );
+                for x in (0..8).chain(56..64) {
+                    assert_eq!(row[x], bar, "{at}: bar pixel at column {x}");
+                }
+                assert_eq!(row[32][3], 255, "{at}: the picture itself is opaque");
             }
         }
     }

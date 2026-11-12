@@ -59,20 +59,6 @@ fn pcg_rand(a: u32, b: u32) -> f32 {
     return f32(h & 0xFFFFu) / 65535.0;
 }
 
-fn hsv2rgb(h: f32, s: f32, v: f32) -> vec3f {
-    let c = v * s;
-    let hp = fract(h) * 6.0;
-    let x = c * (1.0 - abs(hp % 2.0 - 1.0));
-    var rgb: vec3f;
-    if hp < 1.0 { rgb = vec3f(c, x, 0.0); }
-    else if hp < 2.0 { rgb = vec3f(x, c, 0.0); }
-    else if hp < 3.0 { rgb = vec3f(0.0, c, x); }
-    else if hp < 4.0 { rgb = vec3f(0.0, x, c); }
-    else if hp < 5.0 { rgb = vec3f(x, 0.0, c); }
-    else { rgb = vec3f(c, 0.0, x); }
-    return rgb + vec3f(v - c);
-}
-
 // Flat trail index (toroidal wrap) for a uv point and channel.
 fn tf_texel(uv: vec2f) -> vec2u {
     let w = i32(tu.grid_w);
@@ -105,7 +91,7 @@ fn emit_particle(idx: u32) -> Particle {
     let species = idx % SPECIES;
     let angle = pcg_rand(idx, 33u) * TWO_PI;
     let hue = f32(species) / f32(SPECIES);
-    let col = hsv2rgb(hue, 0.85, 1.0);
+    let col = fosfora_hsv_to_rgb(hue, 0.85, 1.0);
 
     p.pos_life = vec4f(pos, 0.0, 1.0);
     p.vel_size = vec4f(cos(angle), sin(angle), 0.0, u.initial_size);
@@ -206,7 +192,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // than blowing out to white (additive-in-feedback runaway).
     let hue = f32(my_species) / f32(SPECIES);
     let bright = 0.035 + chroma_here * 0.14;
-    let col = hsv2rgb(hue, 1.0, 1.0) * bright;
+    let col = fosfora_hsv_to_rgb(hue, 1.0, 1.0) * bright;
     let alpha = clamp(0.12 + chroma_here * 0.35, 0.08, 0.6);
 
     p.pos_life = vec4f(new_pos, 0.0, 1.0);

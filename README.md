@@ -122,7 +122,7 @@ prebuilt downloads don't include it. Building it from source for your own rig is
 
 |  |  |
 |---|---|
-| **Stack and blend** | Layers work like Photoshop or OBS — up to 8 of them, 13 blend modes, drag to reorder. Put a slow shader under a particle storm, dial the opacity, and it's a new look. Three of the modes warp instead of tint: set a layer to Displace and its shapes bend everything underneath, so a ring effect becomes a shockwave through whatever it's sitting on. Layers can also be images, GIFs, video files or a live webcam, not just effects. |
+| **Stack and blend** | Layers work like Photoshop or OBS — up to 8 of them, 20 blend modes, drag to reorder. Put a slow shader under a particle storm, dial the opacity, and it's a new look. Three of the modes warp instead of tint: set a layer to Displace and its shapes bend everything underneath, so a ring effect becomes a shockwave through whatever it's sitting on. Layers can also be images, GIFs, video files or a live webcam, not just effects. |
 | **Perform it live** | Map any MIDI knob to any parameter by clicking **M** and wiggling the knob. Same for OSC. Or open your phone's browser and use it as a touch surface — no app to install. |
 | **It genuinely listens** | Not just "loud = big". Fosfora tracks 85 things about your music 86 times a second — beat and tempo, key, percussive and harmonic content pulled apart, the moment a build turns into a drop — and any of them can drive any parameter. |
 | **Bring the room in** | Feed it a webcam and let particles flow around your silhouette, or a photo, or a depth map. Hand and body tracking stream in over the [bridges](bridges/README.md). |
@@ -173,7 +173,8 @@ message to bind it, or address things directly:
 
 **Signal** — run `fosfora --signal` and the analysis engine broadcasts beats, bars, sections,
 key, phrase position and drop prediction over OSC with no window at all — Fosfora as the
-analysis brain of a TouchDesigner/Resolume/lighting rig. [The schema →](docs/SIGNAL.md)
+analysis brain of a TouchDesigner/Resolume/lighting rig. [The schema →](docs/SIGNAL.md), and a
+ready-made TouchDesigner component and examples with a five-minute setup: [TouchDesigner →](docs/TOUCHDESIGNER.md)
 
 **Your phone** — enable the web surface, switch on **Other devices** under Setup ▸ Control, and
 scan the QR code it shows (or open the network address beside it) on any phone or tablet on the
@@ -189,6 +190,7 @@ holding the old one. Multiple people can connect at once.
 | [**Tutorials**](docs/TUTORIALS.md) | The full guide — effects, audio, layers, scenes, MIDI, OSC |
 | [**Quick reference**](docs/QUICK-REFERENCE.md) | Shortcuts, blend modes, OSC addresses, config files |
 | [**Signal**](docs/SIGNAL.md) | The headless analysis broadcast — `--signal` and the `/fosfora/v1/` OSC schema |
+| [**TouchDesigner**](docs/TOUCHDESIGNER.md) | Quick start for the TouchDesigner examples and the `fosfora_signal` component: beats, phases, sections and key as CHOP channels |
 | [**Audio features**](docs/AUDIO-FEATURES.md) | All 85 features in plain English, and the research behind them |
 | [**Technical**](docs/TECHNICAL.md) | Architecture, shader authoring, the `.pfx` format |
 | [**Credits**](docs/CREDITS.md) | The libraries and papers this is built on |

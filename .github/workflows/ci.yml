@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-09)
         with:
           toolchain: 1.97.0
           components: rustfmt
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Deny check
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-09)
         with:
           toolchain: 1.97.0
       # deny.toml allows rusty_link's GPL licence only because opt-in `--features link`
@@ -106,11 +106,11 @@ jobs:
             exit 1
           fi
           echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-09)
         with:
           toolchain: 1.97.0
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Clippy (video feature)
@@ -140,12 +140,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-09)
         with:
           toolchain: 1.97.0
           targets: aarch64-linux-android
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The lib without `desktop` is what the XR frontend links, and `decode`
       # is the only feature it adds. No other job builds either, so a desktop
       # type leaking into a shared module would first break on the XR branch.
@@ -186,10 +186,10 @@ jobs:
             exit 1
           fi
           echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-09)
         with:
           toolchain: 1.97.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Two feature sets, not one per feature: cargo rebuilds the whole crate for each
       # distinct set (2-5 min apiece), and the features are additive. Defaults cover the
       # cfg(not(feature)) paths; the union runs every feature-gated test. Each feature on
@@ -214,11 +214,11 @@ jobs:
         run: |
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-09)
         with:
           toolchain: nightly-2026-10-07
           components: miri, rust-src
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Miri
         run: cargo +nightly-2026-10-07 miri test -p fosfora-app --lib audio::capture
 
@@ -239,11 +239,11 @@ jobs:
         run: |
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-09)
         with:
           toolchain: 1.97.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       # Debug build on purpose: the dev profile runs deps at opt-level 2, so the
       # DSP chain is near release speed without populating a separate lto=fat
       # release cache. Same profile the test job already exercises.
@@ -293,12 +293,12 @@ jobs:
             exit 1
           fi
           echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master (2026-10-09)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (2026-10-09)
         with:
           toolchain: 1.97.0
           targets: ${{ matrix.target }}
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.os }}-${{ matrix.target }}-v3
       # Clippy per native target so cfg-gated Windows/macOS code is actually linted

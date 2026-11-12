@@ -287,7 +287,10 @@ fn tide_pfx_parses_as_builtin() {
     assert!(EffectLoader::is_builtin(&effect));
     assert_eq!(effect.inputs.len(), 8); // exactly the 8 compute param slots
     let particles = effect.particles.expect("tide is a particle effect");
-    assert_eq!(particles.render_mode, "billboard"); // trails need billboard
+    assert_eq!(
+        particles.render_mode,
+        crate::gpu::particle::ParticleRenderMode::Billboard
+    ); // trails need billboard
     assert!(particles.trail_length >= 2); // ribbon renderer enable gate
     assert!(particles.max_scaled_count <= 300_000); // quality scaler cap
 }
@@ -1512,7 +1515,10 @@ fn vessel_pfx_parses_as_builtin() {
     assert!(EffectLoader::is_builtin(&effect));
     assert_eq!(effect.inputs.len(), 8); // exactly the 8 compute param slots
     let particles = effect.particles.expect("vessel is a particle effect");
-    assert_eq!(particles.render_mode, "billboard"); // trails need billboard
+    assert_eq!(
+        particles.render_mode,
+        crate::gpu::particle::ParticleRenderMode::Billboard
+    ); // trails need billboard
     assert!(particles.trail_length >= 2); // ribbon renderer enable gate
     assert!(particles.max_scaled_count <= 300_000); // quality scaler cap
 }
@@ -1572,7 +1578,10 @@ fn cleave_pfx_parses_as_builtin() {
     assert!(EffectLoader::is_builtin(&effect));
     assert_eq!(effect.inputs.len(), 8); // exactly the 8 compute param slots
     let particles = effect.particles.expect("cleave is a particle effect");
-    assert_eq!(particles.render_mode, "billboard"); // trails need billboard
+    assert_eq!(
+        particles.render_mode,
+        crate::gpu::particle::ParticleRenderMode::Billboard
+    ); // trails need billboard
     assert!(particles.trail_length >= 2); // ribbon renderer enable gate
     assert!(particles.max_scaled_count <= 300_000); // quality scaler cap
 }
@@ -2870,8 +2879,11 @@ fn splat_pfx_parses_as_builtin() {
     assert!(EffectLoader::is_builtin(&effect));
     assert_eq!(effect.inputs.len(), 13); // 8 sim slots + 4 CPU camera slots + roundness
     let particles = effect.particles.expect("splat is a particle effect");
-    assert_eq!(particles.render_mode, "compute"); // splats need the raster
-    assert_eq!(particles.blend, "oit"); // weighted-average OIT resolve
+    assert_eq!(
+        particles.render_mode,
+        crate::gpu::particle::ParticleRenderMode::Compute
+    ); // splats need the raster
+    assert_eq!(particles.blend, crate::gpu::particle::ParticleBlend::Oit); // weighted-average OIT resolve
     assert!(particles.trail_length < 2); // trails share group 2 — forbidden
     let splat = particles.splat.expect("splat def block required");
     assert!(splat.source.starts_with("demo:"));

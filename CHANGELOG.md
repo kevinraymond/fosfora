@@ -5,11 +5,59 @@
 
 ## Unreleased
 
+### Added
+- **Sync offset.** When beat-bound visuals trail the sound in the room, Setup › Audio › Sync offset fires beats, downbeats and the beat and bar phases up to 200 ms early (capped just under half a beat); levels stay as they are. When the sound reaches the audience after the picture, a negative value of up to 250 ms holds every feature back. It also applies to `fosfora --signal`, and leaving it at 0 changes nothing.
+- **Zoom Blur node.** Streaks the picture toward and away from a point while the center stays sharp, the camera-rush look; put `onset` or `bass` on its `strength` to punch on the kick. `directional` turns it into a motion blur along an angle.
+- **Glitch node.** Tears the picture into sliding strips and jumping blocks with the colors pulled apart, drawing a new pattern up to 30 times a second. At `intensity` 0 the picture passes through untouched, so `onset` on `intensity` breaks it up on every hit and snaps back between them.
+- **Displace node.** Warps one picture by the brightness of another inside a chain, with the same three warps as the Displace, Refract and Lens blend modes: wire a Noise Field into its second input and the picture ripples through it. A negative `amount` pulls or pinches instead of pushing or bulging.
+- **Color Grade node.** Lift, gamma and gain, temperature and tint, hue and saturation in one node, with `shadows` and `highlights` colors that push the dark and bright ends toward a color. Temperature and tint keep brightness, so sweeping them from a binding only moves the color.
+- **Tempo-synced LFOs as binding sources.** Bind any control to a sine, triangle, saw, square or sample-and-hold LFO from 4 bars down to 1/16, with an optional phase offset, from the new LFO group in the binding matrix or as `lfo.sine.bar` / `lfo.saw.beat.90` in a bindings file; this used to need the external Smart LFO bridge.
+- **Seven more blend modes: Lighten, Darken, Soft Light, Hue, Saturation, Color and Luminosity,** in the layer menus and the web remote, numbered 13–19 over OSC. A preset that says `SoftLight` used to load as Overlay and now gets the real, gentler Soft Light; set it to Overlay to keep the old look. A blend driven from the binding bus still sweeps only modes 0–9.
+
+### Changed
+- **Audio analysis picks up each block of samples as it arrives instead of checking every 10 ms,** so features and beats reach the visuals up to 10 ms sooner, with that much less frame-to-frame jitter.
+- **Once warmed up, the audio analysis thread no longer allocates memory on any hop (it made six to nine allocations per hop), so it cannot stall waiting on the allocator.** For code embedding the library: `AudioFrame::spectrum` and `mel` are now fixed-size arrays rather than `Box<[f32]>`.
+- **Evaluating bindings no longer builds about 320 strings every frame** (a name and a display label for each of the 161 audio sources); the source table is reused and labels are formatted only when the binding matrix shows them. For code embedding the library: `BindingBus::evaluate` returns outputs that name their binding by index and `apply_outputs` applies them, `SourceRaw` is an enum, and the `postfx`, `particle`, `uniform` and `scene.transport` targets carry enums (`PostFxField`, `ParticleField`, `UniformField`, `TransportAction`) rather than strings.
+- **A `.pfx` whose particle `blend` or `render_mode` is misspelled now logs a warning naming the value,** and still loads and renders as before (additive, billboard). For code embedding the library: `ParticleDef::blend` and `render_mode`, `ParticleSystem::blend_mode` and `obstacle_source` are now enums (`ParticleBlend`, `ParticleRenderMode`, `Option<ObstacleSource>`) rather than strings; `.pfx` and preset files are unchanged.
+
 ### Fixed
-- **Beats still landed on the off-beat on some music after v2.6.0's kick-based fix.** The beat grid's phase check now weighs a learned per-frame beat witness together with the kick drum, so it can move the grid where the kick sits on the "and" or is missing. On the Harmonix pop/EDM set beat accuracy went from 0.65 to 0.68 and on Ballroom from 0.47 to 0.48, with 17 holdout tracks fixed and none broken; tempo, downbeat and section numbers are unchanged, and beatless audio gets no new beats. The witness is a small tree model trained on Creative Commons music, credited in the source tree.
-- **The tempo readout sat at half or a third of the real tempo on fast dance music such as Viennese waltz and quickstep, and the beat grid ran with it.** Once a tempo is found, the learned beat witness now chooses which metrical level it sits at. Ballroom tempo accuracy went from 0.62 to 0.69 and beat accuracy from 0.48 to 0.52, GiantSteps tempo from 0.70 to 0.74 and Harmonix beat accuracy from 0.68 to 0.72; the cost is slow pop at 70 to 110 BPM, now read at double tempo more often (Harmonix tempo accuracy 0.65 to 0.63), with beats landing on every beat and on the "and" between.
-- **On a lot of dance music the beat grid locked onto the off-beat from the start and never moved.** Its phase check wanted overwhelming evidence over the last 32 beats, and on Latin and ballroom music, where the "and" carries real hits, it rarely got it; it now moves on clear evidence. Ballroom beat accuracy went from 0.52 to 0.54 (cha-cha-cha the most) and Harmonix from 0.72 to 0.73. The trade is syncopated pop and hip-hop, where a kick on the "and" now pulls some correctly locked songs off the beat (13 Harmonix tracks, against 22 fixed). Tempo and beatless audio are unchanged.
-- **MP3 files with large embedded cover art failed to open in `--signal-dump`, `--analyze` and `--render-scene`** ("no suitable format reader found"). The decoder could not skip an ID3 tag, so a tag over 1 MB ended the search for the audio before it began; tagged MP3s now open in builds with the `analyze` feature, and files that opened before decode exactly as they did.
+- **A binding whose target name was misspelled, such as `uniform.kik` or `postfx.vignete`, loaded and showed in the matrix but drove nothing, without a word.** Loading it now logs a warning naming the binding, and `fosfora --validate` lists the valid names; the binding is still kept in the file as written.
+- **A clock built from `beat_index + beat_phase` or `bar_index + bar_phase` jumped back a whole beat or bar for one frame after the beat grid nudged its timing later.** The phase wrapped a hop before its index stepped; it now wraps on the same hop. On a steady 120 BPM test track the locked beat clock went from three backward jumps in 20 s to none.
+
+## v2.8.1 — 2026-11-01
+
+### Changed
+- **The output window fills a 4:3 CRT or a portrait monitor instead of letterboxing the workspace's 16:9 frame onto it.** While the window is open Fosfora renders at that display's size and shape, as full screen on it would, so a 4K projector costs what full screen there does. Every other output shows the same picture: NDI, Spout, Syphon and recordings set to Match Window take that size, and a fixed-size stream, virtual camera or recording, like the main window with the interface hidden, letterboxes it instead of stretching it.
+
+## v2.8.0 — 2026-10-23
+
+Fosfora becomes the analysis brain for TouchDesigner. `fosfora --signal` runs headless on the CPU and broadcasts beats, bars, phrases, sections, key and energy; two new release assets turn that stream into channels you can wire and four views you can watch within minutes of downloading. The bar line also stops jumping a beat or two several times a minute on steady dance music.
+
+### Added
+- **TouchDesigner examples.** Drag `fosfora_examples.tox` into a network and four views come alive with the music: a dashboard of every channel, a 3D grid of 640 boxes marching in eighth notes with a ripple for every kick, a rig of eight moving lights whose look follows the section (with an Art-Net DMX output, off until you turn it on), and Keeping time, which compares bars as they arrive with Steady Bars and TouchDesigner's own clock. Show all four or one at full size, and open any of them to see how it is wired.
+- **TouchDesigner component.** `fosfora_signal.tox` turns `fosfora --signal` into CHOP channels you wire like any other: one-frame pulses for beats, downbeats, kicks and onsets, a bar phase that moves every frame, BPM, phrase position, levels, and section and key, with drop-like moments marked experimental. Steady Bars makes every bar finish even when Fosfora moves the downbeat. Setup in [docs/TOUCHDESIGNER.md](docs/TOUCHDESIGNER.md); needs TouchDesigner 2025, and the free Non-Commercial license is enough.
+
+### Fixed
+- **On steady dance music the bar line jumped a beat or two several times a minute, often straight back, so bars came out like [1 2] [1 2 3 4].** When the downbeat evidence turned ambiguous the tracker re-placed the bar on every beat; now another position must win clearly for two bars running. On the Harmonix set the bar line moves 2.5 times a locked minute instead of 7.8 and downbeat accuracy rises 0.28 to 0.31; beats and tempo are unchanged. The drop-like warning's 0.8 tier now catches 23 of 34 hand-labeled drops (was 19) but 42 of 141 Harmonix chorus onsets (was 53).
+
+## v2.7.1 — 2026-10-23
+
+### Docs
+- **Architecture diagrams.** [docs/DIAGRAMS.md](docs/DIAGRAMS.md) draws the engine from four perspectives (what ships and what is dev-only, threads and channels, data in and out, builds) and one diagram per flow (the analysis hop, the beat path, a rendered frame, Signal, a bench round, model training, the offline modes), in light and dark; the technical reference embeds the ones it describes.
+
+### Fixed
+- **Beats reached beat-bound visuals and OSC receivers about 20 ms after the beat.** The grid locks onto onsets the analysis sees late, so even on synthetic renders with exact beat times its beats sat 17 to 29 ms behind. A locked beat now fires 10 ms before its grid instant: Harmonix beat accuracy 0.731 to 0.737 (3 tracks fixed, none broken), Ballroom unchanged, the synthetic renders within 3 to 14 ms, and a receiver reading beats at 60 fps sees them a frame earlier on most beats. Tempo detection is unchanged; Ballroom downbeat accuracy reads 0.188 to 0.181.
+- **On some Latin dance tracks and synthetic techno the beat grid locked a quarter of a beat off and stayed there, so beat-bound visuals hit just before or after every beat.** The grid's phase check now also tests the quarter-beat positions and moves the grid when the music clearly sits there: Ballroom beat accuracy 0.543 to 0.549 with 10 tracks fixed and none broken, Harmonix 0.727 to 0.731 (4 fixed, 1 broken), and the synthetic techno renders that sat late for their first 30 seconds 0.81 to 0.90. Tempo, drop and section detection are unchanged.
+
+## v2.7.0 — 2026-10-22
+
+Beats land on the beat on more music: a learned beat witness joins the kick drum in the grid's phase check and picks the tempo level on fast dance music, the grid now leaves an off-beat lock on clear evidence, and tagged MP3s with large cover art open in analysis builds.
+
+### Fixed
+- **Beats still landed on the off-beat on some music after v2.6.0's kick-based fix.** The grid's phase check now also weighs a learned beat witness (a small model trained on Creative Commons music, credited in the source tree), so it can move the grid where the kick sits on the "and": Harmonix beat accuracy 0.65 to 0.68, 17 tracks fixed and none broken.
+- **The tempo read half or a third of the real tempo on fast dance music such as Viennese waltz and quickstep.** The beat witness now picks the metrical level: Ballroom tempo accuracy 0.62 to 0.69, GiantSteps 0.70 to 0.74. Slow pop at 70 to 110 BPM is read at double tempo more often (Harmonix 0.65 to 0.63); the audio panel's ÷2 button or the Hip-hop tempo preset puts it back.
+- **On a lot of dance music the beat grid locked onto the off-beat and never moved.** It now leaves an off-beat lock on clear rather than overwhelming evidence: Ballroom beat accuracy 0.52 to 0.54, Harmonix 0.72 to 0.73. Syncopated pop and hip-hop pay for it, where a kick on the "and" can pull a correctly locked song off the beat (13 Harmonix tracks, against 22 fixed).
+- **MP3s with large embedded cover art failed to open in `--signal-dump`, `--analyze` and `--render-scene`** ("no suitable format reader found"). ID3 tags over 1 MB are now skipped; files that opened before decode exactly as they did.
 
 ## v2.6.0 — 2026-10-20
 

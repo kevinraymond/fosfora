@@ -96,6 +96,8 @@ pub struct StereoAnalyzer {
     window: Box<[f32]>,
     /// Scratch for the packed `l + i·r` transform.
     scratch: Vec<Complex<f32>>,
+    /// The transform's own scratch, sized once: `Fft::process` would allocate it per call (#75).
+    fft_scratch: Vec<Complex<f32>>,
     /// Per-band `[first_bin, last_bin]` (inclusive), precomputed from [`BAND_EDGES`].
     band_bins: [(usize, usize); NUM_BANDS],
 }
@@ -122,6 +124,7 @@ impl StereoAnalyzer {
             })
             .collect();
 
+        let fft_scratch = vec![Complex::new(0.0, 0.0); fft.get_inplace_scratch_len()];
         Self {
             left: vec![0.0; WINDOW].into_boxed_slice(),
             right: vec![0.0; WINDOW].into_boxed_slice(),
@@ -134,6 +137,7 @@ impl StereoAnalyzer {
             fft_filled: 0,
             window: window.into_boxed_slice(),
             scratch: vec![Complex::new(0.0, 0.0); FFT_SIZE],
+            fft_scratch,
             band_bins,
         }
     }
@@ -221,7 +225,8 @@ impl StereoAnalyzer {
             let w = self.window[i];
             self.scratch[i] = Complex::new(self.fft_l[src] * w, self.fft_r[src] * w);
         }
-        self.fft.process(&mut self.scratch);
+        self.fft
+            .process_with_scratch(&mut self.scratch, &mut self.fft_scratch);
 
         // |L[k]| = |Z[k] + conj(Z[N−k])|/2, |R[k]| = |Z[k] − conj(Z[N−k])|/2. The /(2i) on R is a
         // rotation, so it drops out of the magnitude. k and N−k are both taken mod N, which makes

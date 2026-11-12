@@ -17,11 +17,16 @@ pub const DEFAULT_DISPLACE_AMOUNT: f32 = 0.35;
 
 /// Blend mode for compositing layers.
 ///
-/// Two families. The first ten are *color* blends: arithmetic on the foreground
-/// and background colors at the same pixel. The last three are *displacement*
-/// blends (#1478) — the foreground is read as a warp field rather than as an
-/// image, and its luminance offsets the UV used to sample everything beneath.
-/// A displacing layer draws none of its own color.
+/// Two families. The *color* blends are arithmetic on the foreground and
+/// background colors at the same pixel. The *displacement* blends (#1478) read
+/// the foreground as a warp field rather than as an image: its luminance
+/// offsets the UV used to sample everything beneath, and a displacing layer
+/// draws none of its own color.
+///
+/// The numbering ([`as_u32`](Self::as_u32)) is the wire format for OSC, the
+/// web remote and the shader, so it only ever grows: the ten original color
+/// blends are 0–9, the displacement family 10–12, and the color blends added
+/// later 13 and up. Menus list modes by family instead, in [`MENU`](Self::MENU).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum BlendMode {
     #[default]
@@ -30,7 +35,6 @@ pub enum BlendMode {
     Screen,
     ColorDodge,
     Multiply,
-    #[serde(alias = "SoftLight")]
     Overlay,
     HardLight,
     Difference,
@@ -39,29 +43,18 @@ pub enum BlendMode {
     Displace,
     Refract,
     Lens,
+    Lighten,
+    Darken,
+    /// Until this mode existed, `"SoftLight"` in a preset was read as Overlay.
+    SoftLight,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
 }
 
 impl BlendMode {
-    /// The color-blend family: arithmetic on fg and bg at the same pixel.
-    ///
-    /// Kept as its own list because `from_normalized` maps over it — see there.
-    pub const COLOR: &[BlendMode] = &[
-        BlendMode::Normal,
-        BlendMode::Add,
-        BlendMode::Screen,
-        BlendMode::ColorDodge,
-        BlendMode::Multiply,
-        BlendMode::Overlay,
-        BlendMode::HardLight,
-        BlendMode::Difference,
-        BlendMode::Exclusion,
-        BlendMode::Subtract,
-    ];
-
-    /// The displacement family (#1478): fg luminance warps what is beneath.
-    pub const DISPLACEMENT: &[BlendMode] =
-        &[BlendMode::Displace, BlendMode::Refract, BlendMode::Lens];
-
+    /// Every mode, in wire order: `ALL[i].as_u32() == i`.
     pub const ALL: &[BlendMode] = &[
         BlendMode::Normal,
         BlendMode::Add,
@@ -76,6 +69,80 @@ impl BlendMode {
         BlendMode::Displace,
         BlendMode::Refract,
         BlendMode::Lens,
+        BlendMode::Lighten,
+        BlendMode::Darken,
+        BlendMode::SoftLight,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
+    ];
+
+    /// The color-blend family, in menu order: lighten, darken, contrast,
+    /// inversion, then the hue/saturation/color/luminosity group.
+    pub const COLOR: &[BlendMode] = &[
+        BlendMode::Normal,
+        BlendMode::Add,
+        BlendMode::Screen,
+        BlendMode::Lighten,
+        BlendMode::ColorDodge,
+        BlendMode::Multiply,
+        BlendMode::Darken,
+        BlendMode::Subtract,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+        BlendMode::HardLight,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
+    ];
+
+    /// The displacement family (#1478): fg luminance warps what is beneath.
+    pub const DISPLACEMENT: &[BlendMode] =
+        &[BlendMode::Displace, BlendMode::Refract, BlendMode::Lens];
+
+    /// The order a blend menu lists the modes in: [`COLOR`](Self::COLOR), then
+    /// [`DISPLACEMENT`](Self::DISPLACEMENT) set apart after it. The web remote
+    /// keeps the same order (a test reads it out of `control.html`).
+    pub const MENU: &[BlendMode] = &[
+        BlendMode::Normal,
+        BlendMode::Add,
+        BlendMode::Screen,
+        BlendMode::Lighten,
+        BlendMode::ColorDodge,
+        BlendMode::Multiply,
+        BlendMode::Darken,
+        BlendMode::Subtract,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+        BlendMode::HardLight,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
+        BlendMode::Displace,
+        BlendMode::Refract,
+        BlendMode::Lens,
+    ];
+
+    /// What a binding-bus value sweeps through: the ten original color blends,
+    /// in their original order. Frozen — see [`from_normalized`](Self::from_normalized).
+    pub const BUS_SWEEP: &[BlendMode] = &[
+        BlendMode::Normal,
+        BlendMode::Add,
+        BlendMode::Screen,
+        BlendMode::ColorDodge,
+        BlendMode::Multiply,
+        BlendMode::Overlay,
+        BlendMode::HardLight,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Subtract,
     ];
 
     pub fn as_u32(&self) -> u32 {
@@ -93,26 +160,21 @@ impl BlendMode {
             BlendMode::Displace => 10,
             BlendMode::Refract => 11,
             BlendMode::Lens => 12,
+            BlendMode::Lighten => 13,
+            BlendMode::Darken => 14,
+            BlendMode::SoftLight => 15,
+            BlendMode::Hue => 16,
+            BlendMode::Saturation => 17,
+            BlendMode::Color => 18,
+            BlendMode::Luminosity => 19,
         }
     }
 
     pub fn from_u32(value: u32) -> Self {
-        match value {
-            0 => BlendMode::Normal,
-            1 => BlendMode::Add,
-            2 => BlendMode::Screen,
-            3 => BlendMode::ColorDodge,
-            4 => BlendMode::Multiply,
-            5 => BlendMode::Overlay,
-            6 => BlendMode::HardLight,
-            7 => BlendMode::Difference,
-            8 => BlendMode::Exclusion,
-            9 => BlendMode::Subtract,
-            10 => BlendMode::Displace,
-            11 => BlendMode::Refract,
-            12 => BlendMode::Lens,
-            _ => BlendMode::Normal,
-        }
+        Self::ALL
+            .get(value as usize)
+            .copied()
+            .unwrap_or(BlendMode::Normal)
     }
 
     /// Does this mode read the foreground as a warp field instead of an image?
@@ -124,18 +186,21 @@ impl BlendMode {
     }
 
     /// Map a normalized 0..1 control value (e.g. a binding-bus output) onto
-    /// the color-blend list: 0.0 → Normal, 1.0 → Subtract, evenly spaced
-    /// in between (#1792). Out-of-range input clamps; NaN falls back to Normal.
+    /// [`BUS_SWEEP`](Self::BUS_SWEEP): 0.0 → Normal, 1.0 → Subtract, evenly
+    /// spaced in between (#1792). Out-of-range input clamps; NaN falls back to
+    /// Normal.
     ///
-    /// Deliberately maps over `COLOR`, not `ALL` (#1478). Two reasons: adding
-    /// the displacement modes to the sweep would silently move every shipped
-    /// preset that drives blend from the bus onto a different mode, and the
-    /// displacement family is a structural break in the sweep anyway — those
-    /// modes ignore fg color entirely, so passing through them mid-set reads as
-    /// a glitch rather than a transition. Reach them from the UI, OSC or a preset.
+    /// The sweep is frozen at the ten modes it had when bus-driven blend
+    /// shipped. Adding a mode to it would move every step, so every saved
+    /// preset that drives blend from the bus would silently land on a
+    /// different mode. That is why the displacement family is outside it
+    /// (#1478) — those modes ignore fg color entirely, so passing through them
+    /// mid-set reads as a dropout — and why the color blends added since are
+    /// too. Reach those from the UI, OSC or a preset.
     pub fn from_normalized(v: f32) -> Self {
-        let max_index = (Self::COLOR.len() - 1) as f32;
-        Self::from_u32((v.clamp(0.0, 1.0) * max_index).round() as u32)
+        let max_index = (Self::BUS_SWEEP.len() - 1) as f32;
+        let i = (v.clamp(0.0, 1.0) * max_index).round() as usize;
+        Self::BUS_SWEEP.get(i).copied().unwrap_or(BlendMode::Normal)
     }
 
     pub fn display_name(&self) -> &'static str {
@@ -153,6 +218,13 @@ impl BlendMode {
             BlendMode::Displace => "Displace",
             BlendMode::Refract => "Refract",
             BlendMode::Lens => "Lens",
+            BlendMode::Lighten => "Lighten",
+            BlendMode::Darken => "Darken",
+            BlendMode::SoftLight => "Soft Light",
+            BlendMode::Hue => "Hue",
+            BlendMode::Saturation => "Saturation",
+            BlendMode::Color => "Color",
+            BlendMode::Luminosity => "Luminosity",
         }
     }
 
@@ -171,6 +243,13 @@ impl BlendMode {
             BlendMode::Displace => "Edges shove what's beneath — shockwaves, heat haze",
             BlendMode::Refract => "Bright areas bend like thick glass, splitting color",
             BlendMode::Lens => "Bright areas magnify what's beneath — a breathing zoom",
+            BlendMode::Lighten => "Keeps whichever is brighter, channel by channel",
+            BlendMode::Darken => "Keeps whichever is darker, channel by channel",
+            BlendMode::SoftLight => "Gentle contrast — a softer Overlay, like diffuse light",
+            BlendMode::Hue => "Recolors what's beneath with this layer's hue",
+            BlendMode::Saturation => "Gives what's beneath this layer's saturation",
+            BlendMode::Color => "Tints what's beneath, keeping its brightness",
+            BlendMode::Luminosity => "This layer's brightness, the colors beneath",
         }
     }
 }
@@ -889,22 +968,82 @@ mod tests {
 
     #[test]
     fn blend_mode_all_count() {
-        assert_eq!(BlendMode::ALL.len(), 13);
+        assert_eq!(BlendMode::ALL.len(), 20);
     }
 
     #[test]
-    fn blend_mode_families_partition_all() {
-        // ALL must stay COLOR ++ DISPLACEMENT, in that order: `as_u32` is the
-        // wire format for OSC, the web page and presets, so the color modes
-        // have to keep indices 0..9 and the warp modes have to follow them.
+    fn blend_mode_menu_is_the_families_in_order() {
         let joined: Vec<BlendMode> = BlendMode::COLOR
             .iter()
             .chain(BlendMode::DISPLACEMENT)
             .copied()
             .collect();
-        assert_eq!(joined, BlendMode::ALL);
-        assert_eq!(BlendMode::COLOR.len(), 10);
+        assert_eq!(joined, BlendMode::MENU);
+        assert_eq!(BlendMode::COLOR.len(), 17);
         assert_eq!(BlendMode::DISPLACEMENT.len(), 3);
+    }
+
+    #[test]
+    fn blend_mode_menu_lists_every_mode_once() {
+        let mut menu: Vec<u32> = BlendMode::MENU.iter().map(BlendMode::as_u32).collect();
+        menu.sort_unstable();
+        let all: Vec<u32> = BlendMode::ALL.iter().map(BlendMode::as_u32).collect();
+        assert_eq!(menu, all);
+    }
+
+    /// `as_u32` is the wire format for OSC, the web remote and the shader, so
+    /// a released number never changes meaning.
+    #[test]
+    fn blend_mode_wire_numbers_are_stable() {
+        let released = [
+            "Normal",
+            "Add",
+            "Screen",
+            "ColorDodge",
+            "Multiply",
+            "Overlay",
+            "HardLight",
+            "Difference",
+            "Exclusion",
+            "Subtract",
+            "Displace",
+            "Refract",
+            "Lens",
+        ];
+        for (i, name) in released.iter().enumerate() {
+            let mode: BlendMode = serde_json::from_str(&format!("\"{name}\"")).unwrap();
+            assert_eq!(mode.as_u32(), i as u32, "{name}");
+        }
+    }
+
+    /// The web remote's menu must send the same numbers and show the same
+    /// order as the desktop one.
+    #[test]
+    fn web_remote_blend_menu_matches() {
+        let html = include_str!("../../../../assets/web/control.html");
+        let line = html
+            .lines()
+            .find(|l| l.contains("const blendMenu"))
+            .expect("control.html declares blendMenu");
+        let mut entries = Vec::new();
+        let mut rest = line;
+        while let Some(open) = rest.find('[') {
+            rest = &rest[open + 1..];
+            let Some((num, tail)) = rest.split_once(",'") else {
+                continue;
+            };
+            let Ok(value) = num.trim().parse::<u32>() else {
+                continue;
+            };
+            let (name, tail) = tail.split_once('\'').unwrap();
+            entries.push((value, name.to_string()));
+            rest = tail;
+        }
+        let want: Vec<(u32, String)> = BlendMode::MENU
+            .iter()
+            .map(|m| (m.as_u32(), m.display_name().to_string()))
+            .collect();
+        assert_eq!(entries, want);
     }
 
     #[test]
@@ -1020,6 +1159,13 @@ mod tests {
         assert_eq!(BlendMode::Displace.display_name(), "Displace");
         assert_eq!(BlendMode::Refract.display_name(), "Refract");
         assert_eq!(BlendMode::Lens.display_name(), "Lens");
+        assert_eq!(BlendMode::Lighten.display_name(), "Lighten");
+        assert_eq!(BlendMode::Darken.display_name(), "Darken");
+        assert_eq!(BlendMode::SoftLight.display_name(), "Soft Light");
+        assert_eq!(BlendMode::Hue.display_name(), "Hue");
+        assert_eq!(BlendMode::Saturation.display_name(), "Saturation");
+        assert_eq!(BlendMode::Color.display_name(), "Color");
+        assert_eq!(BlendMode::Luminosity.display_name(), "Luminosity");
     }
 
     #[test]
@@ -1032,9 +1178,10 @@ mod tests {
     }
 
     #[test]
-    fn blend_mode_serde_alias_soft_light() {
+    fn blend_mode_soft_light_is_its_own_mode() {
+        // It used to be a read alias for Overlay.
         let m: BlendMode = serde_json::from_str("\"SoftLight\"").unwrap();
-        assert_eq!(m, BlendMode::Overlay);
+        assert_eq!(m, BlendMode::SoftLight);
     }
 
     #[test]
@@ -1070,9 +1217,9 @@ mod tests {
     }
 
     #[test]
-    fn blend_mode_from_normalized_reaches_all_color_modes() {
-        for (i, mode) in BlendMode::COLOR.iter().enumerate() {
-            let v = i as f32 / (BlendMode::COLOR.len() - 1) as f32;
+    fn blend_mode_from_normalized_reaches_every_sweep_step() {
+        for (i, mode) in BlendMode::BUS_SWEEP.iter().enumerate() {
+            let v = i as f32 / (BlendMode::BUS_SWEEP.len() - 1) as f32;
             assert_eq!(BlendMode::from_normalized(v), *mode, "step {i} (v={v})");
         }
     }
@@ -1090,6 +1237,17 @@ mod tests {
                 !mode.is_displacement(),
                 "from_normalized({v}) returned {mode:?}"
             );
+        }
+    }
+
+    /// Saved presets that drive blend from the bus depend on every step of
+    /// the sweep landing where it did when they were made: the ten original
+    /// color blends, in wire order. New modes must not join it.
+    #[test]
+    fn blend_mode_bus_sweep_is_frozen() {
+        assert_eq!(BlendMode::BUS_SWEEP.len(), 10);
+        for (i, mode) in BlendMode::BUS_SWEEP.iter().enumerate() {
+            assert_eq!(mode.as_u32(), i as u32, "{mode:?}");
         }
     }
 

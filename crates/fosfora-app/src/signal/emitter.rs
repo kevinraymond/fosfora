@@ -133,7 +133,7 @@ impl SignalEmitter {
         if f.downbeat > 0.5 {
             self.bar_total += 1;
             sink.emit(
-                beat_ts,
+                frame.downbeat_time.unwrap_or(beat_ts),
                 schema::DOWNBEAT,
                 &[OscType::Int(self.bar_total as i32)],
             );
@@ -376,13 +376,14 @@ mod tests {
         setup(&mut f);
         AudioFrame {
             features: f,
-            spectrum: vec![0.0; 4].into_boxed_slice(),
-            mel: vec![0.0; 4].into_boxed_slice(),
+            spectrum: [0.0; crate::audio::analyzer::SPECTRUM_BINS],
+            mel: [0.0; crate::audio::analyzer::SPECTROGRAM_MELS],
             dmfcc: [0.0; 13],
             timestamp: ts,
             phase_frozen: false,
             bar_duration: 2.0,
             beat_time: None,
+            downbeat_time: None,
             section_boundary: None,
         }
     }

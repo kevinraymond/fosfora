@@ -438,13 +438,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let on_disk = std::fs::read_to_string(&sim)
             .unwrap_or_else(|e| panic!("{} does not resolve: {e}", sim.display()));
         assert_eq!(on_disk, XR_FLUX_SIM);
-        assert_eq!(pd.render_mode, "billboard");
+        assert_eq!(
+            pd.render_mode,
+            crate::gpu::particle::ParticleRenderMode::Billboard
+        );
         assert!(!pd.velocity_field);
         assert!(pd.trail_length < 2);
         assert!(pd.sprite.is_none());
         assert!(!pd.morph, "morph interleaves aux at a 4x stride");
         assert_ne!(
-            pd.blend, "alpha",
+            pd.blend,
+            crate::gpu::particle::ParticleBlend::Alpha,
             "additive: the eye gets premultiplied color"
         );
         assert!(
@@ -579,13 +583,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             let hop = HopOutput {
                 frame: AudioFrame {
                     features: f,
-                    spectrum: vec![0.3; SPECTRUM_BINS].into(),
-                    mel: vec![0.3; SPECTROGRAM_MELS].into(),
+                    spectrum: [0.3; SPECTRUM_BINS],
+                    mel: [0.3; SPECTROGRAM_MELS],
                     dmfcc: [0.0; 13],
                     timestamp: ts,
                     phase_frozen: false,
                     bar_duration: 2.0,
                     beat_time: None,
+                    downbeat_time: None,
                     section_boundary: None,
                 },
                 beat_fired: f.beat > 0.5,
@@ -1383,8 +1388,15 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             pd.spatial_hash_mode(),
             Some(super::super::spatial_hash::SpatialHashMode::Volume)
         );
-        assert_eq!(pd.blend, "alpha", "dark silhouettes over passthrough");
-        assert_eq!(pd.render_mode, "billboard");
+        assert_eq!(
+            pd.blend,
+            crate::gpu::particle::ParticleBlend::Alpha,
+            "dark silhouettes over passthrough"
+        );
+        assert_eq!(
+            pd.render_mode,
+            crate::gpu::particle::ParticleRenderMode::Billboard
+        );
         assert!(!pd.velocity_field);
         assert!(pd.trail_length < 2);
         assert!(pd.sprite.is_none());
@@ -1641,13 +1653,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         HopOutput {
             frame: AudioFrame {
                 features: f,
-                spectrum: vec![0.3; SPECTRUM_BINS].into(),
-                mel: vec![0.3; SPECTROGRAM_MELS].into(),
+                spectrum: [0.3; SPECTRUM_BINS],
+                mel: [0.3; SPECTROGRAM_MELS],
                 dmfcc: [0.0; 13],
                 timestamp: ts,
                 phase_frozen: false,
                 bar_duration: 2.0,
                 beat_time: None,
+                downbeat_time: None,
                 section_boundary: None,
             },
             beat_fired: f.beat > 0.5,

@@ -217,6 +217,10 @@ pub struct SettingsConfig {
     /// load with the built-in defaults (the pre-A7 hardcoded 150 BPM / sigma 1.0).
     #[serde(default)]
     pub tempo: TempoConfig,
+    /// A/V sync offset, ms (#80): positive fires the beat grid early, negative holds the
+    /// analysis output back. Absent in older settings files, which load as 0 (no offset).
+    #[serde(default)]
+    pub sync_offset_ms: f32,
     /// A9 (#1460): reopen the capture device automatically when the watchdog confirms it died.
     ///
     /// `default = "default_true"`, not the bare `#[serde(default)]` every field above uses:
@@ -298,6 +302,7 @@ impl Default for SettingsConfig {
             rtmp_streams: Vec::new(),
             structure_tuning: StructureConfig::default(),
             tempo: TempoConfig::default(),
+            sync_offset_ms: 0.0,
             auto_reconnect: true,
             favorite_effects: Vec::new(),
             output_alpha: AlphaOutputMode::default(),

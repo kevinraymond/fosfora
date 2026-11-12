@@ -5,6 +5,7 @@
 | **macOS** | `.dmg` | Universal binary (Apple Silicon + Intel) |
 | **Linux x86_64** | `.tar.gz` | glibc 2.35+ (Ubuntu 22.04+, Debian 12+) |
 | **Windows x64** | `.zip` | Windows 10+ |
+| **TouchDesigner** | `fosfora_examples.tox`, `fosfora_signal.tox` | Four ready-made views driven by `fosfora --signal`, and the component they are built on for your own network: [setup](https://github.com/kevinraymond/fosfora/blob/main/docs/TOUCHDESIGNER.md) |
 
 ## Getting started
 

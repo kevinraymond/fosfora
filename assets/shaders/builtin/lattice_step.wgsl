@@ -17,20 +17,6 @@
 @group(0) @binding(1) var<storage, read> state_in: array<u32>;
 @group(0) @binding(2) var<storage, read_write> state_out: array<u32>;
 
-fn pcg(v_in: u32) -> u32 {
-    let state = v_in * 747796405u + 2891336453u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-fn hash01(v: u32) -> f32 {
-    return f32(pcg(v)) / 4294967295.0;
-}
-
-fn cell_hash(p: vec3<u32>, salt: u32) -> u32 {
-    return pcg(p.x + pcg(p.y + pcg(p.z + salt)));
-}
-
 // Linear index of a neighbour with the active boundary policy.
 fn widx(p: vec3<i32>, g: i32) -> u32 {
     if (u.boundary == 0u) {
@@ -62,9 +48,9 @@ fn live_at(p: vec3<i32>, g: i32) -> u32 {
 fn inject_center(gf: f32) -> vec3f {
     let base = u.frame ^ (u.seed_hash * 2654435761u);
     let h = vec3f(
-        hash01(pcg(base + 11u)),
-        hash01(pcg(base + 23u)),
-        hash01(pcg(base + 37u)),
+        fosfora_hash01(fosfora_pcg(base + 11u)),
+        fosfora_hash01(fosfora_pcg(base + 23u)),
+        fosfora_hash01(fosfora_pcg(base + 37u)),
     );
     if (u.domain_mode == 1u) {
         let np = (h * 2.0 - vec3f(1.0)) * (u.domain_radius * 0.7);
@@ -150,14 +136,14 @@ fn cs_step(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (u.inject_active == 1u) {
         let ctr = inject_center(f32(g));
         if (distance(vec3f(gid) + vec3f(0.5), ctr) < f32(u.seed_size) * 0.7
-            && hash01(cell_hash(gid, u.frame ^ 0x5bd1e995u)) < 0.4) {
+            && fosfora_hash01(fosfora_cell_hash(gid, u.frame ^ 0x5bd1e995u)) < 0.4) {
             next = 1u;
         }
     }
 
     // Spectral-flux perturbation: sparse random alive<->dead toggle to break stasis.
     if (u.perturb_prob > 0.0) {
-        if (hash01(cell_hash(gid, u.frame ^ u.seed_hash)) < u.perturb_prob) {
+        if (fosfora_hash01(fosfora_cell_hash(gid, u.frame ^ u.seed_hash)) < u.perturb_prob) {
             next = select(1u, 0u, next != 0u);
         }
     }

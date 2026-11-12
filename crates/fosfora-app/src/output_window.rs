@@ -8,6 +8,10 @@
 //! It exists so the laptop screen can keep the workspace while a projector or
 //! a second monitor carries the output — the arrangement every VJ setup wants
 //! and which a single full-screen window cannot give.
+//!
+//! While it is open the whole render takes its size (GH #292): a 4:3 CRT gets
+//! a 4:3 frame at its own resolution, the frame full screen on it would give,
+//! not the main window's 16:9 letterboxed onto it. See [`render_size`].
 
 use std::sync::Arc;
 
@@ -17,6 +21,14 @@ use winit::monitor::MonitorHandle;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::gpu::context::GpuContext;
+
+/// The size the render is built at (GH #292): the output window's while one
+/// is open, since that is the picture the audience sees, and the main
+/// window's otherwise. The main window then shows the frame in its preview,
+/// or letterboxed when the interface is hidden.
+pub fn render_size(main_window: (u32, u32), output_window: Option<(u32, u32)>) -> (u32, u32) {
+    output_window.unwrap_or(main_window)
+}
 
 /// A display the output window can be opened on.
 #[derive(Clone, PartialEq, Eq)]
@@ -209,6 +221,12 @@ impl OutputWindow {
         self.window.id()
     }
 
+    /// The swapchain's size in pixels, which the render takes while this
+    /// window is open (GH #292).
+    pub fn size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if width > 0 && height > 0 && (width, height) != (self.config.width, self.config.height) {
             self.config.width = width;
@@ -241,5 +259,22 @@ impl OutputWindow {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GH #292: a 16:9 workspace sending to a 4:3 CRT renders 4:3 at the
+    /// CRT's resolution, and closing the window hands the render back.
+    #[test]
+    fn the_render_follows_the_output_window_while_it_is_open() {
+        let laptop = (1920, 1080);
+        let crt = (1024, 768);
+        assert_eq!(render_size(laptop, Some(crt)), crt);
+        assert_eq!(render_size(laptop, None), laptop);
+        // A portrait monitor is just another shape.
+        assert_eq!(render_size(laptop, Some((2160, 3840))), (2160, 3840));
     }
 }

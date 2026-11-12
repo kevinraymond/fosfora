@@ -13,6 +13,7 @@ use wgpu::{Device, Queue};
 use crate::audio::AudioFeatures;
 use crate::gpu::context::GpuContext;
 use crate::gpu::layer::{Layer, LayerContent};
+use crate::gpu::particle::ObstacleSource;
 use crate::gpu::uniforms::ShaderUniforms;
 use crate::gpu::volumetric::VolumetricParams;
 
@@ -53,7 +54,7 @@ pub(crate) fn prepare_effect_layers(
                 // the same slider the background pass decays by (#2349).
                 ps.update_composite_gain(dt);
                 // Advance obstacle video playback
-                if ps.obstacle_source == "video" {
+                if ps.obstacle_source == Some(ObstacleSource::Video) {
                     ps.advance_obstacle_video(device, queue, dt as f64);
                 }
                 // Pack obstacle collision uniforms, a binding's values over
@@ -68,7 +69,7 @@ pub(crate) fn prepare_effect_layers(
                 // Re-raster the 3D-model obstacle depth for this frame
                 // (#1851). Submitted here in update(), before the particle
                 // compute pass samples the obstacle in render().
-                if ps.obstacle_source == "model" {
+                if ps.obstacle_source == Some(ObstacleSource::Model) {
                     ps.render_obstacle_model(device, queue, &audio, dt);
                 }
                 // Reconcile the obstacle water sim (#1851) before dispatch.

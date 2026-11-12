@@ -6,8 +6,9 @@
 //! loudness rise, and the chroma-change magnitude (chord changes correlate with downbeats)
 //! — into a ring of the last 16 beats. It then scores each candidate meter M ∈ {3, 4} and
 //! bar phase p by how much more "downbeat-like" the beats at phase p are than the rest
-//! (accent contrast), locks the winner with hysteresis, and falls back to 4/4 on the
-//! strongest recent beat when confidence is low.
+//! (accent contrast) and locks the winner with hysteresis: a challenger must out-score the
+//! lock by a margin for several beats in a row before the bar line moves. When confidence
+//! is low the challenger is 4/4 on the strongest recent beat.
 //!
 //! Outputs fill the reserved shader fields (#1505, CPU-side only, no ABI churn):
 //! - `downbeat`    — 1.0 on the bar's "one" (a trigger, mirrors `beat`)
@@ -23,7 +24,7 @@
 
 use std::collections::VecDeque;
 
-use super::beat::BeatResult;
+use super::beat::{BeatResult, PHASE_BELOW_ONE};
 
 /// Beats retained for meter/phase scoring (four bars of 4/4).
 const RING_LEN: usize = 16;
@@ -31,9 +32,19 @@ const RING_LEN: usize = 16;
 const MIN_BEATS_FOR_LOCK: usize = 8;
 /// A challenger (meter, phase) must stay the top candidate for this many consecutive
 /// beats before the lock switches — prevents flicker between metrical interpretations.
+/// The low-confidence fallback's choice is a challenger too (#4499).
 const HYSTERESIS_BEATS: u32 = 8;
-/// Accent-contrast score below which meter is considered ambiguous → default to 4/4.
+/// Accent-contrast score below which meter is considered ambiguous → the challenger is
+/// 4/4 on the strongest recent beat.
 const CONFIDENCE_THRESHOLD: f32 = 0.08;
+/// How far a challenger's contrast must exceed the current lock's own, on the same ring,
+/// for a beat to count toward [`HYSTERESIS_BEATS`] (#4499). Topping the ranking by a hair
+/// let two near-equal alignments trade the lock: on Harmonix the bar line moved 7.8 times
+/// a locked minute, 38% of the moves undone within 10 s. The median challenger leads the
+/// lock by ~0.09. From 0.09 up, the CI fixture's right bar arrives after the clip ends
+/// (its decisive streak leads by 0.089 at the least), and past 0.12 the 30 s Ballroom
+/// clips hold wrong locks.
+const SWITCH_MARGIN: f32 = 0.08;
 /// Weights combining a beat's normalized accent cues into one "downbeat-ness" scalar.
 /// Low-band flux (kick on the one) dominates; chroma change (chord change) and loudness
 /// rise refine it.
@@ -81,6 +92,9 @@ pub struct DownbeatResult {
 
 pub struct DownbeatTracker {
     ring: VecDeque<BeatEntry>,
+    /// Each ring entry's (index, downbeat score), rebuilt on every beat into this one buffer
+    /// (#75).
+    scored: Vec<(u64, f32)>,
     /// Band flux accumulated across frames since the previous beat.
     flux_accum: [f32; 3],
     /// rms and chroma captured at the previous beat, for delta cues.
@@ -107,12 +121,48 @@ pub struct DownbeatTracker {
     bar_duration: f64,
     /// Held between beats (discrete per-beat value emitted every frame).
     cur_beat_in_bar: f32,
+    /// #4499 sidecar: collect a [`DownbeatDebug`] per beat. Off unless
+    /// [`Self::enable_debug`] is called, so the live path does no extra work.
+    dbg: bool,
+    dbg_beat: Option<DownbeatDebug>,
+    dbg_path: &'static str,
+    dbg_best: Option<(usize, usize, f32)>,
+    dbg_fallback: bool,
+}
+
+/// #4499: one beat's scoring inputs and the decision they produced, for the dev-only
+/// downbeat sidecar (`downbeat_sidecar.rs`). Enough to replay the tracker exactly: the
+/// cues it wrote into the ring, the grid index it pushed, and the lock state after.
+#[derive(Clone, Copy, Debug)]
+pub struct DownbeatDebug {
+    /// The grid index this beat was pushed with (`BeatEntry::global_idx`).
+    pub idx: u64,
+    /// The cues written into the PREVIOUS beat's entry (flux_low, chroma_change,
+    /// loud_rise); `None` on the first beat, when the ring is empty.
+    pub filled: Option<[f32; 3]>,
+    /// Which branch of `update_meter_phase` ran: `warm` (ring too short), `hold` (the
+    /// challenger is the lock), `weak` (it did not clear the margin; streak reset), `cand`
+    /// (it accrued a beat), `sw` (it took the lock).
+    pub path: &'static str,
+    /// Whether the top contrast was below the confidence threshold, so the challenger was
+    /// the 4/4 fallback.
+    pub fallback: bool,
+    /// The top (meter, phase, contrast) this beat, when scoring ran.
+    pub best: Option<(usize, usize, f32)>,
+    /// The lock after this beat.
+    pub meter: usize,
+    pub phase: usize,
+    pub candidate: Option<(usize, usize)>,
+    pub candidate_count: u32,
+    /// Whether this beat fired the downbeat.
+    pub downbeat: bool,
 }
 
 impl DownbeatTracker {
     pub fn new() -> Self {
         Self {
             ring: VecDeque::with_capacity(RING_LEN),
+            scored: Vec::with_capacity(RING_LEN),
             flux_accum: [0.0; 3],
             prev_rms: 0.0,
             prev_chroma: [0.0; 12],
@@ -126,7 +176,23 @@ impl DownbeatTracker {
             last_downbeat_time: 0.0,
             bar_duration: 0.0,
             cur_beat_in_bar: 0.0,
+            dbg: false,
+            dbg_beat: None,
+            dbg_path: "warm",
+            dbg_best: None,
+            dbg_fallback: false,
         }
+    }
+
+    /// #4499: start collecting a [`DownbeatDebug`] per beat (dev sidecar only).
+    pub fn enable_debug(&mut self) {
+        self.dbg = true;
+    }
+
+    /// #4499: the debug record of the beat processed by the last [`Self::process`] call,
+    /// if a beat fired on it.
+    pub fn take_debug(&mut self) -> Option<DownbeatDebug> {
+        self.dbg_beat.take()
     }
 
     /// Called every audio frame. `band_flux` is `Analyzer::band_flux_3()` (low/mid/high),
@@ -168,7 +234,8 @@ impl DownbeatTracker {
         let (bar_phase, bar_duration) = if loud_silent {
             (0.0, self.bar_duration)
         } else {
-            self.bar_clock(timestamp)
+            let one_next = self.predicts_downbeat(beat.beat_index) == Some(true);
+            self.bar_clock(timestamp, one_next)
         };
 
         DownbeatResult {
@@ -183,22 +250,46 @@ impl DownbeatTracker {
         }
     }
 
+    /// #80: whether the beat at grid index `grid_idx` (0-based, as the scheduler counts its
+    /// instants) is the bar's "one" under the current meter/phase lock, or `None` before a
+    /// bar clock exists. Lets a beat emitted ahead of its instant carry its downbeat with it;
+    /// the tracker itself still decides at the settle, as it always has.
+    pub fn predicts_downbeat(&self, grid_idx: u64) -> Option<bool> {
+        if self.bar_duration <= 0.0 {
+            return None;
+        }
+        let pos = (grid_idx as i64 - self.phase as i64).rem_euclid(self.meter as i64);
+        Some(pos == 0)
+    }
+
     /// The bar clock at `timestamp`: the 0→1 sawtooth (0 at the last downbeat, wrapping every
     /// bar on the audio clock) and the bar length it is running on.
+    ///
+    /// #293: when the bar runs long — corrections moved the grid's instants later than the
+    /// tempo the bar length was taken from — and the coming grid instant (`one_next`) is the
+    /// downbeat, the phase holds just below 1 until that instant settles and `bar_index`
+    /// steps, rather than wrapping a hop or two ahead of it and dipping `bar_index +
+    /// bar_phase` by a bar. A hold of more than a beat means the "one" is not coming where
+    /// expected (the bar line moved), and the clock wraps as before; so does a downbeat
+    /// that passes muted, since the coming instant is then no longer the "one".
     ///
     /// Returned as a pair, from one gate, because the render thread advances its own copy of
     /// the phase at `1/bar_duration` (A8b, #1554) — publishing them separately would let the
     /// two threads disagree about whether the clock is live at all. A `bar_duration` of 0 is
     /// the "no bar clock yet" sentinel, so `bar_duration > 0.0` ⟺ `bar_phase` is a live ramp
     /// holds by construction rather than by the reader re-deriving this gate.
-    fn bar_clock(&self, timestamp: f64) -> (f32, f64) {
+    fn bar_clock(&self, timestamp: f64, one_next: bool) -> (f32, f64) {
         if self.last_downbeat_time <= 0.0 || self.bar_duration <= 0.0 {
             return (0.0, 0.0);
         }
-        (
-            (((timestamp - self.last_downbeat_time) / self.bar_duration).rem_euclid(1.0)) as f32,
-            self.bar_duration,
-        )
+        let raw = (timestamp - self.last_downbeat_time) / self.bar_duration;
+        let held = one_next && (1.0..1.0 + 1.0 / self.meter as f64).contains(&raw);
+        let phase = if held {
+            PHASE_BELOW_ONE
+        } else {
+            raw.rem_euclid(1.0)
+        };
+        (phase as f32, self.bar_duration)
     }
 
     /// Snapshot the beat vector, re-score meter/phase, and decide if this beat is the "one".
@@ -229,11 +320,12 @@ impl DownbeatTracker {
         // put a beat's attack before its own fire and made forward attribution
         // accidentally correct; on time, forward attribution rotated every
         // fixture downbeat exactly one beat late.
-        if let Some(last) = self.ring.back_mut() {
+        let filled = self.ring.back_mut().map(|last| {
             last.flux_low = self.flux_accum[0];
             last.chroma_change = chroma_change;
             last.loud_rise = loud_rise;
-        }
+            [last.flux_low, last.chroma_change, last.loud_rise]
+        });
 
         // Reset per-beat accumulators / references for the next interval.
         self.flux_accum = [0.0; 3];
@@ -267,11 +359,28 @@ impl DownbeatTracker {
         }
 
         self.beat_idx += 1;
+        if self.dbg {
+            self.dbg_beat = Some(DownbeatDebug {
+                idx,
+                filled,
+                path: self.dbg_path,
+                fallback: self.dbg_fallback,
+                best: self.dbg_best,
+                meter: self.meter,
+                phase: self.phase,
+                candidate: self.candidate,
+                candidate_count: self.candidate_count,
+                downbeat: is_downbeat,
+            });
+        }
         if is_downbeat { 1.0 } else { 0.0 }
     }
 
     /// Score every (meter, phase) by accent contrast and update the lock with hysteresis.
     fn update_meter_phase(&mut self) {
+        self.dbg_path = "warm";
+        self.dbg_best = None;
+        self.dbg_fallback = false;
         if self.ring.len() < MIN_BEATS_FOR_LOCK {
             return;
         }
@@ -285,22 +394,20 @@ impl DownbeatTracker {
             .map(|e| e.chroma_change)
             .fold(1e-6, f32::max);
         let max_loud = self.ring.iter().map(|e| e.loud_rise).fold(1e-6, f32::max);
-        let scored: Vec<(u64, f32)> = self
-            .ring
-            .iter()
-            .map(|e| {
-                let s = W_FLUX_LOW * (e.flux_low / max_flux)
-                    + W_CHROMA * (e.chroma_change / max_chroma)
-                    + W_LOUD * (e.loud_rise / max_loud);
-                (e.global_idx, s)
-            })
-            .collect();
+        self.scored.clear();
+        self.scored.extend(self.ring.iter().map(|e| {
+            let s = W_FLUX_LOW * (e.flux_low / max_flux)
+                + W_CHROMA * (e.chroma_change / max_chroma)
+                + W_LOUD * (e.loud_rise / max_loud);
+            (e.global_idx, s)
+        }));
+        let scored = &self.scored;
 
         // Best (meter, phase) by contrast = mean score at phase p minus mean score off it.
         let mut best = (self.meter, self.phase, f32::MIN);
         for &m in &[3usize, 4usize] {
             for p in 0..m {
-                if let Some(c) = contrast(&scored, m, p) {
+                if let Some(c) = contrast(scored, m, p) {
                     if c > best.2 {
                         best = (m, p, c);
                     }
@@ -308,30 +415,51 @@ impl DownbeatTracker {
             }
         }
         let (best_m, best_p, best_score) = best;
+        self.dbg_best = Some(best);
 
-        if best_score < CONFIDENCE_THRESHOLD {
-            // Meter ambiguous: default to 4/4 aligned to the strongest recent beat so the
-            // downbeat still lands somewhere musical.
-            self.meter = 4;
-            self.phase = strongest_phase(&scored, 4);
+        // The challenger for the bar line. When the meter is ambiguous it is 4/4 on the
+        // strongest recent beat, so the downbeat still lands somewhere musical. It used to
+        // take the lock on the spot, re-phasing the bar on every ambiguous beat; that was
+        // most of the bar line's flip-flops (#4499), so it now goes through the same
+        // hysteresis as any other challenger.
+        self.dbg_fallback = best_score < CONFIDENCE_THRESHOLD;
+        let challenger = if self.dbg_fallback {
+            (4, strongest_phase(scored, 4))
+        } else {
+            (best_m, best_p)
+        };
+        if challenger == (self.meter, self.phase) {
+            self.dbg_path = "hold";
             self.candidate = None;
             self.candidate_count = 0;
             return;
         }
-
-        if (best_m, best_p) == (self.meter, self.phase) {
+        // A beat counts toward the switch only when the challenger clearly out-scores the
+        // lock on this ring, not merely tops the ranking: two near-equal alignments used to
+        // trade the lock back and forth (#4499).
+        let clear = match (
+            contrast(scored, challenger.0, challenger.1),
+            contrast(scored, self.meter, self.phase),
+        ) {
+            (Some(theirs), Some(own)) => theirs - own >= SWITCH_MARGIN,
+            _ => true,
+        };
+        if !clear {
+            self.dbg_path = "weak";
             self.candidate = None;
             self.candidate_count = 0;
-        } else if self.candidate == Some((best_m, best_p)) {
+        } else if self.candidate == Some(challenger) {
+            self.dbg_path = "cand";
             self.candidate_count += 1;
             if self.candidate_count >= HYSTERESIS_BEATS {
-                self.meter = best_m;
-                self.phase = best_p;
+                self.dbg_path = "sw";
+                (self.meter, self.phase) = challenger;
                 self.candidate = None;
                 self.candidate_count = 0;
             }
         } else {
-            self.candidate = Some((best_m, best_p));
+            self.dbg_path = "cand";
+            self.candidate = Some(challenger);
             self.candidate_count = 1;
         }
     }
@@ -404,6 +532,7 @@ mod tests {
 
     fn beat_result(bpm: f32) -> BeatResult {
         BeatResult {
+            settled_beat_time: None,
             beat_activation: 0.0,
             onset_strength: 0.0,
             beat: 1.0,
@@ -423,6 +552,7 @@ mod tests {
     /// anchor, yet the audio clock keeps ticking underneath `bar_clock`.
     fn silent_beat(bpm: f32) -> BeatResult {
         BeatResult {
+            settled_beat_time: None,
             beat_activation: 0.0,
             onset_strength: 0.0,
             beat: 0.0,
@@ -489,6 +619,22 @@ mod tests {
         for w in fired.windows(2) {
             assert_eq!(w[1] - w[0], 4, "downbeats spaced one bar (4 beats) apart");
         }
+    }
+
+    /// #293: a bar that runs past its length holds just below 1 while the coming instant is
+    /// the "one", and wraps as before otherwise or once it is more than a beat overdue.
+    #[test]
+    fn bar_clock_holds_for_a_late_downbeat() {
+        let mut t = DownbeatTracker::new();
+        t.last_downbeat_time = 10.0;
+        t.bar_duration = 2.0;
+        let phase = |t: &DownbeatTracker, at: f64, one_next: bool| t.bar_clock(at, one_next).0;
+        assert!((phase(&t, 11.0, true) - 0.5).abs() < 1e-6);
+        assert_eq!(phase(&t, 12.02, true), PHASE_BELOW_ONE as f32);
+        assert!(phase(&t, 12.02, true) < 1.0);
+        assert!((phase(&t, 12.02, false) - 0.01).abs() < 1e-5);
+        // A beat (0.5 s of a 4/4 bar of 2 s) overdue: not this bar's "one".
+        assert!((phase(&t, 12.6, true) - 0.3).abs() < 1e-5);
     }
 
     /// v4 overlay clock: `beat_index` steps by exactly 1 per fired beat, `bar_index`
@@ -739,5 +885,112 @@ mod tests {
     fn chroma_distance_zero_when_identical() {
         let a = [0.3; 12];
         assert!(chroma_distance(&a, &a) < 1e-6);
+    }
+
+    /// Drive `count` beats at 120 BPM. The interval arriving at each fire carries the
+    /// accent `accent(k)` (0..1) of the beat it closes, grid index `k` (attributed one beat
+    /// back, as in `run_meter`). Returns (grid index, whether it fired the downbeat).
+    fn run_accents(
+        t: &mut DownbeatTracker,
+        count: usize,
+        accent: impl Fn(u64) -> f32,
+    ) -> Vec<(u64, bool)> {
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let idx = t.beat_idx;
+            let a = if idx == 0 { 0.0 } else { accent(idx - 1) };
+            let flux = [0.15 + 0.85 * a, 0.3, 0.2];
+            let r = t.process(
+                &beat_result(120.0),
+                flux,
+                0.5 + 0.4 * a,
+                &[0.4; 12],
+                idx as f64 * 0.5,
+                false,
+            );
+            out.push((idx, r.downbeat > 0.5));
+        }
+        out
+    }
+
+    /// A tracker locked on 4/4 with its "one" on grid beats ≡ 1 (mod 4): one silent beat
+    /// first, so the lock is not the fallback's default phase 0.
+    fn locked_on_phase_1() -> DownbeatTracker {
+        let mut t = DownbeatTracker::new();
+        run_accents(&mut t, 1, |_| 0.0);
+        run_accents(&mut t, 40, |k| if k % 4 == 1 { 1.0 } else { 0.0 });
+        assert_eq!((t.meter, t.phase), (4, 1), "the accents lock phase 1");
+        t
+    }
+
+    fn downbeat_phases(beats: &[(u64, bool)]) -> Vec<u64> {
+        beats.iter().filter(|b| b.1).map(|b| b.0 % 4).collect()
+    }
+
+    /// #4499: ambiguous beats (no accent structure: the contrast falls under the confidence
+    /// threshold) must not move a locked bar line. The fallback used to set 4/4 on the
+    /// "strongest" phase on every such beat, with no hysteresis, which moved the bar line by
+    /// a beat or two and back: 62% of the locked moves on Harmonix.
+    #[test]
+    fn ambiguous_beats_do_not_move_a_locked_bar_line() {
+        let mut t = locked_on_phase_1();
+        let flat = run_accents(&mut t, 48, |_| 0.0);
+        let phases = downbeat_phases(&flat);
+        assert!(phases.len() >= 10, "downbeats keep firing: {phases:?}");
+        assert!(
+            phases.iter().all(|&p| p == 1),
+            "the bar line held its phase through 48 ambiguous beats: {phases:?}"
+        );
+    }
+
+    /// #4499: a challenger that tops the ranking by a hair does not steal the bar line. Here
+    /// beat 3 of the bar carries an accent a little stronger than the locked "one" (contrast
+    /// .45 vs .41); topping the ranking for 8 beats used to be enough to move the bar.
+    #[test]
+    fn a_narrowly_stronger_alignment_does_not_take_the_lock() {
+        let mut t = locked_on_phase_1();
+        let accents = run_accents(&mut t, 64, |k| match k % 4 {
+            1 => 0.95,
+            3 => 1.0,
+            _ => 0.0,
+        });
+        let phases = downbeat_phases(&accents);
+        assert!(
+            phases.iter().all(|&p| p == 1),
+            "a near-equal second accent left the bar line alone: {phases:?}"
+        );
+    }
+
+    /// The guard on the other side: when the music's downbeat really moves (the accents
+    /// shift by two beats and stay there), the bar line follows within a few bars.
+    #[test]
+    fn a_real_downbeat_move_still_moves_the_bar_line() {
+        let mut t = locked_on_phase_1();
+        let moved = run_accents(&mut t, 64, |k| if k % 4 == 3 { 1.0 } else { 0.0 });
+        let first_new = moved
+            .iter()
+            .position(|b| b.1 && b.0 % 4 == 3)
+            .expect("the bar line moved to the new accents");
+        assert!(
+            first_new <= 32,
+            "the move landed within 8 bars, at beat {first_new}"
+        );
+        let after = downbeat_phases(&moved[first_new..]);
+        assert!(after.iter().all(|&p| p == 3), "and stayed there: {after:?}");
+    }
+
+    /// #4499 sidecar: a debug record exists exactly on the beats, and only once enabled.
+    #[test]
+    fn debug_records_come_only_from_scored_beats() {
+        let mut t = DownbeatTracker::new();
+        t.process(&beat_result(120.0), [0.2; 3], 0.5, &[0.4; 12], 0.5, false);
+        assert!(t.take_debug().is_none(), "off unless enabled");
+        t.enable_debug();
+        t.process(&beat_result(120.0), [0.2; 3], 0.5, &[0.4; 12], 1.0, false);
+        let d = t.take_debug().expect("a beat leaves a record");
+        assert_eq!((d.idx, d.path, d.meter), (1, "warm", 4));
+        assert!(d.filled.is_some(), "the second beat fills the first entry");
+        t.process(&silent_beat(120.0), [0.2; 3], 0.5, &[0.4; 12], 1.2, false);
+        assert!(t.take_debug().is_none(), "no record between beats");
     }
 }

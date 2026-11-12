@@ -58,24 +58,6 @@ fn wrapped_diff(a: vec2f, b: vec2f) -> vec2f {
 }
 
 // ============================================================
-// HSV to RGB
-// ============================================================
-
-fn hsv2rgb(h: f32, s: f32, v: f32) -> vec3f {
-    let c = v * s;
-    let hp = h * 6.0;
-    let x = c * (1.0 - abs(hp % 2.0 - 1.0));
-    var rgb: vec3f;
-    if hp < 1.0 { rgb = vec3f(c, x, 0.0); }
-    else if hp < 2.0 { rgb = vec3f(x, c, 0.0); }
-    else if hp < 3.0 { rgb = vec3f(0.0, c, x); }
-    else if hp < 4.0 { rgb = vec3f(0.0, x, c); }
-    else if hp < 5.0 { rgb = vec3f(x, 0.0, c); }
-    else { rgb = vec3f(c, 0.0, x); }
-    return rgb + vec3f(v - c);
-}
-
-// ============================================================
 // Emission
 // ============================================================
 
@@ -96,7 +78,7 @@ fn emit_particle(idx: u32) -> Particle {
 
     // Species color (hue rotated by dominant_chroma for pitch-class mapping)
     let hue = fract(f32(species) / f32(ns) + u.dominant_chroma);
-    let col = hsv2rgb(hue, 0.85, 0.9);
+    let col = fosfora_hsv_to_rgb(hue, 0.85, 0.9);
 
     p.pos_life = vec4f(pos, 0.0, 1.0);
     p.vel_size = vec4f(0.0, 0.0, 0.0, u.initial_size);
@@ -253,7 +235,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let speed_brightness = clamp(spd * 3.0, 0.3, 1.0);
     let sat = mix(0.85, max(0.4, 0.85 - spd * 0.5), cm);
     let val = mix(0.9, speed_brightness, cm * 0.5);
-    let col = hsv2rgb(hue, sat, val);
+    let col = fosfora_hsv_to_rgb(hue, sat, val);
     let alpha = 0.7 + spd * 0.5;
 
     p.pos_life = vec4f(new_pos, 0.0, 1.0);

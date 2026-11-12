@@ -34,13 +34,15 @@ use crate::gpu::volumetric::{
 };
 
 /// Compile-time concatenation of the shared `LatticeUniforms` preamble
-/// (`assets/shaders/lib/lattice_uniforms.wgsl`) with a builtin lattice shader.
+/// (`assets/shaders/lib/lattice_uniforms.wgsl`) and the PCG hash library
+/// (`assets/shaders/lib/hash.wgsl`) with a builtin lattice shader.
 /// All three CA passes are built through this so the WGSL struct cannot drift
 /// from [`LatticeUniforms`]; it used to be pasted into each pass by hand.
 macro_rules! lattice_shader {
     ($name:literal) => {
         concat!(
             include_str!("../../../../assets/shaders/lib/lattice_uniforms.wgsl"),
+            include_str!("../../../../assets/shaders/lib/hash.wgsl"),
             include_str!(concat!("../../../../assets/shaders/builtin/", $name))
         )
     };

@@ -897,7 +897,7 @@ mod composite_decay_guard {
             // Only additive compositing has the independent source gain the
             // correction scales. See compute_raster_resolve.wgsl for the algebra
             // that rules out alpha (Morph, Raster) and wboit (Genesis).
-            let additive = particles.blend == "additive";
+            let additive = particles.blend == crate::gpu::particle::ParticleBlend::Additive;
             let Some(cd) = particles.composite_decay.as_ref() else {
                 assert!(
                     !additive,

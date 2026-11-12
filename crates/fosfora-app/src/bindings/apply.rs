@@ -2,13 +2,11 @@
 //!
 //! Extracted verbatim from `App::apply_binding_target` so the headless scene
 //! renderer (#2027) runs the identical code instead of a copy that drifts.
-//! `bindings/catalog.rs` pins the `postfx`/`particle`/`uniform` leaf names by
-//! scanning THIS file's match arms — the marker strings
-//! (`BindingTarget::PostFx(rest) => {`, …) moved here byte-identical, and the
-//! catalog test's `include_str!` points here. If you rename or restructure the
-//! arms, that test fails loudly with "marker not found"; retarget it in the
-//! same change.
+//! Every leaf is an enum variant parsed once at load (`bindings/target_fields.rs`),
+//! so each match below is exhaustive: a new target is a compile error here until
+//! it is handled, and a misspelled one never reaches this file (#150).
 
+use crate::bindings::types::{ParticleField, PostFxField, TransportAction, UniformField};
 use crate::effect::format::{PfxEffect, PostProcessModulation};
 use crate::gpu::layer::LayerStack;
 use crate::gpu::uniforms::ShaderUniforms;
@@ -25,7 +23,7 @@ pub(crate) struct BindingTargetCtx<'a> {
     /// bus writes this frame's overlay, not the saved def (#4055).
     pub postprocess: &'a mut PostProcessModulation,
     /// `scene.transport.*` actions land here; the event loop drains them.
-    pub pending_triggers: &'a mut Vec<String>,
+    pub pending_triggers: &'a mut Vec<TransportAction>,
 }
 
 pub(crate) fn apply_binding_target(
@@ -94,152 +92,143 @@ pub(crate) fn apply_binding_target(
         // Edge-triggered (#1791): fire only on the frame the output rises
         // above 0.5, not every frame a source is held high.
         BindingTarget::SceneTransport(action) => {
-            if rising && !action.is_empty() {
-                ctx.pending_triggers
-                    .push(format!("scene.transport.{action}"));
+            if rising {
+                ctx.pending_triggers.push(*action);
             }
         }
 
-        BindingTarget::PostFx(rest) => {
-            let pp = &mut *ctx.postprocess;
-            match rest.as_str() {
-                "bloom_threshold" => {
-                    pp.bloom_threshold = Some(value * 1.5);
-                }
-                "bloom_intensity" => {
-                    pp.bloom_intensity = Some(value.clamp(0.0, 1.0));
-                }
-                "vignette" => {
-                    pp.vignette = Some(value.clamp(0.0, 1.0));
-                }
-                "ca_intensity" => {
-                    pp.ca_intensity = Some(value.clamp(0.0, 1.0));
-                }
-                "grain_intensity" => {
-                    pp.grain_intensity = Some(value.clamp(0.0, 1.0));
-                }
-                "grain_rate" => {
-                    // Hz, not 0..1 like its neighbors — the bus
-                    // delivers normalized, the field is a rate.
-                    pp.grain_rate = Some(value.clamp(0.0, 1.0) * 60.0);
-                }
-                _ => {}
-            }
-        }
+        BindingTarget::PostFx(field) => apply_postfx(ctx.postprocess, *field, value),
 
         // Applies to every layer's particle system, as this frame's overlay
         // over the saved def and obstacle settings (#4055).
-        BindingTarget::Particle(rest) => {
+        BindingTarget::Particle(field) => {
             let v = value.clamp(0.0, 1.0);
-            let rest = rest.as_str();
             for layer in &mut ctx.layer_stack.layers {
                 if let Some(effect) = layer.as_effect_mut() {
                     if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
-                        let m = &mut ps.modulation;
-                        match rest {
-                            "emit_rate" => m.emit_rate = Some(v * 10000.0),
-                            "burst_on_beat" => {
-                                m.burst_on_beat = Some((v * 2000.0).round() as u32);
-                            }
-                            "lifetime" => m.lifetime = Some(0.5 + v * 29.5),
-                            "speed" => m.initial_speed = Some(v * 2.0),
-                            "size" => m.initial_size = Some(0.001 + v * 0.099),
-                            "drag" => m.drag = Some(0.8 + v * 0.2),
-                            "turbulence" => m.turbulence = Some(v * 2.0),
-                            "gravity_x" => m.gravity_x = Some(-2.0 + v * 4.0),
-                            "gravity_y" => m.gravity_y = Some(-2.0 + v * 4.0),
-                            "vortex_strength" => m.vortex_strength = Some(-5.0 + v * 10.0),
-                            "obstacle_enabled" => m.obstacle_enabled = Some(v > 0.5),
-                            "obstacle_mode" => {
-                                // Bus outputs are normalized 0..1 (#1792): spread
-                                // across all 4 modes. The raw-integer OSC path
-                                // uses from_u32 directly.
-                                m.obstacle_mode =
-                                    Some(crate::gpu::particle::ObstacleMode::from_normalized(v));
-                            }
-                            "obstacle_threshold" => m.obstacle_threshold = Some(v),
-                            "obstacle_elasticity" => m.obstacle_elasticity = Some(v),
-                            _ => {}
-                        }
+                        apply_particle(&mut ps.modulation, *field, v);
                     }
                 }
             }
         }
 
         // Direct shader uniform override.
-        BindingTarget::Uniform(rest) => {
-            let v = value.clamp(0.0, 1.0);
-            let rest = rest.as_str();
-            match rest {
-                "sub_bass" => ctx.uniforms.sub_bass = v,
-                "bass" => ctx.uniforms.bass = v,
-                "low_mid" => ctx.uniforms.low_mid = v,
-                "mid" => ctx.uniforms.mid = v,
-                "upper_mid" => ctx.uniforms.upper_mid = v,
-                "presence" => ctx.uniforms.presence = v,
-                "brilliance" => ctx.uniforms.brilliance = v,
-                "rms" => ctx.uniforms.rms = v,
-                "kick" => ctx.uniforms.kick = v,
-                "centroid" => ctx.uniforms.centroid = v,
-                "flux" => ctx.uniforms.flux = v,
-                "flatness" => ctx.uniforms.flatness = v,
-                "rolloff" => ctx.uniforms.rolloff = v,
-                "bandwidth" => ctx.uniforms.bandwidth = v,
-                "zcr" => ctx.uniforms.zcr = v,
-                "onset" => ctx.uniforms.onset = v,
-                "beat" => ctx.uniforms.beat = v,
-                "beat_phase" => ctx.uniforms.beat_phase = v,
-                "bpm" => ctx.uniforms.bpm = v,
-                "beat_strength" => ctx.uniforms.beat_strength = v,
-                "dominant_chroma" => ctx.uniforms.dominant_chroma = v,
-                // Reserved audio features (batched ABI bump #1505) — allow
-                // manual override before their detectors land.
-                "loudness_m" => ctx.uniforms.loudness_m = v,
-                "loudness_s" => ctx.uniforms.loudness_s = v,
-                "loudness_trend" => ctx.uniforms.loudness_trend = v,
-                "key_class" => ctx.uniforms.key_class = v,
-                "key_is_minor" => ctx.uniforms.key_is_minor = v,
-                "key_confidence" => ctx.uniforms.key_confidence = v,
-                "downbeat" => ctx.uniforms.downbeat = v,
-                "bar_phase" => ctx.uniforms.bar_phase = v,
-                "beat_in_bar" => ctx.uniforms.beat_in_bar = v,
-                "pan" => ctx.uniforms.pan = v,
-                "stereo_width" => ctx.uniforms.stereo_width = v,
-                "stereo_corr" => ctx.uniforms.stereo_corr = v,
-                // A13b per-band pan (#1801).
-                "band_pan_sub_bass" => ctx.uniforms.band_pan[0] = v,
-                "band_pan_bass" => ctx.uniforms.band_pan[1] = v,
-                "band_pan_low_mid" => ctx.uniforms.band_pan[2] = v,
-                "band_pan_mid" => ctx.uniforms.band_pan[3] = v,
-                "band_pan_upper_mid" => ctx.uniforms.band_pan[4] = v,
-                "band_pan_presence" => ctx.uniforms.band_pan[5] = v,
-                "band_pan_brilliance" => ctx.uniforms.band_pan[6] = v,
-                "section_novelty" => ctx.uniforms.section_novelty = v,
-                "buildup" => ctx.uniforms.buildup = v,
-                "drop" => ctx.uniforms.drop = v,
-                // Reserved audio features (batched ABI bump #1629, "v3").
-                "percussive_energy" => ctx.uniforms.percussive_energy = v,
-                "harmonic_energy" => ctx.uniforms.harmonic_energy = v,
-                "harmonic_ratio" => ctx.uniforms.harmonic_ratio = v,
-                "pitch" => ctx.uniforms.pitch = v,
-                "pitch_confidence" => ctx.uniforms.pitch_confidence = v,
-                "contrast_0" => ctx.uniforms.contrast_0 = v,
-                "contrast_1" => ctx.uniforms.contrast_1 = v,
-                "contrast_2" => ctx.uniforms.contrast_2 = v,
-                "contrast_3" => ctx.uniforms.contrast_3 = v,
-                "contrast_4" => ctx.uniforms.contrast_4 = v,
-                "contrast_5" => ctx.uniforms.contrast_5 = v,
-                "contrast_mean" => ctx.uniforms.contrast_mean = v,
-                "timbre_flux" => ctx.uniforms.timbre_flux = v,
-                // Tempo trust (#81).
-                "tempo_confidence" => ctx.uniforms.tempo_confidence = v,
-                "beat_locked" => ctx.uniforms.beat_locked = v,
-                "feedback_decay" => ctx.uniforms.feedback_decay = v,
-                "time" => ctx.uniforms.time = value, // time not clamped
-                _ => {}
-            }
-        }
+        BindingTarget::Uniform(field) => apply_uniform(ctx.uniforms, *field, value),
     }
+}
+
+fn apply_postfx(pp: &mut PostProcessModulation, field: PostFxField, value: f32) {
+    let unit = value.clamp(0.0, 1.0);
+    match field {
+        PostFxField::BloomThreshold => pp.bloom_threshold = Some(value * 1.5),
+        PostFxField::BloomIntensity => pp.bloom_intensity = Some(unit),
+        PostFxField::Vignette => pp.vignette = Some(unit),
+        PostFxField::CaIntensity => pp.ca_intensity = Some(unit),
+        PostFxField::GrainIntensity => pp.grain_intensity = Some(unit),
+        // Hz, not 0..1 like its neighbors — the bus delivers normalized, the
+        // field is a rate.
+        PostFxField::GrainRate => pp.grain_rate = Some(unit * 60.0),
+    }
+}
+
+/// `v` is already clamped to 0..1.
+fn apply_particle(
+    m: &mut crate::gpu::particle::system::ParticleModulation,
+    field: ParticleField,
+    v: f32,
+) {
+    match field {
+        ParticleField::EmitRate => m.emit_rate = Some(v * 10000.0),
+        ParticleField::BurstOnBeat => m.burst_on_beat = Some((v * 2000.0).round() as u32),
+        ParticleField::Lifetime => m.lifetime = Some(0.5 + v * 29.5),
+        ParticleField::Speed => m.initial_speed = Some(v * 2.0),
+        ParticleField::Size => m.initial_size = Some(0.001 + v * 0.099),
+        ParticleField::Drag => m.drag = Some(0.8 + v * 0.2),
+        ParticleField::Turbulence => m.turbulence = Some(v * 2.0),
+        ParticleField::GravityX => m.gravity_x = Some(-2.0 + v * 4.0),
+        ParticleField::GravityY => m.gravity_y = Some(-2.0 + v * 4.0),
+        ParticleField::VortexStrength => m.vortex_strength = Some(-5.0 + v * 10.0),
+        ParticleField::ObstacleEnabled => m.obstacle_enabled = Some(v > 0.5),
+        // Bus outputs are normalized 0..1 (#1792): spread across all 4 modes.
+        // The raw-integer OSC path uses from_u32 directly.
+        ParticleField::ObstacleMode => {
+            m.obstacle_mode = Some(crate::gpu::particle::ObstacleMode::from_normalized(v));
+        }
+        ParticleField::ObstacleThreshold => m.obstacle_threshold = Some(v),
+        ParticleField::ObstacleElasticity => m.obstacle_elasticity = Some(v),
+    }
+}
+
+fn apply_uniform(u: &mut ShaderUniforms, field: UniformField, value: f32) {
+    use UniformField as F;
+    let v = value.clamp(0.0, 1.0);
+    let slot = match field {
+        F::SubBass => &mut u.sub_bass,
+        F::Bass => &mut u.bass,
+        F::LowMid => &mut u.low_mid,
+        F::Mid => &mut u.mid,
+        F::UpperMid => &mut u.upper_mid,
+        F::Presence => &mut u.presence,
+        F::Brilliance => &mut u.brilliance,
+        F::Rms => &mut u.rms,
+        F::Kick => &mut u.kick,
+        F::Centroid => &mut u.centroid,
+        F::Flux => &mut u.flux,
+        F::Flatness => &mut u.flatness,
+        F::Rolloff => &mut u.rolloff,
+        F::Bandwidth => &mut u.bandwidth,
+        F::Zcr => &mut u.zcr,
+        F::Onset => &mut u.onset,
+        F::Beat => &mut u.beat,
+        F::BeatPhase => &mut u.beat_phase,
+        F::Bpm => &mut u.bpm,
+        F::BeatStrength => &mut u.beat_strength,
+        F::DominantChroma => &mut u.dominant_chroma,
+        F::LoudnessM => &mut u.loudness_m,
+        F::LoudnessS => &mut u.loudness_s,
+        F::LoudnessTrend => &mut u.loudness_trend,
+        F::KeyClass => &mut u.key_class,
+        F::KeyIsMinor => &mut u.key_is_minor,
+        F::KeyConfidence => &mut u.key_confidence,
+        F::Downbeat => &mut u.downbeat,
+        F::BarPhase => &mut u.bar_phase,
+        F::BeatInBar => &mut u.beat_in_bar,
+        F::Pan => &mut u.pan,
+        F::StereoWidth => &mut u.stereo_width,
+        F::StereoCorr => &mut u.stereo_corr,
+        F::BandPanSubBass => &mut u.band_pan[0],
+        F::BandPanBass => &mut u.band_pan[1],
+        F::BandPanLowMid => &mut u.band_pan[2],
+        F::BandPanMid => &mut u.band_pan[3],
+        F::BandPanUpperMid => &mut u.band_pan[4],
+        F::BandPanPresence => &mut u.band_pan[5],
+        F::BandPanBrilliance => &mut u.band_pan[6],
+        F::SectionNovelty => &mut u.section_novelty,
+        F::Buildup => &mut u.buildup,
+        F::Drop => &mut u.drop,
+        F::PercussiveEnergy => &mut u.percussive_energy,
+        F::HarmonicEnergy => &mut u.harmonic_energy,
+        F::HarmonicRatio => &mut u.harmonic_ratio,
+        F::Pitch => &mut u.pitch,
+        F::PitchConfidence => &mut u.pitch_confidence,
+        F::Contrast0 => &mut u.contrast_0,
+        F::Contrast1 => &mut u.contrast_1,
+        F::Contrast2 => &mut u.contrast_2,
+        F::Contrast3 => &mut u.contrast_3,
+        F::Contrast4 => &mut u.contrast_4,
+        F::Contrast5 => &mut u.contrast_5,
+        F::ContrastMean => &mut u.contrast_mean,
+        F::TimbreFlux => &mut u.timbre_flux,
+        F::TempoConfidence => &mut u.tempo_confidence,
+        F::BeatLocked => &mut u.beat_locked,
+        F::FeedbackDecay => &mut u.feedback_decay,
+        // Time is a clock, not a 0..1 feature: not clamped.
+        F::Time => {
+            u.time = value;
+            return;
+        }
+    };
+    *slot = v;
 }
 
 /// Write one normalized value into a layer's param store, scaled to that
@@ -262,19 +251,19 @@ pub(crate) fn apply_param_binding(
 /// effect's `.pfx` defaults are never rewritten with modulated values (#3174),
 /// and a preset save or a slider still shows the user's own value (#4053).
 pub(crate) fn modulate_param(store: &mut crate::params::ParamStore, param_name: &str, value: f32) {
-    let Some(def) = store.defs.iter().find(|d| d.name() == param_name).cloned() else {
+    // The def is read in place, not cloned: this runs per bound param per
+    // frame, and a clone copied the def's name string every time (#150).
+    let Some(def) = store.defs.iter().find(|d| d.name() == param_name) else {
         return;
     };
-    match def {
+    let modulated = match *def {
         crate::params::ParamDef::Float { min, max, .. } => {
-            let val = min + (max - min) * value.clamp(0.0, 1.0);
-            store.set_modulated(param_name, ParamValue::Float(val));
+            ParamValue::Float(min + (max - min) * value.clamp(0.0, 1.0))
         }
-        crate::params::ParamDef::Bool { .. } => {
-            store.set_modulated(param_name, ParamValue::Bool(value > 0.5));
-        }
-        _ => {}
-    }
+        crate::params::ParamDef::Bool { .. } => ParamValue::Bool(value > 0.5),
+        _ => return,
+    };
+    store.set_modulated(param_name, modulated);
 }
 
 /// Upgrade the pre-#1792 indexless `param.{effect}.{param}` form now that we
@@ -386,13 +375,13 @@ mod tests {
         };
         apply_binding_target(
             &mut ctx,
-            &BindingTarget::PostFx("bloom_intensity".into()),
+            &BindingTarget::PostFx(PostFxField::BloomIntensity),
             0.9,
             false,
         );
         apply_binding_target(
             &mut ctx,
-            &BindingTarget::PostFx("grain_rate".into()),
+            &BindingTarget::PostFx(PostFxField::GrainRate),
             0.5,
             false,
         );

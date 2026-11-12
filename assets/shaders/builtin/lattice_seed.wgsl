@@ -19,20 +19,6 @@ fn outside_domain(gid: vec3<u32>, gf: f32) -> bool {
     return length(np) > u.domain_radius;
 }
 
-fn pcg(v_in: u32) -> u32 {
-    let state = v_in * 747796405u + 2891336453u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-fn hash01(v: u32) -> f32 {
-    return f32(pcg(v)) / 4294967295.0;
-}
-
-fn cell_hash(p: vec3<u32>, salt: u32) -> u32 {
-    return pcg(p.x + pcg(p.y + pcg(p.z + salt)));
-}
-
 @compute @workgroup_size(4, 4, 4)
 fn cs_seed(@builtin(global_invocation_id) gid: vec3<u32>) {
     let g = u.grid_res;
@@ -47,7 +33,7 @@ fn cs_seed(@builtin(global_invocation_id) gid: vec3<u32>) {
     switch u.init_mode {
         // Random fill.
         case 0u: {
-            if (hash01(cell_hash(gid, u.seed_hash)) < u.init_density) {
+            if (fosfora_hash01(fosfora_cell_hash(gid, u.seed_hash)) < u.init_density) {
                 s = 1u;
             }
         }
@@ -60,9 +46,9 @@ fn cs_seed(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Multi-seed: a handful of hashed spherical clusters.
         case 2u: {
             for (var k = 0u; k < 8u; k++) {
-                let cx = hash01(pcg(u.seed_hash + k * 3u + 1u)) * gf;
-                let cy = hash01(pcg(u.seed_hash + k * 3u + 2u)) * gf;
-                let cz = hash01(pcg(u.seed_hash + k * 3u + 3u)) * gf;
+                let cx = fosfora_hash01(fosfora_pcg(u.seed_hash + k * 3u + 1u)) * gf;
+                let cy = fosfora_hash01(fosfora_pcg(u.seed_hash + k * 3u + 2u)) * gf;
+                let cz = fosfora_hash01(fosfora_pcg(u.seed_hash + k * 3u + 3u)) * gf;
                 if (distance(pf, vec3f(cx, cy, cz)) < f32(u.seed_size)) {
                     s = 1u;
                 }
@@ -73,7 +59,7 @@ fn cs_seed(@builtin(global_invocation_id) gid: vec3<u32>) {
         // counts of a noisy blob are what let birth/survival rules propagate.
         case 4u: {
             if (distance(pf, vec3f(gf * 0.5)) < f32(u.seed_size)
-                && hash01(cell_hash(gid, u.seed_hash)) < u.init_density) {
+                && fosfora_hash01(fosfora_cell_hash(gid, u.seed_hash)) < u.init_density) {
                 s = 1u;
             }
         }
@@ -92,7 +78,7 @@ fn cs_seed(@builtin(global_invocation_id) gid: vec3<u32>) {
     // lifetime cap doesn't age the whole seed out on the same generation — a
     // synchronised die-off reads as a global flash. Packed into the high bits.
     if (s == 1u && u.max_age > 1u) {
-        let a0 = cell_hash(gid, u.seed_hash ^ 0x5f356495u) % u.max_age;
+        let a0 = fosfora_cell_hash(gid, u.seed_hash ^ 0x5f356495u) % u.max_age;
         s = s | (a0 << 8u);
     }
 

@@ -140,6 +140,13 @@ A list of pages on the left, one page at a time.
 | 10| Displace     | Edges shove what's beneath — shockwaves  |
 | 11| Refract      | Bright areas bend like glass, split color|
 | 12| Lens         | Bright areas magnify what's beneath      |
+| 13| Lighten      | Keeps the brighter, channel by channel   |
+| 14| Darken       | Keeps the darker, channel by channel     |
+| 15| Soft Light   | Gentle contrast — a softer Overlay       |
+| 16| Hue          | Recolors beneath with this layer's hue   |
+| 17| Saturation   | This layer's saturation, beneath's color |
+| 18| Color        | Tints beneath, keeping its brightness    |
+| 19| Luminosity   | This layer's brightness, beneath's color |
 
 Modes 10–12 are the **displacement family**: the layer is read as a warp field
 rather than an image, so it draws none of its own color. A **Displace** slider
@@ -148,7 +155,7 @@ bindable as `layer.{n}.displace`). They need something below them to warp — on
 the bottom layer they do nothing.
 
 Note that `layer.{n}.blend` driven from the binding bus sweeps modes 0–9 only;
-pick a displacement mode from the UI, OSC or a preset.
+pick a displacement mode or one of 13–19 from the UI, OSC or a preset.
 
 ---
 
@@ -165,6 +172,24 @@ pick a displacement mode from the UI, OSC or a preset.
 | 6 | Brilliance | BR   | 6-20 kHz      | Air, sparkle, cymbals      |
 
 Full glossary of all 85 audio features, in plain English: [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
+
+---
+
+## LFO Sources
+
+Tempo-synced LFOs bind like any audio feature (the **LFO · Tempo** group in the
+binding matrix), so any layer, effect or post-processing control can sway with
+the beat. Values run 0–1 and hold still while the tempo is not locked.
+
+| Part     | Values                                                    |
+|----------|-----------------------------------------------------------|
+| Shape    | `sine`, `triangle`, `saw`, `square`, `sh` (sample & hold) |
+| Division | `4bar`, `2bar`, `bar`, `half`, `beat`, `8th`, `16th`      |
+| Phase    | optional, whole degrees 0–359                             |
+
+Written `lfo.{shape}.{division}` or with a phase offset
+`lfo.{shape}.{division}.{degrees}`: `lfo.sine.bar`, `lfo.saw.beat.90`. Two LFOs
+a quarter-cycle apart (`.0` and `.90`) drive X and Y round a circle.
 
 ---
 
@@ -203,7 +228,7 @@ Default ports: **RX 9000**, **TX 9001**
 | `/fosfora/param/{name}`            | float | Set param on active layer    |
 | `/fosfora/layer/{n}/param/{name}`  | float | Set param on layer n         |
 | `/fosfora/layer/{n}/opacity`       | float | Layer opacity (0-1)          |
-| `/fosfora/layer/{n}/blend`         | int   | Blend mode (0-12)            |
+| `/fosfora/layer/{n}/blend`         | int   | Blend mode (0-19)            |
 | `/fosfora/layer/{n}/displace`      | float | Warp strength, modes 10-12   |
 | `/fosfora/layer/{n}/enabled`       | bool  | Layer enabled state          |
 | `/fosfora/trigger/{action}`        | float | Fire trigger action          |

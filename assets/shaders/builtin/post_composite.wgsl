@@ -30,15 +30,8 @@ struct PostParams {
 // Flash limiter output for this frame: x = gain on the final colour (1 = untouched).
 @group(0) @binding(5) var<uniform> flash: vec4f;
 
-// ACES filmic tonemapping
-fn aces_tonemap(x: vec3f) -> vec3f {
-    let a = 2.51;
-    let b = 0.03;
-    let c = 2.43;
-    let d = 0.59;
-    let e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
-}
+// ACES filmic tonemapping is fosfora_aces_tonemap, from lib/tonemap.wgsl
+// (prepended by gpu/postprocess.rs).
 
 // Hash for film grain
 fn hash_grain(p: vec2f) -> f32 {
@@ -78,7 +71,7 @@ fn post_color(uv: vec2f) -> vec4f {
     // Tonemap: ACES (house look) or linear passthrough (SuperSplat-faithful,
     // preserves raw sRGB contrast — no highlight compression / dark lift).
     if post.tonemap_mode < 0.5 {
-        color = aces_tonemap(color);
+        color = fosfora_aces_tonemap(color);
     } else {
         color = clamp(color, vec3f(0.0), vec3f(1.0));
     }

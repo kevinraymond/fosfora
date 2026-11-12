@@ -795,6 +795,139 @@ mod tests {
         }
     }
 
+    fn assert_rgb(got: [f32; 4], want: [f32; 3], tol: f32, msg: &str) {
+        for c in 0..3 {
+            assert!(
+                (got[c] - want[c]).abs() < tol,
+                "{msg}: got {got:?}, expected {want:?}"
+            );
+        }
+    }
+
+    fn luma(c: [f32; 4]) -> f32 {
+        0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    }
+
+    /// Lighten, Darken and Soft Light, per channel, in and above 0..1. The
+    /// expected values are worked by hand from the W3C formulas.
+    ///
+    /// Run: cargo test -p fosfora-app -- --ignored separable_blends_added_later
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn separable_blends_added_later() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        let blend = |mode: BlendMode, bg: [f32; 3], fg: [f32; 3]| {
+            blend_rgba(
+                &device,
+                &queue,
+                mode.as_u32(),
+                [bg[0], bg[1], bg[2], 1.0],
+                [fg[0], fg[1], fg[2], 1.0],
+                1.0,
+            )
+        };
+        let (bg, fg) = ([0.25, 0.5, 2.0], [0.5, 0.25, 1.0]);
+        assert_rgb(
+            blend(BlendMode::Lighten, bg, fg),
+            [0.5, 0.5, 2.0],
+            1e-3,
+            "lighten",
+        );
+        assert_rgb(
+            blend(BlendMode::Darken, bg, fg),
+            [0.25, 0.25, 1.0],
+            1e-3,
+            "darken",
+        );
+
+        // fg <= 0.5 darkens by b(1-b)(1-2f); fg > 0.5 lifts toward the
+        // 16b^3-12b^2+4b curve (b <= 0.25) or sqrt(b).
+        let got = blend(BlendMode::SoftLight, [0.25, 0.5, 0.5], [0.75, 0.25, 0.75]);
+        assert_rgb(
+            got,
+            [0.375, 0.375, 0.5 + 0.5 * (0.5f32.sqrt() - 0.5)],
+            1e-3,
+            "soft light",
+        );
+        // Gentler than Overlay, which takes 0.5 under 0.25 to 0.25.
+        let overlay = blend(BlendMode::Overlay, [0.5; 3], [0.25; 3]);
+        assert!(
+            got[1] > overlay[1],
+            "soft light {got:?} vs overlay {overlay:?}"
+        );
+        // HDR: the 0..1 formula plus the excess, like Overlay.
+        assert_rgb(
+            blend(BlendMode::SoftLight, [2.0; 3], [0.5; 3]),
+            [2.0; 3],
+            1e-3,
+            "hdr",
+        );
+    }
+
+    /// Hue, Saturation, Color and Luminosity each keep one input's luminance
+    /// and take color from the other.
+    ///
+    /// Run: cargo test -p fosfora-app -- --ignored non_separable_blends
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn non_separable_blends_keep_the_right_luminance() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        let blend = |mode: BlendMode, bg: [f32; 4], fg: [f32; 4]| {
+            blend_rgba(&device, &queue, mode.as_u32(), bg, fg, 1.0)
+        };
+        let gray = [0.5, 0.5, 0.5, 1.0];
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let rose = [0.5, 0.25, 0.25, 1.0];
+        let navy = [0.25, 0.25, 0.5, 1.0];
+        let tol = 2e-3;
+
+        // Color: red over gray is a red as bright as the gray.
+        let c = blend(BlendMode::Color, gray, red);
+        assert!((luma(c) - 0.5).abs() < tol, "color luma: {c:?}");
+        assert!(
+            c[0] > c[1] + 0.3 && (c[1] - c[2]).abs() < tol,
+            "color hue: {c:?}"
+        );
+        // Luminosity is Color with the inputs swapped.
+        let l = blend(BlendMode::Luminosity, red, gray);
+        assert_rgb(l, [c[0], c[1], c[2]], tol, "luminosity");
+
+        // Hue: navy's hue, rose's saturation and luminance.
+        let h = blend(BlendMode::Hue, rose, navy);
+        assert!((luma(h) - luma(rose)).abs() < tol, "hue luma: {h:?}");
+        assert!(
+            h[2] > h[0] && (h[0] - h[1]).abs() < tol,
+            "hue is navy's: {h:?}"
+        );
+        assert!(
+            (h[2] - h[0] - 0.25).abs() < tol,
+            "saturation is rose's: {h:?}"
+        );
+
+        // Saturation: a gray layer drains the color and keeps the luminance.
+        let s = blend(BlendMode::Saturation, rose, gray);
+        assert_rgb(s, [luma(rose); 3], tol, "saturation");
+
+        // HDR: Hue over a bloom keeps the bloom's brightness, which is the
+        // background's excess riding on white (white has no hue to change).
+        let bloom = [2.0, 2.0, 2.0, 1.0];
+        assert_rgb(
+            blend(BlendMode::Hue, bloom, red),
+            [2.0; 3],
+            tol,
+            "hue over bloom",
+        );
+        // Luminosity of a bright layer keeps that layer's excess instead.
+        assert_rgb(
+            blend(BlendMode::Luminosity, gray, bloom),
+            [2.0; 3],
+            tol,
+            "bright luminosity",
+        );
+    }
+
     /// Composite uniform RGBA `bg` and `fg` (Rgba16Float in, Rgba32Float out) at
     /// `opacity` and return the centre pixel.
     fn blend_rgba(

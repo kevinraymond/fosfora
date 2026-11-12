@@ -32,10 +32,15 @@ pub struct BindingBus {
     /// preset save); cleared on explicit preset save/load.
     pub(crate) preset_scope_dirty: bool,
     pub learn_target: Option<LearnState>,
-    /// Last frame's source snapshot (for UI diagnostics / templates).
+    /// Last frame's source snapshot (for UI diagnostics / templates). Also the
+    /// buffer the next frame refills in place, so its table is not reallocated
+    /// every frame (#149).
     pub last_snapshot: SourceSnapshot,
+    /// This frame's evaluated outputs, consumed by [`Self::apply_outputs`].
+    /// Kept between frames for its capacity.
+    pub(crate) outputs: Vec<BindingOutput>,
     /// Scene transport triggers pending drain by the main loop.
-    pub pending_triggers: Vec<String>,
+    pub pending_triggers: Vec<TransportAction>,
 }
 
 /// Where layer `old` ends up after moving `from` to `to`.
@@ -83,6 +88,7 @@ impl BindingBus {
             preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
+            outputs: Vec::new(),
             pending_triggers: Vec::new(),
         }
     }
@@ -104,6 +110,7 @@ impl BindingBus {
             preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
+            outputs: Vec::new(),
             pending_triggers: Vec::new(),
         }
     }
@@ -116,16 +123,23 @@ impl BindingBus {
         audio: Option<&AudioFeatures>,
         mel: &[f32],
         dmfcc: &[f32; 13],
-    ) -> Vec<BindingOutput> {
-        let mut snapshot = HashMap::with_capacity(128);
+    ) -> &[BindingOutput] {
+        let mut snapshot = self.take_snapshot_buffer();
         if let Some(features) = audio {
-            snapshot.extend(sources::collect_audio(features));
+            sources::collect_audio_into(&mut snapshot, features);
+            super::lfo::collect_into(&mut snapshot, features.beat_clock(), &self.bindings);
         }
-        if !mel.is_empty() {
-            snapshot.extend(sources::collect_mel_bands(mel));
-        }
-        snapshot.extend(sources::collect_dmfcc_bands(dmfcc));
+        sources::collect_mel_bands_into(&mut snapshot, mel);
+        sources::collect_dmfcc_bands_into(&mut snapshot, dmfcc);
         self.evaluate_snapshot(snapshot)
+    }
+
+    /// Last frame's snapshot, emptied, to refill: its table keeps its capacity,
+    /// so a steady frame allocates no map storage (#149).
+    fn take_snapshot_buffer(&mut self) -> SourceSnapshot {
+        let mut snapshot = std::mem::take(&mut self.last_snapshot);
+        snapshot.clear();
+        snapshot
     }
 
     /// Load preset-scoped bindings from an explicit sidecar path rather than
@@ -348,7 +362,8 @@ impl BindingBus {
     }
 
     /// Evaluate all enabled bindings for one frame.
-    /// Returns per-binding outputs (target, value, rising edge) for the app to apply.
+    /// Returns per-binding outputs (binding, value, rising edge); the app
+    /// applies them with [`Self::apply_outputs`].
     #[cfg(feature = "desktop")]
     pub fn evaluate(
         &mut self,
@@ -357,35 +372,68 @@ impl BindingBus {
         dmfcc: &[f32; 13],
         midi: &MidiSystem,
         osc: &OscSystem,
-    ) -> Vec<BindingOutput> {
+    ) -> &[BindingOutput] {
         // Collect source snapshots (always, even with no bindings — needed for matrix meters)
-        let mut snapshot = HashMap::with_capacity(128);
+        let mut snapshot = self.take_snapshot_buffer();
 
         if let Some(features) = audio {
-            snapshot.extend(sources::collect_audio(features));
+            sources::collect_audio_into(&mut snapshot, features);
+            // Tempo-synced LFOs (#129) run off the same beat clock.
+            super::lfo::collect_into(&mut snapshot, features.beat_clock(), &self.bindings);
         }
         // Mel bands (A1b `audio.mel.N`, #1512) — empty until the first audio frame arrives.
-        if !mel.is_empty() {
-            snapshot.extend(sources::collect_mel_bands(mel));
-        }
+        sources::collect_mel_bands_into(&mut snapshot, mel);
         // Delta-MFCC slopes (A16 `audio.dmfcc.N`, #1467) — bindings-only timbre-motion sources;
         // zeros until the first audio frame arrives.
-        snapshot.extend(sources::collect_dmfcc_bands(dmfcc));
-        snapshot.extend(sources::collect_midi(midi));
-        snapshot.extend(sources::collect_osc(osc));
-        snapshot.extend(sources::collect_websocket(&self.ws_bind_values));
+        sources::collect_dmfcc_bands_into(&mut snapshot, dmfcc);
+        sources::collect_midi_into(&mut snapshot, midi);
+        sources::collect_osc_into(&mut snapshot, osc);
+        sources::collect_websocket_into(&mut snapshot, &self.ws_bind_values);
 
         self.evaluate_snapshot(snapshot)
+    }
+
+    /// Send this frame's outputs to what they drive, consuming them — a later
+    /// call without a fresh `evaluate` applies nothing, so an output can never
+    /// be replayed against a binding list that has since changed.
+    ///
+    /// Shared by the app and the headless renderer, which used to each build
+    /// the dispatch context and loop by hand.
+    pub(crate) fn apply_outputs(
+        &mut self,
+        layer_stack: &mut crate::gpu::layer::LayerStack,
+        effects: &[crate::effect::format::PfxEffect],
+        uniforms: &mut crate::gpu::uniforms::ShaderUniforms,
+        postprocess: &mut crate::effect::format::PostProcessModulation,
+    ) {
+        let mut ctx = super::apply::BindingTargetCtx {
+            layer_stack,
+            effects,
+            uniforms,
+            postprocess,
+            pending_triggers: &mut self.pending_triggers,
+        };
+        for out in self.outputs.drain(..) {
+            if let Some(binding) = self.bindings.get(out.binding) {
+                super::apply::apply_binding_target(
+                    &mut ctx,
+                    &binding.target,
+                    out.value,
+                    out.rising,
+                );
+            }
+        }
     }
 
     /// Core per-frame evaluation against a prebuilt source snapshot. Split from
     /// `evaluate` so tests — and the headless renderer's `evaluate_offline` —
     /// can drive it without `MidiSystem`/`OscSystem`, whose constructors touch
     /// config files, MIDI ports, and UDP sockets.
-    pub fn evaluate_snapshot(&mut self, snapshot: SourceSnapshot) -> Vec<BindingOutput> {
+    pub fn evaluate_snapshot(&mut self, snapshot: SourceSnapshot) -> &[BindingOutput] {
+        self.outputs.clear();
         if self.bindings.is_empty() {
             self.last_snapshot = snapshot;
-            return Vec::new();
+            return &self.outputs;
         }
 
         // Check learn mode: if waiting for source, grab first new value
@@ -396,11 +444,11 @@ impl BindingBus {
                 let midi_source = snapshot
                     .iter()
                     .find(|(k, (v, _))| k.starts_with("midi.") && *v > 0.0)
-                    .map(|(k, _)| k.clone());
+                    .map(|(k, _)| k.to_string());
                 let osc_source = snapshot
                     .iter()
                     .find(|(k, _)| k.starts_with("osc."))
-                    .map(|(k, _)| k.clone());
+                    .map(|(k, _)| k.to_string());
 
                 if let Some(source_key) = midi_source.or(osc_source) {
                     let binding_id = learn.binding_id.clone();
@@ -414,14 +462,12 @@ impl BindingBus {
         }
 
         // Evaluate each enabled binding
-        let mut results = Vec::with_capacity(self.bindings.len());
-
-        for binding in &self.bindings {
+        for (index, binding) in self.bindings.iter().enumerate() {
             if !binding.enabled {
                 continue;
             }
 
-            let Some((value, raw)) = snapshot.get(&binding.source) else {
+            let Some(&(value, raw)) = snapshot.get(binding.source.as_str()) else {
                 continue;
             };
             // A NaN/Inf source (a raw OSC value, a web field) is treated like a missing
@@ -435,10 +481,10 @@ impl BindingBus {
                 None => self.runtimes.entry(binding.id.clone()).or_default(),
             };
 
-            runtime.last_input = Some(*value);
-            runtime.last_raw = Some(raw.clone());
+            runtime.last_input = Some(value);
+            runtime.last_raw = Some(raw);
 
-            let output = transforms::apply_chain(*value, &binding.transforms, runtime);
+            let output = transforms::apply_chain(value, &binding.transforms, runtime);
             runtime.last_output = Some(output);
 
             // Rising-edge latch (#1791): true only on the frame the
@@ -450,8 +496,8 @@ impl BindingBus {
             let rising = above && !runtime.prev_above_threshold;
             runtime.prev_above_threshold = above;
 
-            results.push(BindingOutput {
-                target: binding.target.clone(),
+            self.outputs.push(BindingOutput {
+                binding: index,
                 value: output,
                 rising,
             });
@@ -459,7 +505,7 @@ impl BindingBus {
 
         self.last_snapshot = snapshot;
 
-        results
+        &self.outputs
     }
 
     /// Load preset-scoped bindings (called on preset load).
@@ -596,6 +642,33 @@ impl BindingBus {
 mod tests {
     use super::*;
 
+    /// A tempo-synced LFO source (#129) reaches a binding through the same
+    /// evaluation as an audio feature, phase offset included, and moves with
+    /// the beat clock.
+    #[test]
+    fn an_lfo_source_drives_a_binding_off_the_beat_clock() {
+        let mut bus = BindingBus::new_isolated();
+        bus.add_binding(
+            "lfo.saw.beat.90".into(),
+            "uniform.kick".into(),
+            BindingScope::Global,
+        );
+        let at = |beat_index: f32, beat_phase: f32| AudioFeatures {
+            beat_phase,
+            beat_index,
+            ..Default::default()
+        };
+        let out = bus.evaluate_offline(Some(&at(3.0, 0.5)), &[], &[0.0; 13]);
+        assert_eq!(out.len(), 1);
+        // Half way through the beat, plus a quarter cycle of offset.
+        assert!((out[0].value - 0.75).abs() < 1e-5, "{}", out[0].value);
+        let out = bus.evaluate_offline(Some(&at(4.0, 0.0)), &[], &[0.0; 13]);
+        assert!((out[0].value - 0.25).abs() < 1e-5, "{}", out[0].value);
+        // The bound offset variant has a meter like any other source.
+        assert!(bus.last_snapshot.contains_key("lfo.saw.beat.90"));
+        assert!(bus.last_snapshot.contains_key("lfo.sine.bar"));
+    }
+
     fn empty_bus() -> BindingBus {
         BindingBus {
             bindings: Vec::new(),
@@ -609,6 +682,7 @@ mod tests {
             preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
+            outputs: Vec::new(),
             pending_triggers: Vec::new(),
         }
     }
@@ -830,6 +904,7 @@ mod tests {
             preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
+            outputs: Vec::new(),
             pending_triggers: Vec::new(),
         };
 
@@ -860,6 +935,7 @@ mod tests {
             preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
+            outputs: Vec::new(),
             pending_triggers: Vec::new(),
         };
 
@@ -900,6 +976,7 @@ mod tests {
             preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
+            outputs: Vec::new(),
             pending_triggers: Vec::new(),
         };
 
@@ -1036,16 +1113,7 @@ mod tests {
 
     fn snap(key: &str, v: f32) -> SourceSnapshot {
         let mut m: SourceSnapshot = HashMap::new();
-        m.insert(
-            key.to_string(),
-            (
-                v,
-                SourceRaw {
-                    display: format!("{v:.3}"),
-                    numeric: v as f64,
-                },
-            ),
-        );
+        m.insert(key.to_string().into(), (v, SourceRaw::Value(v)));
         m
     }
 
