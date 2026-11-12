@@ -282,8 +282,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the value, 0..1; an answer under it is "Didn't catch that" with the grammar's hint and changes nothing; default 0.35; read
     //       at launch)
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
-    //   adb shell setprop debug.fosfora.scenecapture 0|1         (no room anchors after the retries: launch Space Setup, then requery; default
-    //       on until a room has been saved (no rooms/*.json: the first launch, board #3752), off once one has; 1 forces, 0 forbids)
+    //   adb shell setprop debug.fosfora.scenecapture 0|1         (no room anchors after the retries: launch Space Setup, then requery; board #5393:
+    //       default on until the app has asked once, ever (hand_menu.json "space_setup_asked", saved when it launches Space Setup or its first
+    //       scene query ends; a headset with a rooms/*.json from before counts as asked), off after; then only the hand menu's Rescan and the
+    //       spoken rescan open it; 1 forces, 0 forbids, and a run with the knob set leaves the flag as it is)
+    //   adb shell setprop debug.fosfora.roam 0|1                 (board #5393: roam forced on or off for this launch, not saved, for unworn tests where
+    //       the head never moves; a press on the hand menu's Roam control or a spoken "roam" / "stay here" takes over; unset, the wearer's saved
+    //       choice, else on by itself when the scan ends with no room; read at launch)
+    //   adb shell setprop debug.fosfora.roamwalk 0.6             (board #5393: a fake head speed, m/s, in place of the measured one, through the same
+    //       low-pass, so roam's immersion rule can be captured unworn: full immersion under 0.3, none over 0.8; logged once a second while it
+    //       matters; live: polled once a second; "" back to the measured speed)
     //   adb shell setprop debug.fosfora.rescan 1|query           (once the room is in: launch Space Setup and requery (1), or requery alone (query), replacing the anchors; the hand menu's "Rescan the room" over adb)
     //   adb shell setprop debug.fosfora.anchors replay           (board #3536, a measurement aid for unworn runs: a scene query that finds no anchors
     //       replays the last located room, saved on every launch to debug/anchors.json under the config dir when its located set changes,
@@ -744,6 +752,35 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // `envdepthhands` is live: polled once a second (below) and applied
     // when it changes.
     let mut env_hands = env_depth.map(|o| o.hand_removal);
+    // Board #5393: Space Setup is asked for once, ever. The flag is saved
+    // the first time this app launches it or its first scene query ends,
+    // whatever the outcome (below, in the frame loop); after that only the
+    // hand menu's Rescan and the spoken rescan open it. A rooms/*.json from
+    // before the flag means the app was used, so it counts as asked. The
+    // knob overrides for tests, and a run with it set leaves the flag as
+    // it is.
+    let capture_knob = switch("debug.fosfora.scenecapture");
+    let mut space_setup_asked =
+        menu_saved.space_setup_asked || crate::room_file::any_saved(&dirs.config);
+    info!(
+        "{}",
+        match capture_knob {
+            Some(on) => format!(
+                "scene: Space Setup on an empty scan {} (debug.fosfora.scenecapture; the asked flag stays as it is)",
+                if on { "forced on" } else { "off" }
+            ),
+            None if space_setup_asked => {
+                "scene: Space Setup asked before: only the hand menu's Rescan and a spoken rescan open it"
+                    .to_owned()
+            }
+            None => "scene: Space Setup not asked yet: an empty scan opens it, once".to_owned(),
+        }
+    );
+    // Board #5393: roam, the show following the wearer (`roam.rs`): the
+    // wearer's saved choice, on by itself when the scan ends with no room,
+    // and forced for a launch by the knob.
+    let mut roam = crate::roam::RoamState::new(menu_saved.roam, switch("debug.fosfora.roam"));
+    info!("{}", crate::roam::launch_line(&roam));
     let mr = MrOptions {
         passthrough: toggle("debug.fosfora.passthrough", mixed),
         hands: toggle("debug.fosfora.hands", mixed),
@@ -752,10 +789,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             .and_then(|s| s.trim().parse::<f32>().ok())
             .map_or(0.0, |ms| (ms / 1000.0).clamp(0.0, 0.1)),
         room: toggle("debug.fosfora.room", mixed),
-        scene_capture: toggle(
-            "debug.fosfora.scenecapture",
-            !crate::room_file::any_saved(&dirs.config),
-        ),
+        scene_capture: capture_knob.unwrap_or(!space_setup_asked),
         rescan_at_start: match debug_prop("debug.fosfora.rescan").as_deref() {
             Some("1") => crate::room::Rescan::Capture,
             Some("query") => crate::room::Rescan::Query,
@@ -1293,9 +1327,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             .map(|v| v.clamp(0.0, 1.0))
     };
     let immerse_knob = unit_knob("debug.fosfora.immerse");
+    // Board #5393: the seated floor; roam keeps the room lighter
+    // (`roam::immerse_floor`), set again on each change of roam.
+    let seated_floor =
+        unit_knob("debug.fosfora.immersefloor").unwrap_or(crate::immerse::IMMERSE_FLOOR);
     let mut immersion = crate::immerse::Immersion::new(
         immerse_knob.unwrap_or(menu_saved.immerse.value()),
-        unit_knob("debug.fosfora.immersefloor").unwrap_or(crate::immerse::IMMERSE_FLOOR),
+        crate::roam::immerse_floor(roam.now().is_on(), seated_floor),
     );
     immersion.fix(unit_knob("debug.fosfora.immersefix"));
     let immerse_room = session.has_passthrough();
@@ -1327,6 +1365,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         voice: menu_saved.voice,
         agent: available.control(agent_pick),
         immerse: immerse_knob.map_or(menu_saved.immerse, crate::immerse::Depth::nearest),
+        roam: roam.now(),
     };
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
@@ -1603,6 +1642,30 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // line had the room dimmed.
     let mut immerse_now: Option<(f32, f32, f32)> = None;
     let mut immerse_logged = false;
+    // Board #5393: roam's rules (`roam.rs`): the cloud following the head,
+    // the head's speed for immersion, the switch to the effect that fills
+    // its volume, and the stage floor's center (x, z), under the head in
+    // roam and at the stage's origin seated. `debug.fosfora.roamwalk` fakes
+    // the head's speed (polled once a second).
+    let mut follow = crate::roam::Follow::default();
+    let mut walk = crate::roam::Walk::default();
+    let mut fill = crate::roam::Fill::default();
+    let mut stage_floor_at = glam::Vec2::ZERO;
+    let walk_knob = || {
+        system_prop("debug.fosfora.roamwalk")
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+    };
+    let mut roam_walk = walk_knob();
+    if let Some(speed) = roam_walk {
+        info!("roam: head speed faked at {speed:.2} m/s (debug.fosfora.roamwalk)");
+    }
+    // Board #5391: the live planes (`live_planes.rs`, a later step) are
+    // extra surface boxes found in the depth map while roaming. They are
+    // chained after the room's boxes once a frame, at the top of the frame
+    // below, and everything that reads the room's boxes then sees them.
+    // Empty in this step.
+    let live_boxes: Vec<ObstacleBox> = Vec::new();
 
     loop {
         // While the session is running, Android events are drained without
@@ -1674,18 +1737,53 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         let scene_mut = scene.as_mut();
         let frames_window = stats.last;
         let has_room = session.has_room();
+        // Board #5393: the scan's end turns the automatic roam on (no
+        // anchors) or off (a room found).
+        let room_scan = session.scan_state();
+        if let Some(now) = roam.scan(room_scan) {
+            roam_changed(
+                now,
+                if now.is_on() {
+                    "the scan found no room"
+                } else {
+                    "the scan found a room"
+                },
+                &mut immersion,
+                seated_floor,
+                &mut controls,
+            );
+        }
+        // Board #5393: Space Setup asked for once, ever: saved the first
+        // time this app launches it or its first scene query ends.
+        let asked_now = if space_setup_asked || capture_knob.is_some() {
+            None
+        } else if session.space_setup_requested() {
+            Some("Space Setup launched")
+        } else {
+            match room_scan {
+                Some(crate::label::ScanState::Found(_)) => Some("the first scan found a room"),
+                Some(crate::label::ScanState::None) => Some("the first scan ended with no room"),
+                _ => None,
+            }
+        };
+        if let Some(why) = asked_now {
+            space_setup_asked = true;
+            menu_saved.space_setup_asked = true;
+            save_hand_menu(&menu_file, menu_saved);
+            info!(
+                "scene: {why}: Space Setup asked for once (saved); from now on only the hand menu's Rescan and a spoken rescan open it"
+            );
+        }
         // Board #3264: while USE_SCENE is awaited, a room without anchors
         // reads "Allow spatial data to see the room".
-        let scan_state = crate::label::with_scene_permission(
-            session.scan_state(),
-            permission_watch.waiting_for(USE_SCENE),
-        );
+        let scan_state =
+            crate::label::with_scene_permission(room_scan, permission_watch.waiting_for(USE_SCENE));
         if scan_state != scan_logged {
             if let Some(state) = scan_state {
                 info!(
                     "room scan: {:?}, the label reads \"{}\"",
                     state,
-                    crate::label::scan_text(state)
+                    crate::roam::scan_text(state, roam.now())
                 );
             }
             scan_logged = scan_state;
@@ -1698,11 +1796,42 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
             // Board #3789: the governor's signal, taken after the frame.
             gpu_frame = input.perf.app_gpu_ms;
+            // Board #5391: the room's boxes and the live planes after them
+            // (`live_boxes`, empty in this step), the one list every user
+            // of the room's boxes below reads.
+            let room_boxes: Vec<ObstacleBox> = input
+                .room_boxes
+                .iter()
+                .chain(live_boxes.iter())
+                .copied()
+                .collect();
+            // Board #5393: in roam the stage floor's slab re-centers under
+            // the head once the head is 3 m from its center
+            // (`roam::floor_center`); seated, it is at the stage's origin.
+            // y = 0 either way.
+            let roam_on = roam.now().is_on();
+            let floor_at = if roam_on {
+                crate::roam::floor_center(stage_floor_at, glam::Vec3::from(input.head))
+            } else {
+                glam::Vec2::ZERO
+            };
+            if floor_box.is_some() && floor_at.distance(stage_floor_at) > 1e-4 {
+                info!(
+                    "roam: the stage floor at ({:.2}, {:.2}){}",
+                    floor_at.x,
+                    floor_at.y,
+                    if roam_on { ", under the head" } else { ", the stage's origin" }
+                );
+            }
+            stage_floor_at = floor_at;
+            let floor_box = floor_box.map(|f| ObstacleBox {
+                center: [floor_at.x, f.center[1], floor_at.y],
+                ..f
+            });
             // Board #3326: the boxes in the obstacle block's order (the
             // room's, then the stage floor) and each one's behavior; the
             // knob waits while the room is on but has no anchors yet.
-            let lane_boxes: Vec<crate::lanes::LaneBox<'_>> = input
-                .room_boxes
+            let lane_boxes: Vec<crate::lanes::LaneBox<'_>> = room_boxes
                 .iter()
                 .enumerate()
                 .map(|(i, b)| crate::lanes::LaneBox {
@@ -1899,7 +2028,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         gesture: gestures.label(),
                         anchor,
                         room: has_room,
-                        room_boxes: input.room_boxes.len(),
+                        room_boxes: room_boxes.len(),
                         rms: last_rms,
                         bass: last_bass,
                         beat: beat_env,
@@ -2081,6 +2210,27 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         menu_saved.immerse = depth;
                         save_hand_menu(&menu_file, menu_saved);
                     }
+                    // Board #5393: the Roam control or a spoken "roam" /
+                    // "stay here", the wearer's choice, saved; it takes
+                    // over from the knob.
+                    Action::SetRoam(on) => {
+                        let change = roam.set(on);
+                        menu_saved.roam = roam.chosen();
+                        save_hand_menu(&menu_file, menu_saved);
+                        match change {
+                            Some(now) => roam_changed(
+                                now,
+                                "asked",
+                                &mut immersion,
+                                seated_floor,
+                                &mut controls,
+                            ),
+                            None => {
+                                controls.roam = roam.now();
+                                info!("roam: {} already", roam.now().describe());
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -2151,6 +2301,31 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         input.head[2]
                     );
                 }
+                // Board #5393: in roam the cloud follows the wearer, by
+                // Recenter's path (the anchor moved, `moved` set), gliding
+                // there over 1.5 s once the head is a meter from it, at
+                // most every 3 s (`roam::Follow`). The sim keeps its
+                // particles relative to the anchor, so the cloud drifts
+                // with it: none jumps, none dies.
+                if roam_on && recenter_on_wearer && recentered {
+                    if let Some(step) = follow.step(
+                        glam::Vec3::from(input.head),
+                        glam::Vec3::from(anchor),
+                        MR_CUBE_Y,
+                        dt,
+                    ) {
+                        if let Some(d) = step.started {
+                            info!(
+                                "roam: the cloud follows the wearer, {d:.2} m from the head, gliding over {} s",
+                                crate::roam::GLIDE_S
+                            );
+                        }
+                        anchor = step.center.to_array();
+                        moved = true;
+                    }
+                } else {
+                    follow.cancel();
+                }
                 if moved {
                     p.set_cube(anchor, anchor_half);
                     if let Some(s) = scene.as_deref_mut() {
@@ -2161,7 +2336,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // stage floor is not a room box); applied after the frame.
                 room_fit = crate::space::fit_room(
                     glam::Vec3::from(anchor),
-                    input.room_boxes.iter().map(|b| {
+                    room_boxes.iter().map(|b| {
                         (
                             glam::Vec3::from(b.center),
                             glam::Quat::from_array(b.rot),
@@ -2169,7 +2344,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         )
                     }),
                 )
-                .map(|half| (half, input.room_boxes.len()));
+                .map(|half| (half, room_boxes.len()));
                 // Seated reach: each hand's joint set moves out along the
                 // arm past a comfortable reach. Only the sim sees the far
                 // hand; occlusion (the skinned mesh), pinch gestures and the
@@ -2373,7 +2548,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // right far pinch point. Off, it runs once more to clear.
                 if edit_on || edit_was_on {
                     let head = glam::Vec3::from(input.head);
-                    let pick_boxes = ray_boxes(&input.room_boxes, floor_box.as_ref());
+                    let pick_boxes = ray_boxes(&room_boxes, floor_box.as_ref());
                     let mut tap = edit_tap && !panel_up;
                     let ray = match pick_test_s {
                         Some(every) if edit_on => {
@@ -2595,13 +2770,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 cloud_ran = cloud;
                 gfx.set_world_visible(cloud.visible());
-                for b in &input.room_boxes {
+                for b in &room_boxes {
                     set.push_box(b);
                 }
                 if let Some(f) = &floor_box {
                     set.push_box(&ObstacleBox {
                         emit: crate::surfaces::synthetic_floor_emit(
-                            input.room_boxes.iter().map(|b| b.kind),
+                            room_boxes.iter().map(|b| b.kind),
                         ),
                         ..*f
                     });
@@ -2628,8 +2803,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         throw = Some((1, Some(head + ahead * 0.5)));
                     }
                     if let Some((hand, pinch)) = throw {
-                        let boxes = ray_boxes(&input.room_boxes, floor_box.as_ref());
-                        let room_n = input.room_boxes.len();
+                        let boxes = ray_boxes(&room_boxes, floor_box.as_ref());
+                        let room_n = room_boxes.len();
                         let flight =
                             pinch.and_then(|p| crate::instruments::Flight::aim(head, p, &boxes));
                         match flight {
@@ -2984,8 +3159,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 );
                 if let (Some(asked), Some(provider)) = (&response.agent, &agent) {
                     let head = glam::Vec3::from(input.head);
-                    let sizes: Vec<[f32; 2]> = input
-                        .room_boxes
+                    let sizes: Vec<[f32; 2]> = room_boxes
                         .iter()
                         .chain(floor_box.iter())
                         .map(|b| {
@@ -3203,7 +3377,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                 }
             }
-            scan_label.step(scan_state, dt);
+            // Board #5393: "No room here: roaming…" when the scan's end
+            // turned roam on.
+            let roam_now = roam.now();
+            scan_label.step_with(scan_state, dt, |s| crate::roam::scan_text(s, roam_now));
             {
                 let head = glam::Vec3::from(input.head);
                 let head_rot = glam::Quat::from_array(input.head_rot);
@@ -3249,7 +3426,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             name: s.name,
                         })
                         .collect();
-                    let boxes = input.room_boxes.iter().chain(floor_box.iter());
+                    let boxes = room_boxes.iter().chain(floor_box.iter());
                     let poses = boxes.enumerate().map(|(k, b)| {
                         let (center, half) = (glam::Vec3::from(b.center), glam::Vec3::from(b.half));
                         (k, pose(center, glam::Quat::from_array(b.rot), half, head, head_rot))
@@ -3337,8 +3514,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             head,
                         )
                     };
-                    let walls: Vec<(usize, crate::canvas::WallFace)> = input
-                        .room_boxes
+                    let walls: Vec<(usize, crate::canvas::WallFace)> = room_boxes
                         .iter()
                         .enumerate()
                         .filter(|&(i, b)| {
@@ -3354,8 +3530,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .update(head, forward, &faces, dt)
                         .map(|k| walls[k]);
                     let face = if canvas_ceiling {
-                        input
-                            .room_boxes
+                        room_boxes
                             .iter()
                             .enumerate()
                             .find(|(_, b)| b.kind == crate::surfaces::KIND_CEILING)
@@ -3397,6 +3572,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     playing: music.analysis.is_some() || live_audio.is_some(),
                 },
             );
+            // Board #5393: in roam the level gives way to walking: the
+            // head's level speed, low-passed, scales it from all of it
+            // under 0.3 m/s to none over 0.8 m/s (`roam::Walk`).
+            walk.step(glam::Vec3::from(input.head), dt, roam_walk);
+            let immerse_level =
+                crate::roam::immerse_level(immerse_level, roam.now().is_on(), walk.factor());
             let immerse_level = if immerse_room { immerse_level } else { 0.0 };
             immerse_now = Some((immerse_level, f.loudness_s, f.buildup));
             // Board #3472, D1: the surfaces pass. Every box whose behavior
@@ -3416,8 +3597,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             {
                 use crate::surfaces::{KIND_CEILING, KIND_FLOOR, SurfaceBehavior};
                 let head = glam::Vec3::from(input.head);
-                let stage_k = input.room_boxes.len();
-                let scene_floor = input.room_boxes.iter().any(|b| b.kind == KIND_FLOOR);
+                let stage_k = room_boxes.len();
+                let scene_floor = room_boxes.iter().any(|b| b.kind == KIND_FLOOR);
                 let stage_top = floor_box.map(|b| b.center[1] + b.half[1]);
                 let mut audio = crate::surface_fx::Audio {
                     rms: f.rms,
@@ -3442,7 +3623,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // behavior, strength and color index.
                 let mut ported = Vec::new();
                 let mut spectrum_sign = 1.0;
-                for (k, b) in input.room_boxes.iter().chain(floor_box.iter()).enumerate() {
+                for (k, b) in room_boxes.iter().chain(floor_box.iter()).enumerate() {
                     // The lane's behavior, strength, color index and band
                     // (board #3488; a box past the lanes' rows: the
                     // defaults).
@@ -3658,6 +3839,41 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             && t - last_switch_t > every
         {
             switch_to = cycle_index(&parked, world_index, 1);
+        }
+        // Board #5393: in roam, the surface-born effect with nothing in
+        // reach to spawn from gives way, once, to the effect that fills its
+        // volume; roam off switches back unless the wearer picked another
+        // meanwhile (`roam::Fill`). A switch asked for this frame wins.
+        if world {
+            let fill_index = world_effects
+                .iter()
+                .position(|e| e == crate::roam::FILL_EFFECT)
+                .filter(|&i| i == world_index || parked.get(i).is_some_and(Option::is_some));
+            let asked = fill.step(crate::roam::FillInput {
+                roam: roam.now().is_on(),
+                scan: session.scan_state(),
+                showing: world_index,
+                surface_born: scene.as_ref().is_some_and(XrScene::surface_born),
+                weight: scene.as_ref().map_or(0.0, XrScene::emitter_weight),
+                fill: fill_index,
+                dt,
+            });
+            if switch_to.is_none() {
+                match asked {
+                    Some(crate::roam::FillSwitch::To(i)) => {
+                        info!(
+                            "roam: nothing in reach emits on '{}': '{}' fills the space",
+                            world_effects[world_index], world_effects[i]
+                        );
+                        switch_to = Some(i);
+                    }
+                    Some(crate::roam::FillSwitch::Back(i)) => {
+                        info!("roam off: back to '{}'", world_effects[i]);
+                        switch_to = Some(i);
+                    }
+                    None => {}
+                }
+            }
         }
         if let Some(next) = switch_to.take()
             && let Some(mut s) = parked[next].take()
@@ -3932,6 +4148,33 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     );
                 }
                 immerse_logged = dimmed;
+            }
+            // Board #5393: the faked head speed, live; and in roam, while
+            // the head's speed takes from the immersion level, by how much.
+            let knob = walk_knob();
+            if knob.map(f32::to_bits) != roam_walk.map(f32::to_bits) {
+                roam_walk = knob;
+                match knob {
+                    Some(speed) => {
+                        info!("roam: head speed faked at {speed:.2} m/s (debug.fosfora.roamwalk)");
+                    }
+                    None => info!("roam: head speed measured again"),
+                }
+            }
+            if roam.now().is_on() && (roam_walk.is_some() || walk.factor() < 0.999) {
+                info!(
+                    "roam: head speed {:.2} m/s{} · immersion x{:.2} (level {:.2} of {:.2}) · passthrough floor {:.2}",
+                    walk.speed(),
+                    if roam_walk.is_some() {
+                        " (debug.fosfora.roamwalk)"
+                    } else {
+                        ""
+                    },
+                    walk.factor(),
+                    immerse_now.map_or(0.0, |(level, ..)| level),
+                    immersion.level(),
+                    immersion.floor()
+                );
             }
             if session.has_hands() || session.has_room() {
                 info!(
@@ -4432,6 +4675,8 @@ fn apply_intent(
         Intent::Rescan => actions.push(Action::RescanRoom),
         Intent::Recenter => actions.push(Action::Recenter),
         Intent::AllNone => actions.push(Action::AllNone),
+        // Board #5393: the Roam control's press, by voice.
+        Intent::Roam(on) => actions.push(Action::SetRoam(on)),
         // Board #5384: a step from the depth the control shows; the label
         // names where it came to.
         Intent::Immersion(step) => {
@@ -4551,16 +4796,36 @@ fn save_hand_menu(path: &std::path::Path, menu: crate::palm_panel::MenuFile) {
     let on_off = |on: bool| if on { "on" } else { "off" };
     match std::fs::write(path, menu.to_json()) {
         Ok(()) => info!(
-            "hand menu: debug panel {} · voice {}{} · immersion {} (saved)",
+            "hand menu: debug panel {} · voice {}{} · immersion {} · roam {} (saved)",
             on_off(menu.debug),
             on_off(menu.voice),
             menu.agent
                 .map(|p| format!(" · agent {}", p.name()))
                 .unwrap_or_default(),
-            menu.immerse.name()
+            menu.immerse.name(),
+            on_off(menu.roam)
         ),
         Err(e) => log::warn!("hand menu: saving {}: {e}", path.display()),
     }
+}
+
+/// Board #5393: roam changed to `now`, because of `why`: the menu shows
+/// it, the passthrough's floor follows it (`roam::immerse_floor` from the
+/// seated one), and the log says so.
+fn roam_changed(
+    now: crate::roam::Roam,
+    why: &str,
+    immersion: &mut crate::immerse::Immersion,
+    seated_floor: f32,
+    controls: &mut Controls,
+) {
+    controls.roam = now;
+    immersion.set_floor(crate::roam::immerse_floor(now.is_on(), seated_floor));
+    info!(
+        "roam: {} · {why} · passthrough floor {:.2}",
+        now.describe(),
+        immersion.floor()
+    );
 }
 
 /// The world-layout effect `effect`, simulated around `options.anchor`.

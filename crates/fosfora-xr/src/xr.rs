@@ -890,6 +890,12 @@ impl XrSession {
         self.room.as_ref().map(Room::scan_state)
     }
 
+    /// Whether this run has asked for Space Setup
+    /// (`Room::capture_requested`); false without a room.
+    pub fn space_setup_requested(&self) -> bool {
+        self.room.as_ref().is_some_and(Room::capture_requested)
+    }
+
     /// The runtime's hand meshes (left, right), when hands are on and
     /// `XR_FB_hand_tracking_mesh` delivered them.
     pub fn hand_meshes(&self) -> [Option<&HandMeshData>; 2] {

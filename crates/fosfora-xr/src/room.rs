@@ -344,7 +344,7 @@ impl Room {
                     self.request_capture();
                 } else {
                     warn!(
-                        "scene: no anchors: run Space Setup on the headset (or set debug.fosfora.scenecapture 1 to launch it)"
+                        "scene: no anchors: the hand menu's Rescan runs Space Setup (debug.fosfora.scenecapture 1 launches it on an empty scan)"
                     );
                 }
             } else {
@@ -896,6 +896,13 @@ impl Room {
         } else {
             ScanState::Scanning
         }
+    }
+
+    /// Whether this run has asked the runtime for Space Setup, by itself
+    /// on an empty scan or for a rescan (board #5393: the app saves that it
+    /// asked, once).
+    pub fn capture_requested(&self) -> bool {
+        self.capture_used
     }
 
     /// The room id of the anchors the last query returned (every one, not

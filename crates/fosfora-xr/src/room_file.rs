@@ -102,11 +102,11 @@ pub fn room_id(uuids: impl IntoIterator<Item = [u8; 16]>) -> Option<u64> {
     Some(fnv1a64(sorted.iter().flatten().copied()))
 }
 
-/// A room id as the 16 lowercase hex digits its file is named by.
 /// Whether any room has ever been saved under `config` (a `rooms/*.json`
-/// exists). On a headset that has none, the first launch's empty scene
-/// query opens Space Setup by itself (board #3752): a wearer who has never
-/// scanned should not be told to find the hand menu first.
+/// exists). Board #3752 opened Space Setup on an empty scan until one was.
+/// Since board #5393 the app asks once, ever, and saves that it did
+/// (`hand_menu.json`'s `space_setup_asked`); a headset with a saved room
+/// and no flag was used before the flag, and counts as asked.
 pub fn any_saved(config: &Path) -> bool {
     std::fs::read_dir(config.join(ROOMS_DIR)).is_ok_and(|entries| {
         entries
@@ -115,6 +115,7 @@ pub fn any_saved(config: &Path) -> bool {
     })
 }
 
+/// A room id as the 16 lowercase hex digits its file is named by.
 pub fn room_id_hex(id: u64) -> String {
     format!("{id:016x}")
 }

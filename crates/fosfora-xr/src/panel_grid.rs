@@ -38,7 +38,8 @@ pub const END_BOX_W: f32 = 40.0;
 /// row on top (board #3336: the effect cycle left the bare pinch-hold),
 /// then, in both layouts at the bottom of the block, Recenter and Rescan
 /// (in the menu since board #4192, so the scan label's "Rescan from the
-/// hand menu" has a row to find), over the agent's provider (board #3776),
+/// hand menu" has a row to find; since board #5393 the two share the left
+/// cell and Roam has the right one), over the agent's provider (board #3776),
 /// over the pitcher and debug toggles, over the room editor's (board
 /// #3326), over the cloud's (step 2c), over the music's (board #3472). The
 /// debug panel shows the effect row at the top of its block, over the
