@@ -64,6 +64,7 @@ pub mod playlist;
 pub mod pose;
 pub mod reach;
 pub mod ripple;
+pub mod roam;
 #[cfg(target_os = "android")]
 mod room;
 pub mod room_edit;
