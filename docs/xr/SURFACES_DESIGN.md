@@ -773,10 +773,15 @@ that range is the position:
   closed, and the noise within a section is a small share of the span.
 - The top `TOP_SHARE` (a quarter) of the range counts as full, so the
   wobble within a full section keeps the room closed.
-- The position maps onto `LOW_LEVEL` (0.2) to 1. A breakdown falls under
+- The position maps onto `LOW_LEVEL` (0.42) to 1. A breakdown falls under
   the range's low, which follows it down within about 3 s, so the song
-  sits at the bottom and the room opens to about three quarters, for as
-  long as the full section's high stays in the window (27 s).
+  sits at the bottom and, after the release, the room is about half
+  dimmed, for as long as the full section's high stays in the window
+  (27 s). The first rework had 0.2, which brought about three quarters of
+  the room back; worn, that was too bright. 0.42 is over the opening's
+  0.35, so the music never shows the room as much as the opening does,
+  and the blend from 0.35 as the history fills only darkens.
+  `debug.fosfora.immerselow` sets it live for tuning.
 - `buildup` over `BUILD_FROM` (0.4) adds up to `BUILDUP_LIFT` (1) to the
   level, scaled by the position. Measured on real songs, `buildup` is high
   wherever the bass is out, in breakdowns as much as before drops, and
@@ -832,9 +837,8 @@ that image is black. Against the dark room the hands vanish entirely;
 in front of the particles, a lit surface or the hand menu they show as
 black silhouettes cut out of the light. The hand menu itself, its cursor,
 the beams and the labels are the app's own quads and stay visible. With
-the old floor the hands kept 15 % of the image. This is the first thing
-to check worn: whether the wearer can still find and press the hand menu
-with hands they cannot see.
+the old floor the hands kept 15 % of the image. Worn, seated, the hands
+at opacity 0 were fine.
 
 **The surfaces.** Every lit face's peak alpha rises with the same level.
 A port's goes from its 0.5 to 1.0, `0.5 + 0.5 * level`. The built-in
@@ -875,6 +879,11 @@ the level whatever the audio and the depth, and skips the opening, for
 unworn screencaps (on this OS version `adb exec-out screencap -p`
 includes the passthrough behind the app's layers).
 `debug.fosfora.immerseopen 0` skips the opening.
+`debug.fosfora.immerselow 0..1` sets the low level; it is also polled
+once a second, so it can be tuned while worn, and a change is logged
+(`immersion: low level 0.45 (debug.fosfora.immerselow)`; unset again,
+`immersion: low level 0.42 (the default)`). The level moves to a new
+value over the attack or the release.
 
 **Measurement runs.** A launch with the music on now spends about 7 s on
 the opening and fills the history for about 15 s more: on the bundled
@@ -888,8 +897,9 @@ the fill.
 
 **Logs.** At launch: `immersion: full · floor 0.00 · opening "Sit back
 and relax" 4.0 s, then 0.35 over 3.0 s · follows loudness_s within its
-last 30 s (p10..p90, span 0.05 at least) onto 0.20..1 · attack 2.0 s ·
-release 4.0 s`, with the knob, a skipped opening ("no opening
+last 30 s (p10..p90, span 0.05 at least) onto 0.42..1 · attack 2.0 s ·
+release 4.0 s`, with the knobs (the low level's as "onto 0.45..1
+(debug.fosfora.immerselow)"), a skipped opening ("no opening
 (debug.fosfora.immerseopen 0)"), the pinned level and a missing
 passthrough said when they apply. When the message goes up:
 `immersion: opening, "Sit back and relax" for 4.0 s, then 0.35 over 3.0
@@ -898,16 +908,17 @@ glide ends: `immersion: the show starts at 0.35 · history 4.0 s`. On a
 drop: `immersion: drop, to 1 for 8.0 s · loudness_s 0.81 in 0.62..0.80`.
 On a change of the depth: `immersion: low (depth 1.00 -> 0.50)`, then the
 menu file's save line. Once a second while the room is dimmed, and once
-when it is back: `immersion: level 0.62 · passthrough 0.38 · loudness_s
+when it is back: `immersion: level 0.73 · passthrough 0.27 · loudness_s
 0.74 in 0.70..0.80 at 0.53 · buildup 0.30 · depth 1.00`, the range and
 the song's position in it, and "opening: the glide" while it runs. A
 failed style call warns once.
 
-**Not yet.** The device: the worn verdict on the opening and on the
-relative level with the owner's songs (does it open visibly at
-breakdowns and close at drops, and is the parking on loud masters
-welcome), the hands at opacity 0 with the hand menu, the label order at
-launch with a scan and a permission prompt, what shows under the dimmed
-image (expected black), the cost of the style calls, and the
+**Worn.** The rework passed worn, seated, with real songs: the opening
+played, the level moved with the song, the black room at level 1 was
+good, and the hands at opacity 0 were fine. The one change asked for was
+a darker open state, hence the low level at 0.42 and its knob.
+
+**Not yet.** The device: the worn verdict on 0.42, the label order at
+launch with a permission prompt, the cost of the style calls, and the
 microphones, whose quiet room may sit over the quiet threshold, so a
 stopped speaker leaves the room at the low level instead of fully back.
