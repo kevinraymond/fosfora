@@ -68,7 +68,7 @@
 
 use glam::Vec3;
 
-use crate::instruments::{Hit, RayBox, cast};
+use crate::instruments::{Hit, RayBox, cast_except};
 use crate::surfaces::{KIND_NONE, SURFACE_LANE_ROWS, SurfaceBehavior, lane_behavior, lane_row};
 
 /// Seconds the ray has to stay on another box before it is the hit.
@@ -195,6 +195,21 @@ impl RoomEditor {
     /// Advance one frame. With the mode off everything clears and the
     /// frame is empty.
     pub fn step(&mut self, input: &EditInput<'_>) -> EditFrame {
+        self.step_except(input, 0..0)
+    }
+
+    /// [`Self::step`] with the boxes at the indices in `unpickable` left
+    /// out of the pick (board #5397: the live planes, which are not kept,
+    /// so there is nothing to edit on them): the ray passes through them,
+    /// and a hit held on one of those indices goes.
+    pub fn step_except(
+        &mut self,
+        input: &EditInput<'_>,
+        unpickable: std::ops::Range<usize>,
+    ) -> EditFrame {
+        if self.hit.is_some_and(|h| unpickable.contains(&h.index)) {
+            self.hit = None;
+        }
         let before = self.hit.map(|h| h.index);
         if !input.on {
             *self = Self::default();
@@ -223,7 +238,7 @@ impl RoomEditor {
         }
         let raw = input
             .ray
-            .and_then(|r| cast(r.origin, r.dir, input.boxes, MAX_M));
+            .and_then(|r| cast_except(r.origin, r.dir, input.boxes, MAX_M, unpickable));
         match raw {
             Some(h) if before == Some(h.index) && self.hit.is_some() => {
                 self.hit = Some(h);
@@ -1090,5 +1105,39 @@ mod tests {
         assert!(cloud_knob(Some("yes")));
         assert!(!cloud_knob(Some("0")));
         assert!(!cloud_knob(Some(" 0 ")));
+    }
+
+    #[test]
+    fn the_ray_passes_through_unpickable_boxes_to_the_wall_behind() {
+        // A live plane 50 cm in front of the wall, after the room's boxes.
+        let mut b = boxes();
+        b.push(RayBox {
+            center: Vec3::new(0.3, 1.4, -1.5),
+            rot: Quat::IDENTITY,
+            half: Vec3::new(0.5, 0.5, 0.02),
+            kind: crate::surfaces::KIND_WALL,
+        });
+        let mut e = RoomEditor::default();
+        let f = point(&mut e, &b, WALL, frames(CONFIRM_S) + 1);
+        assert_eq!(f.hit.map(|h| h.index), Some(3), "pickable, it is in front");
+        // Unpickable: the held hit goes at once and the wall behind it is
+        // the hit after its confirmation, at its own index.
+        let f = e.step_except(&input(&b, WALL), 3..4);
+        assert_eq!(f.hit, None);
+        let mut f = f;
+        for _ in 0..frames(CONFIRM_S) {
+            f = e.step_except(&input(&b, WALL), 3..4);
+        }
+        assert_eq!(f.hit.map(|h| h.index), Some(0));
+        assert!((f.hit.unwrap().point.z + 1.98).abs() < 1e-4);
+        // An empty range is `step`.
+        let mut plain = RoomEditor::default();
+        let mut skip = RoomEditor::default();
+        for _ in 0..=frames(CONFIRM_S) {
+            assert_eq!(
+                plain.step(&input(&b, TABLE)),
+                skip.step_except(&input(&b, TABLE), 0..0)
+            );
+        }
     }
 }

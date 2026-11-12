@@ -130,8 +130,24 @@ pub struct Hit {
 /// enters, by a slab test in each box's frame. A box containing `origin`
 /// is skipped: the ray leaves it, it does not hit it.
 pub fn cast(origin: Vec3, dir: Vec3, boxes: &[RayBox], max_m: f32) -> Option<Hit> {
+    cast_except(origin, dir, boxes, max_m, 0..0)
+}
+
+/// [`cast`] passing through the boxes at the indices in `skip` (board
+/// #5397: the live planes, which the room editor does not offer), the
+/// indices of the rest as in `boxes`.
+pub fn cast_except(
+    origin: Vec3,
+    dir: Vec3,
+    boxes: &[RayBox],
+    max_m: f32,
+    skip: std::ops::Range<usize>,
+) -> Option<Hit> {
     let mut best: Option<Hit> = None;
     for (index, b) in boxes.iter().enumerate() {
+        if skip.contains(&index) {
+            continue;
+        }
         let inv = b.rot.conjugate();
         let o = (inv * (origin - b.center)).to_array();
         let d = (inv * dir).to_array();
