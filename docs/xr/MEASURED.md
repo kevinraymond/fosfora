@@ -3253,3 +3253,27 @@ Captures at the same spot: with the sky on, the curtains run from the wall
 onto the ceiling without a break and the floor shows them fainter; per face,
 each wall and the ceiling starts its own picture and the floor is a bright
 wash. Not yet worn.
+
+## The sky's layers (board #5438)
+
+Quest 3, OS v209, 4 h after a reboot, unworn on the desk in a dark room,
+seated launch in the scanned room (21 anchors replayed), world mode, 72 Hz,
+the governor off, music playing, immersion held at 1, the Aurora theme with
+the sky on. One launch per layer count (`debug.fosfora.skylayers`), 22 s to
+settle, then 30 s of the runtime's App GPU time, no profiler.
+
+| Layers | App med | p90 | max |
+|---|---|---|---|
+| 1 (the sky as it was) | 9.03 ms | 9.54 | 9.62 |
+| 2 (a layer 1.5 m behind) | 9.46 | 9.96 | 9.97 |
+| 3 (layers 1.5 and 4 m behind) | 10.59 | 11.14 | 11.16 |
+| 1 again | 9.36 | 9.51 | 10.02 |
+| 2 again | 9.76 | 10.30 | 10.36 |
+
+The second layer costs about 0.4 ms and the third about 1.1 ms more, so
+three layers are about 1.4 ms over one. The 72 Hz frame has 3.3 ms left at
+three. The rate read 70 to 72 in every condition, one layer included.
+
+A headset on the desk does not move, so the captures show only that each
+layer adds its own curtains between the nearer ones, dimmer and cooler. The
+depth is a worn question.
