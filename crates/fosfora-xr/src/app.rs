@@ -1456,7 +1456,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         agent: available.control(agent_pick),
         immerse: immerse_knob.map_or(menu_saved.immerse, crate::immerse::Depth::nearest),
         roam: roam.now(),
+        edges: edge_bars.mode,
     };
+    // Board #5420: the hand menu's Edges control holds its mode over the
+    // knob's until the knob's own mode changes; the knob's last mode.
+    let mut edge_menu: Option<crate::edge_bars::Mode> = None;
+    let mut edge_knob = edge_bars.mode;
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
     let mut density_set = vec![1.0f32; world_effects.len()];
@@ -2506,6 +2511,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // Board #5393: the Roam control or a spoken "roam" /
                     // "stay here", the wearer's choice, saved; it takes
                     // over from the knob.
+                    Action::SetEdges(mode) => {
+                        let now = crate::edge_bars::EdgeBarsOptions { mode, ..edge_bars };
+                        info!("{} (the hand menu)", now.change_line(&edge_bars, occluders));
+                        edge_bars = now;
+                        edge_menu = Some(mode);
+                        controls.edges = mode;
+                    }
                     Action::SetRoam(on) => {
                         let change = roam.set(on);
                         menu_saved.roam = roam.chosen();
@@ -4594,7 +4606,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             // Board #5420: the edge bars' knobs, live.
-            let now = crate::edge_bars::EdgeBarsOptions::from_knobs(system_prop);
+            let mut now = crate::edge_bars::EdgeBarsOptions::from_knobs(system_prop);
+            if now.mode != edge_knob {
+                edge_knob = now.mode;
+                edge_menu = None;
+            }
+            if let Some(mode) = edge_menu {
+                now.mode = mode;
+            }
+            controls.edges = now.mode;
             if now != edge_bars {
                 info!("{}", now.change_line(&edge_bars, occluders));
                 edge_bars = now;

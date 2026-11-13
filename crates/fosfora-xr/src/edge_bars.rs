@@ -174,6 +174,26 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// The hand menu's Edges control steps through the modes: off, on the
+    /// face, standing, off again.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Inward,
+            Self::Inward => Self::Standing,
+            Self::Standing => Self::Off,
+        }
+    }
+
+    /// The Edges control's words, short enough for half a cell.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Edges off",
+            Self::Inward => "Edges face",
+            Self::Standing => "Edges stand",
+        }
+    }
+
     /// How the bars grow; `None` when off.
     pub fn growth(self) -> Option<Growth> {
         match self {
@@ -896,6 +916,18 @@ mod tests {
 
     fn near(a: Vec3, b: Vec3) -> bool {
         a.abs_diff_eq(b, 1e-5)
+    }
+
+    #[test]
+    fn the_menu_steps_through_off_face_and_standing() {
+        assert_eq!(Mode::Off.next(), Mode::Inward);
+        assert_eq!(Mode::Inward.next(), Mode::Standing);
+        assert_eq!(Mode::Standing.next(), Mode::Off);
+        assert_eq!(Mode::Inward.label(), "Edges face");
+        // Half a cell holds about a dozen characters.
+        for m in [Mode::Off, Mode::Inward, Mode::Standing] {
+            assert!(m.label().len() <= 12);
+        }
     }
 
     #[test]

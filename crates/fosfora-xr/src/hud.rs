@@ -141,6 +141,9 @@ pub struct Controls {
     /// Whether the show follows the wearer, and why (the hand menu's Roam
     /// control; board #5393). The app sets it; a press only asks.
     pub roam: crate::roam::Roam,
+    /// How the edge bars draw (the hand menu's Edges control, not saved;
+    /// board #5420). The app sets it; a press only asks.
+    pub edges: crate::edge_bars::Mode,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -189,6 +192,9 @@ pub enum Action {
     SetImmersion(crate::immerse::Depth),
     /// The Roam control asked for roam on or off (saved; board #5393).
     SetRoam(bool),
+    /// The Edges control asked for this mode of the edge bars (not saved;
+    /// board #5420).
+    SetEdges(crate::edge_bars::Mode),
 }
 
 impl Controls {
@@ -238,6 +244,8 @@ enum Target {
     CycleImmersion,
     /// The Roam control: on from off, off from on (board #5393).
     ToggleRoam,
+    /// The Edges control: the edge bars' next mode (board #5420).
+    CycleEdges,
 }
 
 /// Frame-loop numbers from the last one-second window.
@@ -709,6 +717,8 @@ impl Hud {
             // The app keeps roam's why (chosen, no room) and sets
             // `controls.roam`.
             Some(Target::ToggleRoam) => actions.push(Action::SetRoam(!controls.roam.is_on())),
+            // The app applies the mode and sets `controls.edges`.
+            Some(Target::CycleEdges) => actions.push(Action::SetEdges(controls.edges.next())),
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
                 // A governed density steps from the value it shows.
@@ -1298,7 +1308,11 @@ fn panel_ui(
     if controls.edit_room {
         block.extend(surface_rows(view.surface_params));
     }
-    block.push(cloud_row(controls.cloud, controls.edit_room));
+    block.push(cloud_row(
+        controls.cloud,
+        controls.edit_room,
+        controls.edges,
+    ));
     block.push(music_row(controls.music, view.track, controls.voice));
     let bottom = grid::PANEL_H;
     rows.block(ui, bottom, &block);
@@ -1319,7 +1333,7 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Ro
     if editing {
         block.extend(surface_rows(view.surface_params));
     }
-    block.push(cloud_row(controls.cloud, editing));
+    block.push(cloud_row(controls.cloud, editing, controls.edges));
     block.push(music_row(controls.music, view.track, controls.voice));
     debug_assert_eq!(block.len(), grid::menu_rows(editing));
     rows.block(ui, grid::menu_h(block.len()), &block);
@@ -1443,9 +1457,10 @@ fn agent_row(
 }
 
 /// The cloud's row, over the music's in both layouts: its toggle, and
-/// every surface to none (step 2c). The state is in the words, not a
-/// color.
-fn cloud_row(on: bool, editing: bool) -> Control<'static> {
+/// every surface to none (step 2c) sharing a cell with the edge bars'
+/// mode (board #5420), a half each, as Recenter and Rescan share theirs.
+/// The state is in the words, not a color.
+fn cloud_row(on: bool, editing: bool, edges: crate::edge_bars::Mode) -> Control<'static> {
     Control::Pair([
         Some(Cell::Button(
             Target::ToggleCloud,
@@ -1462,7 +1477,10 @@ fn cloud_row(on: bool, editing: bool) -> Control<'static> {
         )),
         // Every surface to none in one press, for telling what a single
         // assignment does afterwards (board #3326).
-        Some(Cell::Button(Target::AllNone, "All: none")),
+        Some(Cell::Halves([
+            (Target::AllNone, "All: none"),
+            (Target::CycleEdges, edges.label()),
+        ])),
     ])
 }
 
