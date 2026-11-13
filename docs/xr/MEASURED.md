@@ -3368,3 +3368,25 @@ voice changed nothing on the release surface. On the developer surface it
 turned the pitcher on and logged the transcript at debug level. The launch
 line reads "Loading your room" on both surfaces. The fatal label was not
 forced on the device.
+
+## The release APK on the headset (board #3820)
+
+Nov 13, Quest 3 v209, xr-next c2b7c82 built with `run.sh release` and signed
+with the release key. `verify-release`: v1 and v2 signed, 4-byte aligned, not
+debuggable, arm64-v8a only, versionCode 2, 0.1.0. It was installed in place of
+the debug build after an uninstall, with the runtime permissions granted over
+adb, then launched unworn on the desk for 50 s, seated, with no debug knobs set.
+
+- Launch line `build: release APK · release surface`. The debug panel was off
+  and nothing was written under `debug/`.
+- The scene query returned 0 anchors twice, then 23 anchors at +6 s (the
+  usual unworn alternation). It played the first of 7 tracks in `Music/`, and
+  the speech model and the 17M voice model loaded (345 ms and 712 ms).
+- 72.0 frames/s once running, app CPU 2.1 to 2.6 ms per frame, VrApi App
+  8.55 to 9.59 ms over the last 12 lines, 3 to 7 stale per line. No crash,
+  no fatal line.
+- A fresh install has no saved theme, so it starts on Classic with Immersion
+  full, not Aurora.
+
+The debug build and the owner's config were restored afterward; the restored
+config is byte-identical to the backup.
