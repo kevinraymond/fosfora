@@ -79,8 +79,8 @@
 //! overlap on one face, so a pixel is shaded about once.
 //!
 //! **Knobs**, read at launch and polled once a second
-//! ([`EdgeBarsOptions::from_knobs`]): `debug.fosfora.edgebars 0|1|2` (off,
-//! the default until it is worn; inward; standing), `edgebarsgain` (0 to
+//! ([`EdgeBarsOptions::from_knobs`]): `debug.fosfora.edgebars 0|1|2` (off;
+//! inward, the default; standing), `edgebarsgain` (0 to
 //! [`GAIN_MAX`], default 1) and `edgebarsheight` (the fraction, 0 to
 //! [`HEIGHT_FRACTION_MAX`], default [`HEIGHT_FRACTION`]). Off, the frame is
 //! what it was: no strips, no buffer write, no draw.
@@ -164,10 +164,10 @@ const _: () = assert!(
 /// `debug.fosfora.edgebars`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
-    /// 0 or unset: no edge bars.
-    #[default]
+    /// 0: no edge bars.
     Off,
-    /// 1: bars on each face, growing inward from its edges.
+    /// 1 or unset: bars on each face, growing inward from its edges.
+    #[default]
     Inward,
     /// 2: bars standing off each edge along the face's normal.
     Standing,
@@ -226,7 +226,7 @@ pub struct EdgeBarsOptions {
 impl Default for EdgeBarsOptions {
     fn default() -> Self {
         Self {
-            mode: Mode::Off,
+            mode: Mode::Inward,
             gain: 1.0,
             height: HEIGHT_FRACTION,
         }
@@ -246,6 +246,7 @@ impl EdgeBarsOptions {
         };
         Self {
             mode: match prop(KNOB).as_deref().map(str::trim) {
+                Some("0") => Mode::Off,
                 Some("1") => Mode::Inward,
                 Some("2") => Mode::Standing,
                 _ => d.mode,
@@ -1408,12 +1409,12 @@ mod tests {
     }
 
     #[test]
-    fn the_knobs_read_off_by_default_and_log_their_state() {
+    fn the_knobs_read_on_the_face_by_default_and_log_their_state() {
         let none = |_: &str| None::<String>;
         let d = EdgeBarsOptions::from_knobs(none);
         assert_eq!(d, EdgeBarsOptions::default());
-        assert_eq!(d.mode, Mode::Off);
-        assert_eq!(d.mode.growth(), None);
+        assert_eq!(d.mode, Mode::Inward);
+        assert_eq!(d.mode.growth(), Some(Growth::Inward));
         let set = |pairs: &'static [(&'static str, &'static str)]| {
             move |name: &str| {
                 pairs
@@ -1442,18 +1443,19 @@ mod tests {
             (KNOB_HEIGHT, "NaN"),
         ]));
         assert_eq!(o, EdgeBarsOptions::default());
+        // 0 turns them off.
+        let off = EdgeBarsOptions::from_knobs(set(&[(KNOB, "0")]));
+        assert_eq!(off.mode, Mode::Off);
+        assert_eq!(off.mode.growth(), None);
         // The log lines.
-        let on = EdgeBarsOptions {
-            mode: Mode::Inward,
-            ..d
-        };
-        assert!(d.line(true).starts_with("edge bars: off · gain 1"));
+        let on = d;
+        assert!(off.line(true).starts_with("edge bars: off · gain 1"));
         assert!(on.line(true).contains("growing in from its edges"));
         assert!(on.line(false).contains("debug.fosfora.occluders 0"));
-        assert!(!d.line(false).contains("occluders"));
+        assert!(!off.line(false).contains("occluders"));
         assert!(
-            on.change_line(&d, true)
-                .ends_with(&format!("(was: {})", d.describe()))
+            on.change_line(&off, true)
+                .ends_with(&format!("(was: {})", off.describe()))
         );
         assert_eq!(
             drawn_line(Drawn::default(), true),

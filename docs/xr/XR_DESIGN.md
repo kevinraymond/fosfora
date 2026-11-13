@@ -551,8 +551,8 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     does not sharpen an edge no box explains.
 - **Edge bars (board #5420, `edge_bars.rs`).** Bars rise and fall along
   the edges of each plane and box, so the room's outline is drawn as the
-  spectrum. It is off until it has been worn (`debug.fosfora.edgebars 1`
-  turns it on).
+  spectrum. It is on by default (`debug.fosfora.edgebars 0` turns it
+  off).
   - **What is drawn where.** The shapes are the boxes drawn as occluders
     this frame: the scanned boxes, and the live planes and closed boxes
     while they are shown, at their fade. Hidden walls and the stage floor
@@ -607,7 +607,7 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     and 24 % of a 4 x 4 x 2.5 m room's walls, floor and ceiling. The
     fragment has no loop: a merged bar's mean comes from two running sums.
   - **Knobs**, read at launch and polled once a second: `edgebars 0|1|2`
-    (default 0), `edgebarsgain` (0 to 4, default 1) and `edgebarsheight`
+    (default 1), `edgebarsgain` (0 to 4, default 1) and `edgebarsheight`
     (0 to 0.5, default 0.12). The `edge bars:` log lines give the state at
     launch, each change, and what is outlined.
   - **What it does not do.** It is a layer over every shape, not a lane

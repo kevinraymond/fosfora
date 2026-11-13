@@ -433,7 +433,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       occludes, still writing depth, geometry first on or off, for an unworn screencap; live)
     //   adb shell setprop debug.fosfora.edgebars 0|1|2           (board #5420, edge_bars.rs: the room's outline drawn as the spectrum, bars along the edges of
     //       every plane and box drawn as an occluder (hidden walls and the stage floor left out), in the surface's color, while music
-    //       plays; 1 the bars lie on each face and grow in from its edges, 2 they stand off each edge along the face's normal; default 0;
+    //       plays; 1 the bars lie on each face and grow in from its edges, 2 they stand off each edge along the face's normal, 0 off; default 1;
     //       live: polled once a second)
     //   adb shell setprop debug.fosfora.edgebarsgain 1           (edge bars: brightness multiplier, 0..4; 1 = peak alpha 0.25 with the room plain, 0.7 at full
     //       immersion; live)
