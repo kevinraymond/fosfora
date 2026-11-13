@@ -1638,6 +1638,7 @@ mod tests {
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Tessera));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Prism));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Astrolabe));
+        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Aurora));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::None));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Rings));
         assert_eq!(lanes.effective(3, &boxes), Some((B::Rings, 0.4)));
@@ -1803,9 +1804,9 @@ mod tests {
         assert!(lanes.poll_knob(Some("#5=embers"), false, &boxes));
         assert_eq!(lanes.cycle(5, &boxes), Ok(B::Rings));
         // The floor: the rings by default (step 2d), then the
-        // streamlines, the curls, sparks, its three ported effects, none,
-        // the rings.
-        let floor: Vec<_> = (0..8).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
+        // streamlines, the curls, sparks, its four ported effects (aurora
+        // the sky's reflection, board #5436), none, the rings.
+        let floor: Vec<_> = (0..9).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
         assert_eq!(
             floor,
             [
@@ -1815,6 +1816,7 @@ mod tests {
                 B::Tessera,
                 B::Prism,
                 B::Astrolabe,
+                B::Aurora,
                 B::None,
                 B::Rings
             ]
@@ -1949,12 +1951,13 @@ mod tests {
 
     /// Hand assignments of every sort on `themed_room()`: a behavior by
     /// index, a kind with a color, the panel's color and strength, a
-    /// cycle.
+    /// cycle. The floor's color is amber, which no theme gives a floor
+    /// (Aurora's is the key's since board #5436), so it always changes.
     fn hand_assign(lanes: &mut RoomLanes, boxes: &[LaneBox<'_>]) {
         // Unset first, so the same value applies again.
         assert!(!lanes.poll_knob(None, false, boxes));
         assert!(lanes.poll_knob(Some("#0=sparks@0.4,wall=pulse:3:2,#5=none"), false, boxes));
-        assert!(lanes.set_params(3, boxes, color(8)));
+        assert!(lanes.set_params(3, boxes, color(4)));
         assert!(lanes.set_params(4, boxes, strength(0.2)));
         assert!(lanes.cycle(6, boxes).is_ok());
     }

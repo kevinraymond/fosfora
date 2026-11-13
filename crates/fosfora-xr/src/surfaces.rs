@@ -222,8 +222,11 @@ impl SurfaceBehavior {
     /// entries: a table adds shards and prism; a floor tessera, prism and
     /// astrolabe; a wall aurora, fenestra and bezel; a ceiling aurora and
     /// astrolabe; a frame bezel, reticle and fenestra; other and unlabeled
-    /// shards, reticle and tessera. Aurora's curtains are stacked bands
-    /// that want an upright or overhead expanse; prism turns about its
+    /// shards, reticle and tessera. Since board #5436 a floor also takes
+    /// aurora, last: there it is the sky's reflection (`sky.rs`), so aurora
+    /// is on three lists and the floor's has nine. Aurora's curtains are
+    /// stacked bands that want an upright or overhead expanse; prism turns
+    /// about its
     /// center and reads the same from every side of a level face; shards'
     /// cells fill a face of any size with no up; astrolabe is one dial
     /// that needs room around the center; bezel is chrome along the
@@ -256,6 +259,7 @@ impl SurfaceBehavior {
                 Self::Tessera,
                 Self::Prism,
                 Self::Astrolabe,
+                Self::Aurora,
             ],
             KIND_WALL => &[
                 Self::None,
@@ -1582,6 +1586,7 @@ mod tests {
                     B::Tessera,
                     B::Prism,
                     B::Astrolabe,
+                    B::Aurora,
                 ],
             ),
             (
@@ -1643,7 +1648,7 @@ mod tests {
         assert_eq!(B::Pulse.next_for(KIND_FRAME), B::Rings);
         assert_eq!(B::Curls.next_for(KIND_OTHER), B::Streamlines);
         let mut floor = vec![B::default_for(KIND_FLOOR)];
-        for _ in 0..8 {
+        for _ in 0..9 {
             floor.push(floor.last().unwrap().next_for(KIND_FLOOR));
         }
         assert_eq!(
@@ -1656,6 +1661,7 @@ mod tests {
                 B::Tessera,
                 B::Prism,
                 B::Astrolabe,
+                B::Aurora,
                 B::None,
                 B::Rings
             ]
@@ -1663,7 +1669,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ports_sit_on_at_most_two_lists_and_no_list_passes_eight() {
+    fn the_ports_sit_on_at_most_two_lists_and_no_list_passes_eight_but_the_floors_sky() {
         use SurfaceBehavior as B;
         // Other and unlabeled share one list, so it counts once.
         assert_eq!(B::catalogue(KIND_OTHER), B::catalogue(KIND_NONE));
@@ -1676,8 +1682,25 @@ mod tests {
             KIND_OTHER,
         ]
         .map(B::catalogue);
-        for list in lists {
-            assert!(list.len() <= 8, "{list:?}");
+        for (kind, list) in [
+            KIND_TABLE,
+            KIND_FLOOR,
+            KIND_WALL,
+            KIND_CEILING,
+            KIND_FRAME,
+            KIND_OTHER,
+        ]
+        .into_iter()
+        .zip(lists)
+        {
+            // The floor's ninth is aurora, the sky's reflection (board
+            // #5436), last.
+            if kind == KIND_FLOOR {
+                assert_eq!(list.len(), 9);
+                assert_eq!(list.last(), Some(&B::Aurora));
+            } else {
+                assert!(list.len() <= 8, "{list:?}");
+            }
             // The kind's own behaviors first, in their D2a order, then
             // the ports.
             let first_port = list.iter().position(|b| b.port().is_some());
@@ -1687,7 +1710,9 @@ mod tests {
         }
         for b in B::ALL.into_iter().filter(|b| b.port().is_some()) {
             let n = lists.iter().filter(|l| l.contains(&b)).count();
-            assert!((1..=2).contains(&n), "{b:?} is on {n} lists");
+            // Aurora on walls, ceilings and, as their reflection, floors.
+            let most = if b == B::Aurora { 3 } else { 2 };
+            assert!((1..=most).contains(&n), "{b:?} is on {n} lists");
         }
     }
 
