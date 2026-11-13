@@ -3301,3 +3301,9 @@ of the headset and a thing at the left edge of the view are black cutouts
 in the sky. With it on they are shapes with teal bands on their sides and
 the key's tint on their tops, dark toward their silhouettes. The ceiling
 fan, past the 3 m fade, stays a black cutout. Not yet worn.
+
+After the joins were made watertight and the far layer moved to 12 m (the
+same setup, the depth light on, the headset facing the floor and one wall):
+two layers 8.59 / 8.68 / 8.74 ms, 72 Hz. The wall to ceiling join was not in
+that view, so the fix is checked only by the desktop render at the eye
+buffer's size; the wall to floor line in the capture is clean.
