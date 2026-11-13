@@ -18,7 +18,7 @@
 use std::f32::consts::FRAC_PI_2;
 
 use fosfora_xr::math::{self, Fov};
-use fosfora_xr::sky::{self, Layers, Map, RESOLUTION, Room, Sky};
+use fosfora_xr::sky::{self, Edges, Layers, Map, RESOLUTION, Room, Sky};
 use fosfora_xr::surface_fx::LIFT_M;
 use fosfora_xr::surface_port::{self, FIRST_ID, UNIFORM_ROWS, WRAPPER_WGSL, port_face};
 use fosfora_xr::surfaces::{
@@ -97,6 +97,15 @@ fn probe_source(sky: &str) -> String {
 /// what it drew, bit for bit.
 const BEFORE_LAYERS: &str = include_str!("sky_before_layers.wgsl");
 
+/// The eye camera as the ports read it (`surface_port::EYE_BYTES`): the
+/// camera, then the size in pixels of the target drawn into.
+fn eye_block(view_proj: Mat4, (w, h): (u32, u32)) -> Vec<u8> {
+    let mut block = [0.0f32; surface_port::EYE_BYTES / 4];
+    block[..16].copy_from_slice(&view_proj.to_cols_array());
+    block[16..18].copy_from_slice(&[w as f32, h as f32]);
+    bytemuck::cast_slice(&block).to_vec()
+}
+
 /// The probe's uniform: its resolution.
 fn probe_uniform(res: [f32; 2]) -> Vec<u8> {
     bytemuck::cast_slice(&res).to_vec()
@@ -145,11 +154,7 @@ fn render(
         cache: None,
     });
     let u = uniform(device, queue, u);
-    let eye = uniform(
-        device,
-        queue,
-        bytemuck::cast_slice(&view_proj.to_cols_array()),
-    );
+    let eye = uniform(device, queue, &eye_block(view_proj, (W, H)));
     let port = uniform(device, queue, bytemuck::cast_slice(rows));
     let group0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("sky-effect"),
@@ -427,9 +432,9 @@ fn the_sky_shader_matches_its_rust_copy() {
         .map(face_of)
         .collect();
     let joined = sky::join(&faces);
-    let rows_of = |face: &Face, map: Map, fade: [bool; 4], sky: &Sky| {
+    let rows_of = |face: &Face, map: Map, edges: Edges, sky: &Sky| {
         let base = surface_port::rows(face, 0.9, true, FIRST_ID, [1.0; 3]);
-        sky::rows(base, map, sky, fade)
+        sky::rows(base, map, sky, edges)
     };
     let ahead = Vec3::new(sky.facing.x, 0.0, sky.facing.y);
     let sky_face = |dir: Vec3| {
@@ -454,8 +459,8 @@ fn the_sky_shader_matches_its_rust_copy() {
         ]
         .into_iter()
         .map(|(dir, target)| {
-            let (face, fade) = sky_face(dir);
-            let rows = rows_of(&face, Map::Sky, fade, &sky);
+            let (face, edges) = sky_face(dir);
+            let rows = rows_of(&face, Map::Sky, edges, &sky);
             compare(&device, &queue, &face, &rows, eye, target)
         })
         .collect();
@@ -488,7 +493,7 @@ fn the_sky_shader_matches_its_rust_copy() {
         },
         ..sky
     };
-    let rows = rows_of(&floor, Map::Reflection, [true; 4], &three);
+    let rows = rows_of(&floor, Map::Reflection, Edges::OPEN, &three);
     let views: Vec<Tally> = [eye + ahead * 2.0 - Vec3::Y, eye - ahead * 1.5 - Vec3::Y]
         .into_iter()
         .map(|target| compare(&device, &queue, &floor, &rows, eye, target))
@@ -613,10 +618,12 @@ fn one_layer_draws_what_the_sky_drew_before_the_layers_bit_for_bit() {
         (-ahead, eye - ahead * 2.0 + Vec3::Y * 0.4),
         (Vec3::Y, eye + Vec3::Y * 2.0 - ahead * 0.3),
     ] {
-        let (face, fade) = sky_face(dir);
+        // The joined quads without their cuts (the shader before the
+        // layers has none): the same pixels drawn the same way.
+        let (face, edges) = sky_face(dir);
         let base = surface_port::rows(&face, 0.9, false, FIRST_ID, [1.0; 3]);
         drawn.push((
-            sky::rows(base, Map::Sky, &sky, fade),
+            sky::rows(base, Map::Sky, &sky, edges.fade),
             RESOLUTION,
             0.3,
             target,
@@ -710,15 +717,15 @@ fn aurora_uniform(frame: u32, res: [f32; 2], glow: f32) -> Vec<u8> {
 }
 
 /// Every face of `faces` (its port block and its effect's uniform) drawn
-/// with Aurora's sky stages from `view_proj`, premultiplied over clear, at
-/// `size` square: the light, row 0 the top.
+/// with `source`'s sky stages from `view_proj`, premultiplied over clear,
+/// at `width` by `height`: the light, row 0 the top.
 fn render_room(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     source: &str,
     faces: &[([[f32; 4]; UNIFORM_ROWS], Vec<u8>)],
     view_proj: Mat4,
-    size: u32,
+    (width, height): (u32, u32),
 ) -> Vec<[f32; 4]> {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("aurora-sky"),
@@ -750,11 +757,7 @@ fn render_room(
         multiview: None,
         cache: None,
     });
-    let eye = uniform(
-        device,
-        queue,
-        bytemuck::cast_slice(&view_proj.to_cols_array()),
-    );
+    let eye = uniform(device, queue, &eye_block(view_proj, (width, height)));
     let groups: Vec<_> = faces
         .iter()
         .map(|(rows, u)| {
@@ -774,8 +777,8 @@ fn render_room(
         })
         .collect();
     let extent = wgpu::Extent3d {
-        width: size,
-        height: size,
+        width,
+        height,
         depth_or_array_layers: 1,
     };
     let color = device.create_texture(&wgpu::TextureDescriptor {
@@ -789,10 +792,10 @@ fn render_room(
         view_formats: &[],
     });
     let view = color.create_view(&wgpu::TextureViewDescriptor::default());
-    let row_bytes = (size * 8).next_multiple_of(256);
+    let row_bytes = (width * 8).next_multiple_of(256);
     let back = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("color-back"),
-        size: u64::from(row_bytes * size),
+        size: u64::from(row_bytes * height),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -832,7 +835,7 @@ fn render_room(
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(row_bytes),
-                rows_per_image: Some(size),
+                rows_per_image: Some(height),
             },
         },
         extent,
@@ -849,7 +852,7 @@ fn render_room(
     let bytes = back.slice(..).get_mapped_range().to_vec();
     bytes
         .chunks(row_bytes as usize)
-        .flat_map(|row| bytemuck::pod_collect_to_vec::<u8, u16>(&row[..(size * 8) as usize]))
+        .flat_map(|row| bytemuck::pod_collect_to_vec::<u8, u16>(&row[..(width * 8) as usize]))
         .collect::<Vec<u16>>()
         .chunks_exact(4)
         .map(|p| [p[0], p[1], p[2], p[3]].map(half_to_f32))
@@ -936,15 +939,15 @@ fn aurora_renders_as_one_sky_with_a_dark_zenith_and_a_fainter_floor() {
                 .iter()
                 .map(|&(kind, face)| {
                     let map = Map::of(on, fosfora_xr::surfaces::SurfaceBehavior::Aurora, kind);
-                    let (face, fade) = match map {
+                    let (face, edges) = match map {
                         Map::Sky => *joined_i.next().expect("a joined face"),
-                        _ => (face, [true; 4]),
+                        _ => (face, Edges::OPEN),
                     };
                     if map == Map::Face && kind != KIND_FLOOR {
                         joined_i.next();
                     }
                     let base = surface_port::rows(&face, 1.0, false, FIRST_ID, [1.0; 3]);
-                    let rows = sky::rows(base, map, &sky, fade);
+                    let rows = sky::rows(base, map, &sky, edges);
                     let (res, glow) = match map {
                         Map::Face => (surface_port::resolution(face.half), 0.3),
                         Map::Sky => (RESOLUTION, 0.3),
@@ -964,7 +967,7 @@ fn aurora_renders_as_one_sky_with_a_dark_zenith_and_a_fainter_floor() {
                 };
                 let view_proj =
                     math::view_projection(look.to_array(), eye.to_array(), fov, 0.05, 100.0);
-                let pixels = render_room(&device, &queue, &source, &drawn, view_proj, size);
+                let pixels = render_room(&device, &queue, &source, &drawn, view_proj, (size, size));
                 assert!(pixels.iter().all(|p| p.iter().all(|x| x.is_finite())));
                 // Premultiplied light over nothing: the alpha within 1.
                 assert!(pixels.iter().all(|p| p[3] <= 1.0 + 1e-3));
@@ -1038,6 +1041,197 @@ fn aurora_renders_as_one_sky_with_a_dark_zenith_and_a_fainter_floor() {
                 at(1, name)[0] < at(2, name)[0] && at(2, name)[0] < at(3, name)[0],
                 "{frame} {name}"
             );
+        }
+    }
+}
+
+/// The box room of [`room`] as a scan reports one: its ceiling tilted 0.4°
+/// and the wall ahead leaning 0.3° off plumb (the runtime's planes are
+/// never quite level, plumb or square).
+fn scanned_room() -> Vec<(u32, Vec3, Quat, Vec3)> {
+    let mut boxes = room();
+    let r = Quat::from_rotation_y(0.35);
+    boxes[5].2 = Quat::from_axis_angle(r * Vec3::Z, 0.4f32.to_radians()) * boxes[5].2;
+    boxes[3].2 = Quat::from_axis_angle(r * Vec3::X, 0.3f32.to_radians()) * boxes[3].2;
+    boxes
+}
+
+/// Where the lifted planes of `a` and `b` cross: the point of that line
+/// nearest `near`, and its direction.
+fn crossing(a: &Face, b: &Face, near: Vec3) -> (Vec3, Vec3) {
+    let along = a.normal.cross(b.normal).normalize();
+    let (pa, pb) = (a.center + a.normal * LIFT_M, b.center + b.normal * LIFT_M);
+    let m = glam::Mat3::from_cols(a.normal, b.normal, along).transpose();
+    let x = m.inverse() * Vec3::new(a.normal.dot(pa), b.normal.dot(pb), along.dot(near));
+    (x, along)
+}
+
+/// Along the line from `a` to `b` as `view_proj` sees it in `pixels` (`w`
+/// by `h`, row 0 the top): each pixel on the line and the one either side
+/// of it, against the two pixels 4 px from it either side across the line.
+/// The most any is darker than both and brighter than both, in alpha and
+/// in light (the sum of its color), and how many were checked.
+fn across_line(
+    pixels: &[[f32; 4]],
+    (w, h): (u32, u32),
+    view_proj: Mat4,
+    a: Vec3,
+    b: Vec3,
+) -> (f32, f32, usize) {
+    let to_px = |p: Vec3| {
+        let n = view_proj.project_point3(p);
+        Vec2::new((0.5 + 0.5 * n.x) * w as f32, (0.5 - 0.5 * n.y) * h as f32)
+    };
+    for p in [a, b] {
+        assert!((view_proj * p.extend(1.0)).w > 0.0, "the line is in front");
+    }
+    let (pa, pb) = (to_px(a), to_px(b));
+    let along = (pb - pa).normalize();
+    let across = along.perp();
+    let at = |q: Vec2| {
+        let (x, y) = (q.x.floor(), q.y.floor());
+        (x >= 8.0 && y >= 8.0 && x < (w - 8) as f32 && y < (h - 8) as f32)
+            .then(|| pixels[y as usize * w as usize + x as usize])
+    };
+    let steps = (pa.distance(pb) * 2.0) as usize;
+    let (mut darker, mut brighter, mut checked) = (f32::MIN, f32::MIN, 0);
+    for i in 0..=steps {
+        let s = pa + (pb - pa) * (i as f32 / steps as f32);
+        for o in [-1.0, 0.0, 1.0] {
+            let c = s + across * o;
+            let (Some(p), Some(m1), Some(m2)) = (at(c), at(c - across * 4.0), at(c + across * 4.0))
+            else {
+                continue;
+            };
+            let light = |q: [f32; 4]| q[0] + q[1] + q[2];
+            for f in [|q: [f32; 4]| q[3], light] {
+                darker = darker.max(f(m1).min(f(m2)) - f(p));
+                brighter = brighter.max(f(p) - f(m1).max(f(m2)));
+            }
+            checked += 1;
+        }
+    }
+    (darker, brighter, checked)
+}
+
+/// Where the sky's faces meet (board #5438), no pixel along the line is
+/// darker than both its neighbors across it (a crack between the two
+/// quads) or brighter than both (both drawn): the wall ahead under the
+/// ceiling and its corner with the wall to its right, in a box room and in
+/// one as a scan reports it, in one, two and three layers, at a Quest 3
+/// eye buffer's size (2064 by 2208, 24 px a degree at the center), over a
+/// flat effect and over the real Aurora.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn the_sky_faces_meet_without_a_dark_or_bright_line() {
+    let (device, queue) = gpu();
+    let size = (2064, 2208);
+    let tan = 0.95;
+    let fov = Fov {
+        left: -tan,
+        right: tan,
+        up: tan * size.1 as f32 / size.0 as f32,
+        down: -tan * size.1 as f32 / size.0 as f32,
+    };
+    let flat = format!(
+        "struct U {{ resolution: vec2<f32> }}\n@group(0) @binding(0) var<uniform> u: U;\n\
+         fn effect_main(frag_coord: vec4<f32>) -> vec4<f32> {{ return vec4<f32>(0.6, 0.5, 0.4, 1.0); }}\n\
+         {WRAPPER_WGSL}{}",
+        sky::SKY_WGSL
+    );
+    let aurora = aurora_source(sky::SKY_WGSL);
+    // The flat effect shows any line; Aurora's curtains bend across 8 px,
+    // so its tolerance is wider.
+    let sources = [("flat", &flat, 2e-3), ("aurora", &aurora, 0.03)];
+    for (room_name, boxes) in [("box", room()), ("scanned", scanned_room())] {
+        let sky = Sky::new(
+            Room::fit(boxes.iter().copied()).expect("walls"),
+            sky::facing(Quat::from_rotation_y(0.35)),
+        );
+        let eye = sky.point + Vec3::new(0.2, -0.05, 0.15);
+        let faces: Vec<Face> = boxes
+            .iter()
+            .filter(|b| b.0 != KIND_FLOOR)
+            .map(|b| port_face(acting_face(b.1, b.2, b.3, eye)))
+            .collect();
+        let joined = sky::join(&faces);
+        let ahead = Vec3::new(sky.facing.x, 0.0, sky.facing.y);
+        let right = Vec3::new(-sky.facing.y, 0.0, sky.facing.x);
+        let face = |out: Vec3| {
+            faces
+                .iter()
+                .find(|f| f.normal.dot(out) < -0.9)
+                .copied()
+                .expect("a face that way")
+        };
+        let (wall, ceiling, side) = (face(ahead), face(Vec3::Y), face(right));
+        // The two lines: under the ceiling, 40 cm clear of the corners;
+        // down the corner, from 0.6 m over the floor to 0.6 m under the
+        // ceiling.
+        let (p, d) = crossing(&wall, &ceiling, wall.center);
+        let reach = wall.half[0] - 0.4;
+        let (q, e) = crossing(&wall, &side, eye);
+        let e = e * e.y.signum();
+        let lines = [
+            ("under the ceiling", p - d * reach, p + d * reach),
+            (
+                "down the corner",
+                q - e * (q.y - 0.6),
+                q + e * (sky.room.ceiling_y - 0.6 - q.y),
+            ),
+        ];
+        for count in 1..=3 {
+            let sky = Sky {
+                layers: Layers { count, depth: 1.0 },
+                ..sky
+            };
+            for (source_name, source, tol) in &sources {
+                let drawn: Vec<_> = joined
+                    .iter()
+                    .map(|&(f, edges)| {
+                        let base = surface_port::rows(&f, 1.0, false, FIRST_ID, [1.0; 3]);
+                        let u = if *source_name == "flat" {
+                            probe_uniform(RESOLUTION)
+                        } else {
+                            aurora_uniform(150, RESOLUTION, 0.3)
+                        };
+                        (sky::rows(base, Map::Sky, &sky, edges), u)
+                    })
+                    .collect();
+                // At the line's middle, level (a line down the middle runs
+                // through a column of pixel centers, each a tie) and the
+                // head rolled 2.3°.
+                for ((line, a, b), roll) in lines.into_iter().flat_map(|l| [(l, 0.0), (l, 0.04)]) {
+                    let mid = 0.5 * (a + b);
+                    let look = Quat::from_rotation_arc(Vec3::NEG_Z, (mid - eye).normalize())
+                        * Quat::from_rotation_z(roll);
+                    let view_proj =
+                        math::view_projection(look.to_array(), eye.to_array(), fov, 0.05, 100.0);
+                    let pixels = render_room(&device, &queue, source, &drawn, view_proj, size);
+                    let (darker, brighter, checked) = across_line(&pixels, size, view_proj, a, b);
+                    if let Some(dir) = std::env::var_os("FOSFORA_SKY_DUMP") {
+                        let name = format!(
+                            "join_{room_name}_{count}_{source_name}_{}_{roll}.ppm",
+                            line.replace(' ', "-")
+                        );
+                        write_ppm(
+                            &std::path::PathBuf::from(dir).join(name),
+                            &pixels,
+                            size.0 as usize,
+                        );
+                    }
+                    eprintln!(
+                        "{room_name} room, {count} layers, {source_name}, {line}, roll {roll}: {checked} pixels, \
+                         darker than both by {darker:.4}, brighter by {brighter:.4}"
+                    );
+                    assert!(checked > 1000, "{room_name} {count} {source_name} {line}");
+                    assert!(
+                        darker < *tol && brighter < *tol,
+                        "{room_name} room, {count} layers, {source_name}, {line}, roll {roll}: \
+                         darker {darker}, brighter {brighter}"
+                    );
+                }
+            }
         }
     }
 }

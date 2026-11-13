@@ -135,6 +135,11 @@ pub struct Gfx {
     /// Per-eye depth attachment of the faces pass at the faces swapchain's
     /// size (`set_faces_extent`, board #3793); empty without a faces layer.
     faces_depth: Vec<wgpu::TextureView>,
+    /// Per eye, the eye's and the faces layer's sizes in pixels: the
+    /// ported effects read the one of the pass they draw in (board #5438,
+    /// `surface_port::EYE_BYTES`).
+    eye_extent: Vec<[u32; 2]>,
+    faces_extent: Vec<[u32; 2]>,
     pipeline: wgpu::RenderPipeline,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -540,6 +545,8 @@ impl Gfx {
             eyes,
             depth: Vec::new(),
             faces_depth: Vec::new(),
+            eye_extent: Vec::new(),
+            faces_extent: Vec::new(),
             pipeline,
             device,
             queue,
@@ -1061,6 +1068,7 @@ impl Gfx {
     pub fn set_eye_extent(&mut self, eye: usize, width: u32, height: u32) {
         let view = self.depth_view("xr-eye-depth", width, height);
         set_slot(&mut self.depth, eye, view);
+        set_slot(&mut self.eye_extent, eye, [width, height]);
     }
 
     /// Size the eye's faces-pass depth attachment to its faces swapchain
@@ -1070,6 +1078,7 @@ impl Gfx {
     pub fn set_faces_extent(&mut self, eye: usize, width: u32, height: u32) {
         let view = self.depth_view("xr-faces-depth", width, height);
         set_slot(&mut self.faces_depth, eye, view);
+        set_slot(&mut self.faces_extent, eye, [width, height]);
     }
 
     fn depth_view(&self, label: &str, width: u32, height: u32) -> wgpu::TextureView {
@@ -1291,11 +1300,22 @@ impl Gfx {
         env_depth: &EnvDepthPasses<'_>,
     ) -> Option<AtlasOutcome> {
         for (i, (eye, cam)) in self.eyes.iter().zip(cameras).enumerate() {
-            self.queue.write_buffer(
-                &eye.buffer,
-                0,
-                bytemuck::bytes_of(&cam.view_proj().to_cols_array()),
-            );
+            // Board #5438: after the camera, the size of the target the
+            // ported effects draw into this frame, the faces layer's when
+            // it has one (the test the eye loop below makes), else the
+            // eye's.
+            let in_faces = faces.and_then(|f| f.get(i)).is_some() && self.faces_depth.len() > i;
+            let extents = if in_faces {
+                &self.faces_extent
+            } else {
+                &self.eye_extent
+            };
+            let [w, h] = extents.get(i).copied().unwrap_or([1, 1]);
+            let mut block = [0.0f32; crate::surface_port::EYE_BYTES / 4];
+            block[..16].copy_from_slice(&cam.view_proj().to_cols_array());
+            block[16..18].copy_from_slice(&[w as f32, h as f32]);
+            self.queue
+                .write_buffer(&eye.buffer, 0, bytemuck::cast_slice(&block));
             if let Some(p) = particles {
                 p.set_eye(&self.queue, i, cam.view, cam.proj);
             }
@@ -1520,7 +1540,7 @@ fn strip_rows(b: &Beam, color: [f32; 4]) -> Option<[[f32; 4]; 5]> {
 }
 
 /// Put `view` at `slot` of `views`: replace it, or append it as the next.
-fn set_slot(views: &mut Vec<wgpu::TextureView>, slot: usize, view: wgpu::TextureView) {
+fn set_slot<T>(views: &mut Vec<T>, slot: usize, view: T) {
     if slot < views.len() {
         views[slot] = view;
     } else {
@@ -1738,7 +1758,7 @@ fn build_quad_pipeline(
         .map(|i| {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("xr-eye-view-proj"),
-                size: 64,
+                size: crate::surface_port::EYE_BYTES as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });

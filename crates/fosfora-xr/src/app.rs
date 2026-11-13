@@ -4239,8 +4239,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 // Board #5436: the sky's faces drop the rim fade on every
                 // edge another of them continues (a corner, a wall under
-                // the ceiling) and are cut back to meet there on one line
-                // (`sky::join`); every other face keeps its extent and the
+                // the ceiling); across a corner each runs past the other
+                // and its fragments keep their own side of the other's
+                // plane, so exactly one draws each pixel there (`sky::join`,
+                // board #5438); every other face keeps its extent and the
                 // fade all round. The sky and its reflection run at the
                 // sky's resolution, the reflection at its own params (a
                 // wider glow).
@@ -4257,9 +4259,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             .iter()
                             .map(|&(i, face, kind, behavior, strength, color, map)| {
                                 let effect = &effects[i];
-                                let (face, fade) = match map {
-                                    Map::Sky => joined.next().unwrap_or((face, [true; 4])),
-                                    _ => (face, [true; 4]),
+                                let (face, edges) = match map {
+                                    Map::Sky => joined
+                                        .next()
+                                        .unwrap_or((face, crate::sky::Edges::OPEN)),
+                                    _ => (face, crate::sky::Edges::OPEN),
                                 };
                                 let (resolution, params) = match map {
                                     Map::Face => (
@@ -4289,7 +4293,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                         params,
                                     ),
                                     rows: crate::immerse::lift_rows(
-                                        crate::sky::rows(rows, map, &sky, fade),
+                                        crate::sky::rows(rows, map, &sky, edges),
                                         immerse_level,
                                     ),
                                 }

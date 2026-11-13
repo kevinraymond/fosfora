@@ -49,12 +49,25 @@
 //! direction. One evaluation per fragment: across the seam the reflection
 //! fades out instead of cross-fading.
 //!
-//! **The rim** ([`join`]). The surfaces pass fades a face out over its
-//! last 5 cm. On the sky's faces the fade is dropped on every edge another
-//! of the sky's faces continues (two walls in a corner, a wall under the
-//! ceiling), so no dark line runs down a corner, and the quad is cut back
-//! to its neighbor's, so no bright line runs there either where the two
-//! would overlap; an edge with nothing beyond it keeps the fade.
+//! **The rim and the joins** ([`join`]). The surfaces pass fades a face
+//! out over its last 5 cm. On the sky's faces the fade is dropped on every
+//! edge another of the sky's faces continues (two walls in a corner, a
+//! wall under the ceiling), so no dark line runs down a corner. Where two
+//! faces meet across a corner, each runs [`OVERLAP_M`] past the other's
+//! drawn plane, so both quads cover every pixel near the join, and each
+//! fragment there keeps itself only if its own plane is the one the
+//! pixel's view ray meets first ([`keeps`]). Both faces decide that from
+//! the same numbers: the ray through the pixel's center (solved from the
+//! eye camera and the target's size, not from the fragment's
+//! interpolated position) and the same two planes, as the same floats in
+//! both faces' rows, taken in the same order. So the two answers are
+//! exact complements: no pixel is left to neither (a dark crack) or drawn
+//! by both (a bright one, the blend adds). Trimming the quads to meet on
+//! one line left both (board #5438): the trim moved each edge to where the
+//! neighbor's plane crosses its middle, and in a scanned room the planes
+//! are never quite level or plumb, so the two trimmed edges crossed there
+//! and parted toward their ends. An edge with nothing beyond it keeps its
+//! extent and the fade.
 //!
 //! **The layers** (board #5438, [`Layers`], [`far`]). The sky is drawn in
 //! up to three layers. The nearest is the sky above, on the surfaces. Each
@@ -158,12 +171,23 @@ pub const BANDS_FLOOR_RAD: [f32; 2] = [-0.44, -0.34];
 /// Where the sky sits in the port block: `mode.y` (the row of
 /// `surface_port::rows`' overlay flag) carries the [`Map`]; the four rows
 /// after that row are the sky's own: the rim per edge, the point (and the
-/// ceiling), the room in plan, the room's axis and the facing.
+/// ceiling), the room in plan, the room's axis and the facing; then the
+/// joins ([`Edges`]): the face's drawn plane, per edge the drawn plane of
+/// the face joined across it, and per edge from how far toward it the
+/// join decides.
 pub const MODE_ROW: usize = 7;
 pub const EDGES_ROW: usize = 8;
 pub const POINT_ROW: usize = 9;
 pub const ROOM_ROW: usize = 10;
 pub const AXES_ROW: usize = 11;
+pub const PLANE_ROW: usize = 12;
+pub const CUT_ROW: usize = 13;
+pub const CUT_FROM_ROW: usize = 17;
+/// How far a joined edge runs past the neighbor's drawn plane (m), at
+/// both its ends ([`join`]): the fragment decides the rest ([`keeps`]).
+pub const OVERLAP_M: f32 = 0.05;
+/// `cut_from` of an edge with no join: never reached.
+pub const NO_CUT: f32 = 1e9;
 
 /// How a ported face maps to its effect's frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -580,7 +604,7 @@ fn base_k(rows: &[[f32; 4]; UNIFORM_ROWS], uv: Vec2) -> f32 {
 /// `resolution` at face point `uv` (m), world point `world` (the lifted
 /// quad's), seen from `eye`: what `fs_sky` calls the effect with for the
 /// near layer. `None` where it does not call it for that layer (no light
-/// left).
+/// left, or cut away at a joined edge).
 pub fn sample(
     rows: &[[f32; 4]; UNIFORM_ROWS],
     resolution: [f32; 2],
@@ -598,6 +622,9 @@ pub fn sample(
             other: None,
             k,
         });
+    }
+    if !keeps(rows, uv, world, eye, world - eye) {
+        return None;
     }
     let point = Vec3::from_slice(&rows[POINT_ROW][..3]);
     let facing = Vec2::new(rows[AXES_ROW][2], rows[AXES_ROW][3]);
@@ -648,8 +675,9 @@ pub struct Far {
 
 /// The far layers of a sky fragment (mapped [`Map::Sky`]) with port block
 /// `rows`, as [`sample`] takes it: one for each layer past the near one
-/// that `rows` asks for (none per face, on the floor or with one layer),
-/// nearest first. The WGSL's `xr_sky_layer`.
+/// that `rows` asks for (none per face, on the floor, with one layer or
+/// where the fragment is cut away), nearest first. The WGSL's
+/// `xr_sky_layer`.
 pub fn far(
     rows: &[[f32; 4]; UNIFORM_ROWS],
     resolution: [f32; 2],
@@ -658,7 +686,7 @@ pub fn far(
     eye: Vec3,
 ) -> Vec<Far> {
     let mode = rows[MODE_ROW];
-    if !(0.5..1.5).contains(&mode[1]) {
+    if !(0.5..1.5).contains(&mode[1]) || !keeps(rows, uv, world, eye, world - eye) {
         return Vec::new();
     }
     let count = if mode[2] > 2.5 {
@@ -711,43 +739,143 @@ pub fn under(front: [f32; 4], back: [f32; 4]) -> [f32; 4] {
 }
 
 /// `rows` (`surface_port::rows`) for a face mapped by `map` under `sky`,
-/// its rim fading on the edges `fade` marks (-u, +u, -v, +v). A face
-/// mapped per face keeps the rows as they are (every edge fading). The
-/// sky's faces carry its layers (`mode.z` the count, `mode.w` the depth
-/// multiplier); the reflection is one layer and leaves them 0.
+/// its `edges` as [`join`] gives them (or the rim per edge, -u, +u, -v,
+/// +v, true fading). A face mapped per face keeps the rows as they are
+/// (every edge fading). The sky's faces carry its layers (`mode.z` the
+/// count, `mode.w` the depth multiplier) and their cuts; the reflection is
+/// one layer, never cut, and leaves them 0.
 pub fn rows(
     mut rows: [[f32; 4]; UNIFORM_ROWS],
     map: Map,
     sky: &Sky,
-    fade: [bool; 4],
+    edges: impl Into<Edges>,
 ) -> [[f32; 4]; UNIFORM_ROWS] {
     if map == Map::Face {
         return rows;
     }
+    let edges = edges.into();
     let (p, room) = (sky.point, sky.room);
     rows[MODE_ROW][1] = map.code();
     if map == Map::Sky {
         let count = sky.layers.count.clamp(1, LAYERS_MAX);
         rows[MODE_ROW][2] = count as f32;
         rows[MODE_ROW][3] = sky.layers.depth;
+        rows[PLANE_ROW] = edges.plane;
+        for (e, cut) in edges.cut.into_iter().enumerate() {
+            rows[CUT_ROW + e] = cut.unwrap_or([0.0; 4]);
+        }
+        rows[CUT_FROM_ROW] = edges.cut_from;
+    } else {
+        rows[CUT_FROM_ROW] = [NO_CUT; 4];
     }
-    rows[EDGES_ROW] = fade.map(|f| f32::from(u8::from(f)));
+    rows[EDGES_ROW] = edges.fade.map(|f| f32::from(u8::from(f)));
     rows[POINT_ROW] = [p.x, p.y, p.z, room.ceiling_y];
     rows[ROOM_ROW] = [room.center.x, room.center.y, room.half.x, room.half.y];
     rows[AXES_ROW] = [room.axis.x, room.axis.y, sky.facing.x, sky.facing.y];
     rows
 }
 
+/// How a sky face's edges end, per edge (-u, +u, -v, +v) ([`join`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Edges {
+    /// Where the rim fades: no sky face continues the edge.
+    pub fade: [bool; 4],
+    /// The face's drawn plane, `[n.x, n.y, n.z, k]` with `n . p = k` on
+    /// it: the same floats as its neighbors carry for it.
+    pub plane: [f32; 4],
+    /// For an edge joined to a face across a corner, that face's drawn
+    /// plane, as its own `plane`.
+    pub cut: [Option<[f32; 4]>; 4],
+    /// From how far toward each joined edge (m, the face's u or v from its
+    /// center) the join decides, so a neighbor's plane cuts nothing far
+    /// from the edge it joins; [`NO_CUT`] on the others.
+    pub cut_from: [f32; 4],
+}
+
+impl Edges {
+    /// Every edge fading, no join: a face nothing continues.
+    pub const OPEN: Self = Self {
+        fade: [true; 4],
+        plane: [0.0; 4],
+        cut: [None; 4],
+        cut_from: [NO_CUT; 4],
+    };
+}
+
+impl From<[bool; 4]> for Edges {
+    /// The rim per edge, no join.
+    fn from(fade: [bool; 4]) -> Self {
+        Self { fade, ..Self::OPEN }
+    }
+}
+
+/// Whether plane `p` comes before plane `q`: the order both faces at a
+/// join take their two planes in. The WGSL's `xr_before`.
+fn before(p: [f32; 4], q: [f32; 4]) -> bool {
+    for (a, b) in p.iter().zip(&q) {
+        match a.partial_cmp(b) {
+            Some(std::cmp::Ordering::Less) => return true,
+            Some(std::cmp::Ordering::Greater) => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Along the ray from `eye` along `d`, how far (in lengths of `d`) to the
+/// plane `p` (`n . x = k`).
+fn plane_t(p: [f32; 4], eye: Vec3, d: Vec3) -> f32 {
+    let n = Vec3::new(p[0], p[1], p[2]);
+    (p[3] - n.dot(eye)) / n.dot(d)
+}
+
+/// Whether the face with port block `rows` keeps its fragment at face
+/// point `uv` (m), seen from `eye` along the view ray `d` (either way
+/// along it; `world` is the fragment's point, which orients it). At each
+/// joined edge ([`Edges`]), from its `cut_from` on, the face keeps the
+/// fragment only if the ray meets its own drawn plane before the
+/// neighbor's, ahead of the eye: of the two faces' quads, which both cover
+/// the pixel there, exactly one keeps it. Both compute the same two
+/// distances from the same inputs (the planes in [`before`]'s order), so
+/// a tie goes the same way for both. The WGSL's `xr_keeps`, which takes
+/// `d` through the pixel's center.
+pub fn keeps(rows: &[[f32; 4]; UNIFORM_ROWS], uv: Vec2, world: Vec3, eye: Vec3, d: Vec3) -> bool {
+    let d = d * d.dot(world - eye).signum();
+    let own = rows[PLANE_ROW];
+    let toward = [-uv.x, uv.x, -uv.y, uv.y];
+    (0..4).all(|e| {
+        let q = rows[CUT_ROW + e];
+        if toward[e] < rows[CUT_FROM_ROW][e] || q[..3].iter().all(|&x| x == 0.0) {
+            return true;
+        }
+        let own_first = before(own, q);
+        let (p1, p2) = if own_first { (own, q) } else { (q, own) };
+        let (t1, t2) = (plane_t(p1, eye, d), plane_t(p2, eye, d));
+        let first_wins = t1 > 0.0 && !(t2 > 0.0 && t2 < t1);
+        own_first == first_wins
+    })
+}
+
 /// `faces` (as drawn, `surface_port::port_face`) joined as one sky. An edge
 /// another of them continues (its middle within [`NEIGHBOR_M`] of another
 /// face: two walls in a corner, a wall's top under the ceiling) runs to
-/// that neighbor without the rim fade, cut back to the neighbor's drawn
-/// plane: the quads are lifted [`LIFT_M`] off their faces and run on into
-/// each other's slabs, so uncut, two would draw the same sky twice along
-/// the corner, a bright line. Every other edge keeps the face's extent and
-/// the fade. Each face as drawn, with its rim per edge (-u, +u, -v, +v;
-/// true fades).
-pub fn join(faces: &[Face]) -> Vec<(Face, [bool; 4])> {
+/// that neighbor without the rim fade. Across a corner it runs on
+/// [`OVERLAP_M`] past the neighbor's drawn plane at both its ends, however
+/// the two planes lean, and carries that plane ([`Edges::cut`]); the
+/// fragment decides which of the two keeps each pixel ([`keeps`]). A
+/// neighbor beside it in the same plane is joined without that. Every
+/// other edge keeps the face's extent and the fade. Each face as drawn,
+/// with its edges.
+pub fn join(faces: &[Face]) -> Vec<(Face, Edges)> {
+    // Each face's drawn plane, once: what the face carries for itself and
+    // its neighbors for it are the same floats.
+    let planes: Vec<[f32; 4]> = faces
+        .iter()
+        .map(|f| {
+            let n = f.normal;
+            [n.x, n.y, n.z, n.dot(f.center + n * LIFT_M)]
+        })
+        .collect();
     faces
         .iter()
         .enumerate()
@@ -755,44 +883,69 @@ pub fn join(faces: &[Face]) -> Vec<(Face, [bool; 4])> {
             // The quad's reach from its center along each axis, minus and
             // plus.
             let mut reach = [[f.half[0]; 2], [f.half[1]; 2]];
-            let mut fade = [true; 4];
+            let mut edges = Edges {
+                plane: planes[i],
+                ..Edges::OPEN
+            };
+            // From where along each joined edge's axis the join decides,
+            // in the face's own frame before it moves.
+            let mut from = [None::<f32>; 4];
             let lifted = f.center + f.normal * LIFT_M;
-            for (e, faded) in fade.iter_mut().enumerate() {
+            for e in 0..4 {
                 let (axis, side) = (e / 2, e % 2);
-                let dir = if side == 1 {
-                    f.axes[axis]
-                } else {
-                    -f.axes[axis]
-                };
+                let sign = if side == 1 { 1.0 } else { -1.0 };
+                let dir = f.axes[axis] * sign;
                 let mid = f.center + dir * f.half[axis];
                 let neighbor = faces
                     .iter()
                     .enumerate()
                     .filter(|&(j, _)| j != i)
-                    .map(|(_, g)| (g, g.nearest(mid).distance(mid)))
+                    .map(|(j, g)| (j, g.nearest(mid).distance(mid)))
                     .filter(|&(_, d)| d <= NEIGHBOR_M)
                     .min_by(|a, b| a.1.total_cmp(&b.1));
-                let Some((g, _)) = neighbor else {
+                let Some((j, _)) = neighbor else {
                     continue;
                 };
-                *faded = false;
-                // Where the quad's axis meets the neighbor's drawn plane: a
-                // neighbor across the edge (a corner), not one beside it in
-                // the same plane.
+                edges.fade[e] = false;
+                // Only a neighbor across the edge (a corner) is joined
+                // through the fragment, not one beside it in the same
+                // plane.
+                let g = &faces[j];
                 let across = g.normal.dot(dir);
-                if across.abs() > 0.5 {
-                    let t = g.normal.dot(g.center + g.normal * LIFT_M - lifted) / across;
-                    if t > 0.0 && t < f.half[axis] + NEIGHBOR_M {
-                        reach[axis][side] = t;
-                    }
+                let k = g.normal.dot(g.center + g.normal * LIFT_M - lifted);
+                let t = k / across;
+                if across.abs() <= 0.5 || t <= 0.0 || t >= f.half[axis] + NEIGHBOR_M {
+                    continue;
                 }
+                // Where the neighbor's plane crosses this face, as a line
+                // a u + b v + c = 0 in its frame, and how far toward the
+                // edge it runs at either end of the edge (and a little
+                // past them, for the other axis' own reach): the line is
+                // straight, so its ends bound it.
+                let line = [g.normal.dot(f.axes[0]), g.normal.dot(f.axes[1]), -k];
+                let (along, other) = (line[axis], line[1 - axis]);
+                let ends = f.half[1 - axis] + NEIGHBOR_M + OVERLAP_M;
+                let at = |y: f32| -sign * (line[2] + other * y) / along;
+                let (lo, hi) = (at(-ends).min(at(ends)), at(-ends).max(at(ends)));
+                reach[axis][side] = hi + OVERLAP_M;
+                from[e] = Some(lo - OVERLAP_M);
+                edges.cut[e] = Some(planes[j]);
             }
             let mut out = *f;
+            let mut shift = [0.0; 2];
             for (axis, [minus, plus]) in reach.into_iter().enumerate() {
-                out.center += f.axes[axis] * 0.5 * (plus - minus);
+                shift[axis] = 0.5 * (plus - minus);
+                out.center += f.axes[axis] * shift[axis];
                 out.half[axis] = 0.5 * (plus + minus);
             }
-            (out, fade)
+            // From where, in the drawn face's frame.
+            for (e, from) in from.into_iter().enumerate() {
+                if let Some(from) = from {
+                    let sign = if e % 2 == 1 { 1.0 } else { -1.0 };
+                    edges.cut_from[e] = from - sign * shift[e / 2];
+                }
+            }
+            (out, edges)
         })
         .collect()
 }
@@ -866,8 +1019,8 @@ impl Logged {
 /// (0 per face as `fs_main` does, 1 the sky, 2 its reflection) and on the
 /// sky draws `xr_port.mode.z` layers. The Rust copies are [`angles`],
 /// [`frame`], [`seam_weight`], [`zenith_fade`], [`reflect`],
-/// [`box_exit`], [`rim`], [`sample`] (the near layer), [`far`] (the far
-/// ones), [`layer_light`] and [`under`].
+/// [`box_exit`], [`rim`], [`keeps`], [`sample`] (the near layer), [`far`]
+/// (the far ones), [`layer_light`] and [`under`].
 pub const SKY_WGSL: &str = r"
 const XR_PI: f32 = 3.14159265;
 const XR_TAU: f32 = 6.28318531;
@@ -942,6 +1095,59 @@ fn xr_rim(uv: vec2<f32>) -> f32 {
     );
     let r = vec2<f32>(1.0) + (s - vec2<f32>(1.0)) * fade;
     return r.x * r.y;
+}
+
+// Whether plane p comes before plane q: the order both faces at a join
+// take their two planes in.
+fn xr_before(p: vec4<f32>, q: vec4<f32>) -> bool {
+    if p.x != q.x {
+        return p.x < q.x;
+    }
+    if p.y != q.y {
+        return p.y < q.y;
+    }
+    if p.z != q.z {
+        return p.z < q.z;
+    }
+    return p.w < q.w;
+}
+
+// The view ray through the pixel's center (its direction, either way
+// along it): solved from the camera at the pixel's place on the target,
+// the same in every draw that covers the pixel.
+fn xr_pixel_ray(frag: vec2<f32>) -> vec3<f32> {
+    let ndc = vec2<f32>(frag.x / xr_eye.extent.x * 2.0 - 1.0, 1.0 - frag.y / xr_eye.extent.y * 2.0);
+    let m = xr_eye.view_proj;
+    let a = vec3<f32>(m[0].x, m[1].x, m[2].x);
+    let b = vec3<f32>(m[0].y, m[1].y, m[2].y);
+    let c = vec3<f32>(m[0].w, m[1].w, m[2].w);
+    return cross(a - ndc.x * c, b - ndc.y * c);
+}
+
+// Whether this face keeps its fragment at face point uv, the view ray
+// from the eye along d (pointing past the fragment): at each joined edge,
+// from its cut_from on, only if the ray meets this face's drawn plane
+// before the neighbor's, ahead of the eye. Both faces at a join compute
+// the same two distances from the same inputs, so exactly one keeps it.
+fn xr_keeps(uv: vec2<f32>, eye: vec3<f32>, d: vec3<f32>) -> bool {
+    let own = xr_port.plane;
+    var toward = array<f32, 4>(-uv.x, uv.x, -uv.y, uv.y);
+    for (var e = 0u; e < 4u; e++) {
+        let q = xr_port.cut[e];
+        if toward[e] < xr_port.cut_from[e] || all(q.xyz == vec3<f32>(0.0)) {
+            continue;
+        }
+        let own_first = xr_before(own, q);
+        let p1 = select(q, own, own_first);
+        let p2 = select(own, q, own_first);
+        let t1 = (p1.w - dot(p1.xyz, eye)) / dot(p1.xyz, d);
+        let t2 = (p2.w - dot(p2.xyz, eye)) / dot(p2.xyz, d);
+        let first_wins = t1 > 0.0 && !(t2 > 0.0 && t2 < t1);
+        if own_first != first_wins {
+            return false;
+        }
+    }
+    return true;
 }
 
 // The azimuth of d about the sky's point from the facing, positive to the
@@ -1023,6 +1229,12 @@ fn fs_sky(in: XrSkyOut) -> @location(0) vec4<f32> {
         let n = in.uv / xr_port.face.xy * 0.5 + 0.5;
         let c = effect_main(vec4<f32>(vec2<f32>(n.x, 1.0 - n.y) * u.resolution, 0.0, 1.0));
         return xr_light(c, k);
+    }
+    // Where a joined neighbor's plane is met first, it draws: nothing
+    // (sky.rs, join).
+    let ray = xr_pixel_ray(in.pos.xy);
+    if !xr_keeps(in.uv, in.eye, ray * sign(dot(ray, in.world - in.eye))) {
+        return vec4<f32>(0.0);
     }
     // The far layers start from the light before the near layer's fades.
     let k0 = k;
@@ -1537,14 +1749,14 @@ mod tests {
         let head = Vec3::new(0.2, 1.2, 0.1);
         let faces = sky_faces(&boxes, head);
         let joined = join(&faces);
-        for (f, (_, fade)) in faces.iter().zip(&joined) {
+        for (f, (_, edges)) in faces.iter().zip(&joined) {
             if f.normal.y.abs() > 0.9 {
                 // The ceiling: a wall along each edge.
-                assert_eq!(*fade, [false; 4], "{f:?}");
+                assert_eq!(edges.fade, [false; 4], "{f:?}");
             } else {
                 // A wall: its neighbors left and right, the ceiling over
                 // it, nothing under it (the floor is not the sky).
-                assert_eq!(*fade, [false, false, true, false], "{f:?}");
+                assert_eq!(edges.fade, [false, false, true, false], "{f:?}");
             }
         }
         // A hidden wall is not drawn: its two neighbors and the ceiling
@@ -1552,7 +1764,7 @@ mod tests {
         let gone = faces.iter().position(|f| f.normal.y.abs() < 0.9).unwrap();
         let mut open = faces.clone();
         let hidden = open.remove(gone);
-        let flags: Vec<[bool; 4]> = join(&open).into_iter().map(|(_, f)| f).collect();
+        let flags: Vec<[bool; 4]> = join(&open).into_iter().map(|(_, e)| e.fade).collect();
         let kept = flags.iter().flatten().filter(|f| **f).count();
         // Each wall's foot, the hidden wall's two neighbors on its side,
         // and the ceiling's edge over it.
@@ -1582,55 +1794,151 @@ mod tests {
         assert_close!(rim(right_edge, half, [0.0, 1.0, 0.0, 0.0]), 0.0);
     }
 
+    /// `boxes` (a [`box_room`]) as a scan reports them: the ceiling tilted
+    /// 0.4°, the far wall along the axis leaning 0.3° off plumb and the
+    /// first wall turned 0.5° off square.
+    fn scanned(mut boxes: Vec<(u32, Vec3, Quat, Vec3)>) -> Vec<(u32, Vec3, Quat, Vec3)> {
+        let tilt = |b: &mut (u32, Vec3, Quat, Vec3), axis: Vec3, deg: f32| {
+            b.2 = Quat::from_axis_angle(axis, deg.to_radians()) * b.2;
+        };
+        tilt(&mut boxes[5], Vec3::Z, 0.4);
+        tilt(&mut boxes[3], Vec3::X, 0.3);
+        tilt(&mut boxes[0], Vec3::Y, 0.5);
+        boxes
+    }
+
+    /// Where the view ray from `eye` through `target` meets `face`'s drawn
+    /// quad (lifted): its face point and its world point; `None` off the
+    /// quad or behind.
+    fn hit(face: &Face, eye: Vec3, target: Vec3) -> Option<(Vec2, Vec3)> {
+        let d = target - eye;
+        let p = face.center + face.normal * LIFT_M;
+        let t = face.normal.dot(p - eye) / face.normal.dot(d);
+        let uv = uv_of(face, eye + d * t);
+        (t > 0.0 && uv.x.abs() <= face.half[0] && uv.y.abs() <= face.half[1])
+            .then_some((uv, eye + d * t))
+    }
+
     #[test]
-    fn joined_faces_meet_on_one_line_and_draw_no_strip_twice() {
-        let boxes = box_room(Vec2::new(0.4, -0.3), 0.35, 4.6, 3.8, 2.45);
-        let head = Vec3::new(0.6, 1.2, 0.0);
-        let faces = sky_faces(&boxes, head);
-        let joined = join(&faces);
-        let plane = |f: &Face| (f.normal, f.center + f.normal * LIFT_M);
-        let corners = |f: &Face| f.corners(LIFT_M);
-        for (i, (f, fade)) in joined.iter().enumerate() {
-            let before = faces[i];
-            // Still in its plane, with its axes, no larger.
-            assert!(f.normal.abs_diff_eq(before.normal, 1e-6));
-            assert!((f.center - before.center).dot(before.normal).abs() < 1e-5);
-            assert!(f.half[0] <= before.half[0] + 1e-6 && f.half[1] <= before.half[1] + 1e-6);
-            // Each cut edge lies in its neighbor's drawn plane: both of its
-            // corners do, for some other face. An uncut edge stays on its
-            // line.
-            let c = corners(f);
-            let ends = [[c[0], c[3]], [c[1], c[2]], [c[0], c[1]], [c[3], c[2]]];
-            for e in 0..4 {
-                if fade[e] {
+    fn joined_faces_run_past_each_other_and_carry_the_neighbors_plane() {
+        for boxes in [
+            box_room(Vec2::new(0.4, -0.3), 0.35, 4.6, 3.8, 2.45),
+            scanned(box_room(Vec2::new(0.4, -0.3), 0.35, 4.6, 3.8, 2.45)),
+        ] {
+            let head = Vec3::new(0.6, 1.2, 0.0);
+            let faces = sky_faces(&boxes, head);
+            let joined = join(&faces);
+            let mut cuts = 0;
+            for (i, (f, edges)) in joined.iter().enumerate() {
+                let before = faces[i];
+                // Still in its plane, with its axes, and it carries that
+                // plane.
+                assert!(f.normal.abs_diff_eq(before.normal, 1e-6));
+                assert!(f.axes[0].abs_diff_eq(before.axes[0], 1e-6));
+                assert!((f.center - before.center).dot(before.normal).abs() < 1e-5);
+                let lifted = f.center + f.normal * LIFT_M;
+                let [x, y, z, k] = edges.plane;
+                assert!(Vec3::new(x, y, z).abs_diff_eq(f.normal, 1e-6));
+                assert!((f.normal.dot(lifted) - k).abs() < 1e-5);
+                let c = f.corners(LIFT_M);
+                let ends = [[c[0], c[3]], [c[1], c[2]], [c[0], c[1]], [c[3], c[2]]];
+                for e in 0..4 {
                     let (axis, sign) = (e / 2, if e % 2 == 1 { 1.0 } else { -1.0 });
+                    let Some(q) = edges.cut[e] else {
+                        // No join through the fragment: the edge stays
+                        // where it was.
+                        assert_close!(edges.cut_from[e], NO_CUT);
+                        for q in ends[e] {
+                            let along = (q - before.center).dot(before.axes[axis]);
+                            assert!((along - sign * before.half[axis]).abs() < 1e-5, "{i} {e}");
+                        }
+                        continue;
+                    };
+                    cuts += 1;
+                    assert!(!edges.fade[e]);
+                    // The neighbor's plane, as the very floats it carries
+                    // for itself.
+                    let neighbor = joined.iter().enumerate().find(|(j, (_, g))| {
+                        *j != i && g.plane.map(f32::to_bits) == q.map(f32::to_bits)
+                    });
+                    let Some((_, (g, _))) = neighbor else {
+                        panic!("face {i} edge {e}: no face carries its neighbor's plane");
+                    };
+                    // Both ends of the edge run at least OVERLAP_M past the
+                    // neighbor's plane (along the face, more off it), on its
+                    // far side from this face; not much more.
+                    let p = g.center + g.normal * LIFT_M;
+                    let inside = (lifted - p).dot(g.normal).signum();
                     for q in ends[e] {
-                        let along = (q - before.center).dot(before.axes[axis]);
-                        assert!(
-                            (along - sign * before.half[axis]).abs() < 1e-5,
-                            "{i} edge {e}"
-                        );
+                        let past = -(q - p).dot(g.normal) * inside;
+                        assert!(past >= OVERLAP_M * 0.5 - 1e-4, "{i} {e}: {past}");
+                        let along = (q - before.center).dot(before.axes[axis]) * sign;
+                        assert!(along < before.half[axis] + NEIGHBOR_M + 2.0 * OVERLAP_M);
                     }
-                    continue;
+                    // Where the neighbor's plane crosses this face, at
+                    // either end and the middle, the join decides.
+                    let other = 1 - axis;
+                    for s in [-1.0, 0.0, 1.0] {
+                        let base = lifted + f.axes[other] * s * f.half[other];
+                        let x = g.normal.dot(p - base) / g.normal.dot(f.axes[axis]);
+                        assert!(sign * x > edges.cut_from[e] + 0.5 * OVERLAP_M, "{i} {e}");
+                        assert!(sign * x < f.half[axis] - 0.5 * OVERLAP_M, "{i} {e}");
+                    }
                 }
-                let on_a_neighbor = joined.iter().enumerate().any(|(j, (g, _))| {
-                    let (n, p) = plane(g);
-                    j != i && ends[e].iter().all(|q| (*q - p).dot(n).abs() < 1e-4)
-                });
-                assert!(on_a_neighbor, "face {i} edge {e}: {:?}", ends[e]);
+            }
+            // Four corners and four wall-to-ceiling edges, both sides each.
+            assert_eq!(cuts, 16);
+        }
+    }
+
+    #[test]
+    fn along_every_join_exactly_one_face_keeps_each_view_ray() {
+        for boxes in [
+            box_room(Vec2::new(0.4, -0.3), 0.35, 4.6, 3.8, 2.45),
+            scanned(box_room(Vec2::new(0.4, -0.3), 0.35, 4.6, 3.8, 2.45)),
+            scanned(box_room(Vec2::new(-1.0, 2.0), -0.8, 6.17, 5.49, 2.67)),
+        ] {
+            let room = Room::fit(boxes.iter().copied()).unwrap();
+            let sky = Sky::new(room, Vec2::new(0.0, -1.0));
+            // Seated at the point, seated off it, standing, lying back.
+            let p = sky.point;
+            for eye in [
+                p,
+                p + Vec3::new(0.6, -0.05, -0.4),
+                p + Vec3::new(-0.3, 0.45, 0.5),
+                p + Vec3::new(0.2, -0.75, 0.9),
+            ] {
+                let faces = sky_faces(&boxes, eye);
+                let joined = join(&faces);
+                let rows: Vec<_> = joined
+                    .iter()
+                    .map(|(f, e)| sky_rows_edges(f, &sky, *e))
+                    .collect();
+                let drawn = |i: usize, target: Vec3| {
+                    hit(&joined[i].0, eye, target)
+                        .is_some_and(|(uv, w)| keeps(&rows[i], uv, w, eye, target - eye))
+                };
+                let mut rays = 0;
+                for &((i, qa), (j, qb)) in &across_edges(&faces, p) {
+                    // Along the line, rays through points near it on either
+                    // face: from a tenth of a millimeter to 4 cm off it.
+                    let q = 0.5 * (qa + qb);
+                    let (into_a, into_b) = ((qa - q).normalize(), (qb - q).normalize());
+                    for off in [1e-4, 1e-3, 1e-2, 4e-2] {
+                        for target in [q + into_a * off, q + into_b * off] {
+                            let others = (0..joined.len())
+                                .filter(|&k| k != i && k != j && drawn(k, target))
+                                .count();
+                            assert_eq!(others, 0, "a third face at {target}");
+                            let (a, b) = (drawn(i, target), drawn(j, target));
+                            assert!(a != b, "eye {eye}, {target} off {off}: {a} {b}");
+                            rays += 1;
+                        }
+                    }
+                }
+                assert!(rays >= 8 * 3 * 8, "{rays}");
             }
         }
-        // A wall's top was cut down by the ceiling's slab and lift (2 cm
-        // and 1 cm) and its sides in by its neighbors' (3 cm each).
-        let wall = joined
-            .iter()
-            .find(|(f, _)| f.normal.y.abs() < 0.5)
-            .unwrap()
-            .0;
-        let before = faces.iter().find(|f| f.normal.y.abs() < 0.5).unwrap();
-        let t = PLANE_HALF_THICKNESS_M;
-        assert!((before.half[0] - wall.half[0] - (t + LIFT_M)).abs() < 1e-4);
-        assert!((before.half[1] - wall.half[1] - 0.5 * (t + LIFT_M)).abs() < 1e-4);
     }
 
     #[test]
@@ -1786,8 +2094,30 @@ mod tests {
                 .unwrap_or_else(|| panic!("member {name}"))
         };
         assert_eq!(
-            [at("mode"), at("edges"), at("sky"), at("room"), at("axes")],
-            [MODE_ROW, EDGES_ROW, POINT_ROW, ROOM_ROW, AXES_ROW]
+            [
+                at("mode"),
+                at("edges"),
+                at("sky"),
+                at("room"),
+                at("axes"),
+                at("plane"),
+                at("cut"),
+                at("cut_from")
+            ],
+            [
+                MODE_ROW,
+                EDGES_ROW,
+                POINT_ROW,
+                ROOM_ROW,
+                AXES_ROW,
+                PLANE_ROW,
+                CUT_ROW,
+                CUT_FROM_ROW
+            ]
+        );
+        assert_eq!(
+            [CUT_ROW + 4, CUT_FROM_ROW + 1],
+            [CUT_FROM_ROW, UNIFORM_ROWS]
         );
         assert_eq!(
             [at("face"), at("params"), at("color")],
@@ -1839,8 +2169,13 @@ mod tests {
 
     /// The rows of `face` on the sky `sky`, every edge fading or none.
     fn sky_rows(face: &Face, sky: &Sky, fade: bool) -> [[f32; 4]; UNIFORM_ROWS] {
+        sky_rows_edges(face, sky, [fade; 4].into())
+    }
+
+    /// The rows of `face` on the sky `sky` with its `edges`.
+    fn sky_rows_edges(face: &Face, sky: &Sky, edges: Edges) -> [[f32; 4]; UNIFORM_ROWS] {
         let base = crate::surface_port::rows(face, 1.0, false, FIRST_ID, [1.0; 3]);
-        rows(base, Map::Sky, sky, [fade; 4])
+        rows(base, Map::Sky, sky, edges)
     }
 
     /// Where the ray from `eye` through `p` leaves `room`'s box grown by

@@ -152,8 +152,14 @@ pub const PX_PER_M: f32 = 512.0;
 pub const RES_MIN: f32 = 256.0;
 pub const RES_MAX: f32 = 2048.0;
 /// Rows of [`rows`], `struct XrPort` in [`WRAPPER_WGSL`]: the eight of
-/// D2b and the sky's four (`sky::EDGES_ROW` on).
-pub const UNIFORM_ROWS: usize = 12;
+/// D2b, the sky's four (`sky::EDGES_ROW` on) and its six for the joins
+/// between its faces (`sky::PLANE_ROW` on, board #5438).
+pub const UNIFORM_ROWS: usize = 18;
+/// Bytes of the eye camera the ports read, `struct XrEye`: its
+/// `view_proj`, then the size in pixels of the target the ports draw into
+/// (the faces layer's or the eye's), which the sky's joins solve each
+/// pixel's view ray with (`sky::keeps`, board #5438).
+pub const EYE_BYTES: usize = 80;
 /// A face steeper than this (|normal.y| under it) is a wall for
 /// [`port_face`]; anything flatter is level.
 pub const WALL_NORMAL_Y: f32 = 0.7;
@@ -213,7 +219,8 @@ pub fn port_face(face: Face) -> Face {
 /// pass lifts them); `face` (the half extents, the lift, the id); `params`
 /// (the strength); `color` (the tint, the peak alpha); `mode` (x 1 for an
 /// overlay, y 0: mapped per face); `edges` (the rim fades on every edge);
-/// the sky's rows zero (`sky::rows` fills them).
+/// the sky's rows and its joins zero (`sky::rows` fills them; a zero
+/// neighbor's plane is no join).
 pub fn rows(
     face: &Face,
     strength: f32,
@@ -292,7 +299,9 @@ pub fn edge_fade(uv: Vec2, half: [f32; 2]) -> f32 {
 /// shares). The names carry an `xr` prefix so they cannot meet one of the
 /// core's.
 pub const WRAPPER_WGSL: &str = r"
-struct XrEye { view_proj: mat4x4<f32> }
+// The eye camera: view_proj, and xy the size in pixels of the target the
+// ports draw into (sky.rs, the joins)
+struct XrEye { view_proj: mat4x4<f32>, extent: vec4<f32> }
 struct XrPort {
     // -a-b, +a-b, +a+b, -a+b around the face
     corners: array<vec4<f32>, 4>,
@@ -317,6 +326,13 @@ struct XrPort {
     room: vec4<f32>,
     // xy the room's axis (x, z), zw the facing the seam is behind (x, z)
     axes: vec4<f32>,
+    // The joins (sky.rs, join): the face's drawn plane (xyz its normal, w
+    // its offset); per edge (-u, +u, -v, +v) the drawn plane of the face
+    // joined across it (zero: none); and per edge from how far toward it
+    // (m) the join decides
+    plane: vec4<f32>,
+    cut: array<vec4<f32>, 4>,
+    cut_from: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> xr_eye: XrEye;
 @group(1) @binding(1) var<uniform> xr_port: XrPort;
@@ -525,7 +541,8 @@ mod core_side {
     /// The bind group layouts of a port's pipeline: group 0 the effect's
     /// uniform (`size_of::<ShaderUniforms>()` at binding 0, the only one
     /// of the desktop's seven the eight use), group 1 the eye camera
-    /// (binding 0) and the port block (binding 1).
+    /// ([`super::EYE_BYTES`] at binding 0, which the sky's fragments read
+    /// too) and the port block (binding 1).
     pub fn layouts(device: &wgpu::Device) -> [wgpu::BindGroupLayout; 2] {
         let uniform = |binding, visibility, bytes: usize| wgpu::BindGroupLayoutEntry {
             binding,
@@ -550,7 +567,7 @@ mod core_side {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("xr-port"),
                 entries: &[
-                    uniform(0, wgpu::ShaderStages::VERTEX, 64),
+                    uniform(0, both, super::EYE_BYTES),
                     uniform(1, both, 16 * super::UNIFORM_ROWS),
                 ],
             }),
@@ -769,15 +786,18 @@ mod tests {
                 "{name}"
             );
             assert_eq!(struct_span(&module, "XrPort"), 16 * UNIFORM_ROWS, "{name}");
-            assert_eq!(struct_span(&module, "XrEye"), 64, "{name}");
+            assert_eq!(struct_span(&module, "XrEye"), EYE_BYTES, "{name}");
             // Of the desktop's seven bindings the entries read `u` alone,
             // so group 0's layout is binding 0 and nothing stands in for
             // the textures.
             let (vs, fs) = port.entries();
-            for fs in ["fs_main", fs] {
+            assert_eq!(globals_used(&module, &info, "fs_main"), ["u", "xr_port"]);
+            // The sky's fragment reads the eye camera too: its joins solve
+            // each pixel's view ray (board #5438).
+            if port.sky {
                 assert_eq!(
                     globals_used(&module, &info, fs),
-                    ["u", "xr_port"],
+                    ["u", "xr_eye", "xr_port"],
                     "{name} {fs}"
                 );
             }
@@ -1212,7 +1232,10 @@ mod tests {
             );
             let (face, fit) = flat(half);
             let u_buffer = uniform(gpu, bytemuck::bytes_of(u));
-            let eye = uniform(gpu, bytemuck::cast_slice(&fit.to_cols_array()));
+            let mut eye_block = [0.0f32; EYE_BYTES / 4];
+            eye_block[..16].copy_from_slice(&fit.to_cols_array());
+            eye_block[16..18].copy_from_slice(&[w as f32, h as f32]);
+            let eye = uniform(gpu, bytemuck::cast_slice(&eye_block));
             let port = uniform(
                 gpu,
                 bytemuck::cast_slice(&rows(&face, 1.0, overlay, FIRST_ID, [1.0; 3])),
