@@ -1107,12 +1107,14 @@ impl XrSession {
             .as_deref()
             .map_or_else(EnvDepthPasses::default, |e| EnvDepthPasses {
                 occluder: env_frame.and_then(|f| {
+                    // Board #5439: the depth light `before_render` set.
                     e.prepare(
                         &gfx.queue,
                         &f,
                         &cameras,
                         &extents,
                         faces_on.then_some(faces_extents.as_slice()),
+                        gfx.depth_light(),
                     )
                 }),
                 atlas: e.atlas_pass(),

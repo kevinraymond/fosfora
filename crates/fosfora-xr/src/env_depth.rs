@@ -1362,6 +1362,8 @@ impl DepthCollide {
 }
 
 #[cfg(target_os = "android")]
+pub(crate) use runtime::light_pipeline;
+#[cfg(target_os = "android")]
 pub use runtime::{
     AtlasOutcome, AtlasPass, EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthPasses, EnvDepthSlot,
     OccluderTarget, PlanesPass,
@@ -1387,9 +1389,9 @@ mod runtime {
 
     use super::{
         ATLAS_PARAM_ROWS, ATLAS_WGSL, CHECK_GRID, CHECK_WGSL, CheckStats, DepthCollide, DepthView,
-        ENV_DEPTH_WGSL, EnvDepthOptions, EyeReprojection, Obb, Reading, UNIFORM_ROWS, atlas_params,
-        atlas_row_texels, check_layer, mesh_indices, mesh_indices_len, mesh_side, planes_bytes,
-        planes_wgsl,
+        ENV_DEPTH_WGSL, EnvDepthOptions, EyeReprojection, LIGHT_ROW, Obb, Reading, UNIFORM_ROWS,
+        atlas_params, atlas_row_texels, check_layer, mesh_indices, mesh_indices_len, mesh_side,
+        planes_bytes, planes_wgsl,
     };
     use crate::geom_first::{Geom, GeomFirstOptions, GeomPass, set_drop_vertices};
     use crate::gfx::{EyeCamera, Gfx, SWAPCHAIN_FORMAT};
@@ -1560,9 +1562,18 @@ mod runtime {
         /// Per target (`OccluderTarget`), the mesh's index buffer, `None`
         /// for the full-screen pass.
         meshes: [Option<&'a Mesh>; 2],
+        /// Board #5439: the eye pass's draw is the depth light's.
+        lit: bool,
     }
 
     impl EnvDepthDraw<'_> {
+        /// Whether the eye pass's draw writes the depth light
+        /// (`depth_light.rs`): `Gfx::render` then draws it after the box
+        /// and hand occluders, so they hide its light.
+        pub fn lit(&self) -> bool {
+            self.lit
+        }
+
         /// The occluder for `eye` (0 left, 1 right) into `target`'s pass,
         /// the mesh or one full-screen triangle; that target's uniforms
         /// must have been written (`EnvDepth::prepare`).
@@ -1662,6 +1673,10 @@ mod runtime {
         /// Per target, per eye.
         uniforms: [[wgpu::Buffer; 2]; 2],
         pipeline: wgpu::RenderPipeline,
+        /// Board #5439: the mesh drawn with the depth light, for the eye
+        /// pass; `None` without the mesh, with the gray diagnostic, or when
+        /// it did not validate.
+        light_pipeline: Option<wgpu::RenderPipeline>,
         /// The occluder mesh at each distinct step in use, none for the
         /// full-screen pass.
         meshes: Vec<Mesh>,
@@ -1823,7 +1838,8 @@ mod runtime {
                     }
                 );
             }
-            let (pipeline, layout) = build_pipeline(&gfx.device, opts.show, mesh_steps[0] > 0);
+            let (pipeline, light_pipeline, layout) =
+                build_pipeline(&gfx.device, opts.show, mesh_steps[0] > 0);
             // One index buffer per distinct step: the eye's and the faces'
             // (the same at step 8).
             let mut meshes: Vec<Mesh> = Vec::new();
@@ -1987,6 +2003,7 @@ mod runtime {
                 _images: images,
                 uniforms,
                 pipeline,
+                light_pipeline,
                 meshes,
                 mesh_steps,
                 provider,
@@ -2151,7 +2168,11 @@ mod runtime {
         /// sizes) are in eye order, left first, like the depth map's
         /// layers; `faces_extents`, the faces targets' sizes in the same
         /// order, when the faces layer exists (board #3793): its uniforms
-        /// differ from the eye's only in the target size.
+        /// differ from the eye's only in the target size. `light`: the
+        /// depth light's rows this frame (board #5439,
+        /// `depth_light::rows`), `None` with it off; the eye pass then
+        /// draws the mesh with its light when the mesh, its pipeline and
+        /// no diagnostic (`envdepthshow`, `geomfirstshow`) are in the way.
         pub fn prepare(
             &self,
             queue: &wgpu::Queue,
@@ -2159,10 +2180,19 @@ mod runtime {
             cameras: &[EyeCamera],
             extents: &[[u32; 2]],
             faces_extents: Option<&[[u32; 2]]>,
+            light: Option<[[f32; 4]; crate::depth_light::ROWS]>,
         ) -> Option<EnvDepthDraw<'_>> {
             if !self.opts.occlude && !self.opts.show {
                 return None;
             }
+            let lit = light.is_some()
+                && self.light_pipeline.is_some()
+                && !self.opts.show
+                && !self.opts.geom.show
+                && self
+                    .geom
+                    .as_ref()
+                    .is_none_or(|g| g.drop_vertices(0) == 0 || g.can_light());
             let targets = [
                 (OccluderTarget::Eye, Some(extents)),
                 (OccluderTarget::Faces, faces_extents),
@@ -2177,23 +2207,35 @@ mod runtime {
                     .geom
                     .as_ref()
                     .map_or(0, |g| g.drop_vertices(target as usize));
-                self.write_uniforms(queue, frame, cameras, extents, target, drops);
+                let light = light
+                    .as_ref()
+                    .filter(|_| lit && target == OccluderTarget::Eye);
+                self.write_uniforms(queue, frame, cameras, extents, target, drops, light);
             }
             let own = &self.bind_groups[frame.index as usize];
             let geom = self
                 .geom
                 .as_ref()
-                .map_or([None, None], |g| g.draws(frame.index));
+                .map_or([None, None], |g| g.draws(frame.index, lit));
+            let mut targets = [0, 1].map(|t| geom[t].unwrap_or((&self.pipeline, &own[t])));
+            if lit
+                && geom[0].is_none()
+                && let Some(p) = &self.light_pipeline
+            {
+                targets[0] = (p, &own[0]);
+            }
             Some(EnvDepthDraw {
-                targets: [0, 1].map(|t| geom[t].unwrap_or((&self.pipeline, &own[t]))),
+                targets,
                 meshes: self
                     .mesh_steps
                     .map(|step| self.meshes.iter().find(|m| m.step == step)),
+                lit,
             })
         }
 
         /// One target's per-eye uniforms for `frame` (`prepare`), with
-        /// geometry first's `drops` per layer when not 0.
+        /// geometry first's `drops` per layer when not 0 and the depth
+        /// light's rows when it draws in this target.
         fn write_uniforms(
             &self,
             queue: &wgpu::Queue,
@@ -2202,6 +2244,7 @@ mod runtime {
             extents: &[[u32; 2]],
             target: OccluderTarget,
             drops: u32,
+            light: Option<&[[f32; 4]; crate::depth_light::ROWS]>,
         ) {
             for (eye, (cam, extent)) in cameras.iter().zip(extents).enumerate().take(2) {
                 let depth = frame.views[eye];
@@ -2223,6 +2266,9 @@ mod runtime {
                 let mut rows = r.uniform();
                 if drops > 0 {
                     set_drop_vertices(&mut rows, drops);
+                }
+                if let Some(light) = light {
+                    rows[LIGHT_ROW..].copy_from_slice(light);
                 }
                 queue.write_buffer(
                     &self.uniforms[target as usize][eye],
@@ -3191,12 +3237,18 @@ mod runtime {
     /// The occluder (`show` false: color writes off) or the diagnostic
     /// (`show` true: the gray written over the view), off the same shader,
     /// as the full-screen pass (`mesh` false: `frag_depth` with compare
-    /// `Always`) or the mesh (rasterized depth with compare `LessEqual`).
+    /// `Always`) or the mesh (rasterized depth with compare `LessEqual`);
+    /// with the mesh and not the diagnostic, the depth light's too
+    /// ([`light_pipeline`]).
     fn build_pipeline(
         device: &wgpu::Device,
         show: bool,
         mesh: bool,
-    ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    ) -> (
+        wgpu::RenderPipeline,
+        Option<wgpu::RenderPipeline>,
+        wgpu::BindGroupLayout,
+    ) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("xr-env-depth"),
             source: wgpu::ShaderSource::Wgsl(ENV_DEPTH_WGSL.into()),
@@ -3288,7 +3340,84 @@ mod runtime {
             multiview: None,
             cache: None,
         });
-        (pipeline, layout)
+        // Board #5439: the depth light's, on the mesh alone and not under
+        // the gray diagnostic.
+        let light = (mesh && !show).then(|| {
+            light_pipeline(
+                device,
+                &pipeline_layout,
+                &shader,
+                "vs_mesh_light",
+                "xr-env-depth-mesh-light",
+            )
+        });
+        (pipeline, light.flatten(), layout)
+    }
+
+    /// Board #5439: the occluder mesh drawn with the depth light
+    /// (`depth_light.rs`) from `shader`'s vertex stage `vertex` (the
+    /// occluder's `vs_mesh_light`, or geometry first's with the drop) and
+    /// `fs_mesh_light`: the mesh's depth state (`LessEqual`, depth written,
+    /// culling off), its color premultiplied over the target. Built inside
+    /// an error scope: one that does not validate is logged and `None`, so
+    /// the eye pass keeps the depth-only mesh rather than losing the frame.
+    pub(crate) fn light_pipeline(
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        shader: &wgpu::ShaderModule,
+        vertex: &str,
+        label: &str,
+    ) -> Option<wgpu::RenderPipeline> {
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some(vertex),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..wgpu::PrimitiveState::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_mesh_light"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SWAPCHAIN_FORMAT,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+        // wgpu's native futures are ready on the first poll.
+        let scope = std::pin::pin!(device.pop_error_scope());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::future::Future::poll(scope, &mut cx) {
+            std::task::Poll::Ready(None) => Some(pipeline),
+            std::task::Poll::Ready(Some(e)) => {
+                warn!("depth light: {label} did not validate, the light stays off: {e}");
+                None
+            }
+            std::task::Poll::Pending => {
+                warn!("depth light: {label}: the error scope did not answer");
+                Some(pipeline)
+            }
+        }
     }
 }
 

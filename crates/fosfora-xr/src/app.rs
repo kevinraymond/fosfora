@@ -436,6 +436,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the sensor's noise at its range, 0..0.5; live)
     //   adb shell setprop debug.fosfora.geomfirstshow 0|1        (diagnostic: the eye pass's depth map occluder drawn with a magenta tint where it still
     //       occludes, still writing depth, geometry first on or off, for an unworn screencap; live)
+    //   adb shell setprop debug.fosfora.depthlight 0|1           (board #5439, depth_light.rs: what the depth map still occludes drawn lit in the theme's
+    //       colors, bands at even heights drifting up with the music, dark toward its silhouette, out by 3 m; 0 the depth map writes
+    //       depth only, as before; default 1; needs the mesh (envdepthmesh not 0), off under envdepthshow, the geomfirstshow tint
+    //       replaces it; live: polled once a second)
+    //   adb shell setprop debug.fosfora.depthlightgain 1         (depth light: brightness multiplier, 0..4; 1 = peak alpha 0.05 with the room plain, 0.33 at
+    //       full immersion; live)
     //   adb shell setprop debug.fosfora.edgebars 0|1|2|3         (board #5420, edge_bars.rs: the room's outline drawn as the spectrum, bars along the edges of
     //       every plane and box drawn as an occluder (hidden walls and the stage floor left out), in the surface's color, while music
     //       plays; unset each kind of surface in its theme's mode (board #5431, themes.rs); 1 the bars lie on each face and grow in from its
@@ -911,6 +917,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     if let Some(g) = geom_first {
         info!("{}", g.line(occluders));
     }
+    // Board #5439: the depth light (`depth_light.rs`), what the depth map
+    // still occludes drawn lit; the knobs are polled once a second below.
+    // It needs the occluder's mesh, which this run has or not from launch.
+    let depth_light_blocked = env_depth.map_or(
+        Some("no environment depth in this run"),
+        |o: EnvDepthOptions| crate::depth_light::blocked(o.occlude, o.show, o.drawn_mesh_step()),
+    );
+    let mut depth_light = crate::depth_light::DepthLightOptions::from_knobs(debug_prop);
+    info!("{}", depth_light.line(depth_light_blocked));
+    let mut depth_drive = crate::depth_light::Drive::default();
+    let mut depth_light_colors: Option<Option<crate::themes::Theme>> = None;
     // Board #5420: the edge bars (`edge_bars.rs`), the room's outline drawn
     // as the spectrum; the knobs are polled once a second below.
     let mut edge_bars = crate::edge_bars::EdgeBarsOptions::from_knobs(debug_prop);
@@ -4174,20 +4191,51 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     && (0..scanned_n).any(|k| {
                         !room_boxes[k].hidden && lane_color(k) == crate::surfaces::COLOR_KEY
                     });
+                // Board #5439: the depth light, in the room's theme's
+                // colors (the key's tint on its tops under a theme that uses
+                // it).
+                let light_on = depth_light.lit(depth_light_blocked);
+                let light_theme = surface_lanes.saved_theme();
                 // The key's tint only when a lit face asks for it (a
-                // ported one too, since D3, and an edge bar's outline):
-                // the desktop's key hue from core's binding sources, which
-                // builds a map of every source.
+                // ported one too, since D3, an edge bar's outline, and the
+                // depth light's tops): the desktop's key hue from core's
+                // binding sources, which builds a map of every source.
                 if slots.iter().any(|s| s.color == crate::surfaces::COLOR_KEY)
                     || ported
                         .iter()
                         .any(|&(.., color, _)| color == crate::surfaces::COLOR_KEY)
                     || edge_key
+                    || (light_on && crate::depth_light::uses_key(light_theme))
                 {
                     let hue = fosfora_app::bindings::sources::collect_audio(&f)
                         .get("audio.key_hue")
                         .map_or(0.5, |v| v.0);
                     audio.key_tint = crate::surfaces::key_tint(hue);
+                }
+                // The light follows the band the theme gives other surfaces,
+                // its peak the immersion level; logged when its colors
+                // change with the theme.
+                if light_on {
+                    depth_drive.step(
+                        dt,
+                        crate::depth_light::band_level(
+                            &audio,
+                            crate::depth_light::band(light_theme),
+                        ),
+                        beat_env,
+                    );
+                    gfx.set_depth_light(Some(crate::depth_light::rows(
+                        &depth_drive,
+                        crate::depth_light::peak_alpha(immerse_level, depth_light.gain),
+                        crate::depth_light::colors(light_theme, audio.key_tint),
+                    )));
+                    if depth_light_colors != Some(light_theme) {
+                        info!("{}", crate::depth_light::colors_line(light_theme));
+                        depth_light_colors = Some(light_theme);
+                    }
+                } else {
+                    gfx.set_depth_light(None);
+                    depth_light_colors = None;
                 }
                 // Board #5436: the sky's faces drop the rim fade on every
                 // edge another of them continues (a corner, a wall under
@@ -4783,6 +4831,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             if now != edge_bars {
                 info!("{}", now.change_line(&edge_bars, occluders));
                 edge_bars = now;
+            }
+            // Board #5439: the depth light's knobs, live.
+            let now = crate::depth_light::DepthLightOptions::from_knobs(system_prop);
+            if now != depth_light {
+                info!("{}", now.change_line(&depth_light, depth_light_blocked));
+                depth_light = now;
             }
             if let Some(scene) = &scene {
                 info!(

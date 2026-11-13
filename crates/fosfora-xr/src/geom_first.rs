@@ -898,7 +898,8 @@ fn fs_mesh_tint(@location(0) show: vec2<f32>) -> @location(0) vec4<f32> {{
 pub use runtime::{Geom, GeomPass};
 
 /// The GPU side: the two compute pipelines and their buffers, the mesh
-/// pipelines with the drop and the tint, and their bind groups.
+/// pipelines with the drop, the tint and the depth light, and their bind
+/// groups.
 #[cfg(target_os = "android")]
 mod runtime {
     use log::info;
@@ -924,6 +925,10 @@ mod runtime {
         grids: [[u32; 2]; 2],
         geom_pipeline: wgpu::RenderPipeline,
         tint_pipeline: wgpu::RenderPipeline,
+        /// Board #5439: the mesh with the drop and the depth light, for the
+        /// eye pass (`vs_mesh_geom_light`); `None` with the gray diagnostic
+        /// or when it did not validate.
+        light_pipeline: Option<wgpu::RenderPipeline>,
         explain_pipeline: wgpu::ComputePipeline,
         explain_layout: wgpu::BindGroupLayout,
         keep_pipeline: wgpu::ComputePipeline,
@@ -1161,6 +1166,17 @@ mod runtime {
                     write_mask: wgpu::ColorWrites::ALL,
                 },
             );
+            let light_pipeline = if show {
+                None
+            } else {
+                crate::env_depth::light_pipeline(
+                    device,
+                    &draw_pipeline_layout,
+                    &shader,
+                    "vs_mesh_geom_light",
+                    "xr-env-depth-mesh-geom-light",
+                )
+            };
 
             // The explain pass.
             let explain_layout =
@@ -1284,6 +1300,7 @@ mod runtime {
                 grids,
                 geom_pipeline,
                 tint_pipeline,
+                light_pipeline,
                 explain_pipeline,
                 explain_layout,
                 keep_pipeline,
@@ -1421,13 +1438,22 @@ mod runtime {
             }
         }
 
+        /// Whether the eye pass can draw the drop with the depth light
+        /// (board #5439): its pipeline validated.
+        pub fn can_light(&self) -> bool {
+            self.light_pipeline.is_some()
+        }
+
         /// The pipeline and per-eye bind groups for each target's draw
         /// from swapchain image `index`, `None` where the occluder's own
         /// stay: the eye pass's tint with `geomfirstshow` (the drop in it
-        /// on with the test), the drop alone with the test running.
+        /// on with the test), the drop alone with the test running, with
+        /// the depth light in the eye pass when `light` asks for it and
+        /// its pipeline is there (board #5439).
         pub fn draws(
             &self,
             index: u32,
+            light: bool,
         ) -> [Option<(&wgpu::RenderPipeline, &[wgpu::BindGroup; 2])>; 2] {
             let Some(groups) = self.draw_groups.get(index as usize) else {
                 return [None, None];
@@ -1435,7 +1461,8 @@ mod runtime {
             let eye = if self.opts.show {
                 Some((&self.tint_pipeline, &groups[0]))
             } else if self.drop_vertices(0) > 0 {
-                Some((&self.geom_pipeline, &groups[0]))
+                let lit = self.light_pipeline.as_ref().filter(|_| light);
+                Some((lit.unwrap_or(&self.geom_pipeline), &groups[0]))
             } else {
                 None
             };

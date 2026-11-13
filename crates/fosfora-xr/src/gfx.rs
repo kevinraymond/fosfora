@@ -116,6 +116,10 @@ pub struct Gfx {
     /// `None` inside when its pipelines did not validate.
     edge_bars: std::cell::OnceCell<Option<EdgeBars>>,
     edge_counts: std::cell::Cell<(u32, u32)>,
+    /// The depth light's rows for this frame (board #5439,
+    /// `set_depth_light`, `depth_light.rs`), which the environment depth's
+    /// `prepare` writes into the eye pass's occluder uniform; `None` off.
+    depth_light: std::cell::Cell<Option<[[f32; 4]; crate::depth_light::ROWS]>>,
     /// The eye camera's bind group layout, for pipelines built later.
     eye_layout: wgpu::BindGroupLayout,
     /// Whether the eye pass draws the world effect (`set_world_visible`;
@@ -528,6 +532,7 @@ impl Gfx {
             live_outline_count: std::cell::Cell::new(0),
             edge_bars: std::cell::OnceCell::new(),
             edge_counts: std::cell::Cell::new((0, 0)),
+            depth_light: std::cell::Cell::new(None),
             eye_layout,
             ghost,
             ghost_count: std::cell::Cell::new(0),
@@ -954,6 +959,18 @@ impl Gfx {
         }
     }
 
+    /// The depth light for this frame (board #5439): its rows
+    /// (`depth_light::rows`), or `None` to draw the depth map as depth
+    /// alone. Read by the frame's environment depth `prepare`.
+    pub fn set_depth_light(&self, rows: Option<[[f32; 4]; crate::depth_light::ROWS]>) {
+        self.depth_light.set(rows);
+    }
+
+    /// What [`Self::set_depth_light`] set last.
+    pub fn depth_light(&self) -> Option<[[f32; 4]; crate::depth_light::ROWS]> {
+        self.depth_light.get()
+    }
+
     /// The edge bars' two pipelines and their uniform, inside an error
     /// scope: on a validation error (logged) they stay off, as an invalid
     /// pipeline in the eye pass would lose the whole frame.
@@ -1356,8 +1373,18 @@ impl Gfx {
                 .filter(|_| self.world_visible.get())
                 .and_then(|s| s.prepare_world(&self.device, cam));
             let mut pass = begin_eye_pass(&mut encoder, "xr-eye", target, clear, depth);
-            // The live depth map first, right after the clear: it writes
-            // the real room's depth (compare Always, or LessEqual as a mesh) and everything after
+            // Board #5439: with the depth light, the box and hand
+            // occluders go first and the map's mesh after them, so a hand
+            // or a box in front of a lit object hides its light. Every
+            // occluder keeps the nearest depth (Less, or LessEqual for the
+            // mesh), so the depth buffer ends the same in either order.
+            let lit = env_depth.occluder.as_ref().is_some_and(|d| d.lit());
+            if lit && let Some(p) = particles {
+                p.draw_occluders(&mut pass, i);
+            }
+            // The live depth map first, right after the clear (after the
+            // occluders with the light): it writes the real room's depth
+            // (compare Always, or LessEqual as a mesh) and everything after
             // tests against it.
             if let Some(d) = &env_depth.occluder {
                 d.draw(&mut pass, OccluderTarget::Eye, i);
@@ -1368,7 +1395,7 @@ impl Gfx {
                 pass.set_bind_group(1, &quad.bind_group, &[]);
                 pass.draw(0..6, 0..1);
             }
-            if let Some(p) = particles {
+            if !lit && let Some(p) = particles {
                 p.draw_occluders(&mut pass, i);
             }
             if faces_pass.is_none() {
