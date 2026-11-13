@@ -20,7 +20,8 @@
 //! wide at the same pixels per radian ([`RESOLUTION`], [`PX_PER_RAD`]), so
 //! at the horizon a degree across is a degree up. With the `.pfx`'s band
 //! spread the lowest band sits 2° under the horizon and the highest 65°
-//! over it: three bands on the walls, three as rings on the ceiling.
+//! over it: with the walls 2 m off and a 2.4 m ceiling, three bands on the
+//! walls, one along the ceiling's edge and three as rings on the ceiling.
 //!
 //! **The seam.** The effect is not periodic in x, so the turn has one
 //! seam. It is behind the seated wearer: azimuth 0 is the direction the
@@ -95,9 +96,10 @@ pub const NEIGHBOR_M: f32 = 0.1;
 pub const STAGE_HALF_M: f32 = 2.5;
 pub const STAGE_CEILING_M: f32 = 2.5;
 
-/// The port block's rows the sky adds after `surface_port::rows`' eight:
-/// the rim per edge, the point (and the ceiling), the room in plan, the
-/// room's axis and the facing. `mode.y` carries the [`Map`].
+/// Where the sky sits in the port block: `mode.y` (the row of
+/// `surface_port::rows`' overlay flag) carries the [`Map`]; the four rows
+/// after that row are the sky's own: the rim per edge, the point (and the
+/// ceiling), the room in plan, the room's axis and the facing.
 pub const MODE_ROW: usize = 7;
 pub const EDGES_ROW: usize = 8;
 pub const POINT_ROW: usize = 9;
