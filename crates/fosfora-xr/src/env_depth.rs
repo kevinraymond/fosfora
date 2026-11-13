@@ -73,9 +73,15 @@ pub const RAY_DISTANCE_M: f32 = 2.0;
 pub const NEAR_CUT_M: f32 = 0.2;
 /// The diagnostic's gray scale: 0 m black to this white (m).
 pub const SHOW_FAR_M: f32 = 4.0;
+/// The row of [`EyeReprojection::uniform`] that carries the mesh's step
+/// and side (`EnvEye.mesh`), and geometry first's drops in its z.
+pub const MESH_ROW: usize = 21;
+/// The first of the depth light's rows (`EnvEye.light` on,
+/// `crate::depth_light::rows`), zeros from [`EyeReprojection::uniform`].
+pub const LIGHT_ROW: usize = MESH_ROW + 1;
 /// Rows of [`EyeReprojection::uniform`], `struct EnvEye` in
 /// [`ENV_DEPTH_WGSL`].
-pub const UNIFORM_ROWS: usize = 22;
+pub const UNIFORM_ROWS: usize = LIGHT_ROW + crate::depth_light::ROWS;
 /// The occluder's edge-aware filter (`debug.fosfora.envdepthfilter 1`):
 /// the 2x2 texels around a lookup are interpolated when their distances
 /// are within this of each other (m), else the nearest is taken.
@@ -350,13 +356,22 @@ impl EyeReprojection {
             SHOW_FAR_M,
             self.filter_edge_m.max(0.0),
         ];
-        rows[21] = [
+        rows[MESH_ROW] = [
             self.mesh_step as f32,
             mesh_side(self.depth_size[0], self.mesh_step) as f32,
             0.0,
             0.0,
         ];
         rows
+    }
+
+    /// The decoded distance of a texel holding the stored value `d`, as
+    /// the shader's `texel_distance` gives it: `None` without data (`d >=
+    /// 1`) or under the discard distance.
+    pub fn texel_distance(&self, d: f32) -> Option<f32> {
+        (d < 1.0)
+            .then(|| decode_distance(d, self.near, self.far))
+            .filter(|&dist| dist >= self.near_cut_m)
     }
 
     /// The depth map coordinates (0..1 each, `v` down the texture) where
@@ -454,17 +469,20 @@ impl EyeReprojection {
     /// or under the discard distance, the point at [`RAY_DISTANCE_M`] along
     /// that ray, moved onto the far plane (z = w, depth 1).
     pub fn vertex_clip(&self, texel: [u32; 2], d: f32) -> Vec4 {
-        let ray = self.depth_ray(self.mesh_uv(texel));
-        let dist = (d < 1.0)
-            .then(|| decode_distance(d, self.near, self.far))
-            .filter(|&dist| dist >= self.near_cut_m);
-        let q = ray * dist.unwrap_or(RAY_DISTANCE_M);
-        let w = self.depth_view.inverse().transform_point3(q);
-        let mut clip = self.view_proj * w.extend(1.0);
+        let dist = self.texel_distance(d);
+        let mut clip = self.view_proj * self.mesh_point(texel, dist).extend(1.0);
         if dist.is_none() {
             clip.z = clip.w;
         }
         clip
+    }
+
+    /// The world point the mesh puts the vertex of `texel` at: along the
+    /// texel's depth ray at its decoded distance `dist`, or at
+    /// [`RAY_DISTANCE_M`] without one (the shader's `mesh_point`).
+    pub fn mesh_point(&self, texel: [u32; 2], dist: Option<f32>) -> Vec3 {
+        let q = self.depth_ray(self.mesh_uv(texel)) * dist.unwrap_or(RAY_DISTANCE_M);
+        self.depth_view.inverse().transform_point3(q)
     }
 
     /// [`Self::vertex_clip`] after the divide: NDC x and y, and the depth
@@ -529,7 +547,10 @@ pub fn filtered_distance(
 /// returns the decoded distance as gray for the diagnostic pipeline (the
 /// occluder masks color off). The mesh: `vs_mesh` mirrors
 /// [`EyeReprojection::vertex_clip`]; `fs_mesh` writes nothing (color
-/// masked off), `fs_mesh_show` the diagnostic gray.
+/// masked off), `fs_mesh_show` the diagnostic gray. The depth light
+/// (`depth_light.rs`): `vs_mesh_light` is `vs_mesh` with the light's
+/// per-vertex terms (`depth_light::vertex_light` mirrors it) and
+/// `fs_mesh_light` the light (`depth_light::fragment`).
 pub const ENV_DEPTH_WGSL: &str = r"
 struct EnvEye {
     view_proj: mat4x4<f32>,
@@ -553,6 +574,21 @@ struct EnvEye {
     // z geometry first's drops per layer, read by vs_mesh_geom alone
     // (geom_first.rs; 0 off)
     mesh: vec4<f32>,
+    // The depth light (depth_light.rs), read by vs_mesh_light and
+    // fs_mesh_light alone. x bands per meter of height, y their phase, z
+    // the peak alpha, w the crests' gain from the music
+    light: vec4<f32>,
+    // rgb the color of a side (linear), w the steady share between crests
+    light_side: vec4<f32>,
+    // rgb the color of a top, w the bands' contrast on a top
+    light_top: vec4<f32>,
+    // x, y the distance from the eye where the light starts and finishes
+    // fading out (m); z, w the facing (cosine) where it starts and
+    // finishes fading in
+    light_fade: vec4<f32>,
+    // x the shading's floor; y, z the bands per pixel where the bands
+    // start and finish fading into their mean; w that mean
+    light_shape: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> env: EnvEye;
 @group(0) @binding(1) var depth_map: texture_depth_2d_array;
@@ -679,17 +715,19 @@ struct MeshOut {
     @location(0) show: vec2<f32>,
 }
 
-// The occluder as a mesh (EyeReprojection::vertex_clip in env_depth.rs is
-// the CPU mirror): vertex i is the (i % mesh.y)th of row i / mesh.y, one
-// per mesh.x texels, placed where the depth camera saw its texel's
-// distance. Without data, or under the discard distance, on the far plane.
-@vertex
-fn vs_mesh(@builtin(vertex_index) i: u32) -> MeshOut {
+// Vertex i's texel: the (i % mesh.y)th of row i / mesh.y, one per mesh.x
+// texels, the last texel last.
+fn mesh_texel(i: u32) -> vec2<u32> {
     let side = u32(env.mesh.y);
     let last = vec2<u32>(env.sizes.xy) - vec2<u32>(1u);
-    let t = min(vec2<u32>(i % side, i / side) * u32(env.mesh.x), last);
-    // The texel's center; the outer ring on the map's edge, so the mesh
-    // covers the map as the full-screen pass's clamped lookup does.
+    return min(vec2<u32>(i % side, i / side) * u32(env.mesh.x), last);
+}
+
+// The depth camera's ray through texel t's vertex, at z = -1: through the
+// texel's center, the outer ring through the map's edge, so the mesh
+// covers the map as the full-screen pass's clamped lookup does.
+fn mesh_ray(t: vec2<u32>) -> vec3<f32> {
+    let last = vec2<u32>(env.sizes.xy) - vec2<u32>(1u);
     var uv = (vec2<f32>(t) + 0.5) / env.sizes.xy;
     uv = select(uv, vec2<f32>(0.0), t == vec2<u32>(0u));
     uv = select(uv, vec2<f32>(1.0), t == last);
@@ -697,29 +735,132 @@ fn vs_mesh(@builtin(vertex_index) i: u32) -> MeshOut {
     if env.misc.y > 0.5 {
         v_up = 1.0 - uv.y;
     }
-    // The depth camera's ray through uv, at z = -1.
-    let ray = vec3<f32>(
+    return vec3<f32>(
         mix(env.depth_tan.x, env.depth_tan.y, uv.x),
         mix(env.depth_tan.w, env.depth_tan.z, v_up),
         -1.0
     );
+}
+
+// The world point of texel t's vertex: along its ray at its distance, or
+// at the lookup distance without data (dist -1).
+fn mesh_point(t: vec2<u32>, dist: f32) -> vec3<f32> {
+    let w = env.inv_depth_view * vec4<f32>(mesh_ray(t) * select(env.eye.w, dist, dist >= 0.0), 1.0);
+    return w.xyz / w.w;
+}
+
+// The clip position of world point p, a vertex at distance dist: without
+// data on the far plane, depth 1, where the cleared depth already is, so
+// it hides nothing.
+fn mesh_clip(p: vec3<f32>, dist: f32) -> vec4<f32> {
+    var pos = env.view_proj * vec4<f32>(p, 1.0);
+    if dist < 0.0 {
+        pos.z = pos.w;
+    }
+    return pos;
+}
+
+// The occluder as a mesh (EyeReprojection::vertex_clip in env_depth.rs is
+// the CPU mirror): vertex i placed where the depth camera saw its texel's
+// distance. Without data, or under the discard distance, on the far plane.
+fn mesh_vertex(i: u32) -> MeshOut {
+    let t = mesh_texel(i);
     let dist = texel_distance(vec2<i32>(t));
     let valid = dist >= 0.0;
-    let w = env.inv_depth_view * vec4<f32>(ray * select(env.eye.w, dist, valid), 1.0);
     var out: MeshOut;
-    out.pos = env.view_proj * vec4<f32>(w.xyz / w.w, 1.0);
-    if !valid {
-        // Depth 1, where the cleared depth already is: it hides nothing.
-        out.pos.z = out.pos.w;
-    }
+    out.pos = mesh_clip(mesh_point(t, dist), dist);
     out.show = vec2<f32>(select(env.misc.z, dist, valid), select(0.0, 1.0, valid));
     return out;
+}
+
+@vertex
+fn vs_mesh(@builtin(vertex_index) i: u32) -> MeshOut {
+    return mesh_vertex(i);
 }
 
 // The occluder writes depth only; the pass's color target is masked off.
 @fragment
 fn fs_mesh() -> @location(0) vec4<f32> {
     return vec4<f32>(0.0);
+}
+
+struct LightOut {
+    @builtin(position) pos: vec4<f32>,
+    // xyz the world point, w the vertex's share of the light (0..1)
+    @location(0) world: vec4<f32>,
+    // How far the surface faces up, 0..1.
+    @location(1) up: f32,
+}
+
+// The depth light's vertex (depth_light::vertex_light in depth_light.rs
+// is the CPU mirror): mesh_vertex's position, the world point, and the
+// vertex's share of the light. The surface's normal is the map's gradient
+// across the vertex, one mesh step either way along each axis; the share
+// fades out where the surface turns edge-on to the eye (a silhouette's
+// jump turns it fully), shades with the facing, and fades out with the
+// distance from the eye. No share without data at the vertex or at any of
+// the four neighbors.
+fn mesh_light(i: u32) -> LightOut {
+    let t = mesh_texel(i);
+    let dist = texel_distance(vec2<i32>(t));
+    let p = mesh_point(t, dist);
+    var out: LightOut;
+    out.pos = mesh_clip(p, dist);
+    let s = u32(env.mesh.x);
+    let last = vec2<u32>(env.sizes.xy) - vec2<u32>(1u);
+    let x0 = vec2<u32>(max(t.x, s) - s, t.y);
+    let x1 = vec2<u32>(min(t.x + s, last.x), t.y);
+    let y0 = vec2<u32>(t.x, max(t.y, s) - s);
+    let y1 = vec2<u32>(t.x, min(t.y + s, last.y));
+    let d = vec4<f32>(
+        texel_distance(vec2<i32>(x0)),
+        texel_distance(vec2<i32>(x1)),
+        texel_distance(vec2<i32>(y0)),
+        texel_distance(vec2<i32>(y1))
+    );
+    // The gradient in the depth camera's space, turned into the world's.
+    let gx = mesh_ray(x1) * d.y - mesh_ray(x0) * d.x;
+    let gy = mesh_ray(y1) * d.w - mesh_ray(y0) * d.z;
+    let n = (env.inv_depth_view * vec4<f32>(cross(gx, gy), 0.0)).xyz;
+    let to_eye = env.eye.xyz - p;
+    let range = length(to_eye);
+    let len = length(n);
+    var weight = 0.0;
+    var up = 0.0;
+    if dist >= 0.0 && all(d >= vec4<f32>(0.0)) && len > 0.0 && range > 0.0 {
+        let facing = dot(n, to_eye) / (len * range);
+        // The normal on the side the eye sees.
+        up = clamp(select(n.y, -n.y, facing < 0.0) / len, 0.0, 1.0);
+        let f = abs(facing);
+        weight = smoothstep(env.light_fade.z, env.light_fade.w, f)
+            * mix(env.light_shape.x, 1.0, f)
+            * (1.0 - smoothstep(env.light_fade.x, env.light_fade.y, range));
+    }
+    out.world = vec4<f32>(p, weight);
+    out.up = up;
+    return out;
+}
+
+@vertex
+fn vs_mesh_light(@builtin(vertex_index) i: u32) -> LightOut {
+    return mesh_light(i);
+}
+
+// The depth light (depth_light::fragment is the CPU mirror): bands of
+// light at even heights, drifting up, over a steady share, in the side's
+// color on a side and the top's on a top, where the bands fade toward
+// their mean. A band a few pixels wide fades into its mean too. No
+// discard and no frag_depth, so early depth testing stays on.
+@fragment
+fn fs_mesh_light(in: LightOut) -> @location(0) vec4<f32> {
+    let h = in.world.y * env.light.x - env.light.y;
+    let contrast = (1.0 - smoothstep(env.light_shape.y, env.light_shape.z, fwidth(h)))
+        * mix(1.0, env.light_top.w, in.up);
+    let c = 0.5 + 0.5 * cos(6.2831855 * h);
+    let band = mix(env.light_shape.w, c * c, contrast) * env.light.w;
+    let steady = env.light_side.w;
+    let a = clamp(env.light.z * in.world.w * (steady + (1.0 - steady) * band), 0.0, 1.0);
+    return vec4<f32>(mix(env.light_side.rgb, env.light_top.rgb, in.up) * a, a);
 }
 
 // The diagnostic gray of fs_main, off the interpolated distance; where a
@@ -3535,7 +3676,15 @@ mod tests {
         )
         .validate(&module)
         .expect("env depth WGSL validates");
-        for name in ["vs_main", "fs_main", "vs_mesh", "fs_mesh", "fs_mesh_show"] {
+        for name in [
+            "vs_main",
+            "fs_main",
+            "vs_mesh",
+            "fs_mesh",
+            "fs_mesh_show",
+            "vs_mesh_light",
+            "fs_mesh_light",
+        ] {
             assert!(
                 module.entry_points.iter().any(|e| e.name == name),
                 "entry point {name}"
@@ -4095,7 +4244,9 @@ mod tests {
         assert_close!(rows[18], [0.1, 0.0, 1.0, NEAR_CUT_M]);
         assert_close!(rows[19], [320.0, 320.0, 1680.0, 1760.0]);
         assert_close!(rows[20], [0.0, 0.0, SHOW_FAR_M, 0.0]);
-        assert_close!(rows[21], [0.0; 4]);
+        assert_close!(rows[MESH_ROW], [0.0; 4]);
+        // The depth light's rows are its own to write (depth_light::rows).
+        assert_close!(rows[LIGHT_ROW..], [[0.0f32; 4]; UNIFORM_ROWS - LIGHT_ROW]);
         r.far = 20.0;
         r.layer = 1;
         r.filter_edge_m = FILTER_EDGE_M;

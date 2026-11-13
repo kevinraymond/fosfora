@@ -97,8 +97,8 @@
 use glam::{Mat4, Quat, Vec3, Vec4};
 
 use crate::env_depth::{
-    DepthView, ENV_DEPTH_WGSL, Obb, UNIFORM_ROWS, decode_distance, is_infinite, mesh_side,
-    mesh_texel,
+    DepthView, ENV_DEPTH_WGSL, MESH_ROW, Obb, UNIFORM_ROWS, decode_distance, is_infinite,
+    mesh_side, mesh_texel,
 };
 use crate::live_planes::{NOISE_K, NOISE_MIN_M};
 
@@ -610,7 +610,7 @@ pub fn kept_fraction(a: Vec4, b: Vec4) -> f32 {
 /// layer, which turns the drop on in `vs_mesh_geom`; 0, the uniform's own
 /// value, leaves it off.
 pub fn set_drop_vertices(rows: &mut [[f32; 4]; UNIFORM_ROWS], per_layer: u32) {
-    rows[UNIFORM_ROWS - 1][2] = per_layer as f32;
+    rows[MESH_ROW][2] = per_layer as f32;
 }
 
 /// The obstacle block's rows (`ObstacleSet::as_vec4s` on the device) with
@@ -838,37 +838,48 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 ";
 
-/// `vs_mesh`'s first line in [`ENV_DEPTH_WGSL`], which
-/// [`mesh_geom_wgsl`] turns into a plain function.
-const VS_MESH_HEAD: &str = "@vertex\nfn vs_mesh(@builtin(vertex_index) i: u32) -> MeshOut {";
-const MESH_VERTEX_HEAD: &str = "fn mesh_vertex(i: u32) -> MeshOut {";
-
 /// The occluder mesh's shader with the drop: [`ENV_DEPTH_WGSL`] verbatim,
-/// but `vs_mesh` becomes the function `mesh_vertex` (the same body), and
-/// two entry points follow. `vs_mesh_geom` is `vs_mesh` plus the drop:
-/// group 0 binding 2, the target's drops ([`KEEP_WGSL`]), read while
-/// `EnvEye.mesh.z` ([`set_drop_vertices`]) is not 0. `fs_mesh_tint`
+/// then three entry points. `vs_mesh_geom` is `vs_mesh` (the same
+/// `mesh_vertex`) plus the drop: group 0 binding 2, the target's drops
+/// ([`KEEP_WGSL`]), read while `EnvEye.mesh.z` ([`set_drop_vertices`]) is
+/// not 0. `vs_mesh_geom_light` is the depth light's vertex stage
+/// (`vs_mesh_light`, `depth_light.rs`) plus the same drop. `fs_mesh_tint`
 /// writes [`TINT`] where the mesh has data.
 pub fn mesh_geom_wgsl() -> String {
-    let base = ENV_DEPTH_WGSL.replacen(VS_MESH_HEAD, MESH_VERTEX_HEAD, 1);
     let [r, g, b, a] = TINT;
     format!(
-        r"{base}
+        r"{ENV_DEPTH_WGSL}
 // ---- Geometry first (geom_first.rs) ----
 @group(0) @binding(2) var<storage, read> drops: array<u32>;
 
 const DROP_Z: f32 = {DROP_Z:?};
 const TINT: vec4<f32> = vec4<f32>({r:?}, {g:?}, {b:?}, {a:?});
 
+// Whether vertex i is dropped: only while the drop is on (mesh.z, the
+// drops per layer, not 0).
+fn dropped(i: u32) -> bool {{
+    let per_layer = u32(env.mesh.z);
+    return per_layer > 0u && drops[u32(env.misc.x) * per_layer + i] != 0u;
+}}
+
 // vs_mesh, and a dropped vertex past the far plane: the clipper removes
 // every triangle it is part of.
 @vertex
 fn vs_mesh_geom(@builtin(vertex_index) i: u32) -> MeshOut {{
     var out = mesh_vertex(i);
-    let per_layer = u32(env.mesh.z);
-    if per_layer > 0u && drops[u32(env.misc.x) * per_layer + i] != 0u {{
+    if dropped(i) {{
         out.pos.z = out.pos.w * DROP_Z;
         out.show.y = 0.0;
+    }}
+    return out;
+}}
+
+// vs_mesh_light with the same drop.
+@vertex
+fn vs_mesh_geom_light(@builtin(vertex_index) i: u32) -> LightOut {{
+    var out = mesh_light(i);
+    if dropped(i) {{
+        out.pos.z = out.pos.w * DROP_Z;
     }}
     return out;
 }}
@@ -1959,11 +1970,12 @@ mod tests {
         };
         let rows = r.uniform();
         // The mesh row's z is 0 from the occluder: the drop is off.
-        assert_eq!(rows[UNIFORM_ROWS - 1][2].to_bits(), 0);
+        assert_eq!(rows[MESH_ROW][2].to_bits(), 0);
         let mut on = rows;
         set_drop_vertices(&mut on, 161 * 161);
-        assert_close!(on[UNIFORM_ROWS - 1], [2.0, 161.0, 25921.0, 0.0]);
-        assert_eq!(on[..UNIFORM_ROWS - 1], rows[..UNIFORM_ROWS - 1]);
+        assert_close!(on[MESH_ROW], [2.0, 161.0, 25921.0, 0.0]);
+        assert_eq!(on[..MESH_ROW], rows[..MESH_ROW]);
+        assert_eq!(on[MESH_ROW + 1..], rows[MESH_ROW + 1..]);
         let mut off = rows;
         set_drop_vertices(&mut off, 0);
         assert_eq!(off, rows);
@@ -2058,24 +2070,27 @@ mod tests {
             "fs_mesh_show",
             "vs_mesh_geom",
             "fs_mesh_tint",
+            "vs_mesh_geom_light",
+            "fs_mesh_light",
         ] {
             assert!(
                 mesh.entry_points.iter().any(|e| e.name == name),
                 "entry point {name}"
             );
         }
-        // vs_mesh's body is mesh_vertex's, word for word: the drop is the
-        // only difference from the occluder's vertex stage.
-        assert_eq!(ENV_DEPTH_WGSL.matches(VS_MESH_HEAD).count(), 1);
-        assert!(!source.contains("fn vs_mesh("));
-        let body = |s: &str, head: &str| {
-            let start = s.find(head).expect("head") + head.len();
-            let end = start + s[start..].find("\n}\n").expect("end");
-            s[start..end].to_owned()
-        };
-        assert_eq!(
-            body(ENV_DEPTH_WGSL, VS_MESH_HEAD),
-            body(&source, MESH_VERTEX_HEAD)
+        // The occluder's shader verbatim, and the drop's vertex stages
+        // start from its own vertex functions: the drop is the only
+        // difference from the occluder's vertex stages.
+        assert!(source.starts_with(ENV_DEPTH_WGSL));
+        assert!(ENV_DEPTH_WGSL.contains(
+            "fn vs_mesh(@builtin(vertex_index) i: u32) -> MeshOut {\n    return mesh_vertex(i);\n}"
+        ));
+        assert!(ENV_DEPTH_WGSL.contains("fn vs_mesh_light(@builtin(vertex_index) i: u32) -> LightOut {\n    return mesh_light(i);\n}"));
+        assert!(
+            source.contains("-> MeshOut {\n    var out = mesh_vertex(i);\n    if dropped(i) {")
+        );
+        assert!(
+            source.contains("-> LightOut {\n    var out = mesh_light(i);\n    if dropped(i) {")
         );
         assert!(source.contains(&format!("const DROP_Z: f32 = {DROP_Z:?};")));
         for (name, module) in [("cs_main", &explain), ("cs_main", &keep)] {
