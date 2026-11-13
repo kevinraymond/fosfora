@@ -1542,7 +1542,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut edge_outline = crate::edge_bars::Outline::default();
     let mut edge_rows: Vec<[f32; 4]> = Vec::new();
     let mut edge_logged: Option<(usize, usize, bool)> = None;
-    let mut edge_kinds_logged: Option<Vec<(u32, crate::edge_bars::Mode)>> = None;
+    let mut edge_kinds_logged: Option<[(u32, crate::edge_bars::Mode); 6]> = None;
     info!(
         "wall spectrum {}",
         canvas.as_ref().map_or("off".to_owned(), |c| format!(
@@ -4214,11 +4214,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             .choice
                             .mode(crate::themes::edge_mode(edge_theme, kind))
                     };
-                    let kinds: Vec<(u32, crate::edge_bars::Mode)> = crate::surfaces::KIND_NAMES
-                        .iter()
-                        .map(|&(kind, _)| (kind, edge_mode(kind)))
-                        .collect();
-                    if edge_kinds_logged.as_ref() != Some(&kinds) {
+                    let kinds = crate::surfaces::KIND_NAMES.map(|(kind, _)| (kind, edge_mode(kind)));
+                    if edge_kinds_logged != Some(kinds) {
                         info!(
                             "edge bars: per kind {} ({})",
                             crate::edge_bars::kinds_line(&kinds),
