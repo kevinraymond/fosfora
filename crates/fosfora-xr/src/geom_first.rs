@@ -1055,6 +1055,8 @@ mod runtime {
     }
 
     impl Geom {
+        /// Board #5439: `points` is the depth light's tile, which the draws
+        /// bind at 3 and 4.
         /// Build it for an occluder mesh at `steps` (per target, the eye's
         /// not 0) over a `size` map whose swapchain `images` and per-target,
         /// per-eye `uniforms` the occluder already has; `show` is
@@ -1064,6 +1066,7 @@ mod runtime {
             device: &wgpu::Device,
             images: &[(wgpu::Texture, wgpu::TextureView)],
             uniforms: &[[wgpu::Buffer; 2]; 2],
+            points: &crate::env_depth::LightPoints,
             size: [u32; 2],
             steps: [u32; 2],
             show: bool,
@@ -1094,6 +1097,9 @@ mod runtime {
                     },
                     depth_entry(1, wgpu::ShaderStages::VERTEX_FRAGMENT),
                     storage_entry(2, wgpu::ShaderStages::VERTEX, true),
+                    // Board #5439: the depth light's tile of points.
+                    crate::env_depth::LightPoints::layout_entry(3),
+                    crate::env_depth::LightPoints::sampler_layout_entry(4),
                 ],
             });
             let source = mesh_geom_wgsl();
@@ -1290,6 +1296,8 @@ mod runtime {
                                         binding: 2,
                                         resource: drops[t].as_entire_binding(),
                                     },
+                                    points.entry(3),
+                                    points.sampler_entry(4),
                                 ],
                             })
                         })
@@ -1453,47 +1461,46 @@ mod runtime {
             }
         }
 
-        /// Whether the eye pass can draw the drop with the depth light
-        /// (board #5439): its pipeline validated.
+        /// Whether the passes can draw the drop with the depth light and
+        /// its veil (board #5439): their pipelines validated.
         pub fn can_light(&self) -> bool {
-            self.light_pipeline.is_some()
-        }
-
-        /// Whether the faces pass can draw the drop with the veil (board
-        /// #5439): its pipeline validated.
-        pub fn can_veil(&self) -> bool {
-            self.veil_pipeline.is_some()
+            self.light_pipeline.is_some() && self.veil_pipeline.is_some()
         }
 
         /// The pipeline and per-eye bind groups for each target's draw
         /// from swapchain image `index`, `None` where the occluder's own
         /// stay: the eye pass's tint with `geomfirstshow` (the drop in it
-        /// on with the test), the drop alone with the test running, with
-        /// the depth light in the eye pass when `light` asks for it and the
-        /// veil in the faces pass when `veil` does, where their pipelines
-        /// are there (board #5439).
+        /// on with the test), else the drop with each target's mesh draw
+        /// `kinds` (board #5439: depth alone, the veil, or the light) where
+        /// its test runs.
         pub fn draws(
             &self,
             index: u32,
-            light: bool,
-            veil: bool,
+            kinds: [crate::depth_light::MeshDraw; 2],
         ) -> [Option<(&wgpu::RenderPipeline, &[wgpu::BindGroup; 2])>; 2] {
+            use crate::depth_light::MeshDraw;
             let Some(groups) = self.draw_groups.get(index as usize) else {
                 return [None, None];
             };
+            let pipeline = |kind: MeshDraw| match kind {
+                MeshDraw::Depth => Some(&self.geom_pipeline),
+                MeshDraw::Veil => self.veil_pipeline.as_ref(),
+                MeshDraw::Light => self.light_pipeline.as_ref(),
+            };
+            let draw = |t: usize| {
+                (self.drop_vertices(t) > 0).then(|| {
+                    (
+                        pipeline(kinds[t]).unwrap_or(&self.geom_pipeline),
+                        &groups[t],
+                    )
+                })
+            };
             let eye = if self.opts.show {
                 Some((&self.tint_pipeline, &groups[0]))
-            } else if self.drop_vertices(0) > 0 {
-                let lit = self.light_pipeline.as_ref().filter(|_| light);
-                Some((lit.unwrap_or(&self.geom_pipeline), &groups[0]))
             } else {
-                None
+                draw(0)
             };
-            let faces = (self.drop_vertices(1) > 0).then(|| {
-                let veiled = self.veil_pipeline.as_ref().filter(|_| veil);
-                (veiled.unwrap_or(&self.geom_pipeline), &groups[1])
-            });
-            [eye, faces]
+            [eye, draw(1)]
         }
     }
 }

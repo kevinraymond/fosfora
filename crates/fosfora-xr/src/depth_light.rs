@@ -3,12 +3,21 @@
 //! dark the surfaces' light behind it shows between them.
 //!
 //! **What is lit.** The depth occluder's mesh (`env_depth.rs`,
-//! `envdepthmesh`) in the eye pass, where it still occludes. With geometry
-//! first on (`geom_first.rs`) that is exactly what no room box explains: a
-//! chair, a vacuum, a pile, a person, the wearer's own legs. The mesh
+//! `envdepthmesh`), where it still occludes. With geometry first on
+//! (`geom_first.rs`) that is exactly what no room box explains: a chair, a
+//! vacuum, a pile, a person, the wearer's own legs. The eye pass's mesh
 //! writes the same depth as before, so the particles are hidden behind real
 //! things as they were. The hands are not part of it, since the runtime
 //! removes them from the map and the hand mesh occludes them.
+//!
+//! **Where the points draw** ([`mesh_draws`]). In the faces layer
+//! (`faces_layer.rs`) when there is one, the default with passthrough: at
+//! half the eye's resolution a quarter of the eye's fragments shade them,
+//! and the runtime's upsample of the layer keeps them soft. That pass then
+//! draws its own mesh (twice the eye's step) with the light, after its
+//! occluders. The eye pass draws its mesh for the depth and the veil of its
+//! own light (the edge bars) alone, or depth alone where the veil has
+//! nothing to do. Without a faces layer the eye pass draws the points.
 //!
 //! **The veil** ([`veil`]). The map no longer hides the surfaces' light
 //! (the sky, the lit faces, the edge bars) with its coarse cutout. Those
@@ -18,9 +27,12 @@
 //! visible (level 0) the map hides the surfaces' light behind a real thing
 //! as before and the passthrough shows the thing; at level 0.5 half of it
 //! shows through, over the passthrough at half; with the room black
-//! (level 1) all of it shows, and the thing is only its points. The
-//! surfaces' own layer (`faces_layer.rs`) gets the same erase from the
-//! mesh drawn after its surfaces with the veil alone. The blend erases the
+//! (level 1) all of it shows, and the thing is only its points. The faces
+//! layer gets the same erase from its own mesh. At level 0 the veil erases
+//! all, which drawing the mesh first gives without shading the surfaces
+//! behind real things, so both passes do that there ([`veil_passes`]); at
+//! level 1 it erases nothing, so the eye pass's mesh writes depth alone.
+//! The blend erases the
 //! share in color and alpha alike, so at level 0 the eye layer stays
 //! transparent over the passthrough where the veil erased it. The points
 //! add their light: the layer's alpha carries the erase and not the light,
@@ -28,23 +40,31 @@
 //! second draw for. `depthlightveil 0` keeps the hard cutout at every
 //! level: the mesh draws before the surfaces, as in the first version.
 //!
-//! **The points** ([`fragment`], [`plane_points`], [`cell_point`]). Cells
-//! on a lattice in each of the world's three axis planes, a point
-//! somewhere in each cell (in fewer of them at a low fill, [`point_layout`]),
-//! a soft disk whose radius varies by cell ([`SIZE`]), swells with the
-//! music ([`SWELL`]) and twinkles at its own rate and phase. The fragment
-//! looks at the four cells around it in each plane it uses: a point lies
-//! within half a cell of its cell's center with a radius of at most half a
-//! cell, so no farther cell reaches it. The planes are weighted by the
-//! fourth power of the normal's components, so a surface uses the plane it
-//! faces. The share covered is `depthlightfill`, a quarter by default. A
+//! **The points** ([`fragment`], [`plane_points`], [`points_tile`]). A
+//! tile of soft points made once and uploaded as a small texture
+//! ([`TILE`] texels, [`TILE_CELLS`] cells a side, a point anywhere in each
+//! cell): per texel, the distance to the nearest point's center as a cone
+//! that falls to 0 at [`REACH`], and that point's size, twinkle phase and
+//! rank. The fragment reads it once per plane and octave at the world
+//! position and makes the point there: a soft disk of the fill's radius
+//! ([`point_layout`]) times its size ([`SIZE`]), swelling with the music
+//! ([`SWELL`]) and shrinking with what the vertex keeps, present where its
+//! rank is under the fill's share of cells, twinkling at 1, 2 or 3 times
+//! the clock by its size from its phase with a triangle wave ([`wave`]),
+//! no sine. Each plane and octave reads the tile from its own place
+//! ([`tile_offset`]), and it repeats every 16 cells (64 cm 1 m from the
+//! eye). The planes are weighted by the fourth power of the normal's
+//! components, so a surface uses the plane it faces; a second plane only
+//! between about 35 and 55 degrees off an axis ([`PLANE_MIN`]). The share
+//! covered is `depthlightfill`, a quarter by default. A
 //! cell's side is [`CELL_M`] at 1 m from the eye and doubles with each
 //! octave of the distance, the next octave fading in over the last part of
-//! each ([`OCTAVE_BLEND`]), so a thing keeps its look on screen near or far
-//! and the map's noise, larger far away, stays small against the cells.
-//! Through the points run the bands from the first version as a slow wave
-//! of light, one every [`BAND_SPACING_M`] of height, drifting up, its
-//! crests tinted toward the top's color. A surface that faces up takes the
+//! each ([`OCTAVE_BLEND`], the last quarter), so a thing keeps its look on
+//! screen near or far and the map's noise, larger far away, stays small
+//! against the cells. Through the points run the bands from the first
+//! version as a slow wave of light, one every [`BAND_SPACING_M`] of height,
+//! drifting up, its crests tinted toward the top's color, its profile the
+//! same triangle wave squared. A surface that faces up takes the
 //! top's color. The colors are the theme's ([`colors`]): the color the
 //! theme gives other surfaces, and the key's tint where the theme uses it
 //! anywhere. Aurora draws teal and the key's tint; a room with no theme
@@ -86,38 +106,45 @@
 //! crests follow the band the theme gives other surfaces ([`band`]; the rms
 //! for Aurora), smoothed ([`MUSIC_ATTACK_S`], [`MUSIC_RELEASE_S`]).
 //!
-//! **Draw order.** With the light on, the eye pass draws the box and hand
-//! occluders, the quad, the surfaces when they are in the eye pass, the
-//! highlight, the live outlines and the edge bars, then the map's mesh,
-//! then the particles and everything after them. The faces pass draws the
-//! occluders, its surfaces, then the mesh with the veil alone. Every
-//! occluder keeps the nearest depth (compare `Less` or `LessEqual`), so the
-//! depth buffer ends the same whatever the order. With the veil off, the
-//! mesh draws right after the box and hand occluders in both passes, as in
-//! the first version.
+//! **Draw order.** With the veil letting some light through, the eye pass
+//! draws the box and hand occluders, the quad, the surfaces when they are
+//! in the eye pass, the highlight, the live outlines and the edge bars,
+//! then the map's mesh, then the particles and everything after them; the
+//! faces pass draws the occluders, its surfaces, then the mesh. Otherwise
+//! a pass drawing the points draws them right after the box and hand
+//! occluders and before its surfaces, and a pass drawing the mesh for its
+//! depth alone draws it first, as before the light. Every occluder keeps
+//! the nearest depth (compare `Less` or `LessEqual`), so the depth buffer
+//! ends the same whatever the order.
 //!
-//! **Cost.** Per vertex of the eye mesh (26K per eye at the default step
-//! 2), in the vertex stage where the map is already read: four more texel
-//! loads, five rays, two one-sided differences, a cross product, a
-//! rotation, two square roots and three smoothsteps. Per fragment of the
-//! eye mesh: one `fwidth`, then where the vertex keeps light the points of
-//! one octave (two in the last part of each) in one plane (two or three
-//! where the surface faces between axes), four cells each, a cell being two
-//! integer hashes, a sine, a square root, a length and a smoothstep; then
-//! the band's cosine and smoothstep and the blend. Typical: four to eight
-//! cells; at most twenty-four. No texture, no discard, no `frag_depth`, so
-//! early depth testing works as before. The veil makes every fragment the
-//! mesh covers blend, and the surfaces behind a real thing are no longer
-//! rejected by its depth, so they shade where they did not. The faces pass
-//! adds the mesh at its step with a constant fragment.
+//! **Cost.** The first points (board #5439, measured on the Quest 3)
+//! evaluated four hashed cells per plane and octave per fragment, a sine,
+//! a square root and a length each, in the eye pass: about 4 ms for a pile
+//! covering 15 % of the view, and the veil about 1.5 ms more. Now, per
+//! vertex of the mesh that draws the points (the faces layer's, 6.6K per
+//! eye at step 4; the eye's, 26K, without a faces layer), in the vertex
+//! stage where the map is already read: four more texel loads, five rays,
+//! two one-sided differences, a cross product, a rotation, two square roots
+//! and three smoothsteps. Per fragment of that mesh: one `fwidth`, a
+//! normalize, the planes' weights, a `log2` and a square root, then one
+//! read of the tile (two in the last quarter of an octave or between two
+//! axes, at most six) with about forty arithmetic operations each, no
+//! transcendental; then the wave (a triangle, no cosine) and the blend.
+//! No discard and no `frag_depth`, so early depth testing works as before.
+//! The eye pass's mesh adds a constant fragment where the veil erases (0 <
+//! level < 1) and nothing over the depth-only occluder otherwise. Between
+//! the two levels the surfaces behind a real thing shade, where its depth
+//! rejected them before.
 //!
 //! **Knobs**, read at launch and polled once a second
 //! ([`DepthLightOptions::from_knobs`]): `debug.fosfora.depthlight 0|1`
 //! (default 1; 0 is the frame as it was, with depth only, no color write
 //! and the old order), `depthlightgain` (0 to [`GAIN_MAX`], default 1),
-//! `depthlightfill` (the share covered, [`FILL_RANGE`], default [`FILL`])
-//! and `depthlightveil 0|1` (default 1; 0 keeps the hard cutout at every
-//! level). It needs the occluder's mesh. With the full-screen pass
+//! `depthlightfill` (the share covered, [`FILL_RANGE`], default [`FILL`]),
+//! `depthlightveil 0|1` (default 1; 0 keeps the hard cutout at every
+//! level) and `depthlightpoints 0|1` (default 1; 0 draws no points, the
+//! mesh still drawn in the light's passes and order, to cost the points
+//! apart). It needs the occluder's mesh. With the full-screen pass
 //! (`envdepthmesh 0`, or `envdepthfilter 0` or 1) or the gray diagnostic
 //! (`envdepthshow`) it is off, and the log says so ([`blocked`]).
 //! `geomfirstshow`'s tint replaces it while on.
@@ -125,16 +152,19 @@
 //! **What it does not do.** It does not change what occludes the
 //! particles: the depth written, geometry first's rule and the hand
 //! removal are as before. It does not sharpen the map's edge; at levels
-//! between 0 and 1 the veil still follows the map's coarse silhouette.
-//! Where no box explains a wall (no scan, roam, geometry first off) the
-//! wall is points too.
+//! between 0 and 1 the veil still follows the map's coarse silhouette, in
+//! the faces layer the coarser one of its own mesh. Where no box explains a
+//! wall (no scan, roam, geometry first off) the wall is points too. In the
+//! faces layer the points' masses and edges come from its mesh at twice the
+//! step: a thing narrower than about four texels can fall between its
+//! vertices and carry no points.
 //!
 //! Plain numbers in, so it builds and tests on the desktop:
 //! [`vertex_light`] mirrors the WGSL's `mesh_light`, [`fragment`] its
 //! `fs_mesh_light` and [`veil`] the blend, and `tests/depth_light_gpu.rs`
 //! runs the stages on a desktop GPU against them.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::PI;
 
 use glam::{Vec2, Vec3, Vec4};
 
@@ -148,6 +178,7 @@ pub const KNOB: &str = "debug.fosfora.depthlight";
 pub const KNOB_GAIN: &str = "debug.fosfora.depthlightgain";
 pub const KNOB_FILL: &str = "debug.fosfora.depthlightfill";
 pub const KNOB_VEIL: &str = "debug.fosfora.depthlightveil";
+pub const KNOB_POINTS: &str = "debug.fosfora.depthlightpoints";
 
 /// Rows of [`rows`], the end of `struct EnvEye` from `light` on
 /// (`env_depth::LIGHT_ROW`).
@@ -159,9 +190,9 @@ pub const BAND_SPACING_M: f32 = 0.2;
 pub const STEADY: f32 = 0.55;
 /// How far a crest tints a side toward the top's color.
 pub const BAND_TINT: f32 = 0.35;
-/// The mean of the crest's profile, a squared raised cosine: what the wave
-/// fades into where a band spans few pixels.
-pub const CREST_MEAN: f32 = 0.375;
+/// The mean of the crest's profile, [`wave`] squared: what the wave fades
+/// into where a band spans few pixels (13/35).
+pub const CREST_MEAN: f32 = 13.0 / 35.0;
 /// Bands per pixel where the wave starts to fade into its mean and where
 /// it is gone: six pixels a band and two.
 pub const AA_BANDS_PER_PX: [f32; 2] = [1.0 / 6.0, 0.5];
@@ -184,8 +215,8 @@ pub const NEAR_KEEP: f32 = 0.5;
 /// eye buffer.
 pub const CELL_M: f32 = 0.04;
 /// The share of an octave of the distance where the next octave's cells
-/// start to fade in.
-pub const OCTAVE_BLEND: f32 = 0.6;
+/// start to fade in: the last quarter of each reads the tile twice.
+pub const OCTAVE_BLEND: f32 = 0.75;
 /// The octaves' range around 1 m, as in the WGSL: cells from 1/16 to 16
 /// times [`CELL_M`].
 pub const OCTAVE_RANGE: [f32; 2] = [-4.0, 3.999];
@@ -195,16 +226,23 @@ pub const OCTAVE_RANGE: [f32; 2] = [-4.0, 3.999];
 pub const AA_CELLS_PER_PX: [f32; 2] = [0.15, 0.4];
 /// Taken off each plane's share of the points, so a plane the surface
 /// barely faces fades out rather than drops; one left with none is skipped
-/// and the others shared out again, as in the WGSL.
-pub const PLANE_MIN: f32 = 0.05;
+/// and the others shared out again, as in the WGSL. A surface reads a
+/// second plane only between about 35 and 55 degrees off an axis.
+pub const PLANE_MIN: f32 = 0.12;
 /// A point's radius as factors of the base, uniformly between them.
 pub const SIZE: [f32; 2] = [0.7, 1.3];
 /// Where a point's soft edge starts, as a share of its radius.
 pub const SOFT_CORE: f32 = 0.35;
 /// The music's swell: the radius grows by up to this share.
 pub const SWELL: f32 = 0.2;
-/// A point's largest offset from its cell's center, cells: anywhere in it.
-pub const JITTER: f32 = 0.5;
+/// The points' tile ([`points_tile`]): texels a side, and cells a side in
+/// it, one point in each anywhere within it, the tile repeating every
+/// [`TILE_CELLS`] cells (64 cm 1 m from the eye).
+pub const TILE: u32 = 256;
+pub const TILE_CELLS: u32 = 16;
+/// The farthest a point's light reaches from its center (cells), the
+/// tile's R at 0: a radius stays within it.
+pub const REACH: f32 = 0.5;
 /// The share covered by points (`depthlightfill`), and the knob's range:
 /// the largest point must stay within half a cell, which caps it.
 pub const FILL: f32 = 0.25;
@@ -262,6 +300,10 @@ pub struct DepthLightOptions {
     /// `debug.fosfora.depthlightveil`: the surfaces' light shows through
     /// with the room dark (on), or the hard cutout at every level (off).
     pub veil: bool,
+    /// `debug.fosfora.depthlightpoints`: the points drawn (on), or none,
+    /// the mesh still drawn with the veil and in its order (off): the
+    /// points' cost apart, for a cost run.
+    pub points: bool,
 }
 
 impl Default for DepthLightOptions {
@@ -271,15 +313,16 @@ impl Default for DepthLightOptions {
             gain: 1.0,
             fill: FILL,
             veil: true,
+            points: true,
         }
     }
 }
 
 impl DepthLightOptions {
-    /// The options the four knobs ask, each read through `prop` (a system
+    /// The options the five knobs ask, each read through `prop` (a system
     /// property by name, `None` unset): `depthlight` and `depthlightveil`
     /// off only at `0`; an unreadable number is the default, one out of
-    /// range the nearest end.
+    /// range the nearest end. `depthlightpoints` off only at `0` too.
     pub fn from_knobs(prop: impl Fn(&str) -> Option<String>) -> Self {
         let d = Self::default();
         let number = |name: &str| {
@@ -293,6 +336,7 @@ impl DepthLightOptions {
             gain: number(KNOB_GAIN).map_or(d.gain, |v| v.clamp(0.0, GAIN_MAX)),
             fill: number(KNOB_FILL).map_or(d.fill, |v| v.clamp(FILL_RANGE[0], FILL_RANGE[1])),
             veil: !off(KNOB_VEIL),
+            points: !off(KNOB_POINTS),
         }
     }
 
@@ -310,10 +354,13 @@ impl DepthLightOptions {
             "on, points · gain {} · fill {} · {} · a point's peak alpha {ALPHA_LOW} with the room plain to {ALPHA_HIGH} black · cells {CELL_M} m at 1 m, doubling each octave · the light falls to {FAR_FLOOR} from {} to {} m · two masses part at {JUMP_MIN_M} m or {JUMP_REL} of the distance",
             self.gain,
             self.fill,
-            if self.veil {
-                "veil on: the surfaces' light shows through by the immersion level"
-            } else {
-                "veil off (debug.fosfora.depthlightveil 0): the hard cutout at every level"
+            match (self.veil, self.points) {
+                (true, true) => "veil on: the surfaces' light shows through by the immersion level",
+                (false, true) =>
+                    "veil off (debug.fosfora.depthlightveil 0): the hard cutout at every level",
+                (true, false) => "no points (debug.fosfora.depthlightpoints 0), the veil alone",
+                (false, false) =>
+                    "no points (debug.fosfora.depthlightpoints 0) and the hard cutout (debug.fosfora.depthlightveil 0)",
             },
             FADE_M[0],
             FADE_M[1],
@@ -370,6 +417,92 @@ pub fn peak_alpha(level: f32, gain: f32) -> f32 {
 /// nothing but its own folds.
 pub fn veil_share(level: f32, on: bool) -> f32 {
     if on { 1.0 - unit(level) } else { 1.0 }
+}
+
+/// The veil's share within which it counts as none or all (`veil_passes`).
+pub const VEIL_EPS: f32 = 1e-3;
+
+/// How the passes draw the mesh this frame with the veil asked for (`on`)
+/// at share `v` ([`veil_share`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VeilPasses {
+    /// The surfaces draw before the mesh, which erases `v` of them. Not at
+    /// `v` 1 (the room plain): the mesh first, as without the veil, gives
+    /// the same frame without shading the surfaces behind real things.
+    pub surfaces_first: bool,
+    /// The faces pass draws the mesh: first and depth only without the
+    /// veil's order, after its surfaces with the veil alone in it, but not
+    /// at `v` 0 (the room black), where there is nothing to erase.
+    pub faces_mesh: bool,
+}
+
+/// [`VeilPasses`] for the veil asked for (`on`) at share `v`.
+pub fn veil_passes(on: bool, v: f32) -> VeilPasses {
+    let surfaces_first = on && v < 1.0 - VEIL_EPS;
+    VeilPasses {
+        surfaces_first,
+        faces_mesh: !surfaces_first || v > VEIL_EPS,
+    }
+}
+
+/// What a pass draws the mesh with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshDraw {
+    /// Depth alone, color masked off: the occluder as before the light.
+    Depth,
+    /// Depth and the veil alone (`fs_mesh_veil`): the veil's share of the
+    /// light behind erased, nothing added.
+    Veil,
+    /// Depth, the veil and the points (`fs_mesh_light`).
+    Light,
+}
+
+/// How the eye pass and the faces pass draw the mesh in a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeshDraws {
+    pub eye: MeshDraw,
+    /// `None`: the faces pass draws no mesh.
+    pub faces: Option<MeshDraw>,
+    /// Both passes draw their surfaces before the mesh.
+    pub surfaces_first: bool,
+}
+
+/// How the passes draw the mesh with the light on or not (`lit`), the veil
+/// asked for (`veil_on`) at share `v`, and with a faces layer this frame
+/// (`faces_layer`). With a faces layer the points go there: at half the
+/// eye's resolution a quarter of the eye's fragments shade them, and the
+/// runtime's upsample of the layer keeps them soft. The eye pass then
+/// draws the mesh for its depth (the particles) and the veil of its own
+/// light (the edge bars): with the veil alone while it lets some light
+/// through and erases some, depth alone otherwise. Without a faces layer
+/// the eye pass draws the points. Without the light, as before: depth
+/// alone, first.
+pub fn mesh_draws(lit: bool, veil_on: bool, v: f32, faces_layer: bool) -> MeshDraws {
+    if !lit {
+        return MeshDraws {
+            eye: MeshDraw::Depth,
+            faces: Some(MeshDraw::Depth),
+            surfaces_first: false,
+        };
+    }
+    let passes = veil_passes(veil_on, v);
+    if faces_layer {
+        MeshDraws {
+            eye: if passes.surfaces_first && v > VEIL_EPS {
+                MeshDraw::Veil
+            } else {
+                MeshDraw::Depth
+            },
+            faces: Some(MeshDraw::Light),
+            surfaces_first: passes.surfaces_first,
+        }
+    } else {
+        MeshDraws {
+            eye: MeshDraw::Light,
+            faces: None,
+            surfaces_first: passes.surfaces_first,
+        }
+    }
 }
 
 /// What the blend leaves in a pixel holding `dst` (premultiplied RGBA)
@@ -561,9 +694,20 @@ pub fn rows(
         [FADE_M[0], FADE_M[1], FAR_FLOOR, unit(veil)],
         [JUMP_MIN_M, JUMP_REL, JUMP_SOFT, NEAR_KEEP],
         [CELL_M, OCTAVE_BLEND, AA_CELLS_PER_PX[0], AA_CELLS_PER_PX[1]],
-        [radius, presence, JITTER, 1.0 + SWELL * music],
+        [radius, presence, REACH, 1.0 + SWELL * music],
         [SIZE[0], SIZE[1], SOFT_CORE, TWINKLE_DEPTH],
     ]
+}
+
+/// `rows` for a target whose pixels are `scale` times the eye's in size
+/// (the faces layer: 2): the points' and the wave's fades start and end at
+/// `scale` times the cells and bands per pixel, so they fade at the same
+/// size on the eye's screen.
+pub fn scale_fades(mut rows: [[f32; 4]; ROWS], scale: f32) -> [[f32; 4]; ROWS] {
+    for (row, col) in [(3, 0), (3, 1), (6, 2), (6, 3)] {
+        rows[row][col] *= scale;
+    }
+    rows
 }
 
 /// This frame's [`Frame`] under the options `opts`, with `drive` stepped,
@@ -578,7 +722,11 @@ pub fn frame(
     Frame {
         rows: rows(
             drive,
-            peak_alpha(level, opts.gain),
+            if opts.points {
+                peak_alpha(level, opts.gain)
+            } else {
+                0.0
+            },
             colors(theme, key),
             opts.fill,
             veil_share(level, opts.veil),
@@ -691,7 +839,7 @@ pub fn vertex_light(
     }
 }
 
-/// The WGSL's `light_hash`: one PCG step.
+/// One PCG step, the points' tile's hash.
 pub fn hash(v: u32) -> u32 {
     let s = v.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
     let w = ((s >> ((s >> 28) + 4)) ^ s).wrapping_mul(277_803_737);
@@ -707,63 +855,112 @@ pub fn light_plane(v: Vec3, k: u32) -> Vec2 {
     }
 }
 
-/// One cell's point, from the cell's hash: whether the cell holds one,
-/// its center (cells), its size factor, and its twinkle's rate and phase.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CellPoint {
-    pub present: bool,
-    pub center: Vec2,
-    pub size: f32,
-    pub rate: f32,
-    pub phase: f32,
+/// Where the tile is read for plane `k` at octave `o`, as an offset of
+/// whole tiles' share (the WGSL's `light_offset`): each plane and octave
+/// reads it from its own place, so neighbors do not repeat each other.
+pub fn tile_offset(k: u32, o: i32) -> Vec2 {
+    let (k, o) = (k as f32, o as f32);
+    Vec2::new(0.31 * k + 0.17 * o, 0.57 * k + 0.29 * o)
 }
 
-/// Cell `c`'s point (`c` in cells of plane `k` at octave `o`), as the
-/// WGSL's `cell_point` draws it from two hashes.
-pub fn cell_layout(rows: &[[f32; 4]; ROWS], c: Vec2, k: u32, o: i32) -> CellPoint {
-    let [point, size_row] = [rows[7], rows[8]];
-    let (cx, cy) = (c.x as i32, c.y as i32);
-    let a = hash(
-        ((cx as u32).wrapping_mul(73_856_093) ^ (cy as u32).wrapping_mul(19_349_663))
-            ^ (k.wrapping_add(3u32.wrapping_mul((o + 16) as u32))).wrapping_mul(83_492_791),
-    );
+/// Cell `c` of the tile's point, from the cell's hash: its center (cells,
+/// anywhere in the cell), its size (0..1 over [`SIZE`]), its twinkle's
+/// phase and its rank (the fill keeps the points ranked under the share of
+/// cells it asks for).
+pub fn tile_point(c: [u32; 2]) -> (Vec2, f32, f32, f32) {
+    let a = hash(c[0] + TILE_CELLS * c[1] + 0x5bd1_e995);
     let b = hash(a);
-    let jitter = Vec2::new((a & 65535) as f32, (a >> 16) as f32) / 65535.0 - 0.5;
-    CellPoint {
-        present: ((b & 255) as f32 / 256.0) < point[1],
-        center: c + 0.5 + jitter * (2.0 * point[2]),
-        size: size_row[0] + (size_row[1] - size_row[0]) * (((b >> 8) & 255) as f32 / 255.0),
-        rate: 1.0 + (((b >> 16) & 255) % 3) as f32,
-        phase: (b >> 24) as f32 / 256.0,
-    }
+    let unit = |v: u32| (v & 65535) as f32 / 65536.0;
+    let center = Vec2::new(c[0] as f32 + unit(a), c[1] as f32 + unit(a >> 16));
+    (center, unit(b), unit(b >> 16), unit(hash(b)))
 }
 
-/// The light of cell `c`'s point (`c` in cells of plane `k` at octave
-/// `o`) at `g`, in cells, 0..1, with what the fragment keeps `keep`: the
-/// WGSL's `cell_point`.
-pub fn cell_point(rows: &[[f32; 4]; ROWS], g: Vec2, c: Vec2, k: u32, o: i32, keep: f32) -> f32 {
-    let [wave, point, size_row] = [rows[3], rows[7], rows[8]];
-    let cp = cell_layout(rows, c, k, o);
-    let radius = point[0] * cp.size * point[3] * keep.max(0.0).sqrt();
-    if !cp.present || radius <= 1e-4 {
+/// The tile of soft points the fragment samples ([`TILE`] texels a side,
+/// [`TILE_CELLS`] cells, a point in each, wrapping), made once: per texel,
+/// RGBA8, R `1 - d / REACH` for `d` the distance (cells) to the nearest
+/// point's center, 0 past the reach; G that point's twinkle phase; B its
+/// size; A its rank. Row-major, row 0 first.
+pub fn points_tile() -> Vec<[u8; 4]> {
+    let per = TILE / TILE_CELLS;
+    let n = TILE_CELLS as i32;
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut out = Vec::with_capacity((TILE * TILE) as usize);
+    for y in 0..TILE {
+        for x in 0..TILE {
+            let g = Vec2::new((x as f32 + 0.5) / per as f32, (y as f32 + 0.5) / per as f32);
+            let (gx, gy) = ((x / per) as i32, (y / per) as i32);
+            let mut best = (f32::INFINITY, 0.0, 0.0, 0.0);
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let (cx, cy) = (gx + dx, gy + dy);
+                    let wrap = [cx.rem_euclid(n) as u32, cy.rem_euclid(n) as u32];
+                    let (center, phase, size, rank) = tile_point(wrap);
+                    let shift =
+                        Vec2::new((cx - wrap[0] as i32) as f32, (cy - wrap[1] as i32) as f32);
+                    let d = (g - center - shift).length();
+                    if d < best.0 {
+                        best = (d, phase, size, rank);
+                    }
+                }
+            }
+            let (d, phase, size, rank) = best;
+            out.push([byte(1.0 - d / REACH), byte(phase), byte(size), byte(rank)]);
+        }
+    }
+    out
+}
+
+/// The tile read at `uv` (tiles; it repeats) as the GPU's linear filter
+/// reads RGBA8 at level 0: the four texels around, by their centers.
+pub fn sample_tile(tile: &[[u8; 4]], uv: Vec2) -> Vec4 {
+    let t = uv * TILE as f32 - 0.5;
+    let base = t.floor();
+    let f = t - base;
+    let at = |dx: i32, dy: i32| {
+        let x = (base.x as i32 + dx).rem_euclid(TILE as i32) as usize;
+        let y = (base.y as i32 + dy).rem_euclid(TILE as i32) as usize;
+        let [r, g, b, a] = tile[y * TILE as usize + x];
+        Vec4::new(r as f32, g as f32, b as f32, a as f32) / 255.0
+    };
+    let top = at(0, 0).lerp(at(1, 0), f.x);
+    let bottom = at(0, 1).lerp(at(1, 1), f.x);
+    top.lerp(bottom, f.y)
+}
+
+/// A smooth wave with period 1, 1 at whole numbers and 0 halfway: a
+/// triangle eased by a smoothstep, the light's cheap stand-in for a
+/// cosine (the WGSL's `light_wave`).
+pub fn wave(x: f32) -> f32 {
+    let t = ((x - x.floor()) * 2.0 - 1.0).abs();
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The points of plane `k` at octave `o` at `g` (cells), 0..1, from one
+/// read of the tile: the nearest point's disk at its size, the fill's
+/// radius ([`point_layout`]), the music's swell and the vertex's keep
+/// (`radius_scale`, all but the size), soft from [`SOFT_CORE`] of the
+/// radius; none where the point's rank is past the fill's share of cells;
+/// twinkling at 1, 2 or 3 times the clock by its size, from its own phase.
+/// The WGSL's `plane_points`.
+pub fn plane_points(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    g: Vec2,
+    k: u32,
+    o: i32,
+    radius_scale: f32,
+) -> f32 {
+    let [wave_row, point, size_row] = [rows[3], rows[7], rows[8]];
+    let s = sample_tile(tile, g / TILE_CELLS as f32 + tile_offset(k, o));
+    let d = (1.0 - s.x) * point[2];
+    let radius = radius_scale * (size_row[0] + (size_row[1] - size_row[0]) * s.z);
+    if s.w >= point[1] || radius <= 1e-4 {
         return 0.0;
     }
-    let core = 1.0 - smoothstep(radius * size_row[2], radius, (g - cp.center).length());
-    let twinkle = 1.0 - size_row[3]
-        + size_row[3] * (0.5 + 0.5 * (TAU * (cp.rate * wave[3] + cp.phase)).sin());
+    let core = 1.0 - smoothstep(radius * size_row[2], radius, d);
+    let rate = 1.0 + (s.z * 2.999).floor();
+    let twinkle = 1.0 - size_row[3] + size_row[3] * wave(rate * wave_row[3] + s.y);
     core * twinkle
-}
-
-/// The points of plane `k` at octave `o` at `g`, in cells: the brightest
-/// of the four cells around `g`. The WGSL's `plane_points`.
-pub fn plane_points(rows: &[[f32; 4]; ROWS], g: Vec2, k: u32, o: i32, keep: f32) -> f32 {
-    let base = (g - 0.5).floor();
-    (0..4u32)
-        .map(|j| {
-            let c = base + Vec2::new((j & 1) as f32, (j >> 1) as f32);
-            cell_point(rows, g, c, k, o, keep)
-        })
-        .fold(0.0, f32::max)
 }
 
 /// The interpolated normal made unit, +Z where it has no length (two
@@ -779,16 +976,18 @@ pub fn unit_normal(n: Vec3) -> Vec3 {
 /// The points' light at world point `p` seen from `eye` with the
 /// interpolated normal `normal` and keep `keep`, where the world moves by
 /// `fw` across a pixel (`fwidth`), before the peak, the distance and the
-/// wave: the planes and octaves of the WGSL's fragment.
+/// wave: the planes and octaves of the WGSL's fragment, one read of the
+/// tile each.
 pub fn points(
     rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
     eye: Vec3,
     p: Vec3,
     normal: Vec3,
     keep: f32,
     fw: Vec3,
 ) -> f32 {
-    let [_, _, _, _, _, _, cell_row, _, _] = *rows;
+    let [cell_row, point] = [rows[6], rows[7]];
     let n = unit_normal(normal);
     let n2 = n * n;
     let tri = n2 * n2 / n2.dot(n2);
@@ -799,6 +998,7 @@ pub fn points(
         .clamp(OCTAVE_RANGE[0], OCTAVE_RANGE[1]);
     let li = l.floor();
     let next = smoothstep(cell_row[1], 1.0, l - li);
+    let radius_scale = point[0] * point[3] * keep.max(0.0).sqrt();
     let (mut sum, mut used) = (0.0, 0.0);
     for j in 0..2 {
         let wo = if j == 1 { next } else { 1.0 - next };
@@ -815,7 +1015,10 @@ pub fn points(
             let f = light_plane(fw, k);
             let aa = 1.0 - smoothstep(cell_row[2], cell_row[3], f.x.max(f.y) / cell);
             if aa > 0.0 {
-                sum += wo * wk * aa * plane_points(rows, light_plane(p, k) / cell, k, o, keep);
+                sum += wo
+                    * wk
+                    * aa
+                    * plane_points(rows, tile, light_plane(p, k) / cell, k, o, radius_scale);
             }
             used += wo * wk;
         }
@@ -825,10 +1028,9 @@ pub fn points(
 
 /// The wave's term at height `y` (m) with the light's `rows`, before the
 /// music and its fade: the crest's profile, 1 on a crest and 0 midway
-/// between two. A function of the height alone.
+/// between two, [`wave`] squared. A function of the height alone.
 pub fn crest(rows: &[[f32; 4]; ROWS], y: f32) -> f32 {
-    let h = y * rows[0][0] - rows[0][1];
-    let c = 0.5 + 0.5 * (TAU * h).cos();
+    let c = wave(y * rows[0][0] - rows[0][1]);
     c * c
 }
 
@@ -839,6 +1041,7 @@ pub fn crest(rows: &[[f32; 4]; ROWS], y: f32) -> f32 {
 /// ([`veil`]) erases by.
 pub fn fragment(
     rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
     eye: Vec3,
     p: Vec3,
     normal: Vec3,
@@ -851,7 +1054,7 @@ pub fn fragment(
     let (mut lit, mut up) = (0.0, 0.0);
     if keep > 0.0 && weight > 0.0 {
         up = unit_normal(normal).y.clamp(0.0, 1.0);
-        lit = points(rows, eye, p, normal, keep, fw);
+        lit = points(rows, tile, eye, p, normal, keep, fw);
     }
     let fade_wave = 1.0 - smoothstep(wave[0], wave[1], fw.y * light[0]);
     let crest = wave[2] + (crest(rows, p.y) - wave[2]) * fade_wave;
@@ -872,6 +1075,7 @@ mod tests {
     use crate::math::{self, Fov};
     use crate::surfaces::{GREEN, TEAL};
     use glam::Quat;
+    use std::f32::consts::TAU;
 
     /// The Quest 3's depth fov (v207).
     const FOV: Fov = Fov {
@@ -982,6 +1186,12 @@ mod tests {
         rows
     }
 
+    /// The points' tile, made once for the tests.
+    fn tile() -> &'static [[u8; 4]] {
+        static TILE_ONCE: std::sync::OnceLock<Vec<[u8; 4]>> = std::sync::OnceLock::new();
+        TILE_ONCE.get_or_init(points_tile)
+    }
+
     /// A seated eye 1.2 m up looking ahead and a little down.
     fn seated() -> EyeReprojection {
         eye_at(Vec3::new(0.0, 1.2, 0.0), Quat::from_rotation_x(-0.25))
@@ -1014,11 +1224,77 @@ mod tests {
             [point[0], point[1], point[2], 0.0]
         );
         assert_close!(veil_share(f32::NAN, true), 1.0);
+        // The passes: the veil's order only while it lets some light
+        // through, the faces pass's mesh only while it erases some.
+        let passes = |level: f32, on: bool| veil_passes(on, veil_share(level, on));
+        assert_eq!(
+            passes(0.0, true),
+            VeilPasses {
+                surfaces_first: false,
+                faces_mesh: true
+            }
+        );
+        assert_eq!(
+            passes(0.5, true),
+            VeilPasses {
+                surfaces_first: true,
+                faces_mesh: true
+            }
+        );
+        assert_eq!(
+            passes(1.0, true),
+            VeilPasses {
+                surfaces_first: true,
+                faces_mesh: false
+            }
+        );
+        for level in [0.0, 0.5, 1.0] {
+            assert_eq!(
+                passes(level, false),
+                VeilPasses {
+                    surfaces_first: false,
+                    faces_mesh: true
+                }
+            );
+        }
+        // The faces layer's fades, at twice its cells per pixel.
+        let base = rows(&Drive::default(), 1.0, [TEAL; 2], FILL, 0.0);
+        let half = scale_fades(base, 2.0);
+        assert_close!(
+            [half[3][0], half[3][1]],
+            [2.0 * base[3][0], 2.0 * base[3][1]]
+        );
+        assert_close!(
+            [half[6][2], half[6][3]],
+            [2.0 * base[6][2], 2.0 * base[6][3]]
+        );
+        assert_close!(half[0], base[0]);
+        // Where the points draw: the faces layer when there is one, the
+        // eye pass then holding the depth and its own veil.
+        let draws =
+            |level: f32, on: bool, faces: bool| mesh_draws(true, on, veil_share(level, on), faces);
+        use MeshDraw::{Depth, Light, Veil};
+        let want = |eye, faces, surfaces_first| MeshDraws {
+            eye,
+            faces,
+            surfaces_first,
+        };
+        assert_eq!(draws(0.0, true, true), want(Depth, Some(Light), false));
+        assert_eq!(draws(0.5, true, true), want(Veil, Some(Light), true));
+        assert_eq!(draws(1.0, true, true), want(Depth, Some(Light), true));
+        assert_eq!(draws(1.0, false, true), want(Depth, Some(Light), false));
+        assert_eq!(draws(0.5, true, false), want(Light, None, true));
+        assert_eq!(draws(0.0, true, false), want(Light, None, false));
+        assert_eq!(
+            mesh_draws(false, true, 0.5, true),
+            want(Depth, Some(Depth), false)
+        );
         // The rows carry it, and the fragment hands it on as its alpha.
         let mut rows = lit_rows();
         rows[4][3] = veil_share(0.25, true);
         let f = fragment(
             &rows,
+            tile(),
             Vec3::ZERO,
             Vec3::new(0.0, 0.0, -1.0),
             Vec3::Z,
@@ -1042,7 +1318,7 @@ mod tests {
         let row: Vec<Vec3> = (0..200)
             .map(|i| base + across * (i as f32 * 0.002 - 0.2))
             .collect();
-        let light = |e: Vec3, p: Vec3| points(&rows, e, p, n, 1.0, fw);
+        let light = |e: Vec3, p: Vec3| points(&rows, tile(), e, p, n, 1.0, fw);
         let lit: Vec<f32> = row.iter().map(|&p| light(eye, p)).collect();
         assert!(lit.iter().any(|&v| v > 0.4) && lit.iter().any(|&v| v < 0.01));
         // The map's noise moves each point along its view ray by up to
@@ -1138,36 +1414,121 @@ mod tests {
     fn the_fringe_between_two_masses_carries_shrinking_points() {
         // Across the fringe the keep falls from the near side's to none,
         // and a point's radius with its square root: the points shrink and
-        // thin out, no line. Take a cell's point and see how far from its
-        // center it still lights at each keep.
+        // thin out, no line. Take one point of the tile and see how far
+        // from its center it still lights at each keep.
         let rows = lit_rows();
-        let (c, cp) = (0..100)
-            .map(|i| Vec2::new(i as f32, 7.0))
-            .map(|c| (c, cell_layout(&rows, c, 2, 0)))
-            .find(|(_, cp)| cp.present)
-            .expect("a cell with a point");
+        // A point whose neighbors stand at least a cell off, so its own
+        // disk is what lights around it.
+        let cells = (0..TILE_CELLS).flat_map(|y| (0..TILE_CELLS).map(move |x| [x, y]));
+        let spacing = |c: [u32; 2]| {
+            let (center, ..) = tile_point(c);
+            let n = TILE_CELLS as i32;
+            (-1..=1)
+                .flat_map(|dy| (-1..=1).map(move |dx| (dx, dy)))
+                .filter(|&d| d != (0, 0))
+                .map(|(dx, dy)| {
+                    let (x, y) = (c[0] as i32 + dx, c[1] as i32 + dy);
+                    let w = [x.rem_euclid(n) as u32, y.rem_euclid(n) as u32];
+                    let shift = Vec2::new((x - w[0] as i32) as f32, (y - w[1] as i32) as f32);
+                    (tile_point(w).0 + shift - center).length()
+                })
+                .fold(f32::INFINITY, f32::min)
+        };
+        let lonely = cells
+            .max_by(|a, b| spacing(*a).total_cmp(&spacing(*b)))
+            .unwrap();
+        assert!(spacing(lonely) > 1.0, "{}", spacing(lonely));
+        let (center, _, size, _) = tile_point(lonely);
+        // The plane's coordinates that read the tile at the center.
+        let g = center - tile_offset(2, 0) * TILE_CELLS as f32;
+        let scale = |keep: f32| rows[7][0] * rows[7][3] * keep.sqrt();
         let reach = |keep: f32| {
-            (0..400)
+            (0..500)
                 .map(|i| i as f32 * 0.001)
                 .take_while(|&dx| {
-                    cell_point(&rows, cp.center + Vec2::new(dx, 0.0), c, 2, 0, keep) > 0.0
+                    plane_points(&rows, tile(), g + Vec2::new(dx, 0.0), 2, 0, scale(keep)) > 0.0
                 })
                 .count() as f32
                 * 0.001
         };
-        let radius = |keep: f32| rows[7][0] * cp.size * rows[7][3] * keep.sqrt();
+        let radius = |keep: f32| scale(keep) * (SIZE[0] + (SIZE[1] - SIZE[0]) * size);
         for keep in [1.0, NEAR_KEEP, 0.1] {
+            // The tile holds the distance in 8 bits and is read through a
+            // linear filter: a few thousandths of a cell.
             assert!(
-                (reach(keep) - radius(keep)).abs() < 0.002,
+                (reach(keep) - radius(keep)).abs() < 0.01,
                 "{keep}: {} vs {}",
                 reach(keep),
                 radius(keep)
             );
         }
         assert_close!(reach(0.0), 0.0);
-        // So a point's area follows the keep.
         let area = |keep: f32| radius(keep).powi(2);
         assert!((area(NEAR_KEEP) / area(1.0) - NEAR_KEEP).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_tile_holds_a_soft_point_in_every_cell_and_wraps() {
+        let t = tile();
+        assert_eq!(t.len(), (TILE * TILE) as usize);
+        let per = (TILE / TILE_CELLS) as f32;
+        let mut shared = 0;
+        for cy in 0..TILE_CELLS {
+            for cx in 0..TILE_CELLS {
+                let (center, phase, size, rank) = tile_point([cx, cy]);
+                // At the center, all of its reach (the linear filter rounds
+                // the cone's tip by under a texel) and its own attributes,
+                // but where another point's center lies within a texel or
+                // two and the filter blends the two.
+                let s = sample_tile(t, center / TILE_CELLS as f32);
+                assert!(s.x > 0.9, "{cx} {cy}: {s}");
+                let own = (s.y - phase).abs() < 0.01
+                    && (s.z - size).abs() < 0.01
+                    && (s.w - rank).abs() < 0.01;
+                shared += usize::from(!own);
+                assert!(center.x - (cx as f32) < 1.0 && center.y - (cy as f32) < 1.0);
+            }
+        }
+        assert!(shared <= 3, "{shared}");
+        // Wrapping: the texels across the tile's edge read like neighbors.
+        let row = |y: usize| (0..TILE as usize).map(move |x| t[y * TILE as usize + x][0]);
+        let jumps = |v: Vec<u8>| v.windows(2).map(|w| w[0].abs_diff(w[1])).max().unwrap();
+        let seam: Vec<u8> = (0..TILE as usize)
+            .map(|y| t[y * TILE as usize + TILE as usize - 1][0].abs_diff(t[y * TILE as usize][0]))
+            .collect();
+        assert!(
+            seam.iter().max() <= Some(&(jumps(row(7).collect()) + 4)),
+            "{seam:?}"
+        );
+        // The cone falls 255 / (REACH * per) a texel.
+        let slope = 255.0 / (REACH * per);
+        assert!(jumps(row(100).collect()) as f32 <= slope + 2.0);
+        // A point's area: at most a quarter of a cell's per point, as the
+        // fill's largest radius allows.
+        let (radius, _) = point_layout(FILL_RANGE[1]);
+        assert!(radius * SIZE[1] * (1.0 + SWELL) <= REACH);
+    }
+
+    #[test]
+    fn the_wave_is_a_cheap_cosine() {
+        // 1 at whole numbers, 0 halfway, period 1, within about a hundredth
+        // of the raised cosine it stands in for, and its square's mean is
+        // CREST_MEAN.
+        for x in [-3.0f32, -1.0, 0.0, 1.0, 7.0] {
+            assert!((wave(x) - 1.0).abs() < 1e-6);
+            assert!(wave(x + 0.5) < 1e-6);
+        }
+        let n = 4000;
+        let (mut worst, mut mean) = (0.0f32, 0.0f32);
+        for i in 0..n {
+            let x = i as f32 / n as f32 * 3.0 - 1.5;
+            let cosine = 0.5 + 0.5 * (TAU * x).cos();
+            worst = worst.max((wave(x) - cosine).abs());
+            assert!((wave(x) - wave(x + 1.0)).abs() < 1e-4);
+            mean += wave(x).powi(2) / n as f32;
+        }
+        assert!(worst < 0.012, "{worst}");
+        assert!((mean - CREST_MEAN).abs() < 2e-3, "{mean}");
     }
 
     #[test]
@@ -1194,6 +1555,7 @@ mod tests {
         let at = |bright: f32| {
             fragment(
                 &rows,
+                tile(),
                 Vec3::ZERO,
                 Vec3::new(0.0, 0.0, -3.0),
                 Vec3::Z,
@@ -1272,13 +1634,13 @@ mod tests {
         d.step(0.0, 0.0, 0.0);
         for fill in [0.1, FILL, FILL_RANGE[1]] {
             let rows = rows(&d, 1.0, [TEAL; 2], fill, 0.0);
+            let scale = rows[7][0] * rows[7][3];
             // Over 40 x 40 cells of the plane facing z, sampled finely.
             let (mut covered, mut n) = (0, 0);
             for i in 0..400 {
                 for j in 0..400 {
                     let g = Vec2::new(i as f32 * 0.1 + 0.05, j as f32 * 0.1 + 0.05);
-                    let v = plane_points(&rows, g, 2, 0, 1.0);
-                    covered += usize::from(v > 0.0);
+                    covered += usize::from(plane_points(&rows, tile(), g, 2, 0, scale) > 0.0);
                     n += 1;
                 }
             }
@@ -1291,6 +1653,7 @@ mod tests {
         let p = Vec3::new(0.013, 1.007, -1.0);
         let small = points(
             &rows,
+            tile(),
             Vec3::new(0.0, 1.2, 0.0),
             p,
             Vec3::Z,
@@ -1333,6 +1696,7 @@ mod tests {
         let at = |z: f32| {
             points(
                 &rows,
+                tile(),
                 eye,
                 Vec3::new(0.0123, 0.0456, -z),
                 Vec3::Z,
@@ -1368,7 +1732,16 @@ mod tests {
         rows[2] = [rows[1][0], rows[1][1], rows[1][2], BAND_TINT];
         let eye = Vec3::new(0.0, 1.0, 0.0);
         let at = |rows: &[[f32; 4]; ROWS], p: Vec3, fwy: f32| {
-            fragment(rows, eye, p, Vec3::Y, 1.0, 1.0, Vec3::new(1e-5, fwy, 1e-5))[1]
+            fragment(
+                rows,
+                tile(),
+                eye,
+                p,
+                Vec3::Y,
+                1.0,
+                1.0,
+                Vec3::new(1e-5, fwy, 1e-5),
+            )[1]
         };
         let lit = (0..400)
             .map(|i| Vec3::new(i as f32 * 0.001, 0.0, -0.5))
@@ -1506,12 +1879,12 @@ mod tests {
             rows[6],
             [CELL_M, OCTAVE_BLEND, AA_CELLS_PER_PX[0], AA_CELLS_PER_PX[1]]
         );
-        assert_close!(rows[7], [radius, presence, JITTER, 1.0 + SWELL * d.music()]);
+        assert_close!(rows[7], [radius, presence, REACH, 1.0 + SWELL * d.music()]);
         assert_close!(rows[8], [SIZE[0], SIZE[1], SOFT_CORE, TWINKLE_DEPTH]);
         const {
             assert!(FADE_M[0] < FADE_M[1] && AA_BANDS_PER_PX[0] < AA_BANDS_PER_PX[1]);
             assert!(AA_CELLS_PER_PX[0] < AA_CELLS_PER_PX[1] && SIZE[0] < SIZE[1]);
-            assert!(JITTER <= 0.5 && JUMP_SOFT < 1.0);
+            assert!(REACH <= 0.5 && JUMP_SOFT < 1.0);
         };
         // The rows end the occluder's uniform, from `light` on.
         assert_eq!(LIGHT_ROW + ROWS, UNIFORM_ROWS);
@@ -1554,6 +1927,7 @@ mod tests {
             format!("const PLANE_MIN: f32 = {PLANE_MIN:?};"),
             format!("const OCTAVE_MIN: f32 = {:?};", OCTAVE_RANGE[0]),
             format!("const OCTAVE_MAX: f32 = {:?};", OCTAVE_RANGE[1]),
+            format!("const TILE_CELLS: f32 = {:?};", TILE_CELLS as f32),
         ] {
             assert!(ENV_DEPTH_WGSL.contains(&line), "{line}");
         }
@@ -1577,6 +1951,20 @@ mod tests {
         assert!(!knobs(&[(KNOB, " 0 ")]).on);
         assert!(knobs(&[(KNOB, "yes")]).on);
         assert!(!knobs(&[(KNOB_VEIL, "0")]).veil);
+        assert!(knobs(&[]).points && !knobs(&[(KNOB_POINTS, "0")]).points);
+        let no_points = frame(
+            &knobs(&[(KNOB_POINTS, "0")]),
+            &Drive::default(),
+            None,
+            [1.0; 3],
+            1.0,
+        );
+        assert_close!(no_points.rows[0][2], 0.0);
+        assert!(
+            knobs(&[(KNOB_POINTS, "0")])
+                .line(None)
+                .contains("no points")
+        );
         assert!(knobs(&[(KNOB_VEIL, "1")]).veil);
         assert_close!(knobs(&[(KNOB_GAIN, "2.5")]).gain, 2.5);
         assert_close!(knobs(&[(KNOB_GAIN, "50")]).gain, GAIN_MAX);

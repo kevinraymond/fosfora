@@ -599,7 +599,7 @@ struct EnvEye {
     // points start and finish fading out
     light_cell: vec4<f32>,
     // x the points' base radius (cells), y the share of cells with a
-    // point, z a point's largest offset from its cell's center (cells), w
+    // point, z the farthest a point's light reaches in the tile (cells), w
     // the swell (a radius factor from the music)
     light_point: vec4<f32>,
     // x, y a point's radius as factors of the base, z where its soft edge
@@ -608,6 +608,10 @@ struct EnvEye {
 }
 @group(0) @binding(0) var<uniform> env: EnvEye;
 @group(0) @binding(1) var depth_map: texture_depth_2d_array;
+// The depth light's tile of soft points (depth_light::points_tile) and its
+// linear, repeating sampler, read by fs_mesh_light alone.
+@group(0) @binding(3) var light_points: texture_2d<f32>;
+@group(0) @binding(4) var light_sampler: sampler;
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -885,20 +889,14 @@ fn vs_mesh_light(@builtin(vertex_index) i: u32) -> LightOut {
     return mesh_light(i);
 }
 
-const TAU: f32 = 6.2831855;
 // Taken off each plane's share of the points; a plane left with none is
 // skipped.
-const PLANE_MIN: f32 = 0.05;
+const PLANE_MIN: f32 = 0.12;
 // The cells' octaves, from 1/16 to 16 times the side 1 m from the eye.
 const OCTAVE_MIN: f32 = -4.0;
 const OCTAVE_MAX: f32 = 3.999;
-
-// A 32-bit integer hash: one PCG step (depth_light::hash is the same).
-fn light_hash(v: u32) -> u32 {
-    let s = v * 747796405u + 2891336453u;
-    let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
-    return (w >> 22u) ^ w;
-}
+// The tile's cells a side.
+const TILE_CELLS: f32 = 16.0;
 
 // Coordinates in the cells' plane k: across x (k 0), y (1) or z (2).
 fn light_plane(v: vec3<f32>, k: u32) -> vec2<f32> {
@@ -911,60 +909,56 @@ fn light_plane(v: vec3<f32>, k: u32) -> vec2<f32> {
     return v.xy;
 }
 
-// The light of cell c's point (c in cells of plane k at octave o) at g, in
-// cells, 0..1 (depth_light::cell_point is the CPU mirror). A cell has a
-// point with the chance light_point.y, anywhere within light_point.z of
-// its center; a soft disk whose radius varies by cell, swells with the
-// music and shrinks with keep; twinkling at its own rate and phase.
-fn cell_point(g: vec2<f32>, c: vec2<f32>, k: u32, o: i32, keep: f32) -> f32 {
-    let ci = vec2<i32>(c);
-    let a = light_hash(
-        ((bitcast<u32>(ci.x) * 73856093u) ^ (bitcast<u32>(ci.y) * 19349663u))
-            ^ ((k + 3u * bitcast<u32>(o + 16)) * 83492791u)
-    );
-    let b = light_hash(a);
-    let present = f32(b & 255u) / 256.0 < env.light_point.y;
-    let size = mix(env.light_size.x, env.light_size.y, f32((b >> 8u) & 255u) / 255.0);
-    let jitter = vec2<f32>(f32(a & 65535u), f32(a >> 16u)) / 65535.0 - 0.5;
-    let center = c + 0.5 + jitter * (2.0 * env.light_point.z);
-    let radius = env.light_point.x * size * env.light_point.w * sqrt(keep);
-    let core = 1.0 - smoothstep(radius * env.light_size.z, radius, length(g - center));
-    let rate = 1.0 + f32(((b >> 16u) & 255u) % 3u);
-    let phase = f32(b >> 24u) / 256.0;
-    let twinkle = 1.0 - env.light_size.w
-        + env.light_size.w * (0.5 + 0.5 * sin(TAU * (rate * env.light_wave.w + phase)));
-    return select(0.0, core * twinkle, present && radius > 1e-4);
+// Where plane k at octave o reads the tile (depth_light::tile_offset).
+fn light_offset(k: u32, o: i32) -> vec2<f32> {
+    let kf = f32(k);
+    let octave = f32(o);
+    return vec2<f32>(0.31 * kf + 0.17 * octave, 0.57 * kf + 0.29 * octave);
 }
 
-// The points of plane k at octave o at g, in cells: the brightest of the
-// four cells around g. A point lies within half a cell of its cell's
-// center and its radius is at most half a cell, so no other cell reaches g.
-fn plane_points(g: vec2<f32>, k: u32, o: i32, keep: f32) -> f32 {
-    let base = floor(g - 0.5);
-    var light = 0.0;
-    for (var j = 0u; j < 4u; j++) {
-        let c = base + vec2<f32>(f32(j & 1u), f32(j >> 1u));
-        light = max(light, cell_point(g, c, k, o, keep));
-    }
-    return light;
+// A smooth wave with period 1, 1 at whole numbers and 0 halfway: a
+// triangle eased by a smoothstep (depth_light::wave), for a cosine.
+fn light_wave(x: f32) -> f32 {
+    let t = abs(fract(x) * 2.0 - 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// The points of plane k at octave o at g, in cells, 0..1, from one read of
+// the tile (depth_light::plane_points is the CPU mirror): the nearest
+// point's disk at its size times radius_scale (the fill's radius, the
+// music's swell and the vertex's keep), soft from light_size.z of its
+// radius; none where its rank is past the fill's share; twinkling at 1, 2
+// or 3 times the clock by its size, from its phase.
+fn plane_points(g: vec2<f32>, k: u32, o: i32, radius_scale: f32) -> f32 {
+    let s = textureSampleLevel(light_points, light_sampler, g / TILE_CELLS + light_offset(k, o), 0.0);
+    let d = (1.0 - s.r) * env.light_point.z;
+    let radius = radius_scale * mix(env.light_size.x, env.light_size.y, s.b);
+    let core = 1.0 - smoothstep(radius * env.light_size.z, radius, d);
+    // 1, 2 or 3 by the point's size: the byte steps of s.b stay clear of
+    // the floor's edges.
+    let rate = 1.0 + floor(s.b * 2.999);
+    let twinkle = 1.0 - env.light_size.w + env.light_size.w * light_wave(rate * env.light_wave.w + s.g);
+    return select(0.0, core * twinkle, s.a < env.light_point.y && radius > 1e-4);
 }
 
 // The depth light (depth_light::fragment is the CPU mirror): points of
-// light on the surface, fixed in the room. Cells on a lattice in each of
-// the world's three axis planes, weighted by how squarely the surface
-// faces each (the normal's fourth powers), so noise along the view ray
-// barely moves a point; the cells' side doubles with each octave of the
-// distance from the eye, the next octave fading in over the last part of
-// each, so far things keep their look on screen. Where the cells get a few
-// pixels small (a surface seen edge-on, the fringe that leans back at a
-// step) the points fade out: a strip without points reads as the sky
-// between them, where a glow would draw the step. Through the points, bands
-// of light at even heights drifting up, the crests tinted toward the
-// top's color; a top in the top's color. The alpha out is the veil, which
-// the blend uses to erase that share of the light already behind (rgb
-// One, OneMinusSrcAlpha; alpha Zero, OneMinusSrcAlpha), so the light adds
-// and the surfaces behind keep 1 - veil. No discard and no frag_depth, so
-// early depth testing stays on.
+// light on the surface, fixed in the room, read from a tile of soft points
+// made once. The tile lies in each of the world's three axis planes,
+// weighted by how squarely the surface faces each (the normal's fourth
+// powers, a plane under PLANE_MIN skipped), so noise along the view ray
+// barely moves a point; one read per plane, one plane but where the
+// surface faces between axes. A cell's side doubles with each octave of
+// the distance from the eye, the next octave fading in over the last part
+// of each, so far things keep their look on screen; one octave but there.
+// Where the cells get a few pixels small (a surface seen edge-on, the
+// fringe that leans back at a step) the points fade out: a strip without
+// points reads as the sky between them, where a glow would draw the step.
+// Through the points, a slow wave of light at even heights drifting up,
+// the crests tinted toward the top's color; a top in the top's color. The
+// alpha out is the veil, which the blend uses to erase that share of the
+// light already behind (rgb One, OneMinusSrcAlpha; alpha Zero,
+// OneMinusSrcAlpha), so the light adds and the surfaces behind keep
+// 1 - veil. No discard and no frag_depth, so early depth testing stays on.
 @fragment
 fn fs_mesh_light(in: LightOut) -> @location(0) vec4<f32> {
     let p = in.world.xyz;
@@ -983,6 +977,7 @@ fn fs_mesh_light(in: LightOut) -> @location(0) vec4<f32> {
         let l = clamp(log2(max(length(p - env.eye.xyz), 1e-3)), OCTAVE_MIN, OCTAVE_MAX);
         let li = floor(l);
         let next = smoothstep(env.light_cell.y, 1.0, l - li);
+        let radius_scale = env.light_point.x * env.light_point.w * sqrt(keep);
         var sum = 0.0;
         var used = 0.0;
         for (var j = 0; j < 2; j++) {
@@ -1001,16 +996,15 @@ fn fs_mesh_light(in: LightOut) -> @location(0) vec4<f32> {
                 let f = light_plane(fw, k);
                 let aa = 1.0 - smoothstep(env.light_cell.z, env.light_cell.w, max(f.x, f.y) / cell);
                 if aa > 0.0 {
-                    sum += wo * wk * aa * plane_points(light_plane(p, k) / cell, k, o, keep);
+                    sum += wo * wk * aa * plane_points(light_plane(p, k) / cell, k, o, radius_scale);
                 }
                 used += wo * wk;
             }
         }
         points = sum / max(used, 1e-6);
     }
-    let h = p.y * env.light.x - env.light.y;
     let wave = 1.0 - smoothstep(env.light_wave.x, env.light_wave.y, fw.y * env.light.x);
-    let c = 0.5 + 0.5 * cos(TAU * h);
+    let c = light_wave(p.y * env.light.x - env.light.y);
     let crest = mix(env.light_wave.z, c * c, wave);
     let band = env.light_side.w + (1.0 - env.light_side.w) * crest * env.light.w;
     let tint = clamp(up + env.light_top.w * crest, 0.0, 1.0);
@@ -1525,12 +1519,12 @@ impl DepthCollide {
 }
 
 #[cfg(target_os = "android")]
-pub(crate) use runtime::light_pipeline;
-#[cfg(target_os = "android")]
 pub use runtime::{
     AtlasOutcome, AtlasPass, EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthPasses, EnvDepthSlot,
     OccluderTarget, PlanesPass,
 };
+#[cfg(target_os = "android")]
+pub(crate) use runtime::{LightPoints, light_pipeline};
 
 /// The OpenXR provider, its swapchain wrapped as wgpu textures, and the
 /// occluder pipeline. The `openxr` crate binds the extension's function
@@ -1556,6 +1550,7 @@ mod runtime {
         atlas_params, atlas_row_texels, check_layer, mesh_indices, mesh_indices_len, mesh_side,
         planes_bytes, planes_wgsl,
     };
+    use crate::depth_light::{MeshDraw, MeshDraws};
     use crate::geom_first::{Geom, GeomFirstOptions, GeomPass, set_drop_vertices};
     use crate::gfx::{EyeCamera, Gfx, SWAPCHAIN_FORMAT};
     use crate::live_wire::{DepthGrid, LAYER};
@@ -1725,29 +1720,21 @@ mod runtime {
         /// Per target (`OccluderTarget`), the mesh's index buffer, `None`
         /// for the full-screen pass.
         meshes: [Option<&'a Mesh>; 2],
-        /// Board #5439: the eye pass's draw is the depth light's.
-        lit: bool,
-        /// Board #5439: with the light, the veil is on: the faces pass's
-        /// draw is the veil's, and both passes draw the mesh after their
-        /// surfaces.
-        veiled: bool,
+        /// Board #5439: how each pass draws the mesh this frame
+        /// (`depth_light::mesh_draws`).
+        draws: MeshDraws,
     }
 
     impl EnvDepthDraw<'_> {
-        /// Whether the eye pass's draw writes the depth light
-        /// (`depth_light.rs`): `Gfx::render` then draws it after the box
-        /// and hand occluders, so they hide its light.
-        pub fn lit(&self) -> bool {
-            self.lit
-        }
-
-        /// Whether the veil is on with the light: `Gfx::render` then draws
-        /// the mesh after the surfaces' light in both passes (the eye
-        /// pass's surfaces, highlight, live outlines and edge bars; the
-        /// faces pass's surfaces), and the mesh erases the veil's share of
-        /// it.
-        pub fn veiled(&self) -> bool {
-            self.veiled
+        /// How each pass draws the mesh this frame: `Gfx::render` orders
+        /// the passes by it. A pass drawing the light draws it after the
+        /// box and hand occluders, so they hide it; with the surfaces
+        /// first, both passes draw the mesh after their surfaces' light
+        /// (the eye pass's lit faces, highlight, live outlines and edge
+        /// bars; the faces pass's surfaces), which it erases the veil's
+        /// share of.
+        pub fn draws(&self) -> MeshDraws {
+            self.draws
         }
 
         /// The occluder for `eye` (0 left, 1 right) into `target`'s pass,
@@ -2062,6 +2049,8 @@ mod runtime {
                     })
                 })
             });
+            // Board #5439: the depth light's tile of points, made once.
+            let points = LightPoints::new(gfx);
             let bind_groups = images
                 .iter()
                 .map(|(_, view)| {
@@ -2079,6 +2068,8 @@ mod runtime {
                                         binding: 1,
                                         resource: wgpu::BindingResource::TextureView(view),
                                     },
+                                    points.entry(3),
+                                    points.sampler_entry(4),
                                 ],
                             })
                         })
@@ -2091,6 +2082,7 @@ mod runtime {
                     &gfx.device,
                     &images,
                     &uniforms,
+                    &points,
                     [width, height],
                     mesh_steps,
                     opts.show,
@@ -2364,29 +2356,28 @@ mod runtime {
             if !self.opts.occlude && !self.opts.show {
                 return None;
             }
+            // Board #5439: the light needs its pipelines, and no diagnostic
+            // in the way; then the passes' draws (depth_light::mesh_draws):
+            // with a faces layer the points go there.
             let lit = light.is_some()
                 && self.light_pipeline.is_some()
+                && self.veil_pipeline.is_some()
                 && !self.opts.show
                 && !self.opts.geom.show
-                && self
-                    .geom
-                    .as_ref()
-                    .is_none_or(|g| g.drop_vertices(0) == 0 || g.can_light());
-            // The veil: the faces pass draws the mesh with it too, so its
-            // pipelines must be there for both.
-            let veiled = lit
-                && light.is_some_and(|f| f.veil)
-                && self.veil_pipeline.is_some()
-                && self
-                    .geom
-                    .as_ref()
-                    .is_none_or(|g| g.drop_vertices(1) == 0 || g.can_veil());
+                && self.geom.as_ref().is_none_or(Geom::can_light);
+            let draws = crate::depth_light::mesh_draws(
+                lit,
+                light.is_some_and(|f| f.veil),
+                light.map_or(1.0, |f| f.rows[4][3]),
+                faces_extents.is_some(),
+            );
+            let faces_kind = draws.faces.unwrap_or(MeshDraw::Depth);
             let targets = [
-                (OccluderTarget::Eye, Some(extents)),
-                (OccluderTarget::Faces, faces_extents),
+                (OccluderTarget::Eye, Some(extents), draws.eye),
+                (OccluderTarget::Faces, faces_extents, faces_kind),
             ];
-            for (target, extents) in targets {
-                let Some(extents) = extents else {
+            for (target, target_extents, kind) in targets {
+                let Some(target_extents) = target_extents else {
                     continue;
                 };
                 // Board #5416: geometry first's drops per layer, 0 unless
@@ -2395,39 +2386,44 @@ mod runtime {
                     .geom
                     .as_ref()
                     .map_or(0, |g| g.drop_vertices(target as usize));
-                // The light's rows where it draws: the eye pass when lit,
-                // the faces pass when veiled (its veil).
-                let draws = match target {
-                    OccluderTarget::Eye => lit,
-                    OccluderTarget::Faces => veiled,
-                };
-                let light = light.as_ref().map(|f| &f.rows).filter(|_| draws);
-                self.write_uniforms(queue, frame, cameras, extents, target, drops, light);
+                // The light's rows where it draws, its fades in the
+                // target's own pixels: the faces layer's are larger, so a
+                // cell or a band fades at the size it does in the eye's.
+                let rows = light.as_ref().filter(|_| kind != MeshDraw::Depth).map(|f| {
+                    let scale = extents
+                        .first()
+                        .zip(target_extents.first())
+                        .map_or(1.0, |(e, t)| e[0] as f32 / t[0].max(1) as f32);
+                    crate::depth_light::scale_fades(f.rows, scale)
+                });
+                self.write_uniforms(
+                    queue,
+                    frame,
+                    cameras,
+                    target_extents,
+                    target,
+                    drops,
+                    rows.as_ref(),
+                );
             }
             let own = &self.bind_groups[frame.index as usize];
-            let geom = self
-                .geom
-                .as_ref()
-                .map_or([None, None], |g| g.draws(frame.index, lit, veiled));
-            let mut targets = [0, 1].map(|t| geom[t].unwrap_or((&self.pipeline, &own[t])));
-            for (t, on, pipeline) in [
-                (0, lit, &self.light_pipeline),
-                (1, veiled, &self.veil_pipeline),
-            ] {
-                if on
-                    && geom[t].is_none()
-                    && let Some(p) = pipeline
-                {
-                    targets[t] = (p, &own[t]);
-                }
-            }
+            let geom = self.geom.as_ref().map_or([None, None], |g| {
+                g.draws(frame.index, [draws.eye, faces_kind])
+            });
+            let pipeline = |kind: MeshDraw| match kind {
+                MeshDraw::Depth => Some(&self.pipeline),
+                MeshDraw::Veil => self.veil_pipeline.as_ref(),
+                MeshDraw::Light => self.light_pipeline.as_ref(),
+            };
+            let targets = [(0, draws.eye), (1, faces_kind)].map(|(t, kind)| {
+                geom[t].unwrap_or((pipeline(kind).unwrap_or(&self.pipeline), &own[t]))
+            });
             Some(EnvDepthDraw {
                 targets,
                 meshes: self
                     .mesh_steps
                     .map(|step| self.meshes.iter().find(|m| m.step == step)),
-                lit,
-                veiled,
+                draws,
             })
         }
 
@@ -3432,6 +3428,102 @@ mod runtime {
         ))
     }
 
+    /// Board #5439: the depth light's tile of soft points
+    /// (`depth_light::points_tile`), uploaded once as an RGBA8 texture at
+    /// level 0 alone, and its linear, repeating sampler: group 0 bindings 3
+    /// and 4 of the occluder's and geometry first's draws.
+    pub struct LightPoints {
+        _texture: wgpu::Texture,
+        view: wgpu::TextureView,
+        sampler: wgpu::Sampler,
+    }
+
+    impl LightPoints {
+        fn new(gfx: &Gfx) -> Self {
+            use crate::depth_light::{TILE, points_tile};
+            let size = wgpu::Extent3d {
+                width: TILE,
+                height: TILE,
+                depth_or_array_layers: 1,
+            };
+            let texture = gfx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("xr-depth-light-points"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let tile = points_tile();
+            gfx.queue.write_texture(
+                texture.as_image_copy(),
+                bytemuck::cast_slice(&tile),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(TILE * 4),
+                    rows_per_image: Some(TILE),
+                },
+                size,
+            );
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let sampler = gfx.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("xr-depth-light-points"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..wgpu::SamplerDescriptor::default()
+            });
+            Self {
+                _texture: texture,
+                view,
+                sampler,
+            }
+        }
+
+        /// The tile's layout entry at `binding`, read in the fragment stage.
+        pub fn layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+            wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }
+        }
+
+        /// The sampler's layout entry at `binding`.
+        pub fn sampler_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+            wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            }
+        }
+
+        /// The tile's bind group entry at `binding`.
+        pub fn entry(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: wgpu::BindingResource::TextureView(&self.view),
+            }
+        }
+
+        /// The sampler's bind group entry at `binding`.
+        pub fn sampler_entry(&self, binding: u32) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: wgpu::BindingResource::Sampler(&self.sampler),
+            }
+        }
+    }
+
     /// The occluder (`show` false: color writes off) or the diagnostic
     /// (`show` true: the gray written over the view), off the same shader,
     /// as the full-screen pass (`mesh` false: `frag_depth` with compare
@@ -3475,6 +3567,8 @@ mod runtime {
                     },
                     count: None,
                 },
+                LightPoints::layout_entry(3),
+                LightPoints::sampler_layout_entry(4),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

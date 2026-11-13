@@ -18,6 +18,7 @@ use openxr as xr;
 use wgpu::hal;
 use wgpu::hal::api::Vulkan as HalVk;
 
+use crate::depth_light::MeshDraw;
 use crate::env_depth::{AtlasOutcome, EnvDepthPasses, OccluderTarget};
 use crate::particles3d::{DEPTH_FORMAT, Particles3d};
 use crate::scene::XrScene;
@@ -1375,22 +1376,41 @@ impl Gfx {
                     [0.0; 4],
                     Some(faces_depth),
                 );
-                // The occluders only matter under a lit face; the cleared
-                // layer is submitted either way. Board #5439: with the depth
-                // light's veil, the surfaces draw behind the boxes and the
-                // hands alone, and the depth map's mesh after them erases
-                // the veil's share of their light where a real thing lies
-                // in front; without it, the mesh first hides it all.
-                if self.faces_lit() {
-                    let veiled = env_depth.occluder.as_ref().is_some_and(|d| d.veiled());
-                    if !veiled && let Some(d) = &env_depth.occluder {
+                // The occluders only matter under a lit face or the depth
+                // light's points; the cleared layer is submitted either way.
+                // Board #5439: with the light, this pass draws its points
+                // (`depth_light::mesh_draws`), after the box and hand
+                // occluders so they hide them, and after the surfaces when
+                // the veil lets some of their light through (the mesh then
+                // erases its share); before them otherwise, which then test
+                // against its depth. Without it, the mesh first, depth
+                // alone, as before.
+                let mesh = env_depth
+                    .occluder
+                    .as_ref()
+                    .filter(|d| d.draws().faces.is_some());
+                let points = mesh.is_some_and(|d| d.draws().faces == Some(MeshDraw::Light));
+                if self.faces_lit() || points {
+                    let surfaces_first = mesh.is_some_and(|d| d.draws().surfaces_first);
+                    if !points && let Some(d) = mesh {
                         d.draw(&mut pass, OccluderTarget::Faces, i);
                     }
                     if let Some(p) = particles {
                         p.draw_occluders(&mut pass, i);
                     }
-                    self.draw_faces(&mut pass, eye, i);
-                    if veiled && let Some(d) = &env_depth.occluder {
+                    if points
+                        && !surfaces_first
+                        && let Some(d) = mesh
+                    {
+                        d.draw(&mut pass, OccluderTarget::Faces, i);
+                    }
+                    if self.faces_lit() {
+                        self.draw_faces(&mut pass, eye, i);
+                    }
+                    if points
+                        && surfaces_first
+                        && let Some(d) = mesh
+                    {
                         d.draw(&mut pass, OccluderTarget::Faces, i);
                     }
                 }
@@ -1407,13 +1427,16 @@ impl Gfx {
             // or a box in front of a lit object hides its light. Every
             // occluder keeps the nearest depth (Less, or LessEqual for the
             // mesh), so the depth buffer ends the same in either order.
-            let lit = env_depth.occluder.as_ref().is_some_and(|d| d.lit());
-            // With its veil on, the mesh draws after the surfaces' light
-            // (the lit faces when they are in this pass, the highlight, the
-            // live outlines and the edge bars), which then tests against
-            // the boxes and the hands alone, and erases the veil's share of
-            // it where a real thing lies in front, before the sprites.
-            let veiled = env_depth.occluder.as_ref().is_some_and(|d| d.veiled());
+            // Board #5439: the depth light's points in this pass when there
+            // is no faces layer; the mesh after the surfaces' light (the lit
+            // faces when they are in this pass, the highlight, the live
+            // outlines and the edge bars) when the veil lets some of it
+            // through: that light then tests against the boxes and the
+            // hands alone, and the mesh erases the veil's share of it where
+            // a real thing lies in front, before the sprites.
+            let draws = env_depth.occluder.as_ref().map(|d| d.draws());
+            let lit = draws.is_some_and(|m| m.eye == MeshDraw::Light);
+            let veiled = draws.is_some_and(|m| m.surfaces_first);
             if lit && let Some(p) = particles {
                 p.draw_occluders(&mut pass, i);
             }

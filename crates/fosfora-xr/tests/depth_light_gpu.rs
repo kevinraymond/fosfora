@@ -5,8 +5,9 @@
 //! copies. The light's vertex stages write the occluder's depth bit for
 //! bit, with geometry first's drop too; each vertex's keep, light by
 //! distance, normal and height match `depth_light::vertex_light`; the
-//! fragment over known inputs matches `depth_light::fragment`, its points,
-//! octaves and fades included; and over a sky drawn first, the veil leaves
+//! fragment over known inputs, reading the same tile of points through the
+//! GPU's filter, matches `depth_light::fragment`, its planes, octaves and
+//! fades included; and over a sky drawn first, the veil leaves
 //! what `depth_light::veil` says at each level. `#[ignore]`d like the other
 //! GPU tests (they need an adapter); run them with
 //! `cargo test -p fosfora-xr --test depth_light_gpu -- --ignored`.
@@ -16,8 +17,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use fosfora_xr::depth_light::{self, Drive, ROWS, fragment, veil, vertex_light};
 use fosfora_xr::env_depth::{
-    DepthView, ENV_DEPTH_WGSL, EyeReprojection, FILTER_SOFT_M, LIGHT_ROW, NEAR_CUT_M, Obb,
-    UNIFORM_ROWS, mesh_indices, mesh_side, mesh_texel, ray_obb,
+    DepthView, ENV_DEPTH_WGSL, EyeReprojection, FILTER_SOFT_M, LIGHT_ROW, MESH_ROW, NEAR_CUT_M,
+    Obb, UNIFORM_ROWS, mesh_indices, mesh_side, mesh_texel, ray_obb,
 };
 use fosfora_xr::geom_first::{mesh_geom_wgsl, set_drop_vertices};
 use fosfora_xr::math::{self, Fov};
@@ -451,6 +452,18 @@ fn draw(
             resource: b.as_entire_binding(),
         });
     }
+    // The light's fragment reads the tile of points at 3 and 4.
+    let (points, sampler) = points_tile(device, queue);
+    if fragment == "fs_mesh_light" {
+        entries.push(wgpu::BindGroupEntry {
+            binding: 3,
+            resource: wgpu::BindingResource::TextureView(&points),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: 4,
+            resource: wgpu::BindingResource::Sampler(&sampler),
+        });
+    }
     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("depth-light"),
         layout: &layout,
@@ -529,7 +542,8 @@ fn draw(
         pass.set_bind_group(0, &bind, &[]);
         match topology {
             wgpu::PrimitiveTopology::PointList => {
-                let side = mesh_side(MAP, STEP);
+                // The vertices of the mesh at the uniform's own step.
+                let side = rows[MESH_ROW][1] as u32;
                 pass.draw(0..side * side, 0..1);
             }
             _ if vertex.starts_with("vs_ramp") => pass.draw(0..3, 0..1),
@@ -593,6 +607,49 @@ fn draw(
         color,
         depth: rows_of(&depth_back, depth_bytes, W * 4),
     }
+}
+
+/// The light's tile of points as the app uploads it (`env_depth`'s
+/// `LightPoints`): RGBA8 at level 0, a linear repeating sampler.
+fn points_tile(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::TextureView, wgpu::Sampler) {
+    let size = wgpu::Extent3d {
+        width: depth_light::TILE,
+        height: depth_light::TILE,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("points"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let tile = depth_light::points_tile();
+    queue.write_texture(
+        texture.as_image_copy(),
+        bytemuck::cast_slice(&tile),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(depth_light::TILE * 4),
+            rows_per_image: Some(depth_light::TILE),
+        },
+        size,
+    );
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("points"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..wgpu::SamplerDescriptor::default()
+    });
+    (
+        texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        sampler,
+    )
 }
 
 /// An f16's value.
@@ -879,7 +936,18 @@ fn fs_test_normal(in: TestOut) -> @location(0) vec4<f32> {{
 #[ignore = "needs a GPU adapter"]
 fn the_vertex_stage_matches_its_cpu_mirror() {
     let (device, queue, _guard) = gpu();
-    let rows = uniform_rows(0);
+    // The eye pass's mesh, and the faces layer's at twice the step, where
+    // the points draw with a faces layer.
+    for step in [STEP, 2 * STEP] {
+        vertex_stage_matches(device, queue, step);
+    }
+}
+
+fn vertex_stage_matches(device: &wgpu::Device, queue: &wgpu::Queue, step: u32) {
+    let mut r = eye();
+    r.mesh_step = step;
+    let mut rows = r.uniform();
+    rows[LIGHT_ROW..].copy_from_slice(&light_rows());
     let source = vertex_test_wgsl(ENV_DEPTH_WGSL);
     let run = |fragment: &str| {
         draw(
@@ -897,13 +965,12 @@ fn the_vertex_stage_matches_its_cpu_mirror() {
     let (shares, normals) = (run("fs_test"), run("fs_test_normal"));
     let map = synthetic_map();
     let stored = |t: [u32; 2]| f32::from(map[(t[1] * MAP + t[0]) as usize]) / 65535.0;
-    let r = eye();
     let light = light_rows();
-    let side = mesh_side(MAP, STEP);
+    let side = mesh_side(MAP, step);
     let want = |i: u32| {
         let texel = [
-            mesh_texel(i % side, MAP, STEP),
-            mesh_texel(i / side, MAP, STEP),
+            mesh_texel(i % side, MAP, step),
+            mesh_texel(i / side, MAP, step),
         ];
         vertex_light(&r, &light, texel, stored)
     };
@@ -935,9 +1002,9 @@ fn the_vertex_stage_matches_its_cpu_mirror() {
         }
     }
     eprintln!(
-        "{compared} vertices compared ({full} keep all, {part} part, {far} dimmed by distance): worst keep {worst_keep:.2e}, light {worst_bright:.2e}, height {worst_y:.2e} m, normal {worst_n:.2e}"
+        "step {step}: {compared} vertices compared ({full} keep all, {part} part, {far} dimmed by distance): worst keep {worst_keep:.2e}, light {worst_bright:.2e}, height {worst_y:.2e} m, normal {worst_n:.2e}"
     );
-    assert!(compared > 5000, "{compared}");
+    assert!(compared > 5000 / (step * step / 4) as usize, "{compared}");
     assert!(full > 1000 && part > 50 && far > 100, "{full} {part} {far}");
     assert!(worst_keep < 2e-3, "{worst_keep}");
     assert!(worst_bright < 2e-3, "{worst_bright}");
@@ -975,6 +1042,7 @@ fn the_fragment_matches_its_cpu_mirror() {
     let rows = uniform_rows(0);
     let light = light_rows();
     let eye_pos = eye().eye_pos;
+    let tile = depth_light::points_tile();
     // A wall 1.2 m out, a top below the eye, a surface between axes
     // across an octave's boundary, one whose cells shrink to pixels, and
     // a steep one whose wave is too thin to draw.
@@ -1030,7 +1098,16 @@ fn the_fragment_matches_its_cpu_mirror() {
                 let nx = (px_ as f32 + 0.5) / W as f32 * 2.0 - 1.0;
                 let ny = 1.0 - (py_ as f32 + 0.5) / H as f32 * 2.0;
                 let p = p0 + px * nx + py * ny;
-                let want = fragment(&light, eye_pos, p, n, 0.5 + 0.5 * ny, 0.6 + 0.4 * nx, fw);
+                let want = fragment(
+                    &light,
+                    &tile,
+                    eye_pos,
+                    p,
+                    n,
+                    0.5 + 0.5 * ny,
+                    0.6 + 0.4 * nx,
+                    fw,
+                );
                 let c = got.color[(py_ * W + px_) as usize];
                 let e = (0..4)
                     .map(|k| (c[k] - want[k]).abs())
@@ -1043,9 +1120,9 @@ fn the_fragment_matches_its_cpu_mirror() {
         eprintln!(
             "p0 {p0} by {px} / {py}, n {n}: {lit} pixels lit, worst {worst:.2e}, {bad} over 2e-3"
         );
-        // A pixel on a point's edge where the GPU's division put it in
-        // the next cell's window sees the same points; allow a handful of
-        // the hash's float edges, nothing more.
-        assert!(bad <= (W * H / 20000) as usize, "{bad}");
+        // The GPU weighs the tile's texels with a few bits of sub-texel
+        // precision; where two points' channels meet (an overlap, a size
+        // between two twinkle rates) a handful of pixels differ.
+        assert!(bad <= 15, "{bad}");
     }
 }

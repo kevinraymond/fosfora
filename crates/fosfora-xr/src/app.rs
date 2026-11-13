@@ -437,7 +437,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.geomfirstshow 0|1        (diagnostic: the eye pass's depth map occluder drawn with a magenta tint where it still
     //       occludes, still writing depth, geometry first on or off, for an unworn screencap; live)
     //   adb shell setprop debug.fosfora.depthlight 0|1           (board #5439, depth_light.rs: what the depth map still occludes drawn as points of light
-    //       fixed in the room, in the theme's colors, twinkling and swelling with the music, a slow wave of light through them; the
+    //       fixed in the room, in the faces layer when there is one, in the theme's colors, twinkling and swelling with the music, a slow
+    //       wave of light through them; the
     //       points thin out only where two masses part (a step of half a meter or a quarter of the distance); dim but never black far
     //       away; 0 the depth map writes depth only, as before; default 1; needs the mesh (envdepthmesh not 0), off under
     //       envdepthshow, the geomfirstshow tint replaces it; live: polled once a second)
@@ -447,6 +448,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.depthlightveil 0|1       (depth light: 1 the sky, the lit faces and the edge bars show through what the depth map
     //       occludes by the immersion level, all of them with the room black, none with it plain; 0 the hard cutout at every level,
     //       for the A/B; default 1; live)
+    //   adb shell setprop debug.fosfora.depthlightpoints 0|1     (depth light: 0 draws no points, the mesh still drawn in the light's passes and order,
+    //       to cost the points apart from the veil; default 1; live)
     //   adb shell setprop debug.fosfora.edgebars 0|1|2|3         (board #5420, edge_bars.rs: the room's outline drawn as the spectrum, bars along the edges of
     //       every plane and box drawn as an occluder (hidden walls and the stage floor left out), in the surface's color, while music
     //       plays; unset each kind of surface in its theme's mode (board #5431, themes.rs); 1 the bars lie on each face and grow in from its
