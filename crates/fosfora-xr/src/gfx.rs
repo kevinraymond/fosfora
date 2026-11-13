@@ -116,10 +116,11 @@ pub struct Gfx {
     /// `None` inside when its pipelines did not validate.
     edge_bars: std::cell::OnceCell<Option<EdgeBars>>,
     edge_counts: std::cell::Cell<(u32, u32)>,
-    /// The depth light's rows for this frame (board #5439,
-    /// `set_depth_light`, `depth_light.rs`), which the environment depth's
-    /// `prepare` writes into the eye pass's occluder uniform; `None` off.
-    depth_light: std::cell::Cell<Option<[[f32; 4]; crate::depth_light::ROWS]>>,
+    /// The depth light for this frame (board #5439, `set_depth_light`,
+    /// `depth_light.rs`): its rows, which the environment depth's `prepare`
+    /// writes into the occluder's uniforms, and whether the veil is on;
+    /// `None` off.
+    depth_light: std::cell::Cell<Option<crate::depth_light::Frame>>,
     /// The eye camera's bind group layout, for pipelines built later.
     eye_layout: wgpu::BindGroupLayout,
     /// Whether the eye pass draws the world effect (`set_world_visible`;
@@ -966,15 +967,15 @@ impl Gfx {
         }
     }
 
-    /// The depth light for this frame (board #5439): its rows
-    /// (`depth_light::rows`), or `None` to draw the depth map as depth
-    /// alone. Read by the frame's environment depth `prepare`.
-    pub fn set_depth_light(&self, rows: Option<[[f32; 4]; crate::depth_light::ROWS]>) {
-        self.depth_light.set(rows);
+    /// The depth light for this frame (board #5439): its rows and the
+    /// veil (`depth_light::frame`), or `None` to draw the depth map as
+    /// depth alone. Read by the frame's environment depth `prepare`.
+    pub fn set_depth_light(&self, frame: Option<crate::depth_light::Frame>) {
+        self.depth_light.set(frame);
     }
 
     /// What [`Self::set_depth_light`] set last.
-    pub fn depth_light(&self) -> Option<[[f32; 4]; crate::depth_light::ROWS]> {
+    pub fn depth_light(&self) -> Option<crate::depth_light::Frame> {
         self.depth_light.get()
     }
 
@@ -1375,15 +1376,23 @@ impl Gfx {
                     Some(faces_depth),
                 );
                 // The occluders only matter under a lit face; the cleared
-                // layer is submitted either way.
+                // layer is submitted either way. Board #5439: with the depth
+                // light's veil, the surfaces draw behind the boxes and the
+                // hands alone, and the depth map's mesh after them erases
+                // the veil's share of their light where a real thing lies
+                // in front; without it, the mesh first hides it all.
                 if self.faces_lit() {
-                    if let Some(d) = &env_depth.occluder {
+                    let veiled = env_depth.occluder.as_ref().is_some_and(|d| d.veiled());
+                    if !veiled && let Some(d) = &env_depth.occluder {
                         d.draw(&mut pass, OccluderTarget::Faces, i);
                     }
                     if let Some(p) = particles {
                         p.draw_occluders(&mut pass, i);
                     }
                     self.draw_faces(&mut pass, eye, i);
+                    if veiled && let Some(d) = &env_depth.occluder {
+                        d.draw(&mut pass, OccluderTarget::Faces, i);
+                    }
                 }
             }
             // Pipeline and camera slot before the pass; the draw goes inside it.
@@ -1399,14 +1408,20 @@ impl Gfx {
             // occluder keeps the nearest depth (Less, or LessEqual for the
             // mesh), so the depth buffer ends the same in either order.
             let lit = env_depth.occluder.as_ref().is_some_and(|d| d.lit());
+            // With its veil on, the mesh draws after the surfaces' light
+            // (the lit faces when they are in this pass, the highlight, the
+            // live outlines and the edge bars), which then tests against
+            // the boxes and the hands alone, and erases the veil's share of
+            // it where a real thing lies in front, before the sprites.
+            let veiled = env_depth.occluder.as_ref().is_some_and(|d| d.veiled());
             if lit && let Some(p) = particles {
                 p.draw_occluders(&mut pass, i);
             }
             // The live depth map first, right after the clear (after the
-            // occluders with the light): it writes the real room's depth
-            // (compare Always, or LessEqual as a mesh) and everything after
-            // tests against it.
-            if let Some(d) = &env_depth.occluder {
+            // occluders with the light, after the surfaces' light with its
+            // veil): it writes the real room's depth (compare Always, or
+            // LessEqual as a mesh) and everything after tests against it.
+            if !veiled && let Some(d) = &env_depth.occluder {
                 d.draw(&mut pass, OccluderTarget::Eye, i);
             }
             if let Some(quad) = &self.quad {
@@ -1458,6 +1473,12 @@ impl Gfx {
                         pass.draw(0..6, 0..n);
                     }
                 }
+            }
+            // Board #5439: the depth map's mesh with the light and its
+            // veil, over the surfaces' light, writing the real room's depth
+            // for the sprites and everything after.
+            if veiled && let Some(d) = &env_depth.occluder {
+                d.draw(&mut pass, OccluderTarget::Eye, i);
             }
             if let Some(p) = particles {
                 p.draw(&mut pass, i);

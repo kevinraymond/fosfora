@@ -436,12 +436,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the sensor's noise at its range, 0..0.5; live)
     //   adb shell setprop debug.fosfora.geomfirstshow 0|1        (diagnostic: the eye pass's depth map occluder drawn with a magenta tint where it still
     //       occludes, still writing depth, geometry first on or off, for an unworn screencap; live)
-    //   adb shell setprop debug.fosfora.depthlight 0|1           (board #5439, depth_light.rs: what the depth map still occludes drawn lit in the theme's
-    //       colors, bands at even heights drifting up with the music, dark toward its silhouette, out by 3 m; 0 the depth map writes
-    //       depth only, as before; default 1; needs the mesh (envdepthmesh not 0), off under envdepthshow, the geomfirstshow tint
-    //       replaces it; live: polled once a second)
-    //   adb shell setprop debug.fosfora.depthlightgain 1         (depth light: brightness multiplier, 0..4; 1 = peak alpha 0.05 with the room plain, 0.33 at
-    //       full immersion; live)
+    //   adb shell setprop debug.fosfora.depthlight 0|1           (board #5439, depth_light.rs: what the depth map still occludes drawn as points of light
+    //       fixed in the room, in the theme's colors, twinkling and swelling with the music, a slow wave of light through them; the
+    //       points thin out only where two masses part (a step of half a meter or a quarter of the distance); dim but never black far
+    //       away; 0 the depth map writes depth only, as before; default 1; needs the mesh (envdepthmesh not 0), off under
+    //       envdepthshow, the geomfirstshow tint replaces it; live: polled once a second)
+    //   adb shell setprop debug.fosfora.depthlightgain 1         (depth light: brightness multiplier, 0..4; 1 = a point's peak alpha 0.06 with the room plain,
+    //       0.8 black; live)
+    //   adb shell setprop debug.fosfora.depthlightfill 0.25      (depth light: the share of a surface the points cover, 0.05..0.33; live)
+    //   adb shell setprop debug.fosfora.depthlightveil 0|1       (depth light: 1 the sky, the lit faces and the edge bars show through what the depth map
+    //       occludes by the immersion level, all of them with the room black, none with it plain; 0 the hard cutout at every level,
+    //       for the A/B; default 1; live)
     //   adb shell setprop debug.fosfora.edgebars 0|1|2|3         (board #5420, edge_bars.rs: the room's outline drawn as the spectrum, bars along the edges of
     //       every plane and box drawn as an occluder (hidden walls and the stage floor left out), in the surface's color, while music
     //       plays; unset each kind of surface in its theme's mode (board #5431, themes.rs); 1 the bars lie on each face and grow in from its
@@ -918,8 +923,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         info!("{}", g.line(occluders));
     }
     // Board #5439: the depth light (`depth_light.rs`), what the depth map
-    // still occludes drawn lit; the knobs are polled once a second below.
-    // It needs the occluder's mesh, which this run has or not from launch.
+    // still occludes drawn as points of light, the surfaces' light showing
+    // through it by the immersion level; the knobs are polled once a second
+    // below. It needs the occluder's mesh, which this run has or not from
+    // launch.
     let depth_light_blocked = env_depth.map_or(
         Some("no environment depth in this run"),
         |o: EnvDepthOptions| crate::depth_light::blocked(o.occlude, o.show, o.drawn_mesh_step()),
@@ -4213,8 +4220,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     audio.key_tint = crate::surfaces::key_tint(hue);
                 }
                 // The light follows the band the theme gives other surfaces,
-                // its peak the immersion level; logged when its colors
-                // change with the theme.
+                // its peak and its veil the immersion level; logged when its
+                // colors change with the theme.
                 if light_on {
                     depth_drive.step(
                         dt,
@@ -4224,10 +4231,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         ),
                         beat_env,
                     );
-                    gfx.set_depth_light(Some(crate::depth_light::rows(
+                    gfx.set_depth_light(Some(crate::depth_light::frame(
+                        &depth_light,
                         &depth_drive,
-                        crate::depth_light::peak_alpha(immerse_level, depth_light.gain),
-                        crate::depth_light::colors(light_theme, audio.key_tint),
+                        light_theme,
+                        audio.key_tint,
+                        immerse_level,
                     )));
                     if depth_light_colors != Some(light_theme) {
                         info!("{}", crate::depth_light::colors_line(light_theme));

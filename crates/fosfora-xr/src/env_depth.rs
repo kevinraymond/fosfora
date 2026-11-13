@@ -574,24 +574,37 @@ struct EnvEye {
     // z geometry first's drops per layer, read by vs_mesh_geom alone
     // (geom_first.rs; 0 off)
     mesh: vec4<f32>,
-    // The depth light (depth_light.rs), read by vs_mesh_light and
-    // fs_mesh_light alone. x bands per meter of height, y their phase, z
-    // the peak alpha, w the crests' gain from the music
+    // The depth light (depth_light.rs), read by vs_mesh_light,
+    // fs_mesh_light and fs_mesh_veil alone. x bands per meter of height,
+    // y their phase, z the points' peak alpha, w the crests' gain from the
+    // music
     light: vec4<f32>,
-    // rgb the color of a side (linear), w the steady share between crests
+    // rgb the color of a side (linear), w the bands' steady share
     light_side: vec4<f32>,
-    // rgb the color of a top, w the bands' contrast on a top
+    // rgb the color of a top, w how far a crest tints a side toward it
     light_top: vec4<f32>,
-    // x, y the distance from the eye where the light starts and finishes
-    // fading out (m); z, w the facing (cosine) where it starts and
-    // finishes fading in
+    // x, y the bands per pixel where the bands start and finish fading
+    // into their mean, z that mean, w the twinkle's clock (0..1)
+    light_wave: vec4<f32>,
+    // x, y the distance from the eye (m) where the light starts and
+    // finishes falling, z the floor it falls to; w the veil: the share of
+    // the surfaces' light behind the map that the map erases
     light_fade: vec4<f32>,
-    // x the shading's floor; y, z the bands per pixel where the bands
-    // start and finish fading into their mean; w that mean
-    light_shape: vec4<f32>,
-    // x, y the jump to a neighbor, as a share of the vertex's distance,
-    // where the light starts and finishes fading out; z, w unused
+    // x the smallest step to a nearer neighbor that parts two masses (m),
+    // y the share of the distance that does when that is larger, z where
+    // the thinning starts as a share of the step, w what a near side keeps
     light_jump: vec4<f32>,
+    // x a cell's side 1 m from the eye (m), y the share of an octave where
+    // the next one starts to fade in, z, w the cells per pixel where the
+    // points start and finish fading out
+    light_cell: vec4<f32>,
+    // x the points' base radius (cells), y the share of cells with a
+    // point, z a point's largest offset from its cell's center (cells), w
+    // the swell (a radius factor from the music)
+    light_point: vec4<f32>,
+    // x, y a point's radius as factors of the base, z where its soft edge
+    // starts (a share of the radius), w the twinkle's depth
+    light_size: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> env: EnvEye;
 @group(0) @binding(1) var depth_map: texture_depth_2d_array;
@@ -789,22 +802,25 @@ fn fs_mesh() -> @location(0) vec4<f32> {
 
 struct LightOut {
     @builtin(position) pos: vec4<f32>,
-    // xyz the world point, w the vertex's share of the light (0..1)
+    // xyz the world point, w how much of its points the vertex keeps
+    // (0..1; the edge of a mass thins them)
     @location(0) world: vec4<f32>,
-    // How far the surface faces up, 0..1.
-    @location(1) up: f32,
+    // xyz the surface's normal turned toward the eye (unit), w the light
+    // left at the vertex's distance from the eye
+    @location(1) normal: vec4<f32>,
 }
 
 // The depth light's vertex (depth_light::vertex_light in depth_light.rs
-// is the CPU mirror): mesh_vertex's position, the world point, and the
-// vertex's share of the light. The surface's normal is the map's gradient
-// across the vertex, one mesh step either way along each axis; the share
-// fades out where the surface turns edge-on to the eye (a silhouette's
-// jump turns it fully), shades with the facing, and fades out with the
-// distance from the eye. It fades out too where a neighbor's distance
-// jumps from the vertex's, which the gradient misses when the vertex sits
-// on something thinner than two steps. No share without data at the vertex
-// or at any of the four neighbors.
+// is the CPU mirror): mesh_vertex's position, the world point, the
+// surface's normal and two shares. The normal is the map's gradient one
+// mesh step along each axis, taken toward the neighbor nearer in depth, so
+// a step to another mass does not tilt it; without a neighbor along an
+// axis, or without a gradient, it is the way to the eye. The points kept:
+// none where a neighbor is nearer by a mass's step (the far side of an
+// edge), light_jump.w of them where one is farther by it (the near side),
+// all of them inside a mass, none without data. A step smaller than a
+// mass's changes nothing. The light by distance: all of it to the fade's
+// start, its floor past the end.
 fn mesh_light(i: u32) -> LightOut {
     let t = mesh_texel(i);
     let dist = texel_distance(vec2<i32>(t));
@@ -823,29 +839,44 @@ fn mesh_light(i: u32) -> LightOut {
         texel_distance(vec2<i32>(y0)),
         texel_distance(vec2<i32>(y1))
     );
-    // The gradient in the depth camera's space, turned into the world's.
-    let gx = mesh_ray(x1) * d.y - mesh_ray(x0) * d.x;
-    let gy = mesh_ray(y1) * d.w - mesh_ray(y0) * d.z;
-    let n = (env.inv_depth_view * vec4<f32>(cross(gx, gy), 0.0)).xyz;
+    // A neighbor counts with data and when it is not the vertex itself
+    // (clamped at the map's border).
+    let has = (d >= vec4<f32>(0.0))
+        & vec4<bool>(t.x > 0u, t.x < last.x, t.y > 0u, t.y < last.y);
     let to_eye = env.eye.xyz - p;
     let range = length(to_eye);
-    let len = length(n);
-    var weight = 0.0;
-    var up = 0.0;
-    if dist >= 0.0 && all(d >= vec4<f32>(0.0)) && len > 0.0 && range > 0.0 {
-        let facing = dot(n, to_eye) / (len * range);
-        // The normal on the side the eye sees.
-        up = clamp(select(n.y, -n.y, facing < 0.0) / len, 0.0, 1.0);
-        let f = abs(facing);
-        let step = abs(d - vec4<f32>(dist));
-        let jump = max(max(step.x, step.y), max(step.z, step.w)) / dist;
-        weight = smoothstep(env.light_fade.z, env.light_fade.w, f)
-            * mix(env.light_shape.x, 1.0, f)
-            * (1.0 - smoothstep(env.light_fade.x, env.light_fade.y, range))
-            * (1.0 - smoothstep(env.light_jump.x, env.light_jump.y, jump));
+    var n = to_eye;
+    var keep = 0.0;
+    var bright = 0.0;
+    if dist >= 0.0 && range > 0.0 {
+        // One-sided differences, each axis toward its neighbor nearer in
+        // depth.
+        let gap = select(vec4<f32>(1e30), abs(d - vec4<f32>(dist)), has);
+        let q = mesh_ray(t) * dist;
+        let gx = select(q - mesh_ray(x0) * d.x, mesh_ray(x1) * d.y - q, gap.y <= gap.x);
+        let gy = select(q - mesh_ray(y0) * d.z, mesh_ray(y1) * d.w - q, gap.w <= gap.z);
+        let g = (env.inv_depth_view * vec4<f32>(cross(gx, gy), 0.0)).xyz;
+        if (has.x || has.y) && (has.z || has.w) && dot(g, g) > 0.0 {
+            n = g;
+        }
+        let nearer = max(
+            max(select(0.0, dist - d.x, has.x), select(0.0, dist - d.y, has.y)),
+            max(select(0.0, dist - d.z, has.z), select(0.0, dist - d.w, has.w))
+        );
+        let farther = max(
+            max(select(0.0, d.x - dist, has.x), select(0.0, d.y - dist, has.y)),
+            max(select(0.0, d.z - dist, has.z), select(0.0, d.w - dist, has.w))
+        );
+        let part = max(env.light_jump.x, env.light_jump.y * dist);
+        let start = env.light_jump.z * part;
+        keep = (1.0 - smoothstep(start, part, nearer))
+            * (1.0 - (1.0 - env.light_jump.w) * smoothstep(start, part, farther));
+        bright = mix(1.0, env.light_fade.z, smoothstep(env.light_fade.x, env.light_fade.y, range));
     }
-    out.world = vec4<f32>(p, weight);
-    out.up = up;
+    n = select(n, -n, dot(n, to_eye) < 0.0);
+    let len = length(n);
+    out.world = vec4<f32>(p, keep);
+    out.normal = vec4<f32>(select(vec3<f32>(0.0, 0.0, 1.0), n / len, len > 0.0), bright);
     return out;
 }
 
@@ -854,21 +885,145 @@ fn vs_mesh_light(@builtin(vertex_index) i: u32) -> LightOut {
     return mesh_light(i);
 }
 
-// The depth light (depth_light::fragment is the CPU mirror): bands of
-// light at even heights, drifting up, over a steady share, in the side's
-// color on a side and the top's on a top, where the bands fade toward
-// their mean. A band a few pixels wide fades into its mean too. No
-// discard and no frag_depth, so early depth testing stays on.
+const TAU: f32 = 6.2831855;
+// Taken off each plane's share of the points; a plane left with none is
+// skipped.
+const PLANE_MIN: f32 = 0.05;
+// The cells' octaves, from 1/16 to 16 times the side 1 m from the eye.
+const OCTAVE_MIN: f32 = -4.0;
+const OCTAVE_MAX: f32 = 3.999;
+
+// A 32-bit integer hash: one PCG step (depth_light::hash is the same).
+fn light_hash(v: u32) -> u32 {
+    let s = v * 747796405u + 2891336453u;
+    let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+
+// Coordinates in the cells' plane k: across x (k 0), y (1) or z (2).
+fn light_plane(v: vec3<f32>, k: u32) -> vec2<f32> {
+    if k == 0u {
+        return v.yz;
+    }
+    if k == 1u {
+        return v.xz;
+    }
+    return v.xy;
+}
+
+// The light of cell c's point (c in cells of plane k at octave o) at g, in
+// cells, 0..1 (depth_light::cell_point is the CPU mirror). A cell has a
+// point with the chance light_point.y, anywhere within light_point.z of
+// its center; a soft disk whose radius varies by cell, swells with the
+// music and shrinks with keep; twinkling at its own rate and phase.
+fn cell_point(g: vec2<f32>, c: vec2<f32>, k: u32, o: i32, keep: f32) -> f32 {
+    let ci = vec2<i32>(c);
+    let a = light_hash(
+        ((bitcast<u32>(ci.x) * 73856093u) ^ (bitcast<u32>(ci.y) * 19349663u))
+            ^ ((k + 3u * bitcast<u32>(o + 16)) * 83492791u)
+    );
+    let b = light_hash(a);
+    let present = f32(b & 255u) / 256.0 < env.light_point.y;
+    let size = mix(env.light_size.x, env.light_size.y, f32((b >> 8u) & 255u) / 255.0);
+    let jitter = vec2<f32>(f32(a & 65535u), f32(a >> 16u)) / 65535.0 - 0.5;
+    let center = c + 0.5 + jitter * (2.0 * env.light_point.z);
+    let radius = env.light_point.x * size * env.light_point.w * sqrt(keep);
+    let core = 1.0 - smoothstep(radius * env.light_size.z, radius, length(g - center));
+    let rate = 1.0 + f32(((b >> 16u) & 255u) % 3u);
+    let phase = f32(b >> 24u) / 256.0;
+    let twinkle = 1.0 - env.light_size.w
+        + env.light_size.w * (0.5 + 0.5 * sin(TAU * (rate * env.light_wave.w + phase)));
+    return select(0.0, core * twinkle, present && radius > 1e-4);
+}
+
+// The points of plane k at octave o at g, in cells: the brightest of the
+// four cells around g. A point lies within half a cell of its cell's
+// center and its radius is at most half a cell, so no other cell reaches g.
+fn plane_points(g: vec2<f32>, k: u32, o: i32, keep: f32) -> f32 {
+    let base = floor(g - 0.5);
+    var light = 0.0;
+    for (var j = 0u; j < 4u; j++) {
+        let c = base + vec2<f32>(f32(j & 1u), f32(j >> 1u));
+        light = max(light, cell_point(g, c, k, o, keep));
+    }
+    return light;
+}
+
+// The depth light (depth_light::fragment is the CPU mirror): points of
+// light on the surface, fixed in the room. Cells on a lattice in each of
+// the world's three axis planes, weighted by how squarely the surface
+// faces each (the normal's fourth powers), so noise along the view ray
+// barely moves a point; the cells' side doubles with each octave of the
+// distance from the eye, the next octave fading in over the last part of
+// each, so far things keep their look on screen. Where the cells get a few
+// pixels small (a surface seen edge-on, the fringe that leans back at a
+// step) the points fade out: a strip without points reads as the sky
+// between them, where a glow would draw the step. Through the points, bands
+// of light at even heights drifting up, the crests tinted toward the
+// top's color; a top in the top's color. The alpha out is the veil, which
+// the blend uses to erase that share of the light already behind (rgb
+// One, OneMinusSrcAlpha; alpha Zero, OneMinusSrcAlpha), so the light adds
+// and the surfaces behind keep 1 - veil. No discard and no frag_depth, so
+// early depth testing stays on.
 @fragment
 fn fs_mesh_light(in: LightOut) -> @location(0) vec4<f32> {
-    let h = in.world.y * env.light.x - env.light.y;
-    let contrast = (1.0 - smoothstep(env.light_shape.y, env.light_shape.z, fwidth(h)))
-        * mix(1.0, env.light_top.w, in.up);
-    let c = 0.5 + 0.5 * cos(6.2831855 * h);
-    let band = mix(env.light_shape.w, c * c, contrast) * env.light.w;
-    let steady = env.light_side.w;
-    let a = clamp(env.light.z * in.world.w * (steady + (1.0 - steady) * band), 0.0, 1.0);
-    return vec4<f32>(mix(env.light_side.rgb, env.light_top.rgb, in.up) * a, a);
+    let p = in.world.xyz;
+    // Before any branch: how far the world moves across a pixel.
+    let fw = fwidth(p);
+    let keep = in.world.w;
+    let weight = env.light.z * in.normal.w;
+    var points = 0.0;
+    var up = 0.0;
+    if keep > 0.0 && weight > 0.0 {
+        let nn = in.normal.xyz;
+        let n = select(vec3<f32>(0.0, 0.0, 1.0), normalize(nn), dot(nn, nn) > 1e-12);
+        up = clamp(n.y, 0.0, 1.0);
+        let n2 = n * n;
+        let tri = n2 * n2 / dot(n2, n2);
+        let l = clamp(log2(max(length(p - env.eye.xyz), 1e-3)), OCTAVE_MIN, OCTAVE_MAX);
+        let li = floor(l);
+        let next = smoothstep(env.light_cell.y, 1.0, l - li);
+        var sum = 0.0;
+        var used = 0.0;
+        for (var j = 0; j < 2; j++) {
+            let wo = select(1.0 - next, next, j == 1);
+            if wo <= 0.0 {
+                continue;
+            }
+            let o = i32(li) + j;
+            let cell = ldexp(env.light_cell.x, o);
+            for (var k = 0u; k < 3u; k++) {
+                // Less the floor, so a plane fades out rather than drops.
+                let wk = tri[k] - PLANE_MIN;
+                if wk <= 0.0 {
+                    continue;
+                }
+                let f = light_plane(fw, k);
+                let aa = 1.0 - smoothstep(env.light_cell.z, env.light_cell.w, max(f.x, f.y) / cell);
+                if aa > 0.0 {
+                    sum += wo * wk * aa * plane_points(light_plane(p, k) / cell, k, o, keep);
+                }
+                used += wo * wk;
+            }
+        }
+        points = sum / max(used, 1e-6);
+    }
+    let h = p.y * env.light.x - env.light.y;
+    let wave = 1.0 - smoothstep(env.light_wave.x, env.light_wave.y, fw.y * env.light.x);
+    let c = 0.5 + 0.5 * cos(TAU * h);
+    let crest = mix(env.light_wave.z, c * c, wave);
+    let band = env.light_side.w + (1.0 - env.light_side.w) * crest * env.light.w;
+    let tint = clamp(up + env.light_top.w * crest, 0.0, 1.0);
+    let a = clamp(weight * band * points, 0.0, 1.0);
+    return vec4<f32>(mix(env.light_side.rgb, env.light_top.rgb, tint) * a, env.light_fade.w);
+}
+
+// The veil alone, for the faces pass: erases the veil's share of the
+// surfaces' light behind the map (blend: Zero, OneMinusSrcAlpha for rgb
+// and alpha), adding nothing.
+@fragment
+fn fs_mesh_veil() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, env.light_fade.w);
 }
 
 // The diagnostic gray of fs_main, off the interpolated distance; where a
@@ -1572,6 +1727,10 @@ mod runtime {
         meshes: [Option<&'a Mesh>; 2],
         /// Board #5439: the eye pass's draw is the depth light's.
         lit: bool,
+        /// Board #5439: with the light, the veil is on: the faces pass's
+        /// draw is the veil's, and both passes draw the mesh after their
+        /// surfaces.
+        veiled: bool,
     }
 
     impl EnvDepthDraw<'_> {
@@ -1580,6 +1739,15 @@ mod runtime {
         /// and hand occluders, so they hide its light.
         pub fn lit(&self) -> bool {
             self.lit
+        }
+
+        /// Whether the veil is on with the light: `Gfx::render` then draws
+        /// the mesh after the surfaces' light in both passes (the eye
+        /// pass's surfaces, highlight, live outlines and edge bars; the
+        /// faces pass's surfaces), and the mesh erases the veil's share of
+        /// it.
+        pub fn veiled(&self) -> bool {
+            self.veiled
         }
 
         /// The occluder for `eye` (0 left, 1 right) into `target`'s pass,
@@ -1682,9 +1850,11 @@ mod runtime {
         uniforms: [[wgpu::Buffer; 2]; 2],
         pipeline: wgpu::RenderPipeline,
         /// Board #5439: the mesh drawn with the depth light, for the eye
-        /// pass; `None` without the mesh, with the gray diagnostic, or when
-        /// it did not validate.
+        /// pass, and with its veil alone, for the faces pass; `None`
+        /// without the mesh, with the gray diagnostic, or when it did not
+        /// validate.
         light_pipeline: Option<wgpu::RenderPipeline>,
+        veil_pipeline: Option<wgpu::RenderPipeline>,
         /// The occluder mesh at each distinct step in use, none for the
         /// full-screen pass.
         meshes: Vec<Mesh>,
@@ -1846,7 +2016,7 @@ mod runtime {
                     }
                 );
             }
-            let (pipeline, light_pipeline, layout) =
+            let (pipeline, light_pipeline, veil_pipeline, layout) =
                 build_pipeline(&gfx.device, opts.show, mesh_steps[0] > 0);
             // One index buffer per distinct step: the eye's and the faces'
             // (the same at step 8).
@@ -2012,6 +2182,7 @@ mod runtime {
                 uniforms,
                 pipeline,
                 light_pipeline,
+                veil_pipeline,
                 meshes,
                 mesh_steps,
                 provider,
@@ -2188,7 +2359,7 @@ mod runtime {
             cameras: &[EyeCamera],
             extents: &[[u32; 2]],
             faces_extents: Option<&[[u32; 2]]>,
-            light: Option<[[f32; 4]; crate::depth_light::ROWS]>,
+            light: Option<crate::depth_light::Frame>,
         ) -> Option<EnvDepthDraw<'_>> {
             if !self.opts.occlude && !self.opts.show {
                 return None;
@@ -2201,6 +2372,15 @@ mod runtime {
                     .geom
                     .as_ref()
                     .is_none_or(|g| g.drop_vertices(0) == 0 || g.can_light());
+            // The veil: the faces pass draws the mesh with it too, so its
+            // pipelines must be there for both.
+            let veiled = lit
+                && light.is_some_and(|f| f.veil)
+                && self.veil_pipeline.is_some()
+                && self
+                    .geom
+                    .as_ref()
+                    .is_none_or(|g| g.drop_vertices(1) == 0 || g.can_veil());
             let targets = [
                 (OccluderTarget::Eye, Some(extents)),
                 (OccluderTarget::Faces, faces_extents),
@@ -2215,22 +2395,31 @@ mod runtime {
                     .geom
                     .as_ref()
                     .map_or(0, |g| g.drop_vertices(target as usize));
-                let light = light
-                    .as_ref()
-                    .filter(|_| lit && target == OccluderTarget::Eye);
+                // The light's rows where it draws: the eye pass when lit,
+                // the faces pass when veiled (its veil).
+                let draws = match target {
+                    OccluderTarget::Eye => lit,
+                    OccluderTarget::Faces => veiled,
+                };
+                let light = light.as_ref().map(|f| &f.rows).filter(|_| draws);
                 self.write_uniforms(queue, frame, cameras, extents, target, drops, light);
             }
             let own = &self.bind_groups[frame.index as usize];
             let geom = self
                 .geom
                 .as_ref()
-                .map_or([None, None], |g| g.draws(frame.index, lit));
+                .map_or([None, None], |g| g.draws(frame.index, lit, veiled));
             let mut targets = [0, 1].map(|t| geom[t].unwrap_or((&self.pipeline, &own[t])));
-            if lit
-                && geom[0].is_none()
-                && let Some(p) = &self.light_pipeline
-            {
-                targets[0] = (p, &own[0]);
+            for (t, on, pipeline) in [
+                (0, lit, &self.light_pipeline),
+                (1, veiled, &self.veil_pipeline),
+            ] {
+                if on
+                    && geom[t].is_none()
+                    && let Some(p) = pipeline
+                {
+                    targets[t] = (p, &own[t]);
+                }
             }
             Some(EnvDepthDraw {
                 targets,
@@ -2238,6 +2427,7 @@ mod runtime {
                     .mesh_steps
                     .map(|step| self.meshes.iter().find(|m| m.step == step)),
                 lit,
+                veiled,
             })
         }
 
@@ -3246,14 +3436,15 @@ mod runtime {
     /// (`show` true: the gray written over the view), off the same shader,
     /// as the full-screen pass (`mesh` false: `frag_depth` with compare
     /// `Always`) or the mesh (rasterized depth with compare `LessEqual`);
-    /// with the mesh and not the diagnostic, the depth light's too
-    /// ([`light_pipeline`]).
+    /// with the mesh and not the diagnostic, the depth light's and its
+    /// veil's too ([`light_pipeline`]).
     fn build_pipeline(
         device: &wgpu::Device,
         show: bool,
         mesh: bool,
     ) -> (
         wgpu::RenderPipeline,
+        Option<wgpu::RenderPipeline>,
         Option<wgpu::RenderPipeline>,
         wgpu::BindGroupLayout,
     ) {
@@ -3348,32 +3539,62 @@ mod runtime {
             multiview: None,
             cache: None,
         });
-        // Board #5439: the depth light's, on the mesh alone and not under
-        // the gray diagnostic.
-        let light = (mesh && !show).then(|| {
-            light_pipeline(
-                device,
-                &pipeline_layout,
-                &shader,
-                "vs_mesh_light",
-                "xr-env-depth-mesh-light",
+        // Board #5439: the depth light's and its veil's, on the mesh alone
+        // and not under the gray diagnostic.
+        let (light, veil) = if mesh && !show {
+            (
+                light_pipeline(
+                    device,
+                    &pipeline_layout,
+                    &shader,
+                    ["vs_mesh_light", "fs_mesh_light"],
+                    "xr-env-depth-mesh-light",
+                ),
+                light_pipeline(
+                    device,
+                    &pipeline_layout,
+                    &shader,
+                    ["vs_mesh", "fs_mesh_veil"],
+                    "xr-env-depth-mesh-veil",
+                ),
             )
-        });
-        (pipeline, light.flatten(), layout)
+        } else {
+            (None, None)
+        };
+        (pipeline, light, veil, layout)
     }
 
-    /// Board #5439: the occluder mesh drawn with the depth light
-    /// (`depth_light.rs`) from `shader`'s vertex stage `vertex` (the
-    /// occluder's `vs_mesh_light`, or geometry first's with the drop) and
-    /// `fs_mesh_light`: the mesh's depth state (`LessEqual`, depth written,
-    /// culling off), its color premultiplied over the target. Built inside
-    /// an error scope: one that does not validate is logged and `None`, so
-    /// the eye pass keeps the depth-only mesh rather than losing the frame.
+    /// Board #5439: the blend of the depth light's mesh
+    /// (`depth_light::veil`): its light added, and the fragment's alpha,
+    /// the veil, the share of what is behind erased in color and alpha
+    /// alike, so a pixel the veil erases stays clear over the passthrough.
+    /// The veil alone (`fs_mesh_veil`, no light) on the same terms.
+    const LIGHT_BLEND: wgpu::BlendState = wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        },
+    };
+
+    /// Board #5439: the occluder mesh drawn with the depth light or its
+    /// veil (`depth_light.rs`), from `shader`'s vertex and fragment stages
+    /// `[vertex, fragment]` (`vs_mesh_light` or `vs_mesh`, or geometry
+    /// first's with the drop; `fs_mesh_light` or `fs_mesh_veil`): the
+    /// mesh's depth state (`LessEqual`, depth written, culling off) and
+    /// [`LIGHT_BLEND`]. Built inside an error scope: one that does not
+    /// validate is logged and `None`, so the pass keeps the depth-only mesh
+    /// rather than losing the frame.
     pub(crate) fn light_pipeline(
         device: &wgpu::Device,
         layout: &wgpu::PipelineLayout,
         shader: &wgpu::ShaderModule,
-        vertex: &str,
+        [vertex, fragment]: [&str; 2],
         label: &str,
     ) -> Option<wgpu::RenderPipeline> {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -3401,11 +3622,11 @@ mod runtime {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: shader,
-                entry_point: Some("fs_mesh_light"),
+                entry_point: Some(fragment),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: SWAPCHAIN_FORMAT,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend: Some(LIGHT_BLEND),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -3821,6 +4042,7 @@ mod tests {
             "fs_mesh_show",
             "vs_mesh_light",
             "fs_mesh_light",
+            "fs_mesh_veil",
         ] {
             assert!(
                 module.entry_points.iter().any(|e| e.name == name),

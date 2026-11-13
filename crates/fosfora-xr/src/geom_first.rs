@@ -926,9 +926,11 @@ mod runtime {
         geom_pipeline: wgpu::RenderPipeline,
         tint_pipeline: wgpu::RenderPipeline,
         /// Board #5439: the mesh with the drop and the depth light, for the
-        /// eye pass (`vs_mesh_geom_light`); `None` with the gray diagnostic
-        /// or when it did not validate.
+        /// eye pass (`vs_mesh_geom_light`), and with the drop and the veil
+        /// alone, for the faces pass; `None` with the gray diagnostic or
+        /// when it did not validate.
         light_pipeline: Option<wgpu::RenderPipeline>,
+        veil_pipeline: Option<wgpu::RenderPipeline>,
         explain_pipeline: wgpu::ComputePipeline,
         explain_layout: wgpu::BindGroupLayout,
         keep_pipeline: wgpu::ComputePipeline,
@@ -1166,16 +1168,28 @@ mod runtime {
                     write_mask: wgpu::ColorWrites::ALL,
                 },
             );
-            let light_pipeline = if show {
-                None
+            let [light_pipeline, veil_pipeline] = if show {
+                [None, None]
             } else {
-                crate::env_depth::light_pipeline(
-                    device,
-                    &draw_pipeline_layout,
-                    &shader,
-                    "vs_mesh_geom_light",
-                    "xr-env-depth-mesh-geom-light",
-                )
+                [
+                    (
+                        ["vs_mesh_geom_light", "fs_mesh_light"],
+                        "xr-env-depth-mesh-geom-light",
+                    ),
+                    (
+                        ["vs_mesh_geom", "fs_mesh_veil"],
+                        "xr-env-depth-mesh-geom-veil",
+                    ),
+                ]
+                .map(|(stages, label)| {
+                    crate::env_depth::light_pipeline(
+                        device,
+                        &draw_pipeline_layout,
+                        &shader,
+                        stages,
+                        label,
+                    )
+                })
             };
 
             // The explain pass.
@@ -1301,6 +1315,7 @@ mod runtime {
                 geom_pipeline,
                 tint_pipeline,
                 light_pipeline,
+                veil_pipeline,
                 explain_pipeline,
                 explain_layout,
                 keep_pipeline,
@@ -1444,16 +1459,24 @@ mod runtime {
             self.light_pipeline.is_some()
         }
 
+        /// Whether the faces pass can draw the drop with the veil (board
+        /// #5439): its pipeline validated.
+        pub fn can_veil(&self) -> bool {
+            self.veil_pipeline.is_some()
+        }
+
         /// The pipeline and per-eye bind groups for each target's draw
         /// from swapchain image `index`, `None` where the occluder's own
         /// stay: the eye pass's tint with `geomfirstshow` (the drop in it
         /// on with the test), the drop alone with the test running, with
-        /// the depth light in the eye pass when `light` asks for it and
-        /// its pipeline is there (board #5439).
+        /// the depth light in the eye pass when `light` asks for it and the
+        /// veil in the faces pass when `veil` does, where their pipelines
+        /// are there (board #5439).
         pub fn draws(
             &self,
             index: u32,
             light: bool,
+            veil: bool,
         ) -> [Option<(&wgpu::RenderPipeline, &[wgpu::BindGroup; 2])>; 2] {
             let Some(groups) = self.draw_groups.get(index as usize) else {
                 return [None, None];
@@ -1466,7 +1489,10 @@ mod runtime {
             } else {
                 None
             };
-            let faces = (self.drop_vertices(1) > 0).then_some((&self.geom_pipeline, &groups[1]));
+            let faces = (self.drop_vertices(1) > 0).then(|| {
+                let veiled = self.veil_pipeline.as_ref().filter(|_| veil);
+                (veiled.unwrap_or(&self.geom_pipeline), &groups[1])
+            });
             [eye, faces]
         }
     }
@@ -2099,6 +2125,7 @@ mod tests {
             "fs_mesh_tint",
             "vs_mesh_geom_light",
             "fs_mesh_light",
+            "fs_mesh_veil",
         ] {
             assert!(
                 mesh.entry_points.iter().any(|e| e.name == name),

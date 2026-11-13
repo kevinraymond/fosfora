@@ -1,114 +1,142 @@
 //! The depth light (board #5439): what the live depth map still occludes is
-//! drawn as a shape lit by the room's light instead of a black cutout.
+//! drawn as a cloud of points of light fixed in the room, and with the room
+//! dark the surfaces' light behind it shows between them.
 //!
 //! **What is lit.** The depth occluder's mesh (`env_depth.rs`,
 //! `envdepthmesh`) in the eye pass, where it still occludes. With geometry
 //! first on (`geom_first.rs`) that is exactly what no room box explains: a
 //! chair, a vacuum, a pile, a person, the wearer's own legs. The mesh
-//! writes the same depth as before and now color too. The hands are not
-//! part of it, since the runtime removes them from the map and the hand
-//! mesh occludes them. The faces pass keeps its depth-only copy.
+//! writes the same depth as before, so the particles are hidden behind real
+//! things as they were. The hands are not part of it, since the runtime
+//! removes them from the map and the hand mesh occludes them.
 //!
-//! **The look** ([`fragment`]). Bands of light at even heights, one every
-//! [`BAND_SPACING_M`], wrap the object and drift up with the music, over a
-//! steady share ([`STEADY`]) of the light, so a trough is dim rather than
-//! dark. A band at one height bends over the object's form, which reads
-//! with one eye. Its profile is a squared raised cosine, mean
-//! [`CREST_MEAN`]. Each vertex has a normal from the map's gradient
-//! ([`vertex_light`]). The light shades from 1 where the surface faces the
-//! eye to [`SHADE_FLOOR`] edge-on, and a surface that faces up (a seat, a
-//! shelf, a knee) takes the top's color with the bands at [`TOP_CONTRAST`],
-//! so a whole top does not flash as a band passes its height. The colors
-//! are the theme's ([`colors`]). The sides take the color the theme gives
-//! other surfaces, the tops the key's tint where the theme uses it. Aurora
-//! draws teal sides and tops in the key's tint; a room with no theme draws
-//! other's own green on both.
+//! **The veil** ([`veil`]). The map no longer hides the surfaces' light
+//! (the sky, the lit faces, the edge bars) with its coarse cutout. Those
+//! draw first, tested against the room's boxes and the hands alone; the
+//! mesh then erases the veil's share of them where it lies in front, and
+//! adds its points. The veil is `1 - level` of the immersion: with the room
+//! visible (level 0) the map hides the surfaces' light behind a real thing
+//! as before and the passthrough shows the thing; at level 0.5 half of it
+//! shows through, over the passthrough at half; with the room black
+//! (level 1) all of it shows, and the thing is only its points. The
+//! surfaces' own layer (`faces_layer.rs`) gets the same erase from the
+//! mesh drawn after its surfaces with the veil alone. The blend erases the
+//! share in color and alpha alike, so at level 0 the eye layer stays
+//! transparent over the passthrough where the veil erased it. The points
+//! add their light: the layer's alpha carries the erase and not the light,
+//! which an "over" of the light itself would need a second output or a
+//! second draw for. `depthlightveil 0` keeps the hard cutout at every
+//! level: the mesh draws before the surfaces, as in the first version.
 //!
-//! **The silhouette.** It fades to dark against dark. The gradient across a
-//! silhouette spans the depth jump, so the normal there lies nearly edge-on
-//! to the eye and the facing fade ([`GRAZE`]) takes the light to 0 at the
-//! last vertex on the object and at the first one behind it. The light
-//! fades out over the mesh cell inside the silhouette, and the fringe
-//! triangles that lean back to the background carry none. A vertex whose
-//! distance jumps from a neighbor's by more than [`JUMP`] has none either,
-//! which keeps something thinner than two mesh steps dark wherever it lies
-//! on the texel grid, instead of lit in some places and not in others as
-//! the head moves (its two neighbors along a row both land on the
-//! background, so the gradient between them misses the jump). On recorded
-//! frames of a real office the two other treatments, a rim brightening
-//! toward the silhouette and the fringe lit along with the object, drew the
-//! mesh's stair steps in light, so the coarse edge was still the first
-//! thing seen. Dark against dark leaves the steps visible only where a
-//! bright curtain of sky passes right behind the edge.
+//! **The points** ([`fragment`], [`plane_points`], [`cell_point`]). Cells
+//! on a lattice in each of the world's three axis planes, a point
+//! somewhere in each cell (in fewer of them at a low fill, [`point_layout`]),
+//! a soft disk whose radius varies by cell ([`SIZE`]), swells with the
+//! music ([`SWELL`]) and twinkles at its own rate and phase. The fragment
+//! looks at the four cells around it in each plane it uses: a point lies
+//! within half a cell of its cell's center with a radius of at most half a
+//! cell, so no farther cell reaches it. The planes are weighted by the
+//! fourth power of the normal's components, so a surface uses the plane it
+//! faces. The share covered is `depthlightfill`, a quarter by default. A
+//! cell's side is [`CELL_M`] at 1 m from the eye and doubles with each
+//! octave of the distance, the next octave fading in over the last part of
+//! each ([`OCTAVE_BLEND`]), so a thing keeps its look on screen near or far
+//! and the map's noise, larger far away, stays small against the cells.
+//! Through the points run the bands from the first version as a slow wave
+//! of light, one every [`BAND_SPACING_M`] of height, drifting up, its
+//! crests tinted toward the top's color. A surface that faces up takes the
+//! top's color. The colors are the theme's ([`colors`]): the color the
+//! theme gives other surfaces, and the key's tint where the theme uses it
+//! anywhere. Aurora draws teal and the key's tint; a room with no theme
+//! other's own green.
 //!
-//! **Stable in time.** The bands are a function of the world height alone,
-//! so a surface keeps its pattern while the map jitters. Noise moves a
-//! point along a nearly level eye ray, which changes its height by a small
-//! fraction of the noise. On three office recordings with the head still,
-//! the height under a texel within 3 m moved between read-backs by 0.4 to
-//! 1.2 cm at the 95th percentile, a tenth of a band at most. The vertex's
-//! share uses smooth fades only: the facing ([`GRAZE`]) and the distance
-//! from the eye ([`FADE_M`], all of it to 1.5 m and none past 3 m, where
-//! the map's noise grows and clutter is too far to matter). A vertex
-//! without data, or next to one, has none. A band narrower than a few
-//! pixels fades into its mean ([`AA_BANDS_PER_PX`]) instead of aliasing.
-//! The drift is integrated on the CPU ([`Drive`]), so the phase moves
-//! continuously, faster with the music, and wraps at a whole band.
+//! **Stable in time.** A point is a function of the world position alone:
+//! its cell and its place in the cell come from the position projected on
+//! an axis plane, so it stays put while the head moves and while the mesh's
+//! vertices slide over the surface. The map's noise moves the surface along
+//! the view ray, and the projection on the plane a surface faces turns that
+//! into a much smaller shift: [`JITTER_TEST_M`] of noise moves a facing
+//! surface's point by a few hundredths of a cell. A head move changes only
+//! the octaves' blend, slowly. The normal is taken toward the neighbor
+//! nearer in depth, so a step does not swing it. Where cells shrink to a
+//! few pixels (a surface seen edge-on, the fringe that leans back at a
+//! step) the points fade out ([`AA_CELLS_PER_PX`]) instead of sparkling.
+//! Fading them into their mean instead drew a faint line of glow along
+//! every step of the mesh in renders of the recorded office.
 //!
-//! **How bright** ([`peak_alpha`]). Premultiplied over the cleared target,
-//! as the surfaces' light is. The peak alpha rises with the immersion level
-//! from [`ALPHA_LOW`] with the room plain (barely there over the real
-//! object) to [`ALPHA_HIGH`] at full immersion, about a third of a lit
-//! surface's full alpha, so the sky and the surfaces stay the subject.
-//! `depthlightgain` multiplies it. The crests follow the band the theme
-//! gives other surfaces ([`band`]; the rms for Aurora), smoothed
-//! ([`MUSIC_ATTACK_S`], [`MUSIC_RELEASE_S`]), and keep [`MUSIC_FLOOR`] of
-//! their light in silence.
+//! **Masses and edges** ([`vertex_light`]). Inside a mass nothing changes
+//! at a step between things: no line, no thinning. A step to a neighbor
+//! larger than [`JUMP_MIN_M`] or [`JUMP_REL`] of the distance, whichever
+//! is larger, parts two masses: the far side keeps no points at its edge,
+//! the near side [`NEAR_KEEP`] of them, and the triangles between them
+//! (the fringe that leans back) carry the near side's points shrinking to
+//! nothing. So a mass ends in thinning points and the one behind it starts
+//! again a cell away, with the sky between. A point's area follows what its
+//! vertex keeps. Something thinner than a mesh step is all near side, so a
+//! vacuum's handle carries points at [`NEAR_KEEP`] of their area.
+//!
+//! **Far things keep their color.** The light is all there to 1.5 m and
+//! falls to [`FAR_FLOOR`] by 3 m ([`FADE_M`]), and stays there as far as
+//! the map has data.
+//!
+//! **How bright** ([`peak_alpha`]). A point's center rises with the
+//! immersion level from [`ALPHA_LOW`] with the room plain to [`ALPHA_HIGH`]
+//! with it black, times `depthlightgain`, the band's wave and the twinkle.
+//! At a quarter covered the light averages well under a lit surface's. The
+//! crests follow the band the theme gives other surfaces ([`band`]; the rms
+//! for Aurora), smoothed ([`MUSIC_ATTACK_S`], [`MUSIC_RELEASE_S`]).
 //!
 //! **Draw order.** With the light on, the eye pass draws the box and hand
-//! occluders first and the map's mesh after them, so the mesh lights only
-//! what is in front of every other occluder. A hand or a box in front of a
-//! lit object hides its light. The depth buffer ends the same, since every
-//! occluder keeps the nearest depth (compare `Less` or `LessEqual`)
-//! whatever the order. Off, the order is as before.
+//! occluders, the quad, the surfaces when they are in the eye pass, the
+//! highlight, the live outlines and the edge bars, then the map's mesh,
+//! then the particles and everything after them. The faces pass draws the
+//! occluders, its surfaces, then the mesh with the veil alone. Every
+//! occluder keeps the nearest depth (compare `Less` or `LessEqual`), so the
+//! depth buffer ends the same whatever the order. With the veil off, the
+//! mesh draws right after the box and hand occluders in both passes, as in
+//! the first version.
 //!
-//! **Cost.** Per vertex of the eye mesh (161 x 161, 26K per eye at the
-//! default step 2): four more texel loads (the neighbors), four rays, a
-//! cross product, a rotation, two square roots, a division and three
-//! smoothsteps, in the vertex stage where the map is already read. None of
-//! it feeds the position, so a binning pass that computes positions alone
-//! skips it. Per fragment: one `fwidth`, one cosine, one smoothstep and
-//! about twenty other arithmetic operations, blended; no texture, no loop,
-//! no discard and no `frag_depth`, so early depth testing works as before.
-//! A person 1 m away covers about 15 % of an eye's pixels and a quarter at
-//! 0.7 m, a vacuum's handle 0.6 m away about 1 %. With the whole map lit
-//! (geometry first off, or no boxes) it is every pixel the map covers.
+//! **Cost.** Per vertex of the eye mesh (26K per eye at the default step
+//! 2), in the vertex stage where the map is already read: four more texel
+//! loads, five rays, two one-sided differences, a cross product, a
+//! rotation, two square roots and three smoothsteps. Per fragment of the
+//! eye mesh: one `fwidth`, then where the vertex keeps light the points of
+//! one octave (two in the last part of each) in one plane (two or three
+//! where the surface faces between axes), four cells each, a cell being two
+//! integer hashes, a sine, a square root, a length and a smoothstep; then
+//! the band's cosine and smoothstep and the blend. Typical: four to eight
+//! cells; at most twenty-four. No texture, no discard, no `frag_depth`, so
+//! early depth testing works as before. The veil makes every fragment the
+//! mesh covers blend, and the surfaces behind a real thing are no longer
+//! rejected by its depth, so they shade where they did not. The faces pass
+//! adds the mesh at its step with a constant fragment.
 //!
 //! **Knobs**, read at launch and polled once a second
 //! ([`DepthLightOptions::from_knobs`]): `debug.fosfora.depthlight 0|1`
 //! (default 1; 0 is the frame as it was, with depth only, no color write
-//! and the old order) and `depthlightgain` (0 to [`GAIN_MAX`], default 1).
-//! It needs the occluder's mesh. With the full-screen pass
+//! and the old order), `depthlightgain` (0 to [`GAIN_MAX`], default 1),
+//! `depthlightfill` (the share covered, [`FILL_RANGE`], default [`FILL`])
+//! and `depthlightveil 0|1` (default 1; 0 keeps the hard cutout at every
+//! level). It needs the occluder's mesh. With the full-screen pass
 //! (`envdepthmesh 0`, or `envdepthfilter 0` or 1) or the gray diagnostic
 //! (`envdepthshow`) it is off, and the log says so ([`blocked`]).
 //! `geomfirstshow`'s tint replaces it while on.
 //!
-//! **What it does not do.** It does not change what occludes. The depth
-//! written, geometry first's rule and the hand removal are as before. It
-//! does not sharpen the coarse edge, only darkens it. It lights what the
-//! map sees, so where no box explains a wall (no scan, roam, geometry first
-//! off) the wall within 3 m is lit too. Past 3 m an object is still a dark
-//! shape. So is anything narrower than about six depth texels (4 cm at 1 m,
-//! 2.5 cm at 0.6 m), where no vertex has all four neighbors on it.
+//! **What it does not do.** It does not change what occludes the
+//! particles: the depth written, geometry first's rule and the hand
+//! removal are as before. It does not sharpen the map's edge; at levels
+//! between 0 and 1 the veil still follows the map's coarse silhouette.
+//! Where no box explains a wall (no scan, roam, geometry first off) the
+//! wall is points too.
 //!
 //! Plain numbers in, so it builds and tests on the desktop:
-//! [`vertex_light`] mirrors the WGSL's `mesh_light` and [`fragment`] its
-//! `fs_mesh_light` (`env_depth::ENV_DEPTH_WGSL`), and
-//! `tests/depth_light_gpu.rs` runs both on a desktop GPU against them.
+//! [`vertex_light`] mirrors the WGSL's `mesh_light`, [`fragment`] its
+//! `fs_mesh_light` and [`veil`] the blend, and `tests/depth_light_gpu.rs`
+//! runs the stages on a desktop GPU against them.
 
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
-use glam::{Vec3, Vec4};
+use glam::{Vec2, Vec3, Vec4};
 
 use crate::env_depth::EyeReprojection;
 use crate::surface_fx::{Audio, BAND_BASS, BAND_HIGH, BAND_MID};
@@ -118,48 +146,80 @@ use crate::themes::Theme;
 /// The knobs' names.
 pub const KNOB: &str = "debug.fosfora.depthlight";
 pub const KNOB_GAIN: &str = "debug.fosfora.depthlightgain";
+pub const KNOB_FILL: &str = "debug.fosfora.depthlightfill";
+pub const KNOB_VEIL: &str = "debug.fosfora.depthlightveil";
 
 /// Rows of [`rows`], the end of `struct EnvEye` from `light` on
 /// (`env_depth::LIGHT_ROW`).
-pub const ROWS: usize = 6;
-/// The height of one band of light (m): crests 12 cm apart, about eight on
-/// a seated person's torso and legs.
-pub const BAND_SPACING_M: f32 = 0.12;
-/// The light between crests, as a share of a crest's.
-pub const STEADY: f32 = 0.35;
-/// The bands' contrast on a surface that faces straight up, as a share of
-/// a side's.
-pub const TOP_CONTRAST: f32 = 0.3;
-/// The mean of the crest's profile, a squared raised cosine: what a band
-/// fades into where it is too thin to draw.
+pub const ROWS: usize = 9;
+
+/// The height of one band of the wave (m).
+pub const BAND_SPACING_M: f32 = 0.2;
+/// The light between the wave's crests, as a share of a crest's.
+pub const STEADY: f32 = 0.55;
+/// How far a crest tints a side toward the top's color.
+pub const BAND_TINT: f32 = 0.35;
+/// The mean of the crest's profile, a squared raised cosine: what the wave
+/// fades into where a band spans few pixels.
 pub const CREST_MEAN: f32 = 0.375;
-/// The shading's floor: the light on a surface seen edge-on, as a share of
-/// one that faces the eye.
-pub const SHADE_FLOOR: f32 = 0.5;
-/// The facing (the cosine between the normal and the way to the eye) where
-/// the light starts to fade in and where it is all there: none at 81
-/// degrees and past, all of it at 53 and under.
-pub const GRAZE: [f32; 2] = [0.15, 0.6];
-/// The distance from the eye (m) where the light starts to fade out and
-/// where it is gone.
-pub const FADE_M: [f32; 2] = [1.5, 3.0];
-/// The largest jump from the vertex's distance to a neighbor's, as a share
-/// of the vertex's, where the light starts to fade out and where it is
-/// gone: a silhouette's jump. The facing fade catches most of them; this
-/// catches a vertex on something thinner than two mesh steps, whose two
-/// neighbors along an axis both lie on the background, so the gradient
-/// between them does not see the jump. The noise on a surface within 3 m
-/// moves a neighbor by a percent or two of the distance (the recordings).
-pub const JUMP: [f32; 2] = [0.06, 0.12];
-/// Bands per pixel (the `fwidth` of the band count) where the bands start
-/// to fade into their mean and where they are gone: six pixels a band and
-/// two.
+/// Bands per pixel where the wave starts to fade into its mean and where
+/// it is gone: six pixels a band and two.
 pub const AA_BANDS_PER_PX: [f32; 2] = [1.0 / 6.0, 0.5];
-/// The peak alpha with the room plain (immersion level 0) and at full
-/// immersion: barely there over the real object, then a third of a lit
-/// surface's full alpha (`immerse::ALPHA_FULL`).
-pub const ALPHA_LOW: f32 = 0.05;
-pub const ALPHA_HIGH: f32 = 0.33;
+/// The distance from the eye (m) where the light starts to fall and where
+/// it reaches its floor.
+pub const FADE_M: [f32; 2] = [1.5, 3.0];
+/// The light past the fade, as a share of a near thing's: a far shelf is a
+/// dim constellation, never black.
+pub const FAR_FLOOR: f32 = 0.35;
+/// The smallest step in depth to a neighbor (m) that parts two masses, and
+/// the share of the vertex's distance that does when that is larger: half
+/// a meter to 2 m, a quarter of the distance past it.
+pub const JUMP_MIN_M: f32 = 0.5;
+pub const JUMP_REL: f32 = 0.25;
+/// Where the thinning at a mass's edge starts, as a share of that step.
+pub const JUMP_SOFT: f32 = 0.6;
+/// What the near side of a mass's edge keeps of its points' area.
+pub const NEAR_KEEP: f32 = 0.5;
+/// A cell's side 1 m from the eye (m): about 30 pixels of the Quest 3's
+/// eye buffer.
+pub const CELL_M: f32 = 0.04;
+/// The share of an octave of the distance where the next octave's cells
+/// start to fade in.
+pub const OCTAVE_BLEND: f32 = 0.6;
+/// The octaves' range around 1 m, as in the WGSL: cells from 1/16 to 16
+/// times [`CELL_M`].
+pub const OCTAVE_RANGE: [f32; 2] = [-4.0, 3.999];
+/// Cells per pixel where the points start to fade out and where they are
+/// gone: under about 7 and 2.5 pixels a cell. They fade to nothing rather
+/// than to their mean, so the fringe at a step reads as sky, not a line.
+pub const AA_CELLS_PER_PX: [f32; 2] = [0.15, 0.4];
+/// Taken off each plane's share of the points, so a plane the surface
+/// barely faces fades out rather than drops; one left with none is skipped
+/// and the others shared out again, as in the WGSL.
+pub const PLANE_MIN: f32 = 0.05;
+/// A point's radius as factors of the base, uniformly between them.
+pub const SIZE: [f32; 2] = [0.7, 1.3];
+/// Where a point's soft edge starts, as a share of its radius.
+pub const SOFT_CORE: f32 = 0.35;
+/// The music's swell: the radius grows by up to this share.
+pub const SWELL: f32 = 0.2;
+/// A point's largest offset from its cell's center, cells: anywhere in it.
+pub const JITTER: f32 = 0.5;
+/// The share covered by points (`depthlightfill`), and the knob's range:
+/// the largest point must stay within half a cell, which caps it.
+pub const FILL: f32 = 0.25;
+pub const FILL_RANGE: [f32; 2] = [0.05, 0.33];
+/// The smallest base radius (cells): a lower fill puts a point in fewer
+/// cells rather than shrinking them.
+pub const RADIUS_MIN: f32 = 0.16;
+/// The twinkle's depth (the share of a point's light it swings) and its
+/// rate in silence (cycles a second, times 1, 2 or 3 by point).
+pub const TWINKLE_DEPTH: f32 = 0.5;
+pub const TWINKLE_HZ: f32 = 0.25;
+/// A point's peak alpha with the room plain (immersion level 0) and with
+/// it black.
+pub const ALPHA_LOW: f32 = 0.06;
+pub const ALPHA_HIGH: f32 = 0.8;
 /// `depthlightgain`'s range.
 pub const GAIN_MAX: f32 = 4.0;
 /// The crests' light in silence, as a share of a loud moment's.
@@ -168,9 +228,13 @@ pub const MUSIC_FLOOR: f32 = 0.4;
 /// rises and while it falls.
 pub const MUSIC_ATTACK_S: f32 = 0.05;
 pub const MUSIC_RELEASE_S: f32 = 0.3;
-/// The drift (bands a second, up) in silence and at a full band; the beat
-/// envelope adds up to as much again, as it speeds the surfaces' clock.
-pub const DRIFT_BANDS_S: [f32; 2] = [0.05, 0.25];
+/// The wave's drift (bands a second, up) in silence and at a full band;
+/// the beat envelope adds up to as much again, as it speeds the surfaces'
+/// clock.
+pub const DRIFT_BANDS_S: [f32; 2] = [0.03, 0.15];
+/// The map noise the stability test applies (m), the recordings' near
+/// noise.
+pub const JITTER_TEST_M: f32 = 0.004;
 
 fn unit(x: f32) -> f32 {
     if x.is_finite() {
@@ -193,6 +257,11 @@ pub struct DepthLightOptions {
     pub on: bool,
     /// `debug.fosfora.depthlightgain`: multiplies the peak alpha.
     pub gain: f32,
+    /// `debug.fosfora.depthlightfill`: the share covered by points.
+    pub fill: f32,
+    /// `debug.fosfora.depthlightveil`: the surfaces' light shows through
+    /// with the room dark (on), or the hard cutout at every level (off).
+    pub veil: bool,
 }
 
 impl Default for DepthLightOptions {
@@ -200,22 +269,30 @@ impl Default for DepthLightOptions {
         Self {
             on: true,
             gain: 1.0,
+            fill: FILL,
+            veil: true,
         }
     }
 }
 
 impl DepthLightOptions {
-    /// The options the two knobs ask, each read through `prop` (a system
-    /// property by name, `None` unset): `depthlight` off only at `0`; an
-    /// unreadable gain is the default, one out of range the nearest end.
+    /// The options the four knobs ask, each read through `prop` (a system
+    /// property by name, `None` unset): `depthlight` and `depthlightveil`
+    /// off only at `0`; an unreadable number is the default, one out of
+    /// range the nearest end.
     pub fn from_knobs(prop: impl Fn(&str) -> Option<String>) -> Self {
         let d = Self::default();
-        Self {
-            on: prop(KNOB).as_deref().map(str::trim) != Some("0"),
-            gain: prop(KNOB_GAIN)
+        let number = |name: &str| {
+            prop(name)
                 .and_then(|v| v.trim().parse::<f32>().ok())
                 .filter(|v| v.is_finite())
-                .map_or(d.gain, |v| v.clamp(0.0, GAIN_MAX)),
+        };
+        let off = |name: &str| prop(name).as_deref().map(str::trim) == Some("0");
+        Self {
+            on: !off(KNOB),
+            gain: number(KNOB_GAIN).map_or(d.gain, |v| v.clamp(0.0, GAIN_MAX)),
+            fill: number(KNOB_FILL).map_or(d.fill, |v| v.clamp(FILL_RANGE[0], FILL_RANGE[1])),
+            veil: !off(KNOB_VEIL),
         }
     }
 
@@ -230,8 +307,16 @@ impl DepthLightOptions {
             return "off (debug.fosfora.depthlight 0): the depth map writes depth only".to_owned();
         }
         format!(
-            "on · gain {} · peak alpha {ALPHA_LOW} with the room plain to {ALPHA_HIGH} at full immersion · a band every {BAND_SPACING_M} m · fades out {} to {} m from the eye",
-            self.gain, FADE_M[0], FADE_M[1],
+            "on, points · gain {} · fill {} · {} · a point's peak alpha {ALPHA_LOW} with the room plain to {ALPHA_HIGH} black · cells {CELL_M} m at 1 m, doubling each octave · the light falls to {FAR_FLOOR} from {} to {} m · two masses part at {JUMP_MIN_M} m or {JUMP_REL} of the distance",
+            self.gain,
+            self.fill,
+            if self.veil {
+                "veil on: the surfaces' light shows through by the immersion level"
+            } else {
+                "veil off (debug.fosfora.depthlightveil 0): the hard cutout at every level"
+            },
+            FADE_M[0],
+            FADE_M[1],
         )
     }
 
@@ -268,8 +353,8 @@ pub fn blocked(occlude: bool, show: bool, mesh_step: u32) -> Option<&'static str
     }
 }
 
-/// The peak alpha at immersion level `level` (0..1) and gain `gain`: from
-/// [`ALPHA_LOW`] at level 0 to [`ALPHA_HIGH`] at 1, times the gain.
+/// A point's peak alpha at immersion level `level` (0..1) and gain `gain`:
+/// from [`ALPHA_LOW`] at level 0 to [`ALPHA_HIGH`] at 1, times the gain.
 pub fn peak_alpha(level: f32, gain: f32) -> f32 {
     let gain = if gain.is_finite() {
         gain.clamp(0.0, GAIN_MAX)
@@ -277,6 +362,29 @@ pub fn peak_alpha(level: f32, gain: f32) -> f32 {
         0.0
     };
     (ALPHA_LOW + (ALPHA_HIGH - ALPHA_LOW) * unit(level)) * gain
+}
+
+/// The veil at immersion level `level`: the share of the surfaces' light
+/// behind the map that the map erases, `1 - level`; 1 at every level with
+/// the veil off (`on` false), which with the mesh drawn first changes
+/// nothing but its own folds.
+pub fn veil_share(level: f32, on: bool) -> f32 {
+    if on { 1.0 - unit(level) } else { 1.0 }
+}
+
+/// What the blend leaves in a pixel holding `dst` (premultiplied RGBA)
+/// when the mesh's fragment writes `src`, whose alpha is the veil: the
+/// veil's share of `dst` erased in color and alpha, `src`'s light added
+/// (rgb One, OneMinusSrcAlpha; alpha Zero, OneMinusSrcAlpha). The faces
+/// pass's veil is the same with no light.
+pub fn veil(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
+    let keep = 1.0 - src[3];
+    [
+        src[0] + dst[0] * keep,
+        src[1] + dst[1] * keep,
+        src[2] + dst[2] * keep,
+        dst[3] * keep,
+    ]
 }
 
 /// Whether `theme` gives any kind of surface the key's tint.
@@ -319,9 +427,9 @@ pub fn colors_line(theme: Option<Theme>) -> String {
     format!("depth light: {side} sides, {top} ({name})")
 }
 
-/// The audio band (`surface_fx::BAND_*`) the crests follow under `theme`:
-/// the one it gives other surfaces; with no theme, other's default
-/// behavior's.
+/// The audio band (`surface_fx::BAND_*`) the crests and the swell follow
+/// under `theme`: the one it gives other surfaces; with no theme, other's
+/// default behavior's.
 pub fn band(theme: Option<Theme>) -> u32 {
     theme.and_then(|t| t.look(KIND_OTHER)).map_or_else(
         || SurfaceBehavior::default_for(KIND_OTHER).default_band(),
@@ -339,19 +447,22 @@ pub fn band_level(audio: &Audio, band: u32) -> f32 {
     })
 }
 
-/// The music the light follows and the bands' phase, stepped once a frame.
+/// The music the light follows, the wave's phase and the twinkle's clock,
+/// stepped once a frame.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Drive {
     music: f32,
     phase: f32,
+    twinkle: f32,
 }
 
 impl Drive {
     /// Advance by `dt` seconds with the band's level `level` and the beat
     /// envelope `beat` (both 0..1): the music one-pole toward the level
-    /// ([`MUSIC_ATTACK_S`] rising, [`MUSIC_RELEASE_S`] falling), the phase
-    /// on by [`DRIFT_BANDS_S`] at that music, times one plus the beat,
-    /// wrapped to a whole band.
+    /// ([`MUSIC_ATTACK_S`] rising, [`MUSIC_RELEASE_S`] falling); the wave's
+    /// phase on by [`DRIFT_BANDS_S`] at that music and the twinkle's clock
+    /// by [`TWINKLE_HZ`] times one plus the music, both times one plus the
+    /// beat and wrapped to a whole cycle.
     pub fn step(&mut self, dt: f32, level: f32, beat: f32) {
         let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
         let level = unit(level);
@@ -361,8 +472,10 @@ impl Drive {
             MUSIC_RELEASE_S
         };
         self.music += (level - self.music) * (1.0 - (-dt / tau).exp());
+        let beat = 1.0 + unit(beat);
         let speed = DRIFT_BANDS_S[0] + (DRIFT_BANDS_S[1] - DRIFT_BANDS_S[0]) * self.music;
-        self.phase = (self.phase + dt * speed * (1.0 + unit(beat))).fract();
+        self.phase = (self.phase + dt * speed * beat).fract();
+        self.twinkle = (self.twinkle + dt * TWINKLE_HZ * (1.0 + self.music) * beat).fract();
     }
 
     /// The smoothed music, 0..1.
@@ -370,35 +483,108 @@ impl Drive {
         self.music
     }
 
-    /// The bands' phase, 0..1 of a band.
+    /// The wave's phase, 0..1 of a band.
     pub fn phase(&self) -> f32 {
         self.phase
     }
+
+    /// The twinkle's clock, 0..1 of a cycle.
+    pub fn twinkle(&self) -> f32 {
+        self.twinkle
+    }
+}
+
+/// The base radius (cells) and the share of cells with a point for a fill
+/// of `fill` (the share covered): the radius that covers it with a point in
+/// every cell, but at least [`RADIUS_MIN`] (then fewer cells hold one) and
+/// at most what keeps the largest swollen point within half a cell.
+pub fn point_layout(fill: f32) -> (f32, f32) {
+    let fill = if fill.is_finite() {
+        fill.clamp(FILL_RANGE[0], FILL_RANGE[1])
+    } else {
+        FILL
+    };
+    let area = PI * size_square_mean();
+    let largest = 0.5 / (SIZE[1] * (1.0 + SWELL));
+    let radius = (fill / area).sqrt().clamp(RADIUS_MIN, largest);
+    (radius, (fill / (area * radius * radius)).min(1.0))
+}
+
+/// The mean of a point's size factor squared ([`SIZE`], uniform).
+pub fn size_square_mean() -> f32 {
+    let [a, b] = SIZE;
+    (b * b * b - a * a * a) / (3.0 * (b - a))
+}
+
+/// A soft point's light over its disk, as a share of the disk's area: 1
+/// inside `soft` of the radius, a smoothstep down to 0 at the radius.
+pub fn profile_share(soft: f32) -> f32 {
+    soft + 0.3 * (1.0 - soft) * (1.0 - soft)
+}
+
+/// This frame's rows and whether the veil is on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Frame {
+    pub rows: [[f32; 4]; ROWS],
+    /// The surfaces draw before the mesh and show through it by the level.
+    pub veil: bool,
 }
 
 /// The light's rows of `struct EnvEye` (from `light` on, written at
-/// `env_depth::LIGHT_ROW` of the eye pass's uniform) for `drive`, the peak
-/// alpha `peak` ([`peak_alpha`]) and the sides' and tops' colors
-/// ([`colors`]).
-pub fn rows(drive: &Drive, peak: f32, [side, top]: [[f32; 3]; 2]) -> [[f32; 4]; ROWS] {
+/// `env_depth::LIGHT_ROW` of both passes' uniforms) for `drive`, the peak
+/// alpha `peak` ([`peak_alpha`]), the sides' and tops' colors
+/// ([`colors`]), the fill and the veil's share ([`veil_share`]).
+pub fn rows(
+    drive: &Drive,
+    peak: f32,
+    [side, top]: [[f32; 3]; 2],
+    fill: f32,
+    veil: f32,
+) -> [[f32; 4]; ROWS] {
+    let music = unit(drive.music);
+    let (radius, presence) = point_layout(fill);
     [
         [
             1.0 / BAND_SPACING_M,
             drive.phase,
             peak,
-            MUSIC_FLOOR + (1.0 - MUSIC_FLOOR) * unit(drive.music),
+            MUSIC_FLOOR + (1.0 - MUSIC_FLOOR) * music,
         ],
         [side[0], side[1], side[2], STEADY],
-        [top[0], top[1], top[2], TOP_CONTRAST],
-        [FADE_M[0], FADE_M[1], GRAZE[0], GRAZE[1]],
+        [top[0], top[1], top[2], BAND_TINT],
         [
-            SHADE_FLOOR,
             AA_BANDS_PER_PX[0],
             AA_BANDS_PER_PX[1],
             CREST_MEAN,
+            drive.twinkle,
         ],
-        [JUMP[0], JUMP[1], 0.0, 0.0],
+        [FADE_M[0], FADE_M[1], FAR_FLOOR, unit(veil)],
+        [JUMP_MIN_M, JUMP_REL, JUMP_SOFT, NEAR_KEEP],
+        [CELL_M, OCTAVE_BLEND, AA_CELLS_PER_PX[0], AA_CELLS_PER_PX[1]],
+        [radius, presence, JITTER, 1.0 + SWELL * music],
+        [SIZE[0], SIZE[1], SOFT_CORE, TWINKLE_DEPTH],
     ]
+}
+
+/// This frame's [`Frame`] under the options `opts`, with `drive` stepped,
+/// the room's `theme`, the key's tint `key` and the immersion `level`.
+pub fn frame(
+    opts: &DepthLightOptions,
+    drive: &Drive,
+    theme: Option<Theme>,
+    key: [f32; 3],
+    level: f32,
+) -> Frame {
+    Frame {
+        rows: rows(
+            drive,
+            peak_alpha(level, opts.gain),
+            colors(theme, key),
+            opts.fill,
+            veil_share(level, opts.veil),
+        ),
+        veil: opts.veil,
+    }
 }
 
 /// What the vertex stage hands on for one vertex of the mesh.
@@ -409,20 +595,25 @@ pub struct VertexLight {
     pub clip: Vec4,
     /// The world point.
     pub world: Vec3,
-    /// The vertex's share of the light, 0..1.
-    pub weight: f32,
-    /// How far the surface faces up, 0..1.
-    pub up: f32,
+    /// How much of its points the vertex keeps, 0..1.
+    pub keep: f32,
+    /// The surface's normal turned toward the eye (unit).
+    pub normal: Vec3,
+    /// The light left at the vertex's distance, 0..1.
+    pub bright: f32,
 }
 
 /// The vertex stage of the light (`mesh_light` in
 /// `env_depth::ENV_DEPTH_WGSL`) for the vertex of `texel` in `r`'s mesh
 /// (`r.mesh_step`), with the light's `rows` and the map's stored values
-/// through `stored`: the occluder's clip position, the world point, and
-/// the share from the normal (the gradient one mesh step either way along
-/// each axis, clamped to the map), the facing, the distance from the eye
-/// and the largest jump to a neighbor ([`JUMP`]). No share without data at
-/// the vertex or a neighbor.
+/// through `stored`. The normal: one-sided differences one mesh step along
+/// each axis, toward the neighbor nearer in depth (a neighbor clamped to
+/// the vertex at the map's border, or without data, does not count), the
+/// way to the eye without one along an axis. What the vertex keeps: the
+/// largest step to a nearer neighbor thins it to none and to a farther one
+/// to [`NEAR_KEEP`], from [`JUMP_SOFT`] of a mass's step ([`JUMP_MIN_M`],
+/// [`JUMP_REL`]) to all of it. The light by distance, all of it to
+/// [`FADE_M`]'s start and [`FAR_FLOOR`] past its end. Nothing without data.
 pub fn vertex_light(
     r: &EyeReprojection,
     rows: &[[f32; 4]; ROWS],
@@ -444,45 +635,196 @@ pub fn vertex_light(
         [x, y.saturating_sub(s)],
         [x, (y + s).min(last[1])],
     ];
+    let inside = [x > 0, x < last[0], y > 0, y < last[1]];
     let d = neighbors.map(|t| r.texel_distance(stored(t)));
-    // The shader multiplies a missing distance's -1 in; its result is not
-    // used then.
-    let q = |k: usize| r.depth_ray(r.mesh_uv(neighbors[k])) * d[k].unwrap_or(-1.0);
-    let n = r
-        .depth_view
-        .inverse()
-        .transform_vector3((q(1) - q(0)).cross(q(3) - q(2)));
+    let has: [bool; 4] = std::array::from_fn(|k| d[k].is_some() && inside[k]);
     let to_eye = r.eye_pos - p;
-    let (range, len) = (to_eye.length(), n.length());
-    let (mut weight, mut up) = (0.0, 0.0);
-    if dist.is_some() && d.iter().all(Option::is_some) && len > 0.0 && range > 0.0 {
-        let facing = n.dot(to_eye) / (len * range);
-        let ny = if facing < 0.0 { -n.y } else { n.y };
-        up = (ny / len).clamp(0.0, 1.0);
-        let f = facing.abs();
-        let [fade, shape, jumps] = [rows[3], rows[4], rows[5]];
-        let d0 = dist.unwrap_or(0.0);
-        let jump = d
-            .iter()
-            .flatten()
-            .map(|&x| (x - d0).abs())
-            .fold(0.0, f32::max)
-            / d0;
-        weight = smoothstep(fade[2], fade[3], f)
-            * (shape[0] + (1.0 - shape[0]) * f)
-            * (1.0 - smoothstep(fade[0], fade[1], range))
-            * (1.0 - smoothstep(jumps[0], jumps[1], jump));
+    let range = to_eye.length();
+    let mut n = to_eye;
+    let (mut keep, mut bright) = (0.0, 0.0);
+    if let Some(d0) = dist.filter(|_| range > 0.0) {
+        let ray = |t: [u32; 2]| r.depth_ray(r.mesh_uv(t));
+        let dv = |k: usize| d[k].unwrap_or(-1.0);
+        let gap = |k: usize| {
+            if has[k] { (dv(k) - d0).abs() } else { 1e30 }
+        };
+        let q = ray(texel) * d0;
+        let side = |a: usize, b: usize| {
+            if gap(b) <= gap(a) {
+                ray(neighbors[b]) * dv(b) - q
+            } else {
+                q - ray(neighbors[a]) * dv(a)
+            }
+        };
+        let g = r
+            .depth_view
+            .inverse()
+            .transform_vector3(side(0, 1).cross(side(2, 3)));
+        if (has[0] || has[1]) && (has[2] || has[3]) && g.dot(g) > 0.0 {
+            n = g;
+        }
+        let largest = |f: &dyn Fn(f32) -> f32| {
+            (0..4)
+                .filter(|&k| has[k])
+                .map(|k| f(dv(k)))
+                .fold(0.0f32, f32::max)
+        };
+        let nearer = largest(&|dk| d0 - dk);
+        let farther = largest(&|dk| dk - d0);
+        let [jump, fade] = [rows[5], rows[4]];
+        let part = jump[0].max(jump[1] * d0);
+        let from = jump[2] * part;
+        keep = (1.0 - smoothstep(from, part, nearer))
+            * (1.0 - (1.0 - jump[3]) * smoothstep(from, part, farther));
+        bright = 1.0 + (fade[2] - 1.0) * smoothstep(fade[0], fade[1], range);
     }
+    if n.dot(to_eye) < 0.0 {
+        n = -n;
+    }
+    let len = n.length();
     VertexLight {
         clip,
         world: p,
-        weight,
-        up,
+        keep,
+        normal: if len > 0.0 { n / len } else { Vec3::Z },
+        bright,
     }
 }
 
-/// The bands' term at height `y` (m) with the light's `rows`, before the
-/// music and the contrast: the crest's profile, 1 on a crest and 0 midway
+/// The WGSL's `light_hash`: one PCG step.
+pub fn hash(v: u32) -> u32 {
+    let s = v.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+    let w = ((s >> ((s >> 28) + 4)) ^ s).wrapping_mul(277_803_737);
+    (w >> 22) ^ w
+}
+
+/// Coordinates in the cells' plane `k`: across x (0), y (1) or z (2).
+pub fn light_plane(v: Vec3, k: u32) -> Vec2 {
+    match k {
+        0 => Vec2::new(v.y, v.z),
+        1 => Vec2::new(v.x, v.z),
+        _ => Vec2::new(v.x, v.y),
+    }
+}
+
+/// One cell's point, from the cell's hash: whether the cell holds one,
+/// its center (cells), its size factor, and its twinkle's rate and phase.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellPoint {
+    pub present: bool,
+    pub center: Vec2,
+    pub size: f32,
+    pub rate: f32,
+    pub phase: f32,
+}
+
+/// Cell `c`'s point (`c` in cells of plane `k` at octave `o`), as the
+/// WGSL's `cell_point` draws it from two hashes.
+pub fn cell_layout(rows: &[[f32; 4]; ROWS], c: Vec2, k: u32, o: i32) -> CellPoint {
+    let [point, size_row] = [rows[7], rows[8]];
+    let (cx, cy) = (c.x as i32, c.y as i32);
+    let a = hash(
+        ((cx as u32).wrapping_mul(73_856_093) ^ (cy as u32).wrapping_mul(19_349_663))
+            ^ (k.wrapping_add(3u32.wrapping_mul((o + 16) as u32))).wrapping_mul(83_492_791),
+    );
+    let b = hash(a);
+    let jitter = Vec2::new((a & 65535) as f32, (a >> 16) as f32) / 65535.0 - 0.5;
+    CellPoint {
+        present: ((b & 255) as f32 / 256.0) < point[1],
+        center: c + 0.5 + jitter * (2.0 * point[2]),
+        size: size_row[0] + (size_row[1] - size_row[0]) * (((b >> 8) & 255) as f32 / 255.0),
+        rate: 1.0 + (((b >> 16) & 255) % 3) as f32,
+        phase: (b >> 24) as f32 / 256.0,
+    }
+}
+
+/// The light of cell `c`'s point (`c` in cells of plane `k` at octave
+/// `o`) at `g`, in cells, 0..1, with what the fragment keeps `keep`: the
+/// WGSL's `cell_point`.
+pub fn cell_point(rows: &[[f32; 4]; ROWS], g: Vec2, c: Vec2, k: u32, o: i32, keep: f32) -> f32 {
+    let [wave, point, size_row] = [rows[3], rows[7], rows[8]];
+    let cp = cell_layout(rows, c, k, o);
+    let radius = point[0] * cp.size * point[3] * keep.max(0.0).sqrt();
+    if !cp.present || radius <= 1e-4 {
+        return 0.0;
+    }
+    let core = 1.0 - smoothstep(radius * size_row[2], radius, (g - cp.center).length());
+    let twinkle = 1.0 - size_row[3]
+        + size_row[3] * (0.5 + 0.5 * (TAU * (cp.rate * wave[3] + cp.phase)).sin());
+    core * twinkle
+}
+
+/// The points of plane `k` at octave `o` at `g`, in cells: the brightest
+/// of the four cells around `g`. The WGSL's `plane_points`.
+pub fn plane_points(rows: &[[f32; 4]; ROWS], g: Vec2, k: u32, o: i32, keep: f32) -> f32 {
+    let base = (g - 0.5).floor();
+    (0..4u32)
+        .map(|j| {
+            let c = base + Vec2::new((j & 1) as f32, (j >> 1) as f32);
+            cell_point(rows, g, c, k, o, keep)
+        })
+        .fold(0.0, f32::max)
+}
+
+/// The interpolated normal made unit, +Z where it has no length (two
+/// opposite normals across a fold), as the WGSL does.
+pub fn unit_normal(n: Vec3) -> Vec3 {
+    if n.dot(n) > 1e-12 {
+        n.normalize()
+    } else {
+        Vec3::Z
+    }
+}
+
+/// The points' light at world point `p` seen from `eye` with the
+/// interpolated normal `normal` and keep `keep`, where the world moves by
+/// `fw` across a pixel (`fwidth`), before the peak, the distance and the
+/// wave: the planes and octaves of the WGSL's fragment.
+pub fn points(
+    rows: &[[f32; 4]; ROWS],
+    eye: Vec3,
+    p: Vec3,
+    normal: Vec3,
+    keep: f32,
+    fw: Vec3,
+) -> f32 {
+    let [_, _, _, _, _, _, cell_row, _, _] = *rows;
+    let n = unit_normal(normal);
+    let n2 = n * n;
+    let tri = n2 * n2 / n2.dot(n2);
+    let l = (p - eye)
+        .length()
+        .max(1e-3)
+        .log2()
+        .clamp(OCTAVE_RANGE[0], OCTAVE_RANGE[1]);
+    let li = l.floor();
+    let next = smoothstep(cell_row[1], 1.0, l - li);
+    let (mut sum, mut used) = (0.0, 0.0);
+    for j in 0..2 {
+        let wo = if j == 1 { next } else { 1.0 - next };
+        if wo <= 0.0 {
+            continue;
+        }
+        let o = li as i32 + j;
+        let cell = cell_row[0] * 2f32.powi(o);
+        for k in 0..3u32 {
+            let wk = tri[k as usize] - PLANE_MIN;
+            if wk <= 0.0 {
+                continue;
+            }
+            let f = light_plane(fw, k);
+            let aa = 1.0 - smoothstep(cell_row[2], cell_row[3], f.x.max(f.y) / cell);
+            if aa > 0.0 {
+                sum += wo * wk * aa * plane_points(rows, light_plane(p, k) / cell, k, o, keep);
+            }
+            used += wo * wk;
+        }
+    }
+    sum / used.max(1e-6)
+}
+
+/// The wave's term at height `y` (m) with the light's `rows`, before the
+/// music and its fade: the crest's profile, 1 on a crest and 0 midway
 /// between two. A function of the height alone.
 pub fn crest(rows: &[[f32; 4]; ROWS], y: f32) -> f32 {
     let h = y * rows[0][0] - rows[0][1];
@@ -490,18 +832,34 @@ pub fn crest(rows: &[[f32; 4]; ROWS], y: f32) -> f32 {
     c * c
 }
 
-/// The fragment stage of the light (`fs_mesh_light`): premultiplied RGBA
-/// at world height `world_y`, with the interpolated share `weight` and
-/// facing up `up`, where the band count changes by `fw` across a pixel
-/// (`fwidth`).
-pub fn fragment(rows: &[[f32; 4]; ROWS], world_y: f32, weight: f32, up: f32, fw: f32) -> [f32; 4] {
-    let [light, side, top, _, shape, _] = *rows;
-    let contrast = (1.0 - smoothstep(shape[1], shape[2], fw)) * (1.0 + (top[3] - 1.0) * up);
-    let band = (shape[3] + (crest(rows, world_y) - shape[3]) * contrast) * light[3];
-    let steady = side[3];
-    let a = (light[2] * weight * (steady + (1.0 - steady) * band)).clamp(0.0, 1.0);
-    let rgb = |k: usize| (side[k] + (top[k] - side[k]) * up) * a;
-    [rgb(0), rgb(1), rgb(2), a]
+/// The fragment stage of the light (`fs_mesh_light`) at world point `p`
+/// seen from `eye`, with the interpolated normal `normal`, keep `keep` and
+/// light by distance `bright`, where the world moves by `fw` across a
+/// pixel: premultiplied light in rgb and the veil in alpha, which the blend
+/// ([`veil`]) erases by.
+pub fn fragment(
+    rows: &[[f32; 4]; ROWS],
+    eye: Vec3,
+    p: Vec3,
+    normal: Vec3,
+    keep: f32,
+    bright: f32,
+    fw: Vec3,
+) -> [f32; 4] {
+    let [light, side, top, wave, fade, ..] = *rows;
+    let weight = light[2] * bright;
+    let (mut lit, mut up) = (0.0, 0.0);
+    if keep > 0.0 && weight > 0.0 {
+        up = unit_normal(normal).y.clamp(0.0, 1.0);
+        lit = points(rows, eye, p, normal, keep, fw);
+    }
+    let fade_wave = 1.0 - smoothstep(wave[0], wave[1], fw.y * light[0]);
+    let crest = wave[2] + (crest(rows, p.y) - wave[2]) * fade_wave;
+    let band = side[3] + (1.0 - side[3]) * crest * light[3];
+    let tint = (up + top[3] * crest).clamp(0.0, 1.0);
+    let a = (weight * band * lit).clamp(0.0, 1.0);
+    let rgb = |k: usize| (side[k] + (top[k] - side[k]) * tint) * a;
+    [rgb(0), rgb(1), rgb(2), fade[3]]
 }
 
 #[cfg(test)]
@@ -513,7 +871,7 @@ mod tests {
     };
     use crate::math::{self, Fov};
     use crate::surfaces::{GREEN, TEAL};
-    use glam::{Quat, Vec2};
+    use glam::Quat;
 
     /// The Quest 3's depth fov (v207).
     const FOV: Fov = Fov {
@@ -614,10 +972,12 @@ mod tests {
         ]
     }
 
+    /// The rows at full immersion with the music full, the wave's phase
+    /// at 0 and the twinkle at its brightest for a phase-0 point.
     fn lit_rows() -> [[f32; 4]; ROWS] {
         let mut d = Drive::default();
         d.step(1.0, 1.0, 0.0);
-        let mut rows = rows(&d, peak_alpha(1.0, 1.0), [TEAL, [1.0, 0.4, 0.9]]);
+        let mut rows = rows(&d, peak_alpha(1.0, 1.0), [TEAL, [1.0, 0.4, 0.9]], FILL, 0.0);
         rows[0][1] = 0.0;
         rows
     }
@@ -627,176 +987,361 @@ mod tests {
         eye_at(Vec3::new(0.0, 1.2, 0.0), Quat::from_rotation_x(-0.25))
     }
 
-    /// A wall 3.5 m ahead, beyond the light's reach.
-    fn wall(o: Vec3, d: Vec3) -> Option<f32> {
-        plane(o, d, Vec3::new(0.0, 0.0, -3.5), Vec3::Z)
+    #[test]
+    fn the_veil_erases_the_surfaces_by_the_level_and_the_points_add() {
+        // A pixel of sky behind a real thing: premultiplied light at
+        // alpha 0.6; a point's light on the thing.
+        let sky = [0.1, 0.5, 0.4, 0.6];
+        let point = [0.05, 0.3, 0.25];
+        for (level, kept) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)] {
+            let v = veil_share(level, true);
+            let out = veil(sky, [point[0], point[1], point[2], v]);
+            for k in 0..3 {
+                assert_close!(out[k], point[k] + sky[k] * kept);
+            }
+            // The alpha is the sky's kept share: the point adds no alpha,
+            // so at level 0 the layer is clear over the passthrough.
+            assert_close!(out[3], sky[3] * kept);
+            // The faces pass: the veil alone.
+            let faces = veil(sky, [0.0, 0.0, 0.0, v]);
+            assert_close!(faces, sky.map(|c| c * kept));
+        }
+        // Off: the mesh draws first over the clear, at a veil of 1, and
+        // its own fold erases what it drew behind.
+        assert_close!(veil_share(0.3, false), 1.0);
+        assert_close!(
+            veil([0.2, 0.2, 0.2, 0.0], [point[0], point[1], point[2], 1.0]),
+            [point[0], point[1], point[2], 0.0]
+        );
+        assert_close!(veil_share(f32::NAN, true), 1.0);
+        // The rows carry it, and the fragment hands it on as its alpha.
+        let mut rows = lit_rows();
+        rows[4][3] = veil_share(0.25, true);
+        let f = fragment(
+            &rows,
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, -1.0),
+            Vec3::Z,
+            1.0,
+            1.0,
+            Vec3::splat(1e-3),
+        );
+        assert_close!(f[3], 0.75);
     }
 
     #[test]
-    fn a_vertical_pole_is_lit_down_its_middle_and_dark_at_its_sides() {
-        // A pole 6 cm across, 0.6 m away: the vacuum's handle.
-        let r = seated();
-        let c = Vec3::new(0.0, 0.0, -0.6);
-        let map = map_of(&r, |o, d| nearest([pole(o, d, c, 0.03), wall(o, d)]));
+    fn a_point_stays_put_under_depth_jitter_and_a_head_move() {
         let rows = lit_rows();
-        let middle = vertex_light(&r, &rows, vertex_near(&r, Vec3::new(0.0, 1.0, -0.57)), &map);
-        // Facing the eye, near: almost all of its share, and a side.
-        assert!(middle.weight > 0.9, "{middle:?}");
-        assert!(middle.up < 0.05, "{middle:?}");
-        assert!((middle.world - Vec3::new(0.0, 1.0, -0.57)).length() < 0.02);
-        // Its light at a crest is the peak, between two the steady share.
-        let at = |y: f32| fragment(&rows, y, middle.weight, 0.0, 0.01)[3];
-        let peak = rows[0][2] * middle.weight;
-        assert!((at(0.0) - peak).abs() < 1e-4, "{} {peak}", at(0.0));
-        assert!((at(BAND_SPACING_M / 2.0) - peak * STEADY).abs() < 1e-4);
-        // Its edge, where the gradient spans the jump to the wall: none.
-        let edge = vertex_light(&r, &rows, vertex_near(&r, Vec3::new(0.03, 1.0, -0.6)), &map);
-        assert!(edge.weight < 0.05, "{edge:?}");
-        // The wall beside it: past the light's reach.
-        let beside = vertex_light(&r, &rows, vertex_near(&r, Vec3::new(0.4, 1.0, -3.5)), &map);
-        assert_close!(beside.weight, 0.0);
+        let fw = Vec3::splat(5e-4);
+        // A surface 1 m out turned 20 degrees from the eye: walk a row of
+        // world points across it and keep each one's light.
+        let eye = Vec3::new(0.0, 1.2, 0.0);
+        let n = Vec3::new(20f32.to_radians().sin(), 0.0, 20f32.to_radians().cos());
+        let across = Vec3::Y.cross(n).normalize();
+        let base = eye - n;
+        let row: Vec<Vec3> = (0..200)
+            .map(|i| base + across * (i as f32 * 0.002 - 0.2))
+            .collect();
+        let light = |e: Vec3, p: Vec3| points(&rows, e, p, n, 1.0, fw);
+        let lit: Vec<f32> = row.iter().map(|&p| light(eye, p)).collect();
+        assert!(lit.iter().any(|&v| v > 0.4) && lit.iter().any(|&v| v < 0.01));
+        // The map's noise moves each point along its view ray by up to
+        // JITTER_TEST_M. On the plane the surface faces that is a few
+        // hundredths of a cell where the ray meets the surface squarely,
+        // under a tenth anywhere on the row.
+        let shift = |p: Vec3| {
+            let moved = p + (p - eye).normalize() * JITTER_TEST_M;
+            (light_plane(moved, 2) - light_plane(p, 2)).length() / CELL_M
+        };
+        assert!(shift(base) < 0.04, "{}", shift(base));
+        let (mut worst_shift, mut worst) = (0.0f32, 0.0f32);
+        for (&p, &v) in row.iter().zip(&lit) {
+            worst_shift = worst_shift.max(shift(p));
+            let moved = p + (p - eye).normalize() * JITTER_TEST_M;
+            worst = worst.max((light(eye, moved) - v).abs());
+        }
+        eprintln!(
+            "{} mm of noise: a point moves {:.3} of a cell at most, the light at a pixel by {worst:.2} at most (at a point's edge)",
+            JITTER_TEST_M * 1000.0,
+            worst_shift
+        );
+        assert!(worst_shift < 0.1, "{worst_shift}");
+        assert!(worst < 0.45, "{worst}");
+        // A head move of 10 cm at 1 m, inside an octave: nothing changes.
+        let moved_eye = eye + Vec3::new(0.1, 0.0, 0.0);
+        for (&p, &v) in row.iter().zip(&lit) {
+            assert_close!(light(moved_eye, p), v);
+        }
+        // Where the octaves blend (1.8 m), a centimeter's move changes
+        // the light only a little: a cross-fade, not a crawl.
+        let far: Vec<Vec3> = row.iter().map(|&p| eye + (p - eye) * 1.8).collect();
+        let step = Vec3::new(0.01, 0.0, 0.0);
+        let changed = far
+            .iter()
+            .map(|&p| (light(eye + step, p) - light(eye, p)).abs())
+            .fold(0.0f32, f32::max);
+        assert!(changed < 0.05, "{changed}");
     }
 
     #[test]
-    fn something_thinner_than_two_mesh_steps_stays_dark_in_every_alignment() {
-        // Poles in front of a wall 2 m out, slid across the texel grid by
-        // quarter texels: a vertex on a pole narrower than two steps has
-        // both neighbors along the row on the wall, so the gradient
-        // between them sees no jump; the jump to the vertex itself does.
+    fn a_small_step_draws_nothing_and_a_large_one_parts_the_masses() {
         let rows = lit_rows();
         let r = eye_at(Vec3::new(0.0, 1.2, 0.0), Quat::IDENTITY);
-        let near_wall = |o, d| plane(o, d, Vec3::new(0.0, 0.0, -2.0), Vec3::Z);
-        let texel_m = |dist: f32| dist * (FOV.right.tan() - FOV.left.tan()) / MAP as f32;
-        let brightest = |dist: f32, width_texels: f32, shift: f32| {
-            let x = shift * texel_m(dist);
-            let c = Vec3::new(x, 0.0, -dist);
-            let radius = width_texels * texel_m(dist) / 2.0;
+        // Two things side by side facing the eye, the right one `step`
+        // behind the left one at 1.2 m.
+        let walk = |step: f32| {
             let map = map_of(&r, move |o, d| {
-                nearest([pole(o, d, c, radius), near_wall(o, d)])
+                let t = plane(o, d, Vec3::new(0.0, 0.0, -1.2), Vec3::Z)?;
+                if (o + d * t).x < 0.0 {
+                    Some(t)
+                } else {
+                    plane(o, d, Vec3::new(0.0, 0.0, -1.2 - step), Vec3::Z)
+                }
             });
-            let mid = vertex_near(&r, Vec3::new(x, 1.2, -dist));
-            // Only the vertices on the pole: the wall behind is lit too.
-            (0..9)
-                .map(|k| [mid[0] + k * STEP - 4 * STEP, mid[1]])
-                .filter(|&t| r.texel_distance(map(t)).is_some_and(|d| d < dist + 0.1))
-                .map(|t| vertex_light(&r, &rows, t, &map).weight)
-                .fold(0.0, f32::max)
+            let mid = vertex_near(&r, Vec3::new(0.0, 1.2, -1.2));
+            (0..12)
+                .map(|k| [mid[0] + k * STEP - 6 * STEP, mid[1]])
+                .map(|t| vertex_light(&r, &rows, t, &map))
+                .collect::<Vec<_>>()
         };
-        for dist in [0.6, 1.0] {
-            for shift in [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75] {
-                // Three texels across: dark wherever it lies.
-                assert_close!(brightest(dist, 3.0, shift), 0.0);
-                // Seven: lit wherever it lies.
-                assert!(brightest(dist, 7.0, shift) > 0.9, "{dist} {shift}");
+        // 10 and 25 cm: one mass. Every vertex keeps all of its points and
+        // its normal faces the eye: no line, no thinning, no tilt.
+        for step in [0.1, 0.25] {
+            for v in walk(step) {
+                assert_close!(v.keep, 1.0);
+                assert!(v.normal.z > 0.99, "{step}: {v:?}");
+                assert_close!(v.bright, 1.0);
             }
         }
+        // 1.5 m: two masses. The near side keeps NEAR_KEEP at its edge,
+        // the far side none at its own; inside each, all of it.
+        let parted = walk(1.5);
+        let keeps: Vec<f32> = parted.iter().map(|v| v.keep).collect();
+        let edge = parted
+            .iter()
+            .position(|v| v.world.z < -1.5)
+            .expect("the far thing");
+        assert_close!(keeps[edge - 1], NEAR_KEEP);
+        assert_close!(keeps[edge], 0.0);
+        assert_close!(keeps[edge - 3], 1.0);
+        assert_close!(keeps[edge + 2], 1.0);
+        // The normals on both sides of the edge still face the eye.
+        assert!(parted[edge - 1].normal.z > 0.99 && parted[edge].normal.z > 0.99);
+        // The step that parts them: half a meter here, a quarter of the
+        // distance farther out.
+        let part = |d: f32| JUMP_MIN_M.max(JUMP_REL * d);
+        assert_close!(part(1.2), 0.5);
+        assert_close!(part(4.0), 1.0);
     }
 
     #[test]
-    fn a_slanted_face_is_shaded_by_its_facing_and_a_top_takes_its_color() {
-        let r = seated();
-        // A board leaning back 45 degrees 1 m ahead, facing the eye and up.
-        let n = Vec3::new(0.0, 1.0, 1.0).normalize();
-        let c = Vec3::new(0.0, 0.9, -1.0);
-        let map = map_of(&r, |o, d| nearest([plane(o, d, c, n), wall(o, d)]));
+    fn the_fringe_between_two_masses_carries_shrinking_points() {
+        // Across the fringe the keep falls from the near side's to none,
+        // and a point's radius with its square root: the points shrink and
+        // thin out, no line. Take a cell's point and see how far from its
+        // center it still lights at each keep.
         let rows = lit_rows();
-        let v = vertex_light(&r, &rows, vertex_near(&r, c), &map);
-        let to_eye = (r.eye_pos - v.world).normalize();
-        let facing = n.dot(to_eye);
-        let want =
-            smoothstep(GRAZE[0], GRAZE[1], facing) * (SHADE_FLOOR + (1.0 - SHADE_FLOOR) * facing);
-        assert!((v.weight - want).abs() < 0.02, "{v:?} want {want}");
-        assert!((v.up - n.y).abs() < 0.02, "{v:?}");
-        // Half a top: the colors half each, the bands at half their way to
-        // the top's contrast.
-        let [r_, g, b, a] = fragment(&rows, 0.0, 1.0, 0.5, 0.01);
-        let mid = |k: usize| f32::midpoint(rows[1][k], rows[2][k]) * a;
-        assert_close!([r_, g, b], [mid(0), mid(1), mid(2)]);
-        // A level top barely flashes: crest against trough.
-        let top = |y: f32| fragment(&rows, y, 1.0, 1.0, 0.01)[3];
-        let side = |y: f32| fragment(&rows, y, 1.0, 0.0, 0.01)[3];
-        let swing = |f: &dyn Fn(f32) -> f32| f(0.0) - f(BAND_SPACING_M / 2.0);
-        assert!((swing(&top) - TOP_CONTRAST * swing(&side)).abs() < 1e-4);
-    }
-
-    #[test]
-    fn at_a_silhouette_the_light_fades_to_none_and_the_fringe_carries_none() {
-        // A box's front face 1 m ahead, a wall 2 m ahead, still in the
-        // light's reach; walk the mesh row through the face's middle out
-        // across its right edge.
-        let r = seated();
-        let box_hit = |o: Vec3, d: Vec3| {
-            let t = plane(o, d, Vec3::new(0.0, 0.0, -1.0), Vec3::Z)?;
-            let p = o + d * t;
-            (p.x.abs() < 0.25 && (0.6..1.2).contains(&p.y)).then_some(t)
+        let (c, cp) = (0..100)
+            .map(|i| Vec2::new(i as f32, 7.0))
+            .map(|c| (c, cell_layout(&rows, c, 2, 0)))
+            .find(|(_, cp)| cp.present)
+            .expect("a cell with a point");
+        let reach = |keep: f32| {
+            (0..400)
+                .map(|i| i as f32 * 0.001)
+                .take_while(|&dx| {
+                    cell_point(&rows, cp.center + Vec2::new(dx, 0.0), c, 2, 0, keep) > 0.0
+                })
+                .count() as f32
+                * 0.001
         };
-        let near_wall = |o, d| plane(o, d, Vec3::new(0.0, 0.0, -2.0), Vec3::Z);
-        let map = map_of(&r, |o, d| nearest([box_hit(o, d), near_wall(o, d)]));
-        let rows = lit_rows();
-        let start = vertex_near(&r, Vec3::new(0.0, 0.9, -1.0));
-        let mut seen = Vec::new();
-        for k in 0..40 {
-            let t = [start[0] + k * STEP, start[1]];
-            let v = vertex_light(&r, &rows, t, &map);
-            let on_box = r.texel_distance(map(t)).is_some_and(|d| d < 1.5);
-            seen.push((on_box, v.weight));
+        let radius = |keep: f32| rows[7][0] * cp.size * rows[7][3] * keep.sqrt();
+        for keep in [1.0, NEAR_KEEP, 0.1] {
+            assert!(
+                (reach(keep) - radius(keep)).abs() < 0.002,
+                "{keep}: {} vs {}",
+                reach(keep),
+                radius(keep)
+            );
         }
-        let last_on = seen.iter().rposition(|s| s.0).expect("the box");
-        assert!(last_on > 3 && last_on + 1 < seen.len());
-        // Inside: all of it (the face looks at the eye).
-        assert!(seen[last_on - 2].1 > 0.9, "{seen:?}");
-        // The last vertex on the box and the first behind it: none, so
-        // the fringe between them is dark at both ends.
-        assert!(seen[last_on].1 < 0.02, "{seen:?}");
-        assert!(seen[last_on + 1].1 < 0.02, "{seen:?}");
-        // And the light falls off toward the edge, never rises.
-        assert!(seen[last_on - 1].1 <= seen[last_on - 2].1 + 1e-4);
-        // One more vertex out, the wall is lit again, at its distance.
-        assert!(seen[last_on + 2].1 > 0.5, "{seen:?}");
+        assert_close!(reach(0.0), 0.0);
+        // So a point's area follows the keep.
+        let area = |keep: f32| radius(keep).powi(2);
+        assert!((area(NEAR_KEEP) / area(1.0) - NEAR_KEEP).abs() < 1e-5);
     }
 
     #[test]
-    fn far_away_the_light_is_gone_and_it_fades_in_between() {
+    fn far_things_keep_a_floor_of_light() {
         let rows = lit_rows();
+        let r = eye_at(Vec3::new(0.0, 1.2, 0.0), Quat::IDENTITY);
         let wall_at = |z: f32| {
-            let r = eye_at(Vec3::new(0.0, 1.2, 0.0), Quat::IDENTITY);
             let map = map_of(&r, move |o, d| {
                 plane(o, d, Vec3::new(0.0, 0.0, -z), Vec3::Z)
             });
-            vertex_light(&r, &rows, vertex_near(&r, Vec3::new(0.0, 1.2, -z)), &map).weight
+            vertex_light(&r, &rows, vertex_near(&r, Vec3::new(0.0, 1.2, -z)), &map)
         };
-        assert!(wall_at(1.0) > 0.99);
-        assert!(wall_at(FADE_M[0] - 0.01) > 0.99);
-        let mid = wall_at(f32::midpoint(FADE_M[0], FADE_M[1]));
-        assert!((mid - 0.5).abs() < 0.02, "{mid}");
-        assert_close!(wall_at(FADE_M[1] + 0.01), 0.0);
-        assert_close!(wall_at(5.0), 0.0);
+        assert_close!(wall_at(1.0).bright, 1.0);
+        assert_close!(wall_at(FADE_M[0] - 0.01).bright, 1.0);
+        let mid = wall_at(f32::midpoint(FADE_M[0], FADE_M[1])).bright;
+        assert!((mid - f32::midpoint(1.0, FAR_FLOOR)).abs() < 0.02, "{mid}");
+        for z in [3.01, 4.0, 6.0, 9.0] {
+            let v = wall_at(z);
+            assert_close!(v.bright, FAR_FLOOR);
+            assert_close!(v.keep, 1.0);
+        }
+        // So a far shelf's points have color: the fragment's light there is
+        // the floor's share of a near one's.
+        let at = |bright: f32| {
+            fragment(
+                &rows,
+                Vec3::ZERO,
+                Vec3::new(0.0, 0.0, -3.0),
+                Vec3::Z,
+                1.0,
+                bright,
+                Vec3::ZERO,
+            )
+        };
+        let (near, far) = (at(1.0), at(FAR_FLOOR));
+        assert!((far[1] - near[1] * FAR_FLOOR).abs() < 1e-5);
     }
 
     #[test]
-    fn a_texel_with_no_data_or_too_near_has_no_light_nor_do_its_neighbors() {
+    fn a_thin_pole_carries_points_wherever_it_lies() {
+        // Poles 3 texels across, 1 m out in front of a wall 3 m out, slid
+        // across the texel grid by quarter texels: a vertex always lands
+        // on the pole, keeps the near side's share and the full light;
+        // the wall's vertices beside it keep none.
+        let rows = lit_rows();
+        let r = eye_at(Vec3::new(0.0, 1.2, 0.0), Quat::IDENTITY);
+        let texel_m = |dist: f32| dist * (FOV.right.tan() - FOV.left.tan()) / MAP as f32;
+        let far_wall = |o, d| plane(o, d, Vec3::new(0.0, 0.0, -3.0), Vec3::Z);
+        for shift in [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75] {
+            let x = shift * texel_m(1.0);
+            let c = Vec3::new(x, 0.0, -1.0);
+            let radius = 1.5 * texel_m(1.0);
+            let map = map_of(&r, move |o, d| {
+                nearest([pole(o, d, c, radius), far_wall(o, d)])
+            });
+            let mid = vertex_near(&r, Vec3::new(x, 1.2, -1.0));
+            let row: Vec<VertexLight> = (0..9)
+                .map(|k| [mid[0] + k * STEP - 4 * STEP, mid[1]])
+                .map(|t| vertex_light(&r, &rows, t, &map))
+                .collect();
+            let on: Vec<&VertexLight> = row.iter().filter(|v| v.world.z > -1.5).collect();
+            assert!(!on.is_empty(), "{shift}");
+            for v in &on {
+                assert_close!(v.keep, NEAR_KEEP);
+                assert_close!(v.bright, 1.0);
+            }
+            let beside = row
+                .iter()
+                .filter(|v| v.world.z < -2.5)
+                .map(|v| v.keep)
+                .fold(1.0f32, f32::min);
+            assert_close!(beside, 0.0);
+        }
+    }
+
+    #[test]
+    fn a_texel_with_no_data_keeps_nothing_and_its_neighbors_keep_theirs() {
         let r = seated();
         let rows = lit_rows();
         let c = Vec3::new(0.0, 0.9, -1.0);
         let t = vertex_near(&r, c);
-        let wall1m = |o, d| plane(o, d, c, Vec3::Z);
-        let good = map_of(&r, wall1m);
-        assert!(vertex_light(&r, &rows, t, &good).weight > 0.9);
+        let good = map_of(&r, |o, d| plane(o, d, c, Vec3::Z));
+        assert_close!(vertex_light(&r, &rows, t, &good).keep, 1.0);
         for bad in [1.0, encode(NEAR_CUT_M * 0.5)] {
-            // At the vertex: no light, and on the far plane.
             let hole = |x: [u32; 2]| if x == t { bad } else { good(x) };
             let v = vertex_light(&r, &rows, t, hole);
-            assert_close!([v.weight, v.up], [0.0, 0.0]);
+            assert_close!([v.keep, v.bright], [0.0, 0.0]);
             assert_close!(v.clip.z, v.clip.w);
-            // At a neighbor one step away: no light either.
+            // A neighbor without data: the other side gives the normal and
+            // nothing thins.
             let next = [t[0] + STEP, t[1]];
             let hole = |x: [u32; 2]| if x == next { bad } else { good(x) };
-            assert_close!(vertex_light(&r, &rows, t, hole).weight, 0.0);
-            // Two steps away it is not a neighbor.
-            let far = [t[0] + 2 * STEP, t[1]];
-            let hole = |x: [u32; 2]| if x == far { bad } else { good(x) };
-            assert!(vertex_light(&r, &rows, t, hole).weight > 0.9);
+            let v = vertex_light(&r, &rows, t, hole);
+            assert_close!(v.keep, 1.0);
+            assert!(v.normal.z > 0.99, "{v:?}");
         }
+    }
+
+    #[test]
+    fn the_points_cover_about_the_fill_and_fade_out_when_small() {
+        let mut d = Drive::default();
+        d.step(0.0, 0.0, 0.0);
+        for fill in [0.1, FILL, FILL_RANGE[1]] {
+            let rows = rows(&d, 1.0, [TEAL; 2], fill, 0.0);
+            // Over 40 x 40 cells of the plane facing z, sampled finely.
+            let (mut covered, mut n) = (0, 0);
+            for i in 0..400 {
+                for j in 0..400 {
+                    let g = Vec2::new(i as f32 * 0.1 + 0.05, j as f32 * 0.1 + 0.05);
+                    let v = plane_points(&rows, g, 2, 0, 1.0);
+                    covered += usize::from(v > 0.0);
+                    n += 1;
+                }
+            }
+            let share = covered as f32 / n as f32;
+            // Overlapping points cover a little less than their areas.
+            assert!(share > 0.7 * fill && share < 1.05 * fill, "{fill}: {share}");
+        }
+        // Cells a few pixels small: the points fade out.
+        let rows = lit_rows();
+        let p = Vec3::new(0.013, 1.007, -1.0);
+        let small = points(
+            &rows,
+            Vec3::new(0.0, 1.2, 0.0),
+            p,
+            Vec3::Z,
+            1.0,
+            Vec3::splat(0.03),
+        );
+        assert_close!(small, 0.0);
+        // The fill's layout: a point in every cell down to the smallest
+        // radius, fewer below it; the largest swollen point within half a
+        // cell.
+        let (radius, presence) = point_layout(FILL);
+        assert_close!(presence, 1.0);
+        assert!(radius * SIZE[1] * (1.0 + SWELL) <= 0.5);
+        let (low, fewer) = point_layout(FILL_RANGE[0]);
+        assert_close!(low, RADIUS_MIN);
+        assert!(fewer < 1.0);
+        let (high, _) = point_layout(1.0);
+        assert!(high * SIZE[1] * (1.0 + SWELL) <= 0.5 + 1e-6);
+        // The soft profile's share of the disk, by numbers.
+        let k = 2000;
+        let numeric: f32 = (0..k)
+            .map(|i| {
+                let x = (i as f32 + 0.5) / k as f32;
+                (1.0 - smoothstep(SOFT_CORE, 1.0, x)) * 2.0 * x / k as f32
+            })
+            .sum();
+        assert!((numeric - profile_share(SOFT_CORE)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn far_or_near_a_cell_keeps_its_size_on_screen() {
+        let rows = lit_rows();
+        let eye = Vec3::ZERO;
+        // At 1, 2 and 4 m the cells are 1, 2 and 4 times CELL_M: the same
+        // angle. Across an octave's boundary the light is continuous.
+        for d in [1.0f32, 2.0, 4.0] {
+            let l = d.log2();
+            assert_close!(CELL_M * 2f32.powi(l.floor() as i32), CELL_M * d);
+        }
+        let at = |z: f32| {
+            points(
+                &rows,
+                eye,
+                Vec3::new(0.0123, 0.0456, -z),
+                Vec3::Z,
+                1.0,
+                Vec3::splat(1e-5),
+            )
+        };
+        let (below, above) = (at(2.0 - 1e-4), at(2.0 + 1e-4));
+        assert!((below - above).abs() < 2e-3, "{below} {above}");
     }
 
     #[test]
@@ -806,120 +1351,53 @@ mod tests {
         assert_close!(peak_alpha(0.5, 1.0), f32::midpoint(ALPHA_LOW, ALPHA_HIGH));
         assert_close!(peak_alpha(2.0, 1.0), ALPHA_HIGH);
         assert_close!(peak_alpha(f32::NAN, 1.0), ALPHA_LOW);
-        assert_close!(peak_alpha(1.0, 2.0), 2.0 * ALPHA_HIGH);
         assert_close!(peak_alpha(1.0, 10.0), GAIN_MAX * ALPHA_HIGH);
         assert_close!(peak_alpha(1.0, 0.0), 0.0);
-        // A third of a lit surface's full alpha at full immersion; barely
-        // there with the room plain.
-        assert!((ALPHA_HIGH - crate::immerse::ALPHA_FULL / 3.0).abs() < 0.01);
-        const { assert!(ALPHA_LOW < ALPHA_HIGH / 5.0) };
-        // The fragment's alpha scales with the peak: the rows' z.
+        // The mean light at a quarter covered stays well under a lit
+        // surface's full alpha.
+        let mean = FILL * profile_share(SOFT_CORE) * (1.0 - TWINKLE_DEPTH / 2.0);
+        assert!(ALPHA_HIGH * mean < crate::immerse::ALPHA_FULL / 4.0);
+    }
+
+    #[test]
+    fn the_wave_runs_through_the_points_and_fades_when_thin() {
+        // A top (its points on the horizontal plane, which the height's
+        // change across a pixel does not touch), one color for both, so
+        // the light out is the points times the wave.
         let mut rows = lit_rows();
-        let full = fragment(&rows, 0.0, 1.0, 0.0, 0.01)[3];
-        rows[0][2] = peak_alpha(0.0, 1.0);
-        let plain = fragment(&rows, 0.0, 1.0, 0.0, 0.01)[3];
-        assert!((plain / full - ALPHA_LOW / ALPHA_HIGH).abs() < 1e-5);
-    }
-
-    #[test]
-    fn the_same_world_point_keeps_its_pattern_while_the_map_jitters() {
-        let rows = lit_rows();
-        // The pattern is the height's alone: wherever the map puts a
-        // point, the same height gets the same band.
-        for y in [0.13, 0.5, 0.91, 1.37] {
-            for w in [0.3, 1.0] {
-                let a = fragment(&rows, y, w, 0.0, 0.01);
-                let b = fragment(&rows, y + 1e-7, w, 0.0, 0.01);
-                assert!((a[3] - b[3]).abs() < 1e-5);
-            }
-        }
-        // A seated person's chest 0.8 m ahead, the map jittering by up to
-        // 4 mm per texel and frame (the recordings' near noise): the
-        // vertex of one texel keeps its height within a millimeter or so,
-        // a small share of a band, and its light share barely moves.
-        let r = seated();
-        let c = Vec3::new(0.0, 1.0, -0.8);
-        let n = Vec3::new(0.2, 0.0, 1.0).normalize();
-        let t = vertex_near(&r, c);
-        let clean = map_of(&r, |o, d| plane(o, d, c, n));
-        let base = vertex_light(&r, &rows, t, &clean);
-        let mut seed = 0x2545_f491_u32;
-        let mut noise = move || {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            (seed as f32 / u32::MAX as f32 - 0.5) * 0.008
+        rows[2] = [rows[1][0], rows[1][1], rows[1][2], BAND_TINT];
+        let eye = Vec3::new(0.0, 1.0, 0.0);
+        let at = |rows: &[[f32; 4]; ROWS], p: Vec3, fwy: f32| {
+            fragment(rows, eye, p, Vec3::Y, 1.0, 1.0, Vec3::new(1e-5, fwy, 1e-5))[1]
         };
-        let (mut worst_y, mut worst_w, mut sum_w) = (0.0f32, 0.0f32, 0.0f32);
-        let frames = 500;
-        for _ in 0..frames {
-            // Each texel its own noise this frame, the vertex's and its
-            // four neighbors' alike.
-            let jitter: Vec<(u32, u32, f32)> = (0..9)
-                .flat_map(|k| (0..9).map(move |j| (k, j)))
-                .map(|(k, j)| (k, j, noise()))
-                .collect();
-            let jittered = |x: [u32; 2]| {
-                let (k, j) = (
-                    (x[0] + 4).saturating_sub(t[0]),
-                    (x[1] + 4).saturating_sub(t[1]),
-                );
-                let e = jitter
-                    .iter()
-                    .find(|&&(a, b, _)| (a, b) == (k, j))
-                    .map_or(0.0, |&(.., e)| e);
-                encode(r.texel_distance(clean(x)).expect("data") + e)
-            };
-            let v = vertex_light(&r, &rows, t, jittered);
-            worst_y = worst_y.max((v.world.y - base.world.y).abs());
-            worst_w = worst_w.max((v.weight - base.weight).abs());
-            sum_w += (v.weight - base.weight).abs();
-        }
-        let mean_w = sum_w / frames as f32;
-        eprintln!(
-            "jitter up to 4 mm: height moved at most {:.2} mm ({:.3} of a band); share {:.3}, moved {mean_w:.4} on average, {worst_w:.3} at most",
-            worst_y * 1000.0,
-            worst_y * rows[0][0],
-            base.weight
-        );
-        assert!(worst_y < 0.002, "{worst_y}");
-        assert!(
-            worst_y * rows[0][0] < 0.02,
-            "a band moved {}",
-            worst_y * rows[0][0]
-        );
-        assert!(mean_w < 0.03, "mean {mean_w}");
-        assert!(worst_w < 0.15, "worst {worst_w}");
-    }
-
-    #[test]
-    fn a_band_too_thin_to_draw_fades_into_its_mean() {
-        let rows = lit_rows();
-        let at = |y: f32, fw: f32| fragment(&rows, y, 1.0, 0.0, fw)[3];
-        // Six pixels a band and wider: the whole swing.
-        let swing = |fw: f32| at(0.0, fw) - at(BAND_SPACING_M / 2.0, fw);
-        let full = swing(AA_BANDS_PER_PX[0]);
-        assert!(full > 0.1);
-        assert!((swing(0.01) - full).abs() < 1e-6);
-        // Two pixels a band and thinner: the mean, flat.
-        assert_close!(swing(AA_BANDS_PER_PX[1]), 0.0);
-        assert_close!(swing(2.0), 0.0);
-        let mean = rows[0][2] * (STEADY + (1.0 - STEADY) * CREST_MEAN * rows[0][3]);
-        assert!((at(0.3, 1.0) - mean).abs() < 1e-5);
-        // In between, part of it.
-        let mid = swing(f32::midpoint(AA_BANDS_PER_PX[0], AA_BANDS_PER_PX[1]));
-        assert!(mid > 0.0 && mid < full);
-        // The profile's mean is CREST_MEAN.
+        let lit = (0..400)
+            .map(|i| Vec3::new(i as f32 * 0.001, 0.0, -0.5))
+            .max_by(|a, b| at(&rows, *a, 1e-5).total_cmp(&at(&rows, *b, 1e-5)))
+            .expect("a point");
+        let crest_light = at(&rows, lit, 1e-5);
+        assert!(crest_light > 0.05, "{crest_light}");
+        // The wave moved half a band puts the point in a trough.
+        let mut trough = rows;
+        trough[0][1] = 0.5;
+        let crest_band = STEADY + (1.0 - STEADY) * rows[0][3];
+        let ratio = at(&trough, lit, 1e-5) / crest_light;
+        assert!((ratio - STEADY / crest_band).abs() < 1e-3, "{ratio}");
+        // A band a few pixels thin: the wave's mean, the points unchanged.
+        let mean_band = STEADY + (1.0 - STEADY) * CREST_MEAN * rows[0][3];
+        let ratio = at(&rows, lit, 1.0) / crest_light;
+        assert!((ratio - mean_band / crest_band).abs() < 1e-3, "{ratio}");
+        assert!((crest(&rows, 0.0) - 1.0).abs() < 1e-6);
+        assert!(crest(&rows, BAND_SPACING_M / 2.0) < 1e-6);
         let n = 1000;
-        let mean: f32 = (0..n)
+        let m: f32 = (0..n)
             .map(|k| crest(&rows, k as f32 / n as f32 * BAND_SPACING_M))
             .sum::<f32>()
             / n as f32;
-        assert!((mean - CREST_MEAN).abs() < 1e-4, "{mean}");
+        assert!((m - CREST_MEAN).abs() < 1e-4, "{m}");
     }
 
     #[test]
-    fn the_drive_drifts_up_with_the_music_and_wraps() {
+    fn the_drive_drifts_twinkles_with_the_music_and_wraps() {
         let mut quiet = Drive::default();
         let mut loud = Drive::default();
         for _ in 0..72 {
@@ -931,38 +1409,28 @@ mod tests {
             "{}",
             quiet.phase()
         );
+        assert!((quiet.twinkle() - TWINKLE_HZ).abs() < 1e-4);
         assert!(loud.phase() > 0.9 * DRIFT_BANDS_S[1], "{}", loud.phase());
+        assert!(loud.twinkle() > 1.9 * TWINKLE_HZ);
         assert!(loud.music() > 0.99);
-        // A crest at height y one step later sits higher: the bands rise.
-        let before = rows(&loud, 1.0, [TEAL; 2]);
-        let y0 = (1.0 + before[0][1]) / before[0][0];
-        loud.step(0.1, 1.0, 0.0);
-        let after = rows(&loud, 1.0, [TEAL; 2]);
-        let y1 = (1.0 + after[0][1]) / after[0][0];
-        assert!(y1 > y0);
-        assert!((crest(&before, y0) - 1.0).abs() < 1e-4);
-        assert!((crest(&after, y1) - 1.0).abs() < 1e-4);
-        // The beat speeds it as it speeds the surfaces' clock.
+        // The beat speeds both.
         let (mut a, mut b) = (loud, loud);
         a.step(0.5, 1.0, 0.0);
         b.step(0.5, 1.0, 1.0);
-        let moved = |d: &Drive| (d.phase() - loud.phase()).rem_euclid(1.0);
-        assert!((moved(&b) - 2.0 * moved(&a)).abs() < 1e-4);
-        // It wraps at a whole band and stays in 0..1.
+        let moved = |x: f32, from: f32| (x - from).rem_euclid(1.0);
+        assert!(
+            (moved(b.phase(), loud.phase()) - 2.0 * moved(a.phase(), loud.phase())).abs() < 1e-4
+        );
+        // Both wrap in 0..1, the twinkle's integer rates keep a point's
+        // twinkle continuous across the wrap.
         for _ in 0..1000 {
             a.step(0.1, 1.0, 1.0);
-            assert!((0.0..1.0).contains(&a.phase()));
+            assert!((0.0..1.0).contains(&a.phase()) && (0.0..1.0).contains(&a.twinkle()));
         }
-        // The music falls slower than it rises.
-        let mut d = Drive::default();
-        d.step(MUSIC_ATTACK_S, 1.0, 0.0);
-        assert!((d.music() - (1.0 - (-1.0f32).exp())).abs() < 1e-5);
-        let mut e = Drive {
-            music: 1.0,
-            phase: 0.0,
-        };
-        e.step(MUSIC_ATTACK_S, 0.0, 0.0);
-        assert!(e.music() > 0.8);
+        for rate in [1.0f32, 2.0, 3.0] {
+            let tw = |t: f32| (TAU * (rate * t + 0.3)).sin();
+            assert!((tw(0.0) - tw(1.0)).abs() < 1e-4);
+        }
         // Bad input moves nothing.
         let mut f = Drive::default();
         f.step(f32::NAN, f32::NAN, f32::INFINITY);
@@ -972,14 +1440,10 @@ mod tests {
     #[test]
     fn the_colors_follow_the_theme() {
         let key = [0.9, 0.3, 1.0];
-        // Aurora: teal, the color it gives other surfaces, and the key's
-        // tint on top, as its sky.
         assert!(uses_key(Some(Theme::Aurora)));
         assert_close!(colors(Some(Theme::Aurora), key), [TEAL, key]);
-        // Drift: teal for other surfaces, no key anywhere.
         assert!(!uses_key(Some(Theme::Drift)));
         assert_close!(colors(Some(Theme::Drift), key), [TEAL, TEAL]);
-        // Classic and no theme: other's own green.
         assert_close!(colors(Some(Theme::Classic), key), [GREEN, GREEN]);
         assert_close!(colors(None, key), [GREEN, GREEN]);
         for t in Theme::ALL {
@@ -994,8 +1458,6 @@ mod tests {
             colors_line(None),
             "depth light: other's own sides, the same on top (no theme saved)"
         );
-        // The band: the theme's for other surfaces (Tide's pulse is the
-        // bass), else other's default (the curls: the rms).
         assert_eq!(band(Some(Theme::Aurora)), crate::surface_fx::BAND_RMS);
         assert_eq!(band(Some(Theme::Tide)), BAND_BASS);
         assert_eq!(band(None), crate::surface_fx::BAND_RMS);
@@ -1016,7 +1478,8 @@ mod tests {
     fn the_rows_pack_what_the_shader_reads() {
         let mut d = Drive::default();
         d.step(0.5, 0.5, 0.0);
-        let rows = rows(&d, 0.2, [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]);
+        let rows = rows(&d, 0.2, [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], FILL, 0.7);
+        let (radius, presence) = point_layout(FILL);
         assert_close!(
             rows[0],
             [
@@ -1027,21 +1490,29 @@ mod tests {
             ]
         );
         assert_close!(rows[1], [0.1, 0.2, 0.3, STEADY]);
-        assert_close!(rows[2], [0.4, 0.5, 0.6, TOP_CONTRAST]);
-        assert_close!(rows[3], [FADE_M[0], FADE_M[1], GRAZE[0], GRAZE[1]]);
+        assert_close!(rows[2], [0.4, 0.5, 0.6, BAND_TINT]);
         assert_close!(
-            rows[4],
+            rows[3],
             [
-                SHADE_FLOOR,
                 AA_BANDS_PER_PX[0],
                 AA_BANDS_PER_PX[1],
-                CREST_MEAN
+                CREST_MEAN,
+                d.twinkle()
             ]
         );
-        assert_close!(rows[5], [JUMP[0], JUMP[1], 0.0, 0.0]);
-        // Every fade runs low to high, as smoothstep needs.
-        const { assert!(FADE_M[0] < FADE_M[1] && GRAZE[0] < GRAZE[1]) };
-        const { assert!(AA_BANDS_PER_PX[0] < AA_BANDS_PER_PX[1] && JUMP[0] < JUMP[1]) };
+        assert_close!(rows[4], [FADE_M[0], FADE_M[1], FAR_FLOOR, 0.7]);
+        assert_close!(rows[5], [JUMP_MIN_M, JUMP_REL, JUMP_SOFT, NEAR_KEEP]);
+        assert_close!(
+            rows[6],
+            [CELL_M, OCTAVE_BLEND, AA_CELLS_PER_PX[0], AA_CELLS_PER_PX[1]]
+        );
+        assert_close!(rows[7], [radius, presence, JITTER, 1.0 + SWELL * d.music()]);
+        assert_close!(rows[8], [SIZE[0], SIZE[1], SOFT_CORE, TWINKLE_DEPTH]);
+        const {
+            assert!(FADE_M[0] < FADE_M[1] && AA_BANDS_PER_PX[0] < AA_BANDS_PER_PX[1]);
+            assert!(AA_CELLS_PER_PX[0] < AA_CELLS_PER_PX[1] && SIZE[0] < SIZE[1]);
+            assert!(JITTER <= 0.5 && JUMP_SOFT < 1.0);
+        };
         // The rows end the occluder's uniform, from `light` on.
         assert_eq!(LIGHT_ROW + ROWS, UNIFORM_ROWS);
         let module = naga::front::wgsl::parse_str(ENV_DEPTH_WGSL).expect("WGSL parses");
@@ -1065,9 +1536,12 @@ mod tests {
             "light",
             "light_side",
             "light_top",
+            "light_wave",
             "light_fade",
-            "light_shape",
             "light_jump",
+            "light_cell",
+            "light_point",
+            "light_size",
         ]
         .into_iter()
         .enumerate()
@@ -1075,6 +1549,16 @@ mod tests {
             assert_eq!(offset(name), (LIGHT_ROW + k) * 16, "{name}");
         }
         assert_eq!(offset("mesh"), crate::env_depth::MESH_ROW * 16);
+        // The WGSL's constants are these.
+        for line in [
+            format!("const PLANE_MIN: f32 = {PLANE_MIN:?};"),
+            format!("const OCTAVE_MIN: f32 = {:?};", OCTAVE_RANGE[0]),
+            format!("const OCTAVE_MAX: f32 = {:?};", OCTAVE_RANGE[1]),
+        ] {
+            assert!(ENV_DEPTH_WGSL.contains(&line), "{line}");
+        }
+        // The hash is PCG's: a known value.
+        assert_eq!(hash(0), 129_708_002);
     }
 
     #[test]
@@ -1086,17 +1570,21 @@ mod tests {
                 .collect();
             DepthLightOptions::from_knobs(move |name| map.get(name).cloned())
         };
-        // On by default; off only at 0.
         assert_eq!(knobs(&[]), DepthLightOptions::default());
-        assert!(knobs(&[]).on);
+        let d = DepthLightOptions::default();
+        assert!(d.on && d.veil);
+        assert_close!([d.gain, d.fill], [1.0, FILL]);
         assert!(!knobs(&[(KNOB, " 0 ")]).on);
-        assert!(knobs(&[(KNOB, "1")]).on);
         assert!(knobs(&[(KNOB, "yes")]).on);
+        assert!(!knobs(&[(KNOB_VEIL, "0")]).veil);
+        assert!(knobs(&[(KNOB_VEIL, "1")]).veil);
         assert_close!(knobs(&[(KNOB_GAIN, "2.5")]).gain, 2.5);
         assert_close!(knobs(&[(KNOB_GAIN, "50")]).gain, GAIN_MAX);
-        assert_close!(knobs(&[(KNOB_GAIN, "-1")]).gain, 0.0);
         assert_close!(knobs(&[(KNOB_GAIN, "nan")]).gain, 1.0);
-        assert_close!(knobs(&[(KNOB_GAIN, "x")]).gain, 1.0);
+        assert_close!(knobs(&[(KNOB_FILL, "0.1")]).fill, 0.1);
+        assert_close!(knobs(&[(KNOB_FILL, "0.9")]).fill, FILL_RANGE[1]);
+        assert_close!(knobs(&[(KNOB_FILL, "0")]).fill, FILL_RANGE[0]);
+        assert_close!(knobs(&[(KNOB_FILL, "x")]).fill, FILL);
         // It needs the mesh, and the occluder, and not the gray.
         assert_eq!(blocked(true, false, 2), None);
         assert!(blocked(true, false, 0).is_some_and(|w| w.contains("envdepthmesh 0")));
@@ -1104,14 +1592,10 @@ mod tests {
         assert!(blocked(true, true, 2).is_some_and(|w| w.contains("envdepthshow")));
         let on = DepthLightOptions::default();
         let off = knobs(&[(KNOB, "0")]);
-        assert!(on.lit(None));
-        assert!(!on.lit(Some("x")));
-        assert!(!off.lit(None));
-        assert!(on.line(None).starts_with("depth light: on · gain 1"));
-        assert!(
-            on.line(None)
-                .contains("peak alpha 0.05 with the room plain to 0.33")
-        );
+        assert!(on.lit(None) && !on.lit(Some("x")) && !off.lit(None));
+        let line = on.line(None);
+        assert!(line.starts_with("depth light: on, points · gain 1 · fill 0.25 · veil on"));
+        assert!(knobs(&[(KNOB_VEIL, "0")]).line(None).contains("veil off"));
         assert!(
             off.line(None)
                 .starts_with("depth light: off (debug.fosfora.depthlight 0)")
@@ -1121,9 +1605,16 @@ mod tests {
             on.line(mesh0)
                 .starts_with("depth light: off, it needs the occluder mesh")
         );
-        // Asked off, the reason does not matter.
         assert_eq!(off.line(mesh0), off.line(None));
         let change = on.change_line(&off, None);
         assert!(change.starts_with("depth light: on") && change.contains("(was: off"));
+        // The frame: the veil by the level, or 1 with it off.
+        let drive = Drive::default();
+        let f = frame(&on, &drive, Some(Theme::Aurora), [1.0; 3], 0.75);
+        assert!(f.veil);
+        assert_close!(f.rows[4][3], 0.25);
+        let f = frame(&knobs(&[(KNOB_VEIL, "0")]), &drive, None, [1.0; 3], 0.75);
+        assert!(!f.veil);
+        assert_close!(f.rows[4][3], 1.0);
     }
 }
