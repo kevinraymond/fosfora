@@ -48,16 +48,18 @@
 //! direction. One evaluation per fragment: across the seam the reflection
 //! fades out instead of cross-fading.
 //!
-//! **The rim** ([`continued`]). The surfaces pass fades a face out over its
+//! **The rim** ([`join`]). The surfaces pass fades a face out over its
 //! last 5 cm. On the sky's faces the fade is dropped on every edge another
 //! of the sky's faces continues (two walls in a corner, a wall under the
-//! ceiling), so no dark line runs down a corner; an edge with nothing
-//! beyond it keeps the fade.
+//! ceiling), so no dark line runs down a corner, and the quad is cut back
+//! to its neighbor's, so no bright line runs there either where the two
+//! would overlap; an edge with nothing beyond it keeps the fade.
 
 use std::f32::consts::{PI, TAU};
 
 use glam::{Quat, Vec2, Vec3};
 
+use crate::surface_fx::LIFT_M;
 use crate::surface_port::UNIFORM_ROWS;
 use crate::surfaces::{Face, KIND_CEILING, KIND_FLOOR, KIND_WALL, SurfaceBehavior};
 
@@ -86,7 +88,7 @@ pub const SEATED_EYE_M: f32 = 1.2;
 /// The least room between the point and the ceiling (m).
 pub const HEADROOM_M: f32 = 0.3;
 /// How close another face must come to the middle of an edge (m) for the
-/// edge to count as continued ([`continued`]).
+/// edge to count as continued ([`join`]).
 pub const NEIGHBOR_M: f32 = 0.1;
 /// The stand-in room without a scanned one: its half extents in plan and
 /// its ceiling over the floor (m).
@@ -478,22 +480,61 @@ pub fn rows(
     rows
 }
 
-/// For each of `faces` (as drawn, `surface_port::port_face`), which of its
-/// edges another of them continues, in the order -u, +u, -v, +v: an edge
-/// whose middle is within [`NEIGHBOR_M`] of another face (two walls in a
-/// corner, a wall's top under the ceiling).
-pub fn continued(faces: &[Face]) -> Vec<[bool; 4]> {
+/// `faces` (as drawn, `surface_port::port_face`) joined as one sky. An edge
+/// another of them continues (its middle within [`NEIGHBOR_M`] of another
+/// face: two walls in a corner, a wall's top under the ceiling) runs to
+/// that neighbor without the rim fade, cut back to the neighbor's drawn
+/// plane: the quads are lifted [`LIFT_M`] off their faces and run on into
+/// each other's slabs, so uncut, two would draw the same sky twice along
+/// the corner, a bright line. Every other edge keeps the face's extent and
+/// the fade. Each face as drawn, with its rim per edge (-u, +u, -v, +v;
+/// true fades).
+pub fn join(faces: &[Face]) -> Vec<(Face, [bool; 4])> {
     faces
         .iter()
         .enumerate()
         .map(|(i, f)| {
-            let (a, b) = (f.axes[0] * f.half[0], f.axes[1] * f.half[1]);
-            [f.center - a, f.center + a, f.center - b, f.center + b].map(|mid| {
-                faces
+            // The quad's reach from its center along each axis, minus and
+            // plus.
+            let mut reach = [[f.half[0]; 2], [f.half[1]; 2]];
+            let mut fade = [true; 4];
+            let lifted = f.center + f.normal * LIFT_M;
+            for (e, faded) in fade.iter_mut().enumerate() {
+                let (axis, side) = (e / 2, e % 2);
+                let dir = if side == 1 {
+                    f.axes[axis]
+                } else {
+                    -f.axes[axis]
+                };
+                let mid = f.center + dir * f.half[axis];
+                let neighbor = faces
                     .iter()
                     .enumerate()
-                    .any(|(j, g)| j != i && g.nearest(mid).distance(mid) <= NEIGHBOR_M)
-            })
+                    .filter(|&(j, _)| j != i)
+                    .map(|(_, g)| (g, g.nearest(mid).distance(mid)))
+                    .filter(|&(_, d)| d <= NEIGHBOR_M)
+                    .min_by(|a, b| a.1.total_cmp(&b.1));
+                let Some((g, _)) = neighbor else {
+                    continue;
+                };
+                *faded = false;
+                // Where the quad's axis meets the neighbor's drawn plane: a
+                // neighbor across the edge (a corner), not one beside it in
+                // the same plane.
+                let across = g.normal.dot(dir);
+                if across.abs() > 0.5 {
+                    let t = g.normal.dot(g.center + g.normal * LIFT_M - lifted) / across;
+                    if t > 0.0 && t < f.half[axis] + NEIGHBOR_M {
+                        reach[axis][side] = t;
+                    }
+                }
+            }
+            let mut out = *f;
+            for (axis, [minus, plus]) in reach.into_iter().enumerate() {
+                out.center += f.axes[axis] * 0.5 * (plus - minus);
+                out.half[axis] = 0.5 * (plus + minus);
+            }
+            (out, fade)
         })
         .collect()
 }
@@ -708,7 +749,6 @@ fn fs_sky(in: XrSkyOut) -> @location(0) vec4<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::surface_fx::LIFT_M;
     use crate::surface_port::{FIRST_ID, PEAK_ALPHA, port_face};
     use crate::surfaces::{
         KIND_FRAME, KIND_OTHER, KIND_TABLE, PLANE_HALF_THICKNESS_M, acting_face,
@@ -1160,15 +1200,15 @@ mod tests {
         let boxes = box_room(Vec2::ZERO, 0.25, 5.0, 4.0, 2.5);
         let head = Vec3::new(0.2, 1.2, 0.1);
         let faces = sky_faces(&boxes, head);
-        let flags = continued(&faces);
-        for (f, c) in faces.iter().zip(&flags) {
+        let joined = join(&faces);
+        for (f, (_, fade)) in faces.iter().zip(&joined) {
             if f.normal.y.abs() > 0.9 {
                 // The ceiling: a wall along each edge.
-                assert_eq!(*c, [true; 4], "{f:?}");
+                assert_eq!(*fade, [false; 4], "{f:?}");
             } else {
                 // A wall: its neighbors left and right, the ceiling over
                 // it, nothing under it (the floor is not the sky).
-                assert_eq!(*c, [true, true, false, true], "{f:?}");
+                assert_eq!(*fade, [false, false, true, false], "{f:?}");
             }
         }
         // A hidden wall is not drawn: its two neighbors and the ceiling
@@ -1176,13 +1216,13 @@ mod tests {
         let gone = faces.iter().position(|f| f.normal.y.abs() < 0.9).unwrap();
         let mut open = faces.clone();
         let hidden = open.remove(gone);
-        let flags = continued(&open);
-        let kept = flags.iter().flatten().filter(|c| !**c).count();
+        let flags: Vec<[bool; 4]> = join(&open).into_iter().map(|(_, f)| f).collect();
+        let kept = flags.iter().flatten().filter(|f| **f).count();
         // Each wall's foot, the hidden wall's two neighbors on its side,
         // and the ceiling's edge over it.
         assert_eq!(kept, 3 + 2 + 1, "{flags:?}");
         let ceiling = open.iter().position(|f| f.normal.y.abs() > 0.9).unwrap();
-        let open_edge = flags[ceiling].iter().position(|c| !c).unwrap();
+        let open_edge = flags[ceiling].iter().position(|f| *f).unwrap();
         let f = &open[ceiling];
         let mid = [
             f.center - f.axes[0] * f.half[0],
@@ -1204,6 +1244,57 @@ mod tests {
         let right_edge = Vec2::new(1.5, 0.0);
         assert_close!(rim(right_edge, half, [1.0, 0.0, 1.0, 1.0]), 1.0);
         assert_close!(rim(right_edge, half, [0.0, 1.0, 0.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn joined_faces_meet_on_one_line_and_draw_no_strip_twice() {
+        let boxes = box_room(Vec2::new(0.4, -0.3), 0.35, 4.6, 3.8, 2.45);
+        let head = Vec3::new(0.6, 1.2, 0.0);
+        let faces = sky_faces(&boxes, head);
+        let joined = join(&faces);
+        let plane = |f: &Face| (f.normal, f.center + f.normal * LIFT_M);
+        let corners = |f: &Face| f.corners(LIFT_M);
+        for (i, (f, fade)) in joined.iter().enumerate() {
+            let before = faces[i];
+            // Still in its plane, with its axes, no larger.
+            assert!(f.normal.abs_diff_eq(before.normal, 1e-6));
+            assert!((f.center - before.center).dot(before.normal).abs() < 1e-5);
+            assert!(f.half[0] <= before.half[0] + 1e-6 && f.half[1] <= before.half[1] + 1e-6);
+            // Each cut edge lies in its neighbor's drawn plane: both of its
+            // corners do, for some other face. An uncut edge stays on its
+            // line.
+            let c = corners(f);
+            let ends = [[c[0], c[3]], [c[1], c[2]], [c[0], c[1]], [c[3], c[2]]];
+            for e in 0..4 {
+                if fade[e] {
+                    let (axis, sign) = (e / 2, if e % 2 == 1 { 1.0 } else { -1.0 });
+                    for q in ends[e] {
+                        let along = (q - before.center).dot(before.axes[axis]);
+                        assert!(
+                            (along - sign * before.half[axis]).abs() < 1e-5,
+                            "{i} edge {e}"
+                        );
+                    }
+                    continue;
+                }
+                let on_a_neighbor = joined.iter().enumerate().any(|(j, (g, _))| {
+                    let (n, p) = plane(g);
+                    j != i && ends[e].iter().all(|q| (*q - p).dot(n).abs() < 1e-4)
+                });
+                assert!(on_a_neighbor, "face {i} edge {e}: {:?}", ends[e]);
+            }
+        }
+        // A wall's top was cut down by the ceiling's slab and lift (2 cm
+        // and 1 cm) and its sides in by its neighbors' (3 cm each).
+        let wall = joined
+            .iter()
+            .find(|(f, _)| f.normal.y.abs() < 0.5)
+            .unwrap()
+            .0;
+        let before = faces.iter().find(|f| f.normal.y.abs() < 0.5).unwrap();
+        let t = PLANE_HALF_THICKNESS_M;
+        assert!((before.half[0] - wall.half[0] - (t + LIFT_M)).abs() < 1e-4);
+        assert!((before.half[1] - wall.half[1] - 0.5 * (t + LIFT_M)).abs() < 1e-4);
     }
 
     #[test]

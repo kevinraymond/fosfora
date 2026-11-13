@@ -4178,15 +4178,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 // Board #5436: the sky's faces drop the rim fade on every
                 // edge another of them continues (a corner, a wall under
-                // the ceiling); every other face keeps it all round. The
-                // sky and its reflection run at the sky's resolution, the
-                // reflection at its own params (a wider glow).
+                // the ceiling) and are cut back to meet there on one line
+                // (`sky::join`); every other face keeps its extent and the
+                // fade all round. The sky and its reflection run at the
+                // sky's resolution, the reflection at its own params (a
+                // wider glow).
                 let sky_faces: Vec<_> = ported
                     .iter()
                     .filter(|p| p.6 == Map::Sky)
                     .map(|p| p.1)
                     .collect();
-                let mut joined = crate::sky::continued(&sky_faces).into_iter();
+                let mut joined = crate::sky::join(&sky_faces).into_iter();
                 let mut port_faces: Vec<_> = surface_ports
                     .as_ref()
                     .map(|effects| {
@@ -4194,9 +4196,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             .iter()
                             .map(|&(i, face, kind, behavior, strength, color, map)| {
                                 let effect = &effects[i];
-                                let fade = match map {
-                                    Map::Sky => joined.next().unwrap_or_default().map(|c| !c),
-                                    _ => [true; 4],
+                                let (face, fade) = match map {
+                                    Map::Sky => joined.next().unwrap_or((face, [true; 4])),
+                                    _ => (face, [true; 4]),
                                 };
                                 let (resolution, params) = match map {
                                     Map::Face => (
