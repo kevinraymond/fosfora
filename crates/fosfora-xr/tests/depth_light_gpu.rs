@@ -3,16 +3,18 @@
 //! handle, a box, the floor and a wall, holes without data and texels too
 //! near) and compared with the depth-only occluder and with the Rust
 //! copies. The light's vertex stages write the occluder's depth bit for
-//! bit, with geometry first's drop too; each vertex's share, facing and
-//! height match `depth_light::vertex_light`; and the fragment over known
-//! inputs matches `depth_light::fragment`, its band fade included.
-//! `#[ignore]`d like the other GPU tests (they need an adapter); run them
-//! with `cargo test -p fosfora-xr --test depth_light_gpu -- --ignored`.
+//! bit, with geometry first's drop too; each vertex's keep, light by
+//! distance, normal and height match `depth_light::vertex_light`; the
+//! fragment over known inputs matches `depth_light::fragment`, its points,
+//! octaves and fades included; and over a sky drawn first, the veil leaves
+//! what `depth_light::veil` says at each level. `#[ignore]`d like the other
+//! GPU tests (they need an adapter); run them with
+//! `cargo test -p fosfora-xr --test depth_light_gpu -- --ignored`.
 #![cfg(not(target_os = "android"))]
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use fosfora_xr::depth_light::{self, Drive, ROWS, fragment, vertex_light};
+use fosfora_xr::depth_light::{self, Drive, ROWS, fragment, veil, vertex_light};
 use fosfora_xr::env_depth::{
     DepthView, ENV_DEPTH_WGSL, EyeReprojection, FILTER_SOFT_M, LIGHT_ROW, NEAR_CUT_M, Obb,
     UNIFORM_ROWS, mesh_indices, mesh_side, mesh_texel, ray_obb,
@@ -293,25 +295,55 @@ fn synthetic_map() -> Vec<u16> {
     map
 }
 
-/// The light's rows: the music half way, the bands' phase part way, the
-/// peak at full immersion, teal sides and a violet key on top.
-fn light_rows() -> [[f32; 4]; ROWS] {
+/// The light's rows: the music half way, the wave and the twinkle part
+/// way, the peak `peak`, teal sides and a violet key on top, the veil
+/// `veil`.
+fn light_rows_at(peak: f32, veil: f32) -> [[f32; 4]; ROWS] {
     let mut d = Drive::default();
     d.step(0.37 / 0.1, 0.5, 0.0);
-    depth_light::rows(
-        &d,
-        depth_light::peak_alpha(1.0, 1.0),
-        [TEAL, [0.7, 0.3, 1.0]],
-    )
+    depth_light::rows(&d, peak, [TEAL, [0.7, 0.3, 1.0]], depth_light::FILL, veil)
 }
 
-/// The eye's uniform with the light's rows, and the drop's vertices per
-/// layer when not 0.
-fn uniform_rows(drop_vertices: u32) -> [[f32; 4]; UNIFORM_ROWS] {
+/// At full immersion: the veil 0.
+fn light_rows() -> [[f32; 4]; ROWS] {
+    light_rows_at(depth_light::peak_alpha(1.0, 1.0), 0.0)
+}
+
+/// The eye's uniform with the light's `light` rows, and the drop's
+/// vertices per layer when not 0.
+fn uniform_with(light: [[f32; 4]; ROWS], drop_vertices: u32) -> [[f32; 4]; UNIFORM_ROWS] {
     let mut rows = eye().uniform();
-    rows[LIGHT_ROW..].copy_from_slice(&light_rows());
+    rows[LIGHT_ROW..].copy_from_slice(&light);
     set_drop_vertices(&mut rows, drop_vertices);
     rows
+}
+
+fn uniform_rows(drop_vertices: u32) -> [[f32; 4]; UNIFORM_ROWS] {
+    uniform_with(light_rows(), drop_vertices)
+}
+
+/// The blend of the light's and the veil's pipelines (`env_depth`'s
+/// `LIGHT_BLEND`): the light added, the veil's share of what is behind
+/// erased in color and alpha.
+const LIGHT_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
+/// How a draw blends: written as is into a float target, or over a sky of
+/// one premultiplied color drawn first, through `LIGHT_BLEND`.
+#[derive(Clone, Copy)]
+enum Over {
+    Nothing,
+    Sky([f32; 4]),
 }
 
 /// What a draw drew: each pixel's RGBA (row-major, `W` x `H`) and depth.
@@ -333,6 +365,7 @@ fn draw(
     topology: wgpu::PrimitiveTopology,
     rows: &[[f32; 4]; UNIFORM_ROWS],
     drops: Option<&[u32]>,
+    over: Over,
 ) -> Drawn {
     let map = synthetic_map();
     let view = depth_map(device, queue, &map);
@@ -340,7 +373,11 @@ fn draw(
         label: Some("depth-light"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
-    let format = wgpu::TextureFormat::Rgba32Float;
+    // A float target that blends where the draw blends.
+    let (format, blend) = match over {
+        Over::Nothing => (wgpu::TextureFormat::Rgba32Float, None),
+        Over::Sky(_) => (wgpu::TextureFormat::Rgba16Float, Some(LIGHT_BLEND)),
+    };
     let depth_format = wgpu::TextureFormat::Depth32Float;
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("depth-light"),
@@ -370,13 +407,17 @@ fn draw(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: None,
+                blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
         multiview: None,
         cache: None,
     });
+    let sky = match over {
+        Over::Nothing => None,
+        Over::Sky(c) => Some(sky_pipeline(device, format, depth_format, c)),
+    };
     let eye = buffer(
         device,
         queue,
@@ -442,7 +483,8 @@ fn draw(
     let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
     let color = texture(format, usage);
     let depth = texture(depth_format, usage);
-    let color_bytes = (W * 16).next_multiple_of(256);
+    let texel = if blend.is_some() { 8 } else { 16 };
+    let color_bytes = (W * texel).next_multiple_of(256);
     let depth_bytes = (W * 4).next_multiple_of(256);
     let read = |row_bytes: u32| {
         device.create_buffer(&wgpu::BufferDescriptor {
@@ -479,6 +521,10 @@ fn draw(
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        if let Some(sky) = &sky {
+            pass.set_pipeline(sky);
+            pass.draw(0..3, 0..1);
+        }
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &bind, &[]);
         match topology {
@@ -527,14 +573,104 @@ fn draw(
             .flat_map(|row| bytemuck::pod_collect_to_vec::<u8, f32>(&row[..used as usize]))
             .collect()
     };
-    let color = rows_of(&color_back, color_bytes, W * 16)
-        .chunks(4)
-        .map(|c| [c[0], c[1], c[2], c[3]])
-        .collect();
+    let color = if blend.is_some() {
+        read_buffer(device, queue, &color_back)
+            .chunks(color_bytes as usize)
+            .flat_map(|row| {
+                bytemuck::pod_collect_to_vec::<u8, u16>(&row[..(W * 8) as usize])
+                    .chunks(4)
+                    .map(|c| [0, 1, 2, 3].map(|k| half(c[k])))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    } else {
+        rows_of(&color_back, color_bytes, W * 16)
+            .chunks(4)
+            .map(|c| [c[0], c[1], c[2], c[3]])
+            .collect()
+    };
     Drawn {
         color,
         depth: rows_of(&depth_back, depth_bytes, W * 4),
     }
+}
+
+/// An f16's value.
+fn half(h: u16) -> f32 {
+    let sign = if h & 0x8000 == 0 { 1.0 } else { -1.0 };
+    let e = i32::from((h >> 10) & 31);
+    let m = f32::from(h & 1023);
+    sign * if e == 0 {
+        m * 2f32.powi(-24)
+    } else {
+        (1.0 + m / 1024.0) * 2f32.powi(e - 15)
+    }
+}
+
+/// The sky's depth: just in front of the far plane, as the room's boxes are
+/// behind the sky's faces, so the mesh's triangles that lean back to the far
+/// plane without data fall behind it, as they fall behind a wall.
+const SKY_DEPTH: f32 = 0.999;
+
+/// A full-target triangle of the premultiplied color `c`, drawn first,
+/// written as is, at [`SKY_DEPTH`].
+fn sky_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    depth_format: wgpu::TextureFormat,
+    c: [f32; 4],
+) -> wgpu::RenderPipeline {
+    let [r, g, b, a] = c;
+    let source = format!(
+        r"
+@vertex
+fn vs_sky(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {{
+    let x = f32((i << 1u) & 2u) * 2.0 - 1.0;
+    let y = f32(i & 2u) * 2.0 - 1.0;
+    return vec4<f32>(x, y, {SKY_DEPTH:?}, 1.0);
+}}
+
+@fragment
+fn fs_sky() -> @location(0) vec4<f32> {{
+    return vec4<f32>({r:?}, {g:?}, {b:?}, {a:?});
+}}
+"
+    );
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("sky"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("sky"),
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_sky"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: depth_format,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Always,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_sky"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    })
 }
 
 /// Every `k`th vertex of each layer's mesh dropped, for the drop's A/B.
@@ -545,69 +681,59 @@ fn some_drops() -> Vec<u32> {
         .collect()
 }
 
+fn differ(a: &[f32], b: &[f32]) -> usize {
+    a.iter()
+        .zip(b)
+        .filter(|(x, y)| x.to_bits() != y.to_bits())
+        .count()
+}
+
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn the_light_writes_the_occluders_depth_bit_for_bit() {
     let (device, queue, _guard) = gpu();
     let tri = wgpu::PrimitiveTopology::TriangleList;
     let rows = uniform_rows(0);
-    let own = draw(
-        device,
-        queue,
-        ENV_DEPTH_WGSL,
-        "vs_mesh",
-        "fs_mesh",
-        tri,
-        &rows,
-        None,
-    );
-    let lit = draw(
-        device,
-        queue,
-        ENV_DEPTH_WGSL,
-        "vs_mesh_light",
-        "fs_mesh_light",
-        tri,
-        &rows,
-        None,
-    );
-    let differ = |a: &[f32], b: &[f32]| {
-        a.iter()
-            .zip(b)
-            .filter(|(x, y)| x.to_bits() != y.to_bits())
-            .count()
+    let draw_with = |source: &str, stages: [&str; 2], rows, drops| {
+        draw(
+            device,
+            queue,
+            source,
+            stages[0],
+            stages[1],
+            tri,
+            rows,
+            drops,
+            Over::Nothing,
+        )
     };
+    let own = draw_with(ENV_DEPTH_WGSL, ["vs_mesh", "fs_mesh"], &rows, None);
+    let lit = draw_with(
+        ENV_DEPTH_WGSL,
+        ["vs_mesh_light", "fs_mesh_light"],
+        &rows,
+        None,
+    );
     assert_eq!(differ(&own.depth, &lit.depth), 0);
     // Geometry first's drop: the light's vertex stage drops what the
-    // occluder's does.
+    // occluder's does, and the faces pass's veil is the occluder's own.
     let side = mesh_side(MAP, STEP);
     let drops = some_drops();
     let rows = uniform_rows(side * side);
     let geom = mesh_geom_wgsl();
-    let dropped = draw(
-        device,
-        queue,
+    let dropped = draw_with(&geom, ["vs_mesh_geom", "fs_mesh"], &rows, Some(&drops));
+    let dropped_lit = draw_with(
         &geom,
-        "vs_mesh_geom",
-        "fs_mesh",
-        tri,
+        ["vs_mesh_geom_light", "fs_mesh_light"],
         &rows,
         Some(&drops),
     );
-    let dropped_lit = draw(
-        device,
-        queue,
-        &geom,
-        "vs_mesh_geom_light",
-        "fs_mesh_light",
-        tri,
-        &rows,
-        Some(&drops),
-    );
+    let dropped_veil = draw_with(&geom, ["vs_mesh_geom", "fs_mesh_veil"], &rows, Some(&drops));
     assert_eq!(differ(&dropped.depth, &dropped_lit.depth), 0);
+    assert_eq!(differ(&dropped.depth, &dropped_veil.depth), 0);
     assert!(differ(&dropped.depth, &own.depth) > 1000);
     // The light lands only where the mesh wrote depth, never past the
-    // peak, premultiplied.
+    // peak; its alpha out is the veil (0 here).
     let peak = light_rows()[0][2];
     let (mut drawn, mut lit_px) = (0, 0);
     for (c, &d) in lit.color.iter().zip(&lit.depth) {
@@ -616,27 +742,112 @@ fn the_light_writes_the_occluders_depth_bit_for_bit() {
             continue;
         }
         drawn += 1;
-        assert!(c[3] <= peak + 1e-6, "{c:?}");
-        assert!(c[..3].iter().all(|&v| v <= c[3] + 1e-6), "{c:?}");
-        lit_px += usize::from(c[3] > 0.02);
+        assert!(c[..3].iter().all(|&v| v <= peak + 1e-6), "{c:?}");
+        assert_eq!(c[3].to_bits(), 0, "{c:?}");
+        lit_px += usize::from(c[1] > 0.02);
     }
     eprintln!(
-        "{drawn} of {} pixels drawn by the mesh, {lit_px} lit above 0.02",
+        "{drawn} of {} pixels drawn by the mesh, {lit_px} of them lit above 0.02",
         lit.depth.len()
     );
-    assert!(lit_px > drawn / 10, "{lit_px} of {drawn}");
-    assert!(lit_px < drawn, "{lit_px} of {drawn}");
+    // Points: clearly less lit than drawn, and some.
+    assert!(
+        lit_px > drawn / 20 && lit_px < drawn / 2,
+        "{lit_px} of {drawn}"
+    );
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn the_veil_leaves_the_sky_by_the_level() {
+    let (device, queue, _guard) = gpu();
+    let tri = wgpu::PrimitiveTopology::TriangleList;
+    let sky = [0.1, 0.5, 0.4, 0.6];
+    for level in [0.0, 0.5, 1.0] {
+        let v = depth_light::veil_share(level, true);
+        // The veil alone (the faces pass's, and the light's with no
+        // light): the sky where the mesh is not, its kept share where it
+        // is, once per fragment there (a fold of the mesh erases twice).
+        for (stages, peak) in [
+            (["vs_mesh", "fs_mesh_veil"], 1.0),
+            (["vs_mesh_light", "fs_mesh_light"], 0.0),
+        ] {
+            let rows = uniform_with(light_rows_at(peak, v), 0);
+            let got = draw(
+                device,
+                queue,
+                ENV_DEPTH_WGSL,
+                stages[0],
+                stages[1],
+                tri,
+                &rows,
+                None,
+                Over::Sky(sky),
+            );
+            let (mut once, mut folds, mut clear) = (0, 0, 0);
+            for (c, &d) in got.color.iter().zip(&got.depth) {
+                let close = |a: [f32; 4], b: [f32; 4]| (0..4).all(|k| (a[k] - b[k]).abs() < 2e-3);
+                if d.to_bits() == SKY_DEPTH.to_bits() {
+                    assert!(close(*c, sky), "{c:?}");
+                    clear += 1;
+                    continue;
+                }
+                let one = veil(sky, [0.0, 0.0, 0.0, v]);
+                if close(*c, one) {
+                    once += 1;
+                } else {
+                    // A fold: erased again.
+                    assert!(
+                        close(*c, veil(one, [0.0, 0.0, 0.0, v]))
+                            || close(*c, veil(veil(one, [0.0, 0.0, 0.0, v]), [0.0, 0.0, 0.0, v])),
+                        "{level} {c:?}"
+                    );
+                    folds += 1;
+                }
+            }
+            eprintln!(
+                "level {level}, {}: {once} pixels erased once, {folds} on folds, {clear} sky alone",
+                stages[1]
+            );
+            assert!(once > 100 * folds.max(1) / 2, "{once} {folds}");
+            assert!(clear > 1000);
+        }
+    }
+    // At full immersion with the light: the sky kept whole, its alpha
+    // untouched, the points added over it.
+    let rows = uniform_with(light_rows(), 0);
+    let got = draw(
+        device,
+        queue,
+        ENV_DEPTH_WGSL,
+        "vs_mesh_light",
+        "fs_mesh_light",
+        tri,
+        &rows,
+        None,
+        Over::Sky(sky),
+    );
+    let mut added = 0;
+    for c in &got.color {
+        assert!((c[3] - sky[3]).abs() < 2e-3, "{c:?}");
+        for k in 0..3 {
+            assert!(c[k] >= sky[k] - 2e-3, "{c:?}");
+        }
+        added += usize::from(c[1] > sky[1] + 0.02);
+    }
+    assert!(added > 1000, "{added}");
 }
 
 /// The light's vertex stage, each vertex a point, handing on its index
-/// (`vs_test`), and its outputs written as they arrive (`fs_test`).
+/// (`vs_test`), and its outputs as they arrive: the keep, the light by
+/// distance, the height (`fs_test`), and the normal (`fs_test_normal`).
 fn vertex_test_wgsl(source: &str) -> String {
     format!(
         r"{source}
 struct TestOut {{
     @builtin(position) pos: vec4<f32>,
     @location(0) world: vec4<f32>,
-    @location(1) up: f32,
+    @location(1) normal: vec4<f32>,
     @location(2) @interpolate(flat) index: u32,
 }}
 
@@ -646,14 +857,19 @@ fn vs_test(@builtin(vertex_index) i: u32) -> TestOut {{
     var out: TestOut;
     out.pos = o.pos;
     out.world = o.world;
-    out.up = o.up;
+    out.normal = o.normal;
     out.index = i;
     return out;
 }}
 
 @fragment
 fn fs_test(in: TestOut) -> @location(0) vec4<f32> {{
-    return vec4<f32>(in.world.w, in.up, in.world.y, f32(in.index));
+    return vec4<f32>(in.world.w, in.normal.w, in.world.y, f32(in.index));
+}}
+
+@fragment
+fn fs_test_normal(in: TestOut) -> @location(0) vec4<f32> {{
+    return vec4<f32>(in.normal.xyz, f32(in.index));
 }}
 "
     )
@@ -664,57 +880,78 @@ fn fs_test(in: TestOut) -> @location(0) vec4<f32> {{
 fn the_vertex_stage_matches_its_cpu_mirror() {
     let (device, queue, _guard) = gpu();
     let rows = uniform_rows(0);
-    let got = draw(
-        device,
-        queue,
-        &vertex_test_wgsl(ENV_DEPTH_WGSL),
-        "vs_test",
-        "fs_test",
-        wgpu::PrimitiveTopology::PointList,
-        &rows,
-        None,
-    );
+    let source = vertex_test_wgsl(ENV_DEPTH_WGSL);
+    let run = |fragment: &str| {
+        draw(
+            device,
+            queue,
+            &source,
+            "vs_test",
+            fragment,
+            wgpu::PrimitiveTopology::PointList,
+            &rows,
+            None,
+            Over::Nothing,
+        )
+    };
+    let (shares, normals) = (run("fs_test"), run("fs_test_normal"));
     let map = synthetic_map();
     let stored = |t: [u32; 2]| f32::from(map[(t[1] * MAP + t[0]) as usize]) / 65535.0;
     let r = eye();
     let light = light_rows();
     let side = mesh_side(MAP, STEP);
-    let (mut compared, mut lit, mut half) = (0, 0, 0);
-    let (mut worst_w, mut worst_up, mut worst_y) = (0.0f32, 0.0f32, 0.0f32);
-    for (c, &d) in got.color.iter().zip(&got.depth) {
-        if d.to_bits() == 1f32.to_bits() && c.iter().all(|v| v.to_bits() == 0) {
-            continue;
-        }
-        let i = c[3] as u32;
+    let want = |i: u32| {
         let texel = [
             mesh_texel(i % side, MAP, STEP),
             mesh_texel(i / side, MAP, STEP),
         ];
-        let want = vertex_light(&r, &light, texel, stored);
-        worst_w = worst_w.max((c[0] - want.weight).abs());
-        worst_up = worst_up.max((c[1] - want.up).abs());
-        if want.weight > 0.0 {
-            worst_y = worst_y.max((c[2] - want.world.y).abs());
+        vertex_light(&r, &light, texel, stored)
+    };
+    let drawn = |c: &[f32; 4], d: f32| {
+        !(d.to_bits() == 1f32.to_bits() && c.iter().all(|v| v.to_bits() == 0))
+    };
+    let (mut compared, mut full, mut part, mut far) = (0, 0, 0, 0);
+    let (mut worst_keep, mut worst_bright, mut worst_y, mut worst_n) =
+        (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for (c, &d) in shares.color.iter().zip(&shares.depth) {
+        if !drawn(c, d) {
+            continue;
+        }
+        let w = want(c[3] as u32);
+        worst_keep = worst_keep.max((c[0] - w.keep).abs());
+        worst_bright = worst_bright.max((c[1] - w.bright).abs());
+        if w.keep > 0.0 {
+            worst_y = worst_y.max((c[2] - w.world.y).abs());
         }
         compared += 1;
-        lit += usize::from(want.weight > 0.9);
-        half += usize::from(want.weight > 0.05 && want.weight < 0.9);
+        full += usize::from(w.keep > 0.99);
+        part += usize::from(w.keep > 0.01 && w.keep < 0.99);
+        far += usize::from(w.bright < 0.99 && w.keep > 0.0);
+    }
+    for (c, &d) in normals.color.iter().zip(&normals.depth) {
+        if drawn(c, d) {
+            let w = want(c[3] as u32);
+            worst_n = worst_n.max((Vec3::new(c[0], c[1], c[2]) - w.normal).length());
+        }
     }
     eprintln!(
-        "{compared} vertices compared ({lit} with all of their share, {half} part of it): worst share {worst_w:.2e}, facing up {worst_up:.2e}, height {worst_y:.2e} m"
+        "{compared} vertices compared ({full} keep all, {part} part, {far} dimmed by distance): worst keep {worst_keep:.2e}, light {worst_bright:.2e}, height {worst_y:.2e} m, normal {worst_n:.2e}"
     );
     assert!(compared > 5000, "{compared}");
-    assert!(lit > 1000 && half > 100, "{lit} {half}");
-    assert!(worst_w < 2e-3, "{worst_w}");
-    assert!(worst_up < 2e-3, "{worst_up}");
+    assert!(full > 1000 && part > 50 && far > 100, "{full} {part} {far}");
+    assert!(worst_keep < 2e-3, "{worst_keep}");
+    assert!(worst_bright < 2e-3, "{worst_bright}");
     assert!(worst_y < 1e-4, "{worst_y}");
+    assert!(worst_n < 2e-3, "{worst_n}");
 }
 
 /// The light's fragment stage over known inputs: a triangle over the
-/// whole target whose height, share and facing up run linearly across
-/// it, at `y(x, y) = y0 + yx x + yy y` over NDC x and y.
-fn fragment_test_wgsl(y: [f32; 3]) -> String {
-    let [y0, yx, yy] = y;
+/// whole target whose world point runs linearly across it from `p0` by
+/// `px` per unit of NDC x and `py` of NDC y, the keep up NDC y, the light
+/// by distance across NDC x, the normal `n` throughout.
+fn fragment_test_wgsl(p0: Vec3, px: Vec3, py: Vec3, n: Vec3) -> String {
+    let v = |v: Vec3| format!("vec3<f32>({:?}, {:?}, {:?})", v.x, v.y, v.z);
+    let (p0, px, py, n) = (v(p0), v(px), v(py), v(n));
     format!(
         r"{ENV_DEPTH_WGSL}
 @vertex
@@ -723,8 +960,8 @@ fn vs_ramp(@builtin(vertex_index) i: u32) -> LightOut {{
     let y = f32(i & 2u) * 2.0 - 1.0;
     var out: LightOut;
     out.pos = vec4<f32>(x, y, 0.5, 1.0);
-    out.world = vec4<f32>(0.0, {y0:?} + {yx:?} * x + {yy:?} * y, 0.0, 0.5 + 0.5 * y);
-    out.up = 0.5 + 0.5 * x;
+    out.world = vec4<f32>({p0} + {px} * x + {py} * y, 0.5 + 0.5 * y);
+    out.normal = vec4<f32>({n}, 0.6 + 0.4 * x);
     return out;
 }}
 "
@@ -737,35 +974,78 @@ fn the_fragment_matches_its_cpu_mirror() {
     let (device, queue, _guard) = gpu();
     let rows = uniform_rows(0);
     let light = light_rows();
-    // A gentle ramp (bands tens of pixels wide), one through the fade
-    // into the mean, and one too steep to draw a band.
-    for ramp in [[1.0, 1.5, 0.3], [1.0, 20.0, 1.0], [1.0, 120.0, 0.0]] {
+    let eye_pos = eye().eye_pos;
+    // A wall 1.2 m out, a top below the eye, a surface between axes
+    // across an octave's boundary, one whose cells shrink to pixels, and
+    // a steep one whose wave is too thin to draw.
+    let cases = [
+        (
+            Vec3::new(0.0, 1.2, -1.2),
+            Vec3::new(0.5, 0.0, 0.0),
+            Vec3::new(0.0, 0.5, 0.0),
+            Vec3::Z,
+        ),
+        (
+            Vec3::new(0.0, 0.5, -0.9),
+            Vec3::new(0.4, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.4),
+            Vec3::Y,
+        ),
+        (
+            Vec3::new(0.3, 1.0, -1.9),
+            Vec3::new(0.6, 0.1, -0.3),
+            Vec3::new(0.0, 0.5, 0.2),
+            Vec3::new(0.6, 0.3, 0.75).normalize(),
+        ),
+        (
+            Vec3::new(0.0, 1.2, -1.2),
+            Vec3::new(12.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.6, 0.0),
+            Vec3::Z,
+        ),
+        (
+            Vec3::new(0.0, 1.2, -1.2),
+            Vec3::new(0.4, 0.0, 0.0),
+            Vec3::new(0.0, 25.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ),
+    ];
+    for (p0, px, py, n) in cases {
         let got = draw(
             device,
             queue,
-            &fragment_test_wgsl(ramp),
+            &fragment_test_wgsl(p0, px, py, n),
             "vs_ramp",
             "fs_mesh_light",
             wgpu::PrimitiveTopology::TriangleList,
             &rows,
             None,
+            Over::Nothing,
         );
-        // Bands per pixel along x and y: fwidth's sum.
-        let fw = light[0][0] * (ramp[1].abs() * 2.0 / W as f32 + ramp[2].abs() * 2.0 / H as f32);
-        let mut worst = 0.0f32;
-        for py in 0..H {
-            for px in 0..W {
-                let nx = (px as f32 + 0.5) / W as f32 * 2.0 - 1.0;
-                let ny = 1.0 - (py as f32 + 0.5) / H as f32 * 2.0;
-                let y = ramp[0] + ramp[1] * nx + ramp[2] * ny;
-                let want = fragment(&light, y, 0.5 + 0.5 * ny, 0.5 + 0.5 * nx, fw);
-                let c = got.color[(py * W + px) as usize];
-                for k in 0..4 {
-                    worst = worst.max((c[k] - want[k]).abs());
-                }
+        // The world's change across a pixel: fwidth's sum.
+        let fw = (px * (2.0 / W as f32)).abs() + (py * (2.0 / H as f32)).abs();
+        let (mut worst, mut bad, mut lit) = (0.0f32, 0, 0);
+        for py_ in 0..H {
+            for px_ in 0..W {
+                let nx = (px_ as f32 + 0.5) / W as f32 * 2.0 - 1.0;
+                let ny = 1.0 - (py_ as f32 + 0.5) / H as f32 * 2.0;
+                let p = p0 + px * nx + py * ny;
+                let want = fragment(&light, eye_pos, p, n, 0.5 + 0.5 * ny, 0.6 + 0.4 * nx, fw);
+                let c = got.color[(py_ * W + px_) as usize];
+                let e = (0..4)
+                    .map(|k| (c[k] - want[k]).abs())
+                    .fold(0.0f32, f32::max);
+                worst = worst.max(e);
+                bad += usize::from(e > 2e-3);
+                lit += usize::from(want[1] > 0.02);
             }
         }
-        eprintln!("ramp {ramp:?}: {fw:.3} bands a pixel, worst {worst:.2e}");
-        assert!(worst < 2e-3, "ramp {ramp:?}: {worst}");
+        eprintln!(
+            "p0 {p0} by {px} / {py}, n {n}: {lit} pixels lit, worst {worst:.2e}, {bad} over 2e-3"
+        );
+        // A pixel on a point's edge where the GPU's division put it in
+        // the next cell's window sees the same points; allow a handful of
+        // the hash's float edges, nothing more.
+        assert!(bad <= (W * H / 20000) as usize, "{bad}");
     }
 }
