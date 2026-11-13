@@ -139,7 +139,11 @@ pub const LAYERS_MAX: u32 = 3;
 pub const LAYERS_DEFAULT: u32 = 2;
 /// How far the far layers' shells are behind the walls and the ceiling
 /// (m), the middle layer's and the farthest's, at a depth multiplier of 1.
-pub const SHELL_M: [f32; 2] = [1.5, 4.0];
+/// With two layers the far one is 12 m back: seated 3 m from a wall it
+/// moves 8 cm against the wall for a 10 cm head move. The third, under the
+/// knob, is three times as deep, past the second so each still composites
+/// under the nearer ones, and moves nearly with the head (9.2 cm).
+pub const SHELL_M: [f32; 2] = [12.0, 36.0];
 /// The largest depth multiplier.
 pub const DEPTH_MAX: f32 = 4.0;
 /// Each layer's share of the sky's light, the nearest first.
@@ -1041,7 +1045,7 @@ const XR_REFLECT_COS: vec2<f32> = vec2<f32>(0.5, 0.906);
 // and how much lower its bands sit (rad of elevation); the elevations on
 // a far layer's frame where it is gone and whole under its lowest band;
 // the far two's tints.
-const XR_SKY_SHELL: vec2<f32> = vec2<f32>(1.5, 4.0);
+const XR_SKY_SHELL: vec2<f32> = vec2<f32>(12.0, 36.0);
 const XR_SKY_LIGHT: vec3<f32> = vec3<f32>(1.0, 0.6, 0.35);
 const XR_SKY_TURN: vec3<f32> = vec3<f32>(0.0, 2.1, 3.2);
 const XR_SKY_DROP: vec3<f32> = vec3<f32>(0.0, 0.09821429, 0.04910714);
@@ -2247,8 +2251,10 @@ mod tests {
             let p = onto(&wall, eye + (ac + ax) * to_wall + Vec3::Y * 0.3);
             let slant = (p - eye).normalize().dot(ac);
             assert!(slant > 0.55 && slant < 0.75, "{slant}");
+            // Past the wall, it leaves through the shell's side across the
+            // axis, or deep enough through the next one.
             let (hit, [a, b, c]) = check(eye, p);
-            assert!((b - grow).abs() < 1e-4 && a < grow && c < grow, "{hit}");
+            assert!((a.max(b) - grow).abs() < 1e-4 && c < grow, "{hit}");
             // Near a corner: 10 cm from the end of the wall along the
             // axis, seen across the room; past the wall the ray leaves
             // through the shell's side beyond the next wall.
@@ -2264,7 +2270,7 @@ mod tests {
             let ceiling = face(Vec3::Y);
             let p = onto(&ceiling, point + ax * 0.3 + Vec3::Y);
             let (hit, [a, b, c]) = check(point, p);
-            assert!((c - grow).abs() < 1e-4 && a < 0.0 && b < 0.0, "{hit}");
+            assert!((c - grow).abs() < 1e-4 && a < grow && b < grow, "{hit}");
             // ...and at a slant near its edge, through the shell's side
             // over the wall.
             let eye = point - ax * 1.5;
@@ -2276,26 +2282,34 @@ mod tests {
 
     #[test]
     fn a_far_layer_moves_against_the_wall_by_its_depth_as_the_head_moves() {
-        for dist in [2.0f32, 3.0] {
-            // A 5 m wide room, the wall ahead `dist` from the point.
-            let boxes = box_room(Vec2::ZERO, 0.0, 5.0, 2.0 * dist, 2.5);
+        // Rooms w by d m (w along x), seated at the point looking at the
+        // wall `ahead`, `dist` away: 2 and 3 m in a 5 m wide room, and both
+        // walls of a 6.17 by 5.49 m room (the scanned one worn).
+        for (w, d, ahead, dist) in [
+            (5.0, 4.0, Vec3::NEG_Z, 2.0),
+            (5.0, 6.0, Vec3::NEG_Z, 3.0),
+            (6.17, 5.49, Vec3::NEG_Z, 2.745),
+            (6.17, 5.49, Vec3::X, 3.085),
+        ] {
+            let boxes = box_room(Vec2::ZERO, 0.0, w, d, 2.67);
             let room = Room::fit(boxes.iter().copied()).unwrap();
             for depth in [1.0, 2.0] {
-                let sky = layered(Sky::new(room, Vec2::new(0.0, -1.0)), 3, depth);
+                let facing = Vec2::new(ahead.x, ahead.z);
+                let sky = layered(Sky::new(room, facing), 3, depth);
                 let wall = *sky_faces(&boxes, sky.point)
                     .iter()
-                    .find(|f| f.normal.z > 0.9)
+                    .find(|f| f.normal.dot(ahead) < -0.9)
                     .unwrap();
                 let r = sky_rows(&wall, &sky, true);
-                // Seated at the point, the wall straight ahead at eye
-                // height.
+                // The wall straight ahead at eye height.
                 let eye = sky.point;
-                let p = on(&wall, uv_of(&wall, Vec3::new(eye.x, eye.y, -dist)));
+                let p = on(&wall, uv_of(&wall, eye + ahead * dist));
                 let before = far(&r, RESOLUTION, uv_of(&wall, p), p, eye);
                 assert_eq!(before.len(), 2);
-                // The head 10 cm to the right. Where on the wall does each
+                // The head 10 cm to the side. Where on the wall does each
                 // layer now show what it showed at p?
-                let moved = eye + Vec3::X * 0.1;
+                let side = Vec3::Y.cross(ahead);
+                let moved = eye + side * 0.1;
                 for f in &before {
                     let to = f.hit - moved;
                     let q = moved + to * (wall.normal.dot(p - moved) / wall.normal.dot(to));
@@ -2310,23 +2324,24 @@ mod tests {
                     let want = 0.1 * (1.0 - to_wall / to_shell);
                     let shift = q - p;
                     assert!(
-                        (shift.x - want).abs() < 1e-4 && shift.y.abs() < 1e-4,
+                        (shift.dot(side) - want).abs() < 1e-4
+                            && (shift - side * shift.dot(side)).length() < 1e-4,
                         "{shift} {want}"
                     );
                     // The shell is its depth behind the wall's center line
                     // (the room's side); the quad is 4 cm in front of that
                     // (the slab's half and the lift).
                     assert!(
-                        (to_shell - dist - SHELL_M[f.layer - 1] * depth).abs() < 1e-4,
+                        (to_shell - dist - SHELL_M[f.layer - 1] * depth).abs() < 1e-3,
                         "{to_shell}"
                     );
-                    // Several centimeters at 2 to 3 m.
-                    assert!(shift.x > 0.03, "{shift}");
+                    // Most of the move, never all of it.
+                    assert!(shift.dot(side) > 0.07 && shift.dot(side) < 0.1, "{shift}");
                     eprintln!(
-                        "wall {to_wall:.2} m, skydepth {depth}: layer {} on its shell {:.2} m behind it moves {:.1} cm for a 10 cm head move",
+                        "{w} x {d} m room, wall {to_wall:.3} m, skydepth {depth}: layer {} on its shell {:.2} m behind it moves {:.2} cm for a 10 cm head move",
                         f.layer,
                         to_shell - to_wall,
-                        100.0 * shift.x
+                        100.0 * shift.dot(side)
                     );
                 }
                 // The near layer stays on the wall: what it shows at p does
@@ -2609,15 +2624,15 @@ mod tests {
         for wrong in ["nan", "inf", "deep"] {
             assert_eq!(knobs(None, Some(wrong)), at(2, 1.0), "{wrong}");
         }
-        assert_close!(at(3, 2.0).shells(), [3.0, 8.0]);
+        assert_close!(at(3, 2.0).shells(), [24.0, 72.0]);
         assert_eq!(
             Layers::default().line(),
-            "sky layers: 2 (debug.fosfora.skylayers), the sky on the surfaces and a layer 1.50 m \
+            "sky layers: 2 (debug.fosfora.skylayers), the sky on the surfaces and a layer 12.00 m \
              behind them at 0.6 of the light (debug.fosfora.skydepth 1.00)"
         );
         let three = at(3, 1.0).line();
         assert!(
-            three.contains("layers 1.50 and 4.00 m behind them at 0.6 and 0.35 of the light"),
+            three.contains("layers 12.00 and 36.00 m behind them at 0.6 and 0.35 of the light"),
             "{three}"
         );
         let change = at(1, 1.0).change_line(&at(3, 1.0));

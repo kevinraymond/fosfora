@@ -872,11 +872,12 @@ fn write_ppm(path: &std::path::Path, pixels: &[[f32; 4]], w: usize) {
 }
 
 /// The most light (mean alpha) around the sky's zenith overhead, by the
-/// layer count. Each layer fades by its own elevation, so from an eye off
-/// the point a far layer's dark center lies a little to the side of the
-/// near one's, and a trace of its rings reaches in (on an RTX 4090: under
-/// 5e-4 with two layers, under 1.5e-3 with three).
-const ZENITH_DARK: [f32; 3] = [1e-3, 1e-3, 2e-3];
+/// layer count. Each layer fades by its own elevation, and a shell 12 m
+/// up is seen in nearly the same direction from the point and from the
+/// eye, so from an eye 0.25 m off the point a far layer's dark center lies
+/// almost over the eye, and a trace of its fading rings crosses the near
+/// layer's (on an RTX 4090: 2e-3 with two layers, 3e-3 with three).
+const ZENITH_DARK: [f32; 3] = [1e-3, 4e-3, 5e-3];
 
 /// The real Aurora on the room's walls, ceiling and floor from a seated
 /// eye, per face and as the sky in one, two and three layers (board

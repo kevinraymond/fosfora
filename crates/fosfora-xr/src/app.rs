@@ -459,7 +459,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       on a floor; 0 puts Aurora back on per-face mapping everywhere, so the two can be captured and costed in one launch;
     //       default 1; logs the state, the point and the seam whenever one changes; live: polled once a second)
     //   adb shell setprop debug.fosfora.skylayers 1|2|3          (board #5438, sky.rs: the sky in layers of depth; 1 the sky on the surfaces alone, as
-    //       before the layers; 2 adds a layer on a shell 1.5 m behind the walls and the ceiling, 3 another 4 m behind, each
+    //       before the layers; 2 adds a layer on a shell 12 m behind the walls and the ceiling, 3 another 36 m behind, each
     //       moving against the surfaces by its depth as the head moves, other curtains at less light and cooler; default 2;
     //       the reflection stays one layer; logs the state at launch and each change; live: polled once a second)
     //   adb shell setprop debug.fosfora.skydepth 1               (sky layers: a multiplier on the far shells' depths, 0..4; 0 puts them on the
