@@ -3194,3 +3194,34 @@ recorded earlier.
 
 Screen captures of each theme at the same spot show the four looks apart at
 a glance. Not yet worn.
+
+## Edge bars growing in, and the Mirror theme (board #5431)
+
+Quest 3, OS v209, 80 to 90 minutes after a reboot, unworn on the desk in a
+dark room, seated launch in the scanned room (21 anchors replayed), world
+mode, 72 Hz, the governor off, music playing, immersion held at 1. One launch
+per condition, 22 s to settle, then 30 s of the runtime's App GPU time, no
+profiler. The outline covered 8 planes and 13 volumes: 144 strips on the
+face, or 36 tunnels in.
+
+| Edges | App med | p90 | max | rate |
+|---|---|---|---|---|
+| off | 7.00 ms | 7.16 | 7.31 | 72 |
+| on the face | 7.30 | 7.61 | 7.70 | 72 |
+| in, every kind | 8.64 | 8.93 | 8.94 | 72 |
+| Mirror theme (in, the floor on the face) | 8.12 | 8.46 | 8.49 | 72 |
+| off | 7.51 | 7.82 | 7.89 | 72 |
+
+With a faint frame at every rung (`FRAME_LIGHT`), a second set: off 7.76 /
+8.09 / 8.18, Mirror 8.64 / 9.03 / 9.09, in on every kind 8.75 / 9.13 / 9.19.
+The tunnels cost about 0.9 to 1.4 ms over no edges, against 0.3 ms for the
+strips: they fill whole faces. 72 Hz holds with 4.7 ms of the frame left.
+
+Stale frames ran from 0 to 180 per 30 s across these launches with the edges
+off as much as on (172 with them off at 7.76 ms), so they do not follow the
+GPU time; that is the seated stale-frame question already open.
+
+The first captures showed the rim and a few dashes where a bar was loud,
+not a tunnel. With the faint frames, the ceiling and the walls show the
+opening's outline repeated into depth and the furniture's faces their own
+rungs. Not yet worn.

@@ -214,6 +214,10 @@ pub const RUNGS: usize = 10;
 pub const RUNG_FILL: f32 = 0.3;
 /// Each rung's light against the one in front of it.
 pub const RUNG_DIM: f32 = 0.8;
+/// The light of a rung along its whole edge while music plays, before the
+/// dimming: every rung is a faint frame, as the copies of a mirror's lights
+/// are, so the tunnel reads at any level and the bars light it further.
+pub const FRAME_LIGHT: f32 = 0.25;
 /// The history's step (s), by time, so 72 and 90 Hz behave alike.
 pub const HISTORY_STEP_S: f32 = 0.06;
 /// The cosines of the view ray's angle to the face's normal over which a
@@ -1241,9 +1245,10 @@ pub fn rung_cover(dz: f32, w: f32, px: f32) -> f32 {
 
 /// Rung `k`'s light `f` across its bar's slot (0..1), the bar's height
 /// k steps ago `h` (0..1): the rim (rung 0) along the whole edge, brighter
-/// where its bar is loud; a deeper rung only in its bar's slot and only
-/// where the bar reached it (half lit at a height of k / [`RUNGS`]), dimmer
-/// by [`RUNG_DIM`] a rung.
+/// where its bar is loud; a deeper rung a faint frame along the whole edge
+/// ([`FRAME_LIGHT`]), brighter in its bar's slot where the bar reached it
+/// (half lit at a height of k / [`RUNGS`]); each dimmer by [`RUNG_DIM`] a
+/// rung.
 pub fn rung_light(k: usize, f: f32, h: f32) -> f32 {
     let gap = 0.5 * (1.0 - BAR_FILL);
     let across = smoothstep(gap, gap + SIDE_SOFT, f)
@@ -1253,7 +1258,7 @@ pub fn rung_light(k: usize, f: f32, h: f32) -> f32 {
     let rung = if k == 0 {
         LINE_LIGHT + (1.0 - LINE_LIGHT) * h * across
     } else {
-        across * lit * level
+        (across * lit * level).max(FRAME_LIGHT)
     };
     RUNG_DIM.powf(k as f32) * rung
 }
@@ -1370,6 +1375,7 @@ const LIFT_M: f32 = 0.01;
 const RUNGS: u32 = 10u;
 const RUNG_FILL: f32 = 0.3;
 const RUNG_DIM: f32 = 0.8;
+const FRAME_LIGHT: f32 = 0.25;
 const GRAZE_LO: f32 = 0.05;
 const GRAZE_HI: f32 = 0.2;
 
@@ -1509,15 +1515,19 @@ fn rung_cover(dz: f32, w: f32, px: f32) -> f32 {
 
 // Rung k's light f across its bar's slot, the bar's height k steps ago h:
 // the rim (rung 0) along the whole edge, brighter where its bar is loud; a
-// deeper rung only in its bar's slot and where the bar reached it, dimmer
-// by RUNG_DIM a rung.
+// deeper rung a faint frame along the whole edge (FRAME_LIGHT), brighter in
+// its bar's slot where the bar reached it; each dimmer by RUNG_DIM a rung.
 fn rung_light(k: u32, f: f32, h: f32) -> f32 {
     let gap = 0.5 * (1.0 - BAR_FILL);
     let across = smoothstep(gap, gap + SIDE_SOFT, f)
         * (1.0 - smoothstep(1.0 - gap - SIDE_SOFT, 1.0 - gap, f));
     let lit = clamp(h * f32(RUNGS) - f32(k) + 0.5, 0.0, 1.0);
     let level = LINE_LIGHT + (1.0 - LINE_LIGHT) * h;
-    let rung = select(across * lit * level, LINE_LIGHT + (1.0 - LINE_LIGHT) * h * across, k == 0u);
+    let rung = select(
+        max(across * lit * level, FRAME_LIGHT),
+        LINE_LIGHT + (1.0 - LINE_LIGHT) * h * across,
+        k == 0u,
+    );
     return pow(RUNG_DIM, f32(k)) * rung;
 }
 
@@ -2431,6 +2441,7 @@ mod tests {
             ("LIFT_M", LIFT_M),
             ("RUNG_FILL", RUNG_FILL),
             ("RUNG_DIM", RUNG_DIM),
+            ("FRAME_LIGHT", FRAME_LIGHT),
             ("GRAZE_LO", GRAZE_LO),
             ("GRAZE_HI", GRAZE_HI),
         ] {
@@ -2634,19 +2645,23 @@ mod tests {
         assert_close!(rung_cover(0.5 * w, w, 0.5 * w), 0.5);
         // A bar's height is how deep its light reaches: 0.45 of the depth
         // lights rungs 0 to 4 (0.4 of it), not 5 (0.5); half at 0.5.
-        let lit: Vec<bool> = (0..RUNGS).map(|k| rung_light(k, 0.5, 0.45) > 0.0).collect();
+        // Past its bar a rung is the faint frame alone.
+        let frame = |k: usize| FRAME_LIGHT * RUNG_DIM.powf(k as f32);
+        let lit: Vec<bool> = (0..RUNGS)
+            .map(|k| rung_light(k, 0.5, 0.45) > frame(k) + 1e-6)
+            .collect();
         assert_eq!(lit.iter().filter(|&&l| l).count(), 5, "{lit:?}");
         assert!(lit[..5].iter().all(|&l| l));
         assert!((rung_light(5, 0.5, 0.5) - 0.5 * 0.8 * RUNG_DIM.powi(5)).abs() < 1e-5);
         // Silence: the rim alone, along the whole edge, gaps included.
         assert_close!(rung_light(0, 0.5, 0.0), LINE_LIGHT);
         assert_close!(rung_light(0, 0.0, 0.0), LINE_LIGHT);
-        assert!((1..RUNGS).all(|k| rung_light(k, 0.5, 0.0) == 0.0));
+        assert!((1..RUNGS).all(|k| (rung_light(k, 0.5, 0.0) - frame(k)).abs() < 1e-6));
         // The rim brightens with its bar, in the bar's slot; a deeper rung
         // is only in the slot.
         assert_close!(rung_light(0, 0.5, 1.0), 1.0);
         assert_close!(rung_light(0, 0.0, 1.0), LINE_LIGHT);
-        assert_close!(rung_light(3, 0.0, 1.0), 0.0);
+        assert_close!(rung_light(3, 0.0, 1.0), frame(3));
     }
 
     #[test]
@@ -2759,18 +2774,22 @@ mod tests {
         let quiet = [0.0f32; 24];
         rows(&quiet, &History::default(), &outline, &mut r);
         assert!((light(&r, at(0)) - LINE_LIGHT).abs() < 1e-3);
-        assert!((1..RUNGS).all(|k| light(&r, at(k)) < 1e-4));
+        // Past the rim, quiet rungs are the faint frames alone.
+        let frame = |k: usize| FRAME_LIGHT * RUNG_DIM.powf(k as f32);
+        assert!((1..RUNGS).all(|k| (light(&r, at(k)) - frame(k)).abs() < 1e-3));
         // No bars at all: the rim alone too.
         rows(&[], &History::default(), &outline, &mut r);
         assert!((light(&r, at(0)) - LINE_LIGHT).abs() < 1e-3);
-        // A hit three steps ago, quiet since: rung 3 alone past the rim.
+        // A hit three steps ago, quiet since: rung 3 alone lit past its frame.
         let mut hist = History::default();
         hist.step(0.0, &full);
         for _ in 0..3 {
             hist.step(HISTORY_STEP_S, &quiet);
         }
         rows(&quiet, &hist, &outline, &mut r);
-        let lit: Vec<bool> = (1..RUNGS).map(|k| light(&r, at(k)) > 1e-3).collect();
+        let lit: Vec<bool> = (1..RUNGS)
+            .map(|k| light(&r, at(k)) > frame(k) + 1e-3)
+            .collect();
         assert_eq!(
             lit,
             [false, false, true, false, false, false, false, false, false]
