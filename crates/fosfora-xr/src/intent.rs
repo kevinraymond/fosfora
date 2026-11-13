@@ -156,6 +156,14 @@ impl ImmersionStep {
     }
 }
 
+/// The hand menu's Theme control by voice (board #5415): the next theme,
+/// as a press, or one by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeStep {
+    Next,
+    To(crate::themes::Theme),
+}
+
 /// What a sentence asks for. Each variant does what a hand already does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
@@ -196,6 +204,8 @@ pub enum Intent {
     /// The hand menu's Roam control (board #5393): the show follows the
     /// wearer, or stays where it is.
     Roam(bool),
+    /// The hand menu's Theme control (board #5415): the whole room's look.
+    Theme(ThemeStep),
     /// The editor's tap (one surface) or hold (the kind), set to this
     /// behavior instead of stepped.
     Behavior {
@@ -240,6 +250,8 @@ pub enum Reason {
     NoTrack(String),
     /// A song name several tracks' titles hold: their titles.
     AmbiguousTrack(Vec<String>),
+    /// A theme name there is no theme by (board #5415).
+    UnknownTheme(String),
 }
 
 impl Reason {
@@ -519,6 +531,28 @@ const LIGHTS_OFF: [&str; 7] = [
     "full dark",
     "full darkness",
 ];
+
+/// Board #5415: the next theme, as [`normalize`] leaves them ("change the
+/// theme" is "change theme").
+const NEXT_THEME: [&str; 9] = [
+    "next theme",
+    "another theme",
+    "other theme",
+    "different theme",
+    "new theme",
+    "change theme",
+    "switch theme",
+    "cycle theme",
+    "theme next",
+];
+/// Verbs a theme sentence may open with, dropped: "set the theme to
+/// aurora", "use the drift theme", "switch to the tide theme".
+const THEME_VERBS: [&str; 8] = [
+    "set", "change", "switch", "use", "make", "go", "apply", "pick",
+];
+/// The longest run of words a theme's name is taken from: "set the theme
+/// to blue sky" asks for an unknown theme, a longer tail is something else.
+const MAX_THEME_WORDS: usize = 2;
 
 /// A kind word, singular or plural (the plural is always the kind):
 /// `table`, `desk`; `floor`, `ground`; `wall`; `ceiling`, `roof`;
@@ -911,6 +945,49 @@ fn immersion(ts: &[&str]) -> Option<ImmersionStep> {
     Some(ImmersionStep::To(depth))
 }
 
+/// Board #5415: the whole room's theme. "next theme" (and "another theme",
+/// "change the theme") steps it as the control's press does; "theme drift",
+/// "drift theme", "set the theme to aurora", "use the tide theme" name one
+/// (a leading verb of [`THEME_VERBS`] dropped). A name no theme has is
+/// [`Reason::UnknownTheme`], whose reply lists the themes. `None` for a
+/// sentence without the word "theme" at its start or end.
+fn theme(ts: &[&str]) -> Option<Result<ThemeStep, Reason>> {
+    if any(ts, &NEXT_THEME) {
+        return Some(Ok(ThemeStep::Next));
+    }
+    let (ts, verb) = match ts {
+        [v, rest @ ..] if THEME_VERBS.contains(v) && !rest.is_empty() => (rest, true),
+        _ => (ts, false),
+    };
+    let name = match ts {
+        ["theme"] if verb => return Some(Ok(ThemeStep::Next)),
+        ["theme", rest @ ..] | [rest @ .., "theme"]
+            if !rest.is_empty() && rest.len() <= MAX_THEME_WORDS =>
+        {
+            rest.join(" ")
+        }
+        _ => return None,
+    };
+    if [
+        "next",
+        "next one",
+        "another",
+        "another one",
+        "other",
+        "different",
+        "new",
+    ]
+    .contains(&name.as_str())
+    {
+        return Some(Ok(ThemeStep::Next));
+    }
+    Some(
+        crate::themes::Theme::from_name(&name)
+            .map(ThemeStep::To)
+            .ok_or(Reason::UnknownTheme(name)),
+    )
+}
+
 /// "play {song}" (board #5385; also "play song …", "play track …"): the
 /// track whose title the name finds (`playlist::find`), or why none.
 /// "play some music" and the like name no song and turn the music on.
@@ -1069,8 +1146,8 @@ fn names(ks: &[usize], vocab: &Vocabulary<'_>) -> Vec<String> {
 }
 
 /// The sentence as an intent, or why not: the menu's phrases first (the
-/// effect row, the toggles, the buttons, a world effect by name), then the
-/// surface templates.
+/// effect row, the toggles, the buttons, a world effect by name), then a
+/// theme (board #5415), a song by name, then the surface templates.
 pub fn parse(sentence: &str, vocab: &Vocabulary<'_>) -> Result<Intent, Miss> {
     let miss = |reason| Miss {
         reason,
@@ -1083,6 +1160,9 @@ pub fn parse(sentence: &str, vocab: &Vocabulary<'_>) -> Result<Intent, Miss> {
     }
     if let Some(intent) = menu(&ts, vocab) {
         return Ok(intent);
+    }
+    if let Some(outcome) = theme(&ts) {
+        return outcome.map(Intent::Theme).map_err(miss);
     }
     if let Some(outcome) = track(&ts, vocab) {
         return outcome.map_err(miss);
@@ -1244,6 +1324,8 @@ fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
         "rescan the room",
         "next song",
         "what is playing",
+        "next theme",
+        "theme aurora",
     ]
     .map(str::to_owned)
     .to_vec();
@@ -1667,6 +1749,8 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         Intent::Immersion(ImmersionStep::Darker) => "darker".to_owned(),
         Intent::Immersion(ImmersionStep::Lighter) => "lighter".to_owned(),
         Intent::Roam(on) => format!("roam {}", on_off(on)),
+        Intent::Theme(ThemeStep::To(theme)) => theme_reply(theme),
+        Intent::Theme(ThemeStep::Next) => "next theme".to_owned(),
         Intent::Behavior { target, behavior } => of(target, behavior.name()),
         Intent::Color { target, color: 0 } => of(target, "own color"),
         Intent::Color { target, color } => of(target, color_name(color)),
@@ -1691,6 +1775,13 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
 /// full", where "darker" would promise a change).
 pub fn immersion_reply(depth: crate::immerse::Depth) -> String {
     format!("immersion {}", depth.name())
+}
+
+/// The label once a theme is applied, whatever asked for it (board
+/// #5415): the theme it came to, "theme: Drift" (a "next theme" names the
+/// one it stepped to).
+pub fn theme_reply(theme: crate::themes::Theme) -> String {
+    format!("theme: {}", theme.title())
 }
 
 /// The reply to a track step `by` (1 next, -1 previous): the track the
@@ -1744,6 +1835,10 @@ pub fn miss_text(miss: &Miss) -> String {
         Reason::TooMany(_) => TOO_MANY_LABEL.to_owned(),
         Reason::NoTrack(name) => format!("No song called \"{name}\""),
         Reason::AmbiguousTrack(titles) => format!("Which one: {}?", listed(titles)),
+        Reason::UnknownTheme(name) => format!(
+            "No theme called \"{name}\": {}",
+            crate::themes::listed(true)
+        ),
     }
 }
 
@@ -1783,13 +1878,23 @@ fn indices(target: Target, vocab: &Vocabulary<'_>, boxes: &[LaneBox<'_>]) -> Vec
 /// `Action` consumer. A behavior on one surface keeps its strength, as
 /// the editor's tap does; on a kind it goes through
 /// [`RoomLanes::set_kind`]. A color, band or strength on a kind sets each
-/// surface of it in turn.
+/// surface of it in turn. A theme (board #5415) goes through
+/// [`RoomLanes::apply_theme`], the next one from what the control shows,
+/// and the label names the theme it came to ([`theme_reply`]).
 pub fn apply(
     intent: &Intent,
     vocab: &Vocabulary<'_>,
     lanes: &mut RoomLanes,
     boxes: &[LaneBox<'_>],
 ) -> Option<String> {
+    if let Intent::Theme(step) = *intent {
+        let theme = match step {
+            ThemeStep::To(theme) => theme,
+            ThemeStep::Next => lanes.theme().next(),
+        };
+        lanes.apply_theme(theme, boxes, "voice");
+        return Some(theme_reply(theme));
+    }
     let target = match *intent {
         Intent::Behavior { target, .. }
         | Intent::Color { target, .. }
@@ -2181,6 +2286,129 @@ mod tests {
             value: "on".to_owned(),
         };
         assert!(Intent::from_json(&action, &v).is_err());
+    }
+
+    /// Board #5415: a theme by name, the next one, and an unknown name,
+    /// with the menu's and the surfaces' words unchanged around them.
+    #[test]
+    fn a_theme_by_name_the_next_one_and_an_unknown_name() {
+        use crate::themes::Theme;
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        let to = |t| Intent::Theme(ThemeStep::To(t));
+        let next = Intent::Theme(ThemeStep::Next);
+        check(
+            &v,
+            &[
+                ("Theme drift.", to(Theme::Drift)),
+                ("theme: Aurora", to(Theme::Aurora)),
+                ("Drift theme", to(Theme::Drift)),
+                ("Set the theme to aurora.", to(Theme::Aurora)),
+                ("Change the theme to Tide.", to(Theme::Tide)),
+                ("Use the classic theme please", to(Theme::Classic)),
+                ("Switch to the Tide theme.", to(Theme::Tide)),
+                ("Next theme.", next),
+                ("Another theme", next),
+                ("Change the theme.", next),
+                ("theme next", next),
+                ("Set the theme to the next one.", next),
+                // The words around them still mean what they did.
+                ("Next effect.", Intent::NextEffect),
+                ("next", Intent::NextEffect),
+                ("Switch to Tide Pool.", Intent::Effect(3)),
+                ("Every wall aurora.", on(Target::Kind(KIND_WALL), B::Aurora)),
+            ],
+        );
+        missed(
+            &v,
+            &[
+                ("Theme sunset.", Reason::UnknownTheme("sunset".to_owned())),
+                (
+                    "Set the theme to blue sky",
+                    Reason::UnknownTheme("blue sky".to_owned()),
+                ),
+                (
+                    "Tide pool theme",
+                    Reason::UnknownTheme("tide pool".to_owned()),
+                ),
+            ],
+        );
+        // The unknown name's reply lists the themes.
+        let Err(miss) = parse("Theme sunset.", &v) else {
+            panic!("parsed");
+        };
+        assert_eq!(
+            miss_text(&miss),
+            "No theme called \"sunset\": Classic, Drift, Tide or Aurora"
+        );
+        // Not the agent's to take: the reply stands.
+        assert!(!crate::agent::forwards(&miss.reason));
+        // In a sentence of clauses, beside the menu's.
+        let clauses = parse_clauses("Theme tide and next effect.", &v);
+        let outcomes: Vec<_> = clauses.into_iter().map(|c| c.outcome).collect();
+        assert_eq!(outcomes, [Ok(to(Theme::Tide)), Ok(Intent::NextEffect)]);
+        // The agent's actions have no theme: its kind misses.
+        let action = AgentAction {
+            kind: "theme".to_owned(),
+            target: String::new(),
+            value: "drift".to_owned(),
+        };
+        assert_eq!(
+            Intent::from_json(&action, &v).map_err(|m| m.reason),
+            Err(Reason::NoMatch)
+        );
+    }
+
+    /// Board #5415: what a spoken theme does to the room, and the reply
+    /// naming the theme it came to.
+    #[test]
+    fn a_spoken_theme_applies_and_the_reply_names_it() {
+        use crate::themes::{Shown, Theme};
+        let dir = std::env::temp_dir().join(format!("fosfora-intent-theme-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (e, boxes) = (effects(), room());
+        let id = room_id(boxes.iter().map(|b| b.uuid));
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        let v = vocab(&e, &boxes, Some(0));
+        let mut page = 0;
+        let mut say = |sentence: &str, lanes: &mut RoomLanes| {
+            respond_on(sentence, &v, lanes, &boxes, false, &mut page).0
+        };
+        // A hand assignment first: the theme wins over it.
+        assert_eq!(say("Amber on the desk.", &mut lanes).label, "desk: amber");
+        let r = say("Set the theme to aurora.", &mut lanes);
+        assert_eq!(r.label, "theme: Aurora");
+        assert_close!(r.seconds, REPLY_S);
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Aurora));
+        let aurora = Theme::Aurora.look(KIND_TABLE).unwrap();
+        assert_eq!(
+            lanes.params_of(0, &boxes),
+            (aurora.color, aurora.band, aurora.strength)
+        );
+        // "next theme" names the one it stepped to.
+        assert_eq!(say("Next theme.", &mut lanes).label, "theme: Classic");
+        assert_eq!(say("next theme", &mut lanes).label, "theme: Drift");
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Drift));
+        // An edit by voice after it: edited, and the next press goes on.
+        say("The desk in rose.", &mut lanes);
+        assert_eq!(lanes.theme(), Shown::Edited(Theme::Drift));
+        assert_eq!(say("Another theme.", &mut lanes).label, "theme: Tide");
+        // An unknown name changes nothing and lists the themes.
+        let r = say("Theme sunset.", &mut lanes);
+        assert_eq!(
+            r.label,
+            "No theme called \"sunset\": Classic, Drift, Tide or Aurora"
+        );
+        assert_close!(r.seconds, MISS_S);
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Tide));
+        // The replies without the room, as `reply` words them.
+        assert_eq!(
+            reply(&Intent::Theme(ThemeStep::To(Theme::Drift)), &v),
+            "theme: Drift"
+        );
+        assert_eq!(theme_reply(Theme::Classic), "theme: Classic");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Board #5384: the room darker and lighter, the lights on and off;
@@ -3113,6 +3341,7 @@ mod tests {
             Intent::Help => unreachable!("the agent's actions have no help"),
             Intent::Immersion(_) => unreachable!("the agent's actions have no immersion"),
             Intent::Roam(_) => unreachable!("the agent's actions have no roam"),
+            Intent::Theme(_) => unreachable!("the agent's actions have no theme"),
             Intent::NextTrack
             | Intent::PrevTrack
             | Intent::Track(_)
