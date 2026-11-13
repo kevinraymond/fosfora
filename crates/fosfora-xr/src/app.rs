@@ -452,6 +452,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       room's center at a seated eye height, the seam behind the facing at launch or the last recenter, and its reflection
     //       on a floor; 0 puts Aurora back on per-face mapping everywhere, so the two can be captured and costed in one launch;
     //       default 1; logs the state, the point and the seam whenever one changes; live: polled once a second)
+    //   adb shell setprop debug.fosfora.skylayers 1|2|3          (board #5438, sky.rs: the sky in layers of depth; 1 the sky on the surfaces alone, as
+    //       before the layers; 2 adds a layer on a shell 1.5 m behind the walls and the ceiling, 3 another 4 m behind, each
+    //       moving against the surfaces by its depth as the head moves, other curtains at less light and cooler; default 2;
+    //       the reflection stays one layer; logs the state at launch and each change; live: polled once a second)
+    //   adb shell setprop debug.fosfora.skydepth 1               (sky layers: a multiplier on the far shells' depths, 0..4; 0 puts them on the
+    //       surfaces; live)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
     //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 0 reads texture row 0 as the bottom of the view, the default; the
     //       runtime renders the map in GL order, verified by envdepthcheck against the room's boxes; 1 as the top)
@@ -1699,6 +1705,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut sky_on = switch_now("debug.fosfora.sky").unwrap_or(true);
     let mut sky_facing: Option<(glam::Vec2, &'static str)> = None;
     let mut sky_logged: Option<crate::sky::Logged> = None;
+    // Board #5438: the sky's layers, their knobs polled once a second
+    // with the sky's.
+    let mut sky_layers = crate::sky::Layers::from_knobs(system_prop);
+    info!("{}", sky_layers.line());
     // Board #3489, D2b: the desktop's single-pass fragment effects on
     // surfaces (`surface_port.rs`). The eight are composed with the
     // libraries the assets carry and their pipelines built here, once;
@@ -4047,7 +4057,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 };
                 let sky_room = crate::sky::Room::fit(input.room_boxes.iter().map(scanned_box))
                     .unwrap_or_else(|| crate::sky::Room::stage(floor_at, stage_floor_y));
-                let sky = crate::sky::Sky::new(sky_room, facing);
+                let sky = crate::sky::Sky {
+                    layers: sky_layers,
+                    ..crate::sky::Sky::new(sky_room, facing)
+                };
                 let hidden_deg: f32 = input
                     .room_boxes
                     .iter()
@@ -4791,6 +4804,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                 );
                 sky_on = now;
+            }
+            // Board #5438: the sky's layers, live.
+            let now = crate::sky::Layers::from_knobs(system_prop);
+            if now != sky_layers {
+                info!("{}", now.change_line(&sky_layers));
+                sky_layers = now;
             }
             // Board #5397: the live planes' knobs, live, and their line
             // once a second while they run.
