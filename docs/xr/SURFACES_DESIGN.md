@@ -922,3 +922,153 @@ a darker open state, hence the low level at 0.42 and its knob.
 launch with a permission prompt, the cost of the style calls, and the
 microphones, whose quiet room may sit over the quiet threshold, so a
 stopped speaker leaves the room at the low level instead of fully back.
+
+## Themes (Nov 13, board #5415)
+
+**Why.** There are 16 surface behaviors and a list per kind of surface,
+but the wearer picks them one surface at a time, in the room editor or by
+voice. Nothing changed the whole room's look at once, so most of what
+exists was never seen. A theme sets the whole room in one press, and it
+wins over what was assigned by hand. The app is used seated in a scanned
+room first, so each theme has to look complete there.
+
+**What a theme is** (`themes.rs`). A name and, for each kind of surface
+(table, floor, wall, ceiling, frame, other), a behavior, a color index, an
+audio band and a strength. The module is plain data: the table, lookup by
+name, the next theme in the cycle, what a room file shows, and the knob's
+launch rule. No theme adds a shader or a behavior. Every pairing below is
+on its kind's own list (`SurfaceBehavior::catalogue`), so none of the
+pairings first proposed needed changing.
+
+**The four.** Each cell is behavior, color, band, strength.
+
+| kind | Classic | Drift | Tide | Aurora |
+| --- | --- | --- | --- | --- |
+| table | streamlines, own (blue), rms, 1 | streamlines, teal, rms, 1 | curls, rose, rms, 1 | streamlines, teal, rms, 1 |
+| floor | rings, own (violet), bass, 1 | rings, blue, bass, 1 | curls, violet, rms, 1 | streamlines, green, rms, 1 |
+| wall | spectrum, own (warm white), rms, 1 | streamlines, blue, rms, 1 | pulse, violet, bass, 1 | aurora, the key's tint, rms, 1 |
+| ceiling | none, own (amber), rms, 1 | rings, blue, bass, 1 | pulse, violet, bass, 1 | aurora, green, rms, 1 |
+| frame | pulse, own (amber), bass, 1 | pulse, teal, bass, 0.6 | rings, rose, bass, 1 | pulse, teal, bass, 1 |
+| other | curls, own (green), rms, 1 | curls, teal, rms, 1 | pulse, rose, bass, 1 | curls, teal, rms, 1 |
+
+Classic is today's defaults (`default_for`), each kind's own color, so
+applying it gives exactly a fresh room. It is the only theme with the wall
+spectrum, since the edge bars carry the spectrum on every edge in every
+theme. Drift is the calm one. The other three color by one rule: the
+room's planes (walls, floor, ceiling) take one color and what stands in it
+(tables, frames, other surfaces) the other, so a table reads against the
+floor and a frame against its wall. Aurora puts the key's tint on the
+walls and gives the floor and the ceiling green. Every band is the
+behavior's own, the rms for the flows and the bass for the rings and the
+pulse, which is Drift's rule as asked; picking a band per theme waits for
+signal dumps of real songs. Every strength is 1 except Drift's frames at
+0.6, because the pulse jumps on the downbeat and is the one restless look
+in the calm theme. The rings and the ported Aurora do not read the band
+(D3's table), so it only matters there if a hand edit later changes the
+behavior.
+
+**The theme wins** (`RoomLanes::apply_theme`). Applying a theme sets every
+kind default and every surface of the room to the kind's look, hand
+assignments included, through the lanes' one writing path, in one save
+and one log line, as All: none does. Every entry of the six kinds takes
+the look whole, and every surface in the room without an entry gets one
+(the stage floor under its zero UUID). A live plane never gets an entry,
+so it follows the theme through its kind's default, which therefore now
+carries a strength and params besides its behavior. A hidden wall is a
+wall: it gets the walls' look and is still not drawn. An unlabeled anchor
+has no look and is left as it is, as All: none leaves it. A look whose
+color is the kind's own and whose band is the behavior's own writes no
+params, so Classic leaves the room exactly as a fresh one, and a behavior
+changed by hand afterwards runs its own band as it would without the
+theme.
+
+**What is saved** (`room_file.rs`). The room file stays version 2 and
+gains two optional fields: `theme`, the name of the theme last applied,
+and `kind_looks`, the strength and params of each kind's default where a
+theme set them. Both are written only when set, so a room that never had
+a theme saves as it did. A new entry starts from its kind's look, so an
+edit by hand after a theme changes only what it names.
+
+What the control shows is worked out from the file each time, not kept as
+a flag. A room whose kind defaults and entries all run the saved theme's
+looks shows the theme. Once something was edited by hand it shows the
+theme as edited ("Drift*"), and the edit and the saved name both stay.
+Undoing the edit unmarks it, and a reload shows the same. A room saved
+before themes has no theme: it shows Classic when it runs Classic (no
+entries and the built-in defaults, or entries that equal them) and custom
+otherwise, and nothing changes until the wearer picks. This is the
+brief's rule of custom with entries and Classic without, except that a
+room whose entries equal the defaults shows Classic, and one with no
+entries but changed kind defaults shows custom. Older files (version 1,
+and version 2 from before themes) read as before. A file written now also
+reads in the build before themes, whose reader ignores fields it does not
+know: the kind defaults and the entries, with their params, read as
+written, so every scanned surface keeps its look, and only the name and
+the kind looks are lost until that build saves the room.
+
+**The control.** "Theme" over the theme's name ("Drift", "Drift*",
+"custom") in the right half of the music row's right cell, with Voice in
+the left half, in both layouts (debug panel on and off). Each press steps
+to the next theme (Classic, Drift, Tide, Aurora, Classic; from custom, to
+Classic) and applies it once the frame's boxes are in, as All: none does.
+It works with the ray and the pinch like every other cell. Adding a row
+would push the debug panel's fullest block into its header, and every full
+cell holds a control the wearer reaches for, so the control shares a cell
+as Recenter and Rescan do. Voice fits a half at the button's 16 points (68
+of 90 points) and is a saved setting, rarely pressed. "Theme: Aurora*" on
+one line needs 113 points at 16, and at 12 it would leave 3 points a side,
+so the half shows the word over the name, as a stepper's label sits over
+its value, with the name at 16 points like every other control. No row
+count or height changed.
+
+**By voice** (`intent.rs`). "theme drift", "drift theme", "set the theme
+to aurora", "change the theme to tide", "use the classic theme" name a
+theme. "next theme", "another theme", "change the theme" step it as a
+press does. The reply names the theme it came to ("theme: Aurora"). A name
+no theme has replies with the list: No theme called "sunset": Classic,
+Drift, Tide or Aurora. The word "theme" has to start or end the sentence,
+so "drift" or "aurora" alone keep meaning what they did. The agent's
+actions have no theme, and an unknown theme is not forwarded to it.
+
+**The knob.** `debug.fosfora.theme <name>` (classic, drift, tide, aurora)
+is polled once a second after the lanes' update and applies that theme
+when its value changes, once. At launch, a value naming the room's own
+theme, edited or not, applies nothing, so a value left over from an
+earlier run neither rewrites the room nor wipes an edit. Like the menu, it
+writes the saved room. To apply the same theme again, set it to "" first.
+It waits for the room's anchors as the surface knob does. To measure each
+theme's cost in one run:
+
+```
+adb shell setprop debug.fosfora.theme classic   # then capture
+adb shell setprop debug.fosfora.theme drift     # then capture
+adb shell setprop debug.fosfora.theme tide      # then capture
+adb shell setprop debug.fosfora.theme aurora    # then capture
+adb shell setprop debug.fosfora.theme '""'
+```
+
+or one launch per theme with `scripts/xr/gpu-stages.sh --with
+"music=1;gov=0" --cond "classic=theme=classic" --cond "drift=theme=drift"
+--cond "tide=theme=tide" --cond "aurora=theme=aurora" --only
+"classic,drift,tide,aurora"`. Back up `rooms/` first: the room ends on
+the last theme.
+
+**Logs.** Loading a room: `room <id>: theme drift`, `theme drift, edited
+since`, `no theme saved: classic (the defaults)` or `no theme saved:
+custom (4 entries)`. Applying one: `room <id>: theme drift (the menu):
+every kind default and every surface (18 in the room, 1 of them live
+planes on their kind's default, 17 entries) -> table streamlines@1.00 teal
+rms · floor rings@1.00 blue bass · …, saved rooms/<id>.json`, the source
+being the menu, voice or the knob. The knob also logs a launch value it
+kept and an unknown name.
+
+**Not yet.** The worn look of each theme seated in the scanned room, the
+screencaps of the control, and each theme's cost in `MEASURED.md`.
+Aurora should cost the most: the ported Aurora on every wall and the
+ceiling (1.2 to 1.5 ms per full view of one face in D2b) and the
+streamlines on the floor (1.7), the biggest faces all on costly shaders.
+Every face on a ported effect cost about 2.9 ms in D2b, so expect about
+that. Drift comes next (streamlines on every wall), then Tide (the cheap
+pulse on the walls and the ceiling, the curls on the floor), then Classic
+(about 1 ms, as in D2a). A theme does not pick the world effect or the
+edge bars' mode.
