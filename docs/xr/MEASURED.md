@@ -3346,3 +3346,25 @@ At most 0.8 ms with the whole map lit, and nothing measurable in the view
 with little unscanned in it (9.00 to 9.40 ms across six launches, off and on
 alike). In the captures the pile is a scatter of points over an unbroken
 sky, with no outline. Not yet worn in this form.
+
+## The release build's menu and log (board #4204)
+
+Quest 3 v209, Nov 13, the debug APK with `debug.fosfora.devmenu` forcing each
+surface, unworn on the desk, seated launch, 21 anchors replayed, Immersion
+black, theme Aurora, the menu dump on (`hudtest 1`). One launch each, the last
+four VrApi lines:
+
+| Surface | App | rate | stale per line |
+|---|---|---|---|
+| release | 10.49 to 11.07 ms | 72 | 1 |
+| developer | 10.65 to 10.85 ms | 72 | 0 to 3 |
+
+Both sit inside launch-to-launch spread. On the developer surface the app logs
+at debug and other crates stay at info, with no visible frame cost. The
+release menu dump shows six rows, titled "Fosfora", with Particles beside a
+full-width Edges cell and no Pitcher, Debug panel or "All: none". The
+developer dump is unchanged: seven rows plus the debug panel. "pitcher on" by
+voice changed nothing on the release surface. On the developer surface it
+turned the pitcher on and logged the transcript at debug level. The launch
+line reads "Loading your room" on both surfaces. The fatal label was not
+forced on the device.
