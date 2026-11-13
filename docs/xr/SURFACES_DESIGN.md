@@ -616,13 +616,39 @@ returns without calling the effect.
 Two walls in a corner both faded there, which left a dark line down the
 corner, and a wall and the ceiling did the same along the ceiling's
 edge. On the sky's faces an edge another of them continues (its middle
-within 10 cm of another sky face) drops the fade and is cut back to the
-neighbor's drawn plane: each quad is lifted 1 cm off its face and runs
-on into its neighbors' 2 cm slabs, so uncut, two quads would draw the
-same sky twice along the corner, a bright line (seen on the desktop
-render before the cut). Cut, they meet on one line. An edge with nothing
+within 10 cm of another sky face) drops the fade. An edge with nothing
 beyond it (a wall's foot, the side of a hidden wall) keeps its extent
 and the fade.
+
+**The joins** (board #5438). Each quad is lifted off its face and runs on
+into its neighbors' slabs, so two quads would draw the same sky twice
+along a corner, a bright line. At first each joined quad was trimmed to
+the neighbor's drawn plane, its edge moved to where that plane crosses
+the edge's middle. Worn, that showed as a thin dashed dark line along the
+ceiling's edge and a dotted bright one further on: a scan's planes are
+never quite level or plumb, so the two trimmed edges crossed at the
+middle and parted toward their ends, a crack (dark) on one side and an
+overlap (bright, the blend adds) on the other. Now a face joined across a
+corner runs 5 cm past the neighbor's drawn plane at both ends of the
+edge, however the two planes lean, so both quads cover every pixel near
+the join, and the fragment decides: near a joined edge a face keeps its
+fragment only if the pixel's view ray meets its own drawn plane before
+the neighbor's, ahead of the eye. Both faces decide from the same
+numbers, so their answers are exact complements: the ray through the
+pixel's center, solved from the eye camera and the size of the target
+the faces draw into (the eye camera the ports read carries it after
+`view_proj`, 80 bytes, which `gfx` writes per eye: the faces layer's size
+or the eye's); and the two planes, written into both faces' rows as the
+same floats and taken in a fixed order. A first try had each face test
+its own interpolated point against the other's plane; the two then
+decided from slightly different numbers, and about one pixel in 2,000 on
+the line went to both. The decision runs only from a little before
+where the neighbor's plane crosses the face (`cut_from`), so no plane
+cuts far from the edge it joins, and the pixel's ray is solved only
+there: about 130 of the IR's expressions for a fragment near a join (7 %
+of an evaluation), nothing elsewhere. A neighbor beside a face in the
+same plane is joined without the fade and without the decision, as
+before.
 
 **Hidden walls** stay undrawn, so a room closed by one has a hole in the
 sky there: the wall's span from the point, from under the horizon to the
@@ -671,7 +697,9 @@ lift, occlusion by what stands in front, and the edge fade wherever no
 sky face continues it. Aurora on a table, a frame or any other surface
 maps per face as before, and the other seven ports are untouched. The
 port block grows from 8 rows to 12 for every port: the rim per edge, the
-point and the ceiling, the room in plan, its axis and the facing.
+point and the ceiling, the room in plan, its axis and the facing; and to
+18 for the joins (board #5438): the face's drawn plane, the neighbor's
+per edge, and per edge from where the join decides.
 
 **The knob.** `debug.fosfora.sky 0|1`, default 1, read at launch and
 polled once a second: 0 puts Aurora back on per-face mapping everywhere,
@@ -706,15 +734,29 @@ and two walls' most of a frame apart per face; the cross-fade across the
 seam and the reflection's fade there; the bands' elevations against the
 zenith fade and the shimmer's period at its end; the reflection against
 the mirrored eye's line for three eyes and four floor points, and that
-it moves with the head; the rim and the cut on a box room and with a
-wall hidden; the mapping per kind and with the knob off; the rows;
+it moves with the head; the rim on a box room and with a wall hidden;
+the joins (`joined_faces_run_past_each_other_and_carry_the_neighbors_plane`
+in a box room and one as a scan reports it, the ceiling tilted 0.4°, a
+wall leaning 0.3° and one turned 0.5°; and
+`along_every_join_exactly_one_face_keeps_each_view_ray`: rays through
+points 0.1 mm to 4 cm off every join, for four eyes in three rooms, kept
+by exactly one face); the mapping per kind and with the knob off; the rows;
 `SKY_WGSL` validated with naga, its constants and the port block's
 layout against the Rust. Two ignored GPU tests (`tests/sky_gpu.rs`):
 `fs_sky` over a probe against `sky::sample` pixel by pixel in five views
 (894,919 pixels on an RTX 4090, worst 2.1e-4 of light, at a slant inside
 a rim) and per face against `fs_main` (3e-8); and the real Aurora on the
 whole room from a seated eye (`FOSFORA_SKY_DUMP=<dir>` writes the
-views).
+views). A third, `the_sky_faces_meet_without_a_dark_or_bright_line`,
+draws every sky face at a Quest 3 eye buffer's size (2064 by 2208) and
+holds each pixel along the line under the ceiling and down a corner to
+its neighbors 4 px across it: in a box room and in the tilted one, at
+one, two and three layers, level (the corner line then runs down a
+column of pixel centers) and with the head rolled 2.3°, over a flat
+effect and over Aurora. The trimmed join failed it in the tilted room
+(0.75 darker and 0.56 brighter than both neighbors); now no pixel is
+darker or brighter than both (0.0000 over the flat effect, and over
+Aurora no more than its curtains bend across 8 px, 0.017).
 
 **Where it will look wrong.**
 - *A room that is not a box*: the point is the center of the walls'
@@ -779,16 +821,27 @@ onto the ceiling without a break. It is the same depth behind every wall
 and the ceiling, where a sphere is farther behind a wall's middle than
 behind a corner, and one sized for a long room's near walls passes inside
 its far corners. And its exit is the slab test the reflection already
-runs (`sky::box_exit`). The two shells are 1.5 m and 4 m behind the walls'
-center lines and the ceiling, times `debug.fosfora.skydepth`. Seated at
-the point, a 10 cm head move shifts a far layer along the wall by the move
-times the share of its distance that lies past the wall (the tests'
-numbers; the drawn quad is 4 cm in front of the wall's center line):
+runs (`sky::box_exit`). The shells are 12 m and 36 m behind the walls'
+center lines and the ceiling, times `debug.fosfora.skydepth`. They were
+1.5 m and 4 m; worn, the owner liked the depth and asked for two layers,
+the surface and one about 12 m back. The third, under the knob, is three
+times as deep, still past the second, so each layer composites under
+the nearer ones. Seated at the point, a 10 cm head move shifts a far
+layer along the wall by the move times the share of its distance that
+lies past the wall (the tests' numbers; the drawn quad is 4 cm in front
+of the wall's center line):
 
-| Wall ahead | 1.5 m shell | 4 m shell | skydepth 2: 3 m | 8 m |
+| Wall ahead (quad) | 12 m shell | 36 m shell | skydepth 2: 24 m | 72 m |
 |---|---|---|---|---|
-| 2 m (quad 1.96 m) | 4.4 cm | 6.7 cm | 6.1 cm | 8.0 cm |
-| 3 m (quad 2.96 m) | 3.4 cm | 5.8 cm | 5.1 cm | 7.3 cm |
+| 2 m (1.96 m) | 8.6 cm | 9.5 cm | 9.3 cm | 9.7 cm |
+| 3 m (2.96 m) | 8.0 cm | 9.2 cm | 8.9 cm | 9.6 cm |
+| 6.17 x 5.49 m room, 2.75 m (2.71 m) | 8.2 cm | 9.3 cm | 9.0 cm | 9.6 cm |
+| 6.17 x 5.49 m room, 3.09 m (3.05 m) | 8.0 cm | 9.2 cm | 8.9 cm | 9.6 cm |
+
+So in the room worn the 12 m layer moves with the head at about four
+fifths of the move, not all of it: the near layer stays on the wall and
+the far one slides 8 cm against it. The 36 m layer moves nearly with the
+head, 1.2 cm more than the 12 m one.
 
 **How they differ.** Stacked copies offset by parallax read as a blur at
 rest, so the far layers are other curtains that belong with the near one:
@@ -805,7 +858,9 @@ rest, so the far layers are other curtains that belong with the near one:
   and the farthest's between those.
 - *In light.* 1, 0.6 and 0.35 of the light, and cooler: the far two's
   colors times (0.8, 0.9, 1) and (0.6, 0.78, 1), after the coverage, as
-  the lane's tint.
+  the lane's tint. They stay at the new depths: drawn on the desktop GPU,
+  the 12 m layer still reads as other, dimmer curtains between the near
+  layer's.
 - *Not in time.* Aurora reads its clock, its curtains' travel, its band
   spread and its glow from its uniform: one value per draw. A
   per-layer time offset or parameter would need a draw per layer (the
@@ -823,8 +878,11 @@ what is behind it.
 **What a far layer keeps and drops.** The rim, the strength, the peak alpha
 with the immersion's lift and the lane's tint apply to every layer. Each
 fades at the zenith by its own elevation. Seated at the point the three
-dark centers coincide; off the point a far layer's lies a little to the
-side. A far layer fades out across the seam's 23° instead of
+dark centers coincide. A shell 12 m up is seen in nearly the same
+direction from the eye as from the point, so off the point a far layer's
+dark center lies almost over the eye, not over the point, and a trace of
+its fading rings crosses the near layer's (2e-3 of alpha 0.25 m off the
+point). A far layer fades out across the seam's 23° instead of
 cross-fading: a second evaluation per layer there would cost more for
 light the wearer seldom faces. Under its lowest band's reach (-0.34 rad on
 its own frame: the band's center, the waves' and the ripple's reach and
@@ -837,13 +895,15 @@ it.
 **The reflection** stays one layer, the near one. Reflecting the far
 layers would cost an evaluation each on the floor.
 
-**One layer is the sky before the layers**, bit for bit. The near layer's
-code path is the one it was, and with one layer nothing else runs. The
-port block keeps its 12 rows: the sky's faces carry the count and the
-depth multiplier in `mode.z` and `mode.w`. A desktop GPU test draws the
-shader and a copy of it from before the layers over the probe and over the
-real Aurora and compares every pixel's bits: identical in all six views on
-an RTX 4090. The Quest's shader compiler is not checked.
+**One layer is the sky before the layers**, bit for bit, away from the
+joins (which changed, above). The near layer's code path is the one it
+was, and with one layer nothing else runs. The sky's faces carry the
+count and the depth multiplier in `mode.z` and `mode.w`. A desktop GPU
+test draws the shader and a copy of it from before the layers over the
+probe and over the real Aurora, on the joined quads without the joins'
+decision (the copy has none), and compares every pixel's bits: identical
+in all six views on an RTX 4090. The Quest's shader compiler is not
+checked.
 
 **The cost, by layer count**, from the shader's IR as above, counted this
 way: naga's emitted expressions, calls inlined, Aurora's band loop counted
@@ -863,16 +923,15 @@ evaluation): the shell's exit 56, the angles 18, the light 18, the frame
 near layer adds its second evaluation as before. The far layers skip
 theirs only at the dark center, on the seam's line and at the walls'
 foot, so seated nearly every wall and ceiling fragment pays the full
-count. The floor's reflection is unchanged. The one-layer sky cost what
-Aurora per face cost on the device (`MEASURED.md`), so expect each far
-layer to add about another Aurora on the walls and the ceiling. The cost
-run decides the default with the owner.
+count. The floor's reflection is unchanged. On the device (`MEASURED.md`,
+"The sky's layers") a second layer cost about 0.4 ms of App and a third
+about 1.1 ms more. A shell's depth changes none of the work.
 
 **The knobs.** `debug.fosfora.skylayers 1|2|3`, default 2, and
 `debug.fosfora.skydepth`, a multiplier on the shells' depths (0 to 4,
 default 1; 0 puts them on the surfaces), read at launch and polled once a
 second with the sky's knob. The log gives `sky layers: 2
-(debug.fosfora.skylayers), the sky on the surfaces and a layer 1.50 m
+(debug.fosfora.skylayers), the sky on the surfaces and a layer 12.00 m
 behind them at 0.6 of the light (debug.fosfora.skydepth 1.00)` at launch,
 and the same with `(was: ...)` after it on each change.
 
@@ -896,7 +955,7 @@ at a slant, near a corner, on the ceiling straight up and at a slant near
 its edge, for both shells, against a marched ray);
 `a_far_layer_moves_against_the_wall_by_its_depth_as_the_head_moves` (the
 table above, the same curtain found again after the move, the near layer
-unmoved); `a_far_layer_runs_on_across_a_corner_and_onto_the_ceiling`
+unmoved, each shift more than 7 cm and less than the move); `a_far_layer_runs_on_across_a_corner_and_onto_the_ceiling`
 (points 0.5 mm either side of every corner and wall-to-ceiling edge, an
 eye off the point, two depths: under a pixel apart on the frame and the
 same light); `one_layer_is_the_sky_as_it_was`;
@@ -907,7 +966,7 @@ the drops and the turns' phases); `the_layers_knobs_and_their_log_lines`;
 and the layers' constants in `SKY_WGSL` against the Rust. The composed
 Aurora validates with naga in `surface_port.rs`'s port test. On the GPU
 (`tests/sky_gpu.rs`): `the_sky_shader_matches_its_rust_copy` now at one,
-two and three layers and three at 2.5 times the depth (worst 1.6e-4 of
+two and three layers and three at 2.5 times the depth (worst 1.7e-4 of
 light on the sky's faces); `one_layer_draws_what_the_sky_drew_before_the_layers_bit_for_bit`;
 and `aurora_renders_as_one_sky_with_a_dark_zenith_and_a_fainter_floor` per
 face and at one, two and three layers (dumps `sky1_*`, `sky2_*`, `sky3_*`).
@@ -928,24 +987,28 @@ face and at one, two and three layers (dumps `sky1_*`, `sky2_*`, `sky3_*`).
   only the near layer's braid is left, thinner and flat.
 - *The zenith*: each layer is dark where its own direction from the point
   is straight up. Seated at the point the three centers coincide. Off the
-  point, or lying back off it, the far layers' centers lie to one side on
-  the ceiling: the dark disc smears and traces of the far rings reach into
-  the near one's.
-- *A small room*: the shells are pushed out by fixed depths, so in a 3 m
-  room the 4 m shell is larger than the room. That is only distance, and
-  the parallax is what that distance gives: the most of any room, 7.3 cm
-  for a 10 cm move on a wall 1.5 m away. The far curtains are as large in
-  angle as the near ones (each layer is mapped by direction from the
-  point), so their depth comes from parallax and light alone, not from
-  size, and close walls may make them read as swimming. `skydepth` under 1
-  trims it.
+  point, or lying back off it, the near layer's dark disc stays over the
+  point and the far layers' sit almost over the head: two dark centers,
+  and the far rings cross the near one's.
+- *The far layer near the head's motion*: at 12 m the far layer moves 80
+  to 86 % of a head move in a room of 2 to 3 m, so it reads less as
+  curtains at a depth than as a sky that follows the head, with the near
+  layer sliding over it. The depth is in the difference between the two.
+  `skydepth` under 1 brings it nearer (0.125 puts it at 1.5 m, where it
+  moved 4.4 cm); the third layer, 36 m back, adds little against it (1.2
+  cm more).
+- *Any room*: the shells are pushed out by fixed depths, 12 m and 36 m,
+  larger than any room. That is only distance, and the parallax is what
+  that distance gives. The far curtains are as large in angle as the near
+  ones (each layer is mapped by direction from the point), so their depth
+  comes from parallax and light alone, not from size.
 - *A room that is not a box*: the shells are the bounding rectangle's, so
   behind a wall inside the rectangle (an L's inner walls, an alcove) a
   layer is deeper than its depth and shifts more there.
 
-**Not yet.** The device: the cost of 1, 2 and 3 layers in `MEASURED.md`,
-the captures, and the worn compare of 1, 2 and 3 seated and lying back,
-which with the cost decides the default.
+**Not yet.** The device: the worn look of the 12 m layer and of the
+joins seated and lying back. The layers' cost is in `MEASURED.md`
+(measured at 1.5 and 4 m; a shell's depth changes none of the work).
 
 ## D2c: the surfaces in their own layer (Oct 9, board #3793)
 
