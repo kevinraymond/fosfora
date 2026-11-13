@@ -633,7 +633,7 @@ mod device {
 
     use anyhow::{Context, Result};
     use fosfora_app::audio::capture::RingBuffer;
-    use log::{error, info, warn};
+    use log::{debug, error, info, warn};
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
     use super::{WHISPER_RATE, audio_ctx, dump_name, mono_16k, pad_short, parse_wav, wav_16k_mono};
@@ -868,7 +868,9 @@ mod device {
                             "voice: {:.2} s of audio transcribed in {} ms (audio_ctx {}, {} threads){after}",
                             h.seconds, h.ms, h.audio_ctx, self.threads
                         );
-                        info!("{}", super::heard_line(&h.text, h.ms));
+                        // Board #4204: the transcript at the debug level,
+                        // which the release surface leaves out of the log.
+                        debug!("{}", super::heard_line(&h.text, h.ms));
                         return Some(Note::Heard {
                             text: h.text,
                             ms: h.ms,

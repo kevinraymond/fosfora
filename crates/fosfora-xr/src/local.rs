@@ -1155,7 +1155,7 @@ mod device {
     use std::sync::mpsc::{Receiver, Sender, channel};
     use std::time::Instant;
 
-    use log::{error, info};
+    use log::{debug, error, info};
     use ort::session::Session;
     use ort::session::builder::GraphOptimizationLevel;
     use ort::value::Tensor;
@@ -1355,7 +1355,10 @@ mod device {
             match answer {
                 Ok(answer) => {
                     let outcome = outcome_text(spec, self.options.floors, &answer, room);
-                    info!("{}", log_line(ms, &answer.picks, &outcome));
+                    // Board #4204: what the model picked for the wearer's
+                    // sentence at the debug level, which the release
+                    // surface leaves out of the log.
+                    debug!("{}", log_line(ms, &answer.picks, &outcome));
                     info!("{}", steps_line(&steps, prefix_tokens));
                     Ok(reply(sentence, &answer))
                 }

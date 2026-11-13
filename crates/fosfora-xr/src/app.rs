@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use android_activity::{AndroidApp, MainEvent, PollEvent};
 use anyhow::{Context, Result};
 use fosfora_app::settings::ParticleQuality;
-use log::{error, info};
+use log::{debug, error, info};
 
 use crate::audio::{LiveAudio, MicSource};
 use crate::env_depth::EnvDepthOptions;
@@ -29,6 +29,8 @@ use crate::xr::{Flow, MrOptions, XrContext, XrSession};
 
 /// Logcat tag. `scripts/xr/run.sh log` filters on it.
 pub const LOG_TAG: &str = "fosfora_xr";
+/// The crate's module path, which its log records carry as their target.
+const LOG_MODULE: &str = "fosfora_xr";
 
 /// S4: the effect renders offscreen at this size and lands on a quad
 /// `QUAD_WIDTH_M` wide, centered at `QUAD_CENTER` in the stage space (1.5 m
@@ -142,9 +144,22 @@ enum Mode {
 }
 
 pub fn run(app: &AndroidApp) {
+    // Board #4204: the app's own lines down to debug (the voice
+    // transcripts and the agent's replies), every other crate's at info as
+    // before. The release surface lowers the app's to info once the launch
+    // knows which build it is (`release::app_log_level`).
     android_logger::init_once(
         android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Info)
+            .with_max_level(log::LevelFilter::Debug)
+            .with_filter(
+                android_logger::FilterBuilder::new()
+                    .filter_level(log::LevelFilter::Info)
+                    .filter_module(
+                        LOG_MODULE,
+                        crate::release::app_log_level(crate::release::Surface::Developer),
+                    )
+                    .build(),
+            )
             .with_tag(LOG_TAG),
     );
     // Rust panics go to stderr, which Android discards. Route them to logcat
@@ -3583,15 +3598,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     agent.is_some(),
                     &mut help_page,
                     |intent| {
-                        apply_intent(
-                            intent,
-                            &vocab,
-                            &mut surface_lanes,
-                            &lane_boxes,
-                            &mut controls,
-                            &mut voice_actions,
-                            &mut switch_to,
-                        )
+                        hidden_reply(surface, intent).unwrap_or_else(|| {
+                            apply_intent(
+                                intent,
+                                &vocab,
+                                &mut surface_lanes,
+                                &lane_boxes,
+                                &mut controls,
+                                &mut voice_actions,
+                                &mut switch_to,
+                            )
+                        })
                     },
                 );
                 if let (Some(asked), Some(provider)) = (&response.agent, &agent) {
@@ -3635,7 +3652,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         agent_call = Some(call.ask(provider.as_ref()));
                     }
                 }
-                info!(
+                // Board #4204: the transcript and what it did at the debug
+                // level, which the release surface leaves out of the log.
+                debug!(
                     "{}",
                     crate::intent::clauses_log_line(&sentence, &clauses, &response.label)
                 );
@@ -3745,7 +3764,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 crate::intent::miss_text(&miss),
                                 crate::intent::hint(&miss.heard, &vocab)
                             );
-                            info!(
+                            debug!(
                                 "voice agent: heard \"{}\" \u{2192} miss {:?} \u{b7} label \"{}\"",
                                 sentence.trim(),
                                 miss.reason,
@@ -3771,24 +3790,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             let mut missed = Vec::new();
                             for outcome in &outcomes {
                                 match outcome {
-                                    Ok(intent) => applied.push(apply_intent(
-                                        intent,
-                                        &vocab,
-                                        &mut surface_lanes,
-                                        &lane_boxes,
-                                        &mut controls,
-                                        &mut voice_actions,
-                                        &mut switch_to,
-                                    )),
+                                    Ok(intent) => applied.push(
+                                        hidden_reply(surface, intent).unwrap_or_else(|| {
+                                            apply_intent(
+                                                intent,
+                                                &vocab,
+                                                &mut surface_lanes,
+                                                &lane_boxes,
+                                                &mut controls,
+                                                &mut voice_actions,
+                                                &mut switch_to,
+                                            )
+                                        }),
+                                    ),
                                     Err(miss) => missed.push(miss.clone()),
                                 }
                             }
-                            info!(
+                            debug!(
                                 "{}",
                                 crate::agent::heard_line(&sentence, &outcomes, &reply.say)
                             );
                             if let Some(line) = crate::agent::dropped_line(&outcomes) {
-                                info!("{line}");
+                                debug!("{line}");
                             }
                             if missed.iter().any(|m| m.reason.names_surfaces()) {
                                 surface_labels.miss();
@@ -3796,7 +3819,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             crate::agent::label(&reply.say, &applied, &missed)
                         }
                         Err(e) => {
-                            info!(
+                            debug!(
                                 "voice agent: heard \"{}\" \u{2192} {e} \u{b7} label \"{}\"",
                                 sentence.trim(),
                                 e.label()
@@ -5494,6 +5517,20 @@ fn switch_agent(
             }))
         }
     }
+}
+
+/// Board #4204: on the release surface, a voice command for a row the
+/// hand menu hides (Pitcher, "All: none") does nothing; its label says so.
+/// `None` lets [`apply_intent`] act.
+fn hidden_reply(
+    surface: crate::release::Surface,
+    intent: &crate::intent::Intent,
+) -> Option<String> {
+    if crate::release::voice_reaches(surface, intent) {
+        return None;
+    }
+    debug!("voice: {intent:?} is not on the release surface; nothing changed");
+    Some(crate::release::HIDDEN_REPLY.to_owned())
 }
 
 /// Board #3751: one intent applied, the grammar's (V2) and the agent's
