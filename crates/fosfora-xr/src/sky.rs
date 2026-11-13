@@ -55,6 +55,27 @@
 //! ceiling), so no dark line runs down a corner, and the quad is cut back
 //! to its neighbor's, so no bright line runs there either where the two
 //! would overlap; an edge with nothing beyond it keeps the fade.
+//!
+//! **The layers** (board #5438, [`Layers`], [`far`]). The sky is drawn in
+//! up to three layers. The nearest is the sky above, on the surfaces. Each
+//! farther one is the sky on a shell: the room's box pushed out by
+//! [`SHELL_M`] (times `debug.fosfora.skydepth`) in plan and above. The view
+//! ray from the eye through the fragment is followed on past the surface
+//! to where it leaves the shell ([`box_exit`]), and that point is mapped
+//! by its direction from the sky's point, as the near layer maps the
+//! fragment. A far layer is then fixed on its shell in the room, so it
+//! moves against the surfaces as the head moves, by its depth, for each
+//! eye. A box keeps the shell continuous across corners and onto the
+//! ceiling (it is convex), the same depth behind every wall and the
+//! ceiling, and cheap: the slab exit the reflection already runs. The far
+//! layers are other curtains: taken from further around the frame
+//! ([`LAYER_TURN_RAD`]), their bands lower ([`LAYER_DROP_RAD`]: between
+//! the near layer's), at less light ([`LAYER_LIGHT`]) and cooler
+//! ([`LAYER_TINT`]). Each is composited under the nearer ones ([`under`]).
+//! A far layer fades by its own elevation at the zenith, fades out across
+//! the seam instead of cross-fading, fades out under its lowest band's
+//! reach ([`BANDS_FLOOR_RAD`]), and is not evaluated where none of its
+//! light is left. The reflection stays one layer, the near one.
 
 use std::f32::consts::{PI, TAU};
 
@@ -95,6 +116,44 @@ pub const NEIGHBOR_M: f32 = 0.1;
 /// its ceiling over the floor (m).
 pub const STAGE_HALF_M: f32 = 2.5;
 pub const STAGE_CEILING_M: f32 = 2.5;
+
+/// The knobs of the sky's layers: how many, and a multiplier on the far
+/// shells' depths.
+pub const KNOB_LAYERS: &str = "debug.fosfora.skylayers";
+pub const KNOB_DEPTH: &str = "debug.fosfora.skydepth";
+/// The most layers, and how many without the knob.
+pub const LAYERS_MAX: u32 = 3;
+pub const LAYERS_DEFAULT: u32 = 2;
+/// How far the far layers' shells are behind the walls and the ceiling
+/// (m), the middle layer's and the farthest's, at a depth multiplier of 1.
+pub const SHELL_M: [f32; 2] = [1.5, 4.0];
+/// The largest depth multiplier.
+pub const DEPTH_MAX: f32 = 4.0;
+/// Each layer's share of the sky's light, the nearest first.
+pub const LAYER_LIGHT: [f32; 3] = [1.0, 0.6, 0.35];
+/// Each layer's tint on the effect's colors (after the coverage, as the
+/// lane's tint): the farther, the cooler.
+pub const LAYER_TINT: [[f32; 3]; 3] = [[1.0, 1.0, 1.0], [0.8, 0.9, 1.0], [0.6, 0.78, 1.0]];
+/// How far around the frame each layer's curtains are taken from (rad of
+/// azimuth): far enough that no band's wave lines up with the near
+/// layer's or the other's (every band's two waves at least 0.4 rad of
+/// phase off), and the ripple's noise is another stretch. The seam stays
+/// behind: a turn on the frame moves no seam.
+pub const LAYER_TURN_RAD: [f32; 3] = [0.0, 2.1, 3.2];
+/// How much lower each layer's bands sit (rad of elevation): half and a
+/// quarter of the bands' spacing ([`BAND_SPACING_RAD`]), so the middle
+/// layer's bands run between the near layer's and the farthest's between
+/// those.
+pub const LAYER_DROP_RAD: [f32; 3] = [0.0, 0.098_214_29, 0.049_107_14];
+/// The bands' spacing in elevation at the `.pfx`'s band spread (0.5 * 1.5
+/// + 0.5 = 1.25 of the frame's height over the seven).
+pub const BAND_SPACING_RAD: f32 = HEIGHT_RAD * 1.25 / 7.0;
+/// The elevations on a far layer's frame (its own, plus its drop) where it
+/// is gone and where it is whole: under the lowest band's reach (its
+/// center, the waves' and the ripple's 0.12 and three of its widest glow's
+/// widths, -0.336 rad) a layer adds only the shimmer, so it fades out
+/// there and is not evaluated below.
+pub const BANDS_FLOOR_RAD: [f32; 2] = [-0.44, -0.34];
 
 /// Where the sky sits in the port block: `mode.y` (the row of
 /// `surface_port::rows`' overlay flag) carries the [`Map`]; the four rows
@@ -274,21 +333,101 @@ pub fn facing(head_rot: Quat) -> Vec2 {
     Vec2::new(level.x, level.z).normalize_or(Vec2::NEG_Y)
 }
 
-/// The sky for this frame: the room, its point and the facing the seam is
-/// behind.
+/// The sky's layers (board #5438): how many are drawn
+/// (`debug.fosfora.skylayers`, 1 to [`LAYERS_MAX`]) and the multiplier on
+/// the far shells' depths (`debug.fosfora.skydepth`, 0 to [`DEPTH_MAX`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Layers {
+    pub count: u32,
+    pub depth: f32,
+}
+
+impl Default for Layers {
+    fn default() -> Self {
+        Self {
+            count: LAYERS_DEFAULT,
+            depth: 1.0,
+        }
+    }
+}
+
+impl Layers {
+    /// The layers the knobs ask for: `skylayers` 1, 2 or 3, else the
+    /// default; `skydepth` a finite number, clamped, else 1.
+    pub fn from_knobs(prop: impl Fn(&str) -> Option<String>) -> Self {
+        let d = Self::default();
+        Self {
+            count: match prop(KNOB_LAYERS).as_deref().map(str::trim) {
+                Some("1") => 1,
+                Some("2") => 2,
+                Some("3") => 3,
+                _ => d.count,
+            },
+            depth: prop(KNOB_DEPTH)
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .map_or(d.depth, |v| v.clamp(0.0, DEPTH_MAX)),
+        }
+    }
+
+    /// How far the far layers' shells are behind the walls and the
+    /// ceiling (m).
+    pub fn shells(&self) -> [f32; 2] {
+        SHELL_M.map(|m| m * self.depth)
+    }
+
+    /// The state in a few words, for the log.
+    pub fn describe(&self) -> String {
+        let [mid, far] = self.shells();
+        let depth = format!("{KNOB_DEPTH} {:.2}", self.depth);
+        let what = match self.count {
+            1 => format!("the sky on the surfaces alone ({depth} unused)"),
+            2 => format!(
+                "the sky on the surfaces and a layer {mid:.2} m behind them at {} of the light ({depth})",
+                LAYER_LIGHT[1]
+            ),
+            _ => format!(
+                "the sky on the surfaces and layers {mid:.2} and {far:.2} m behind them at {} and {} of the light ({depth})",
+                LAYER_LIGHT[1], LAYER_LIGHT[2]
+            ),
+        };
+        format!("{} ({KNOB_LAYERS}), {what}", self.count)
+    }
+
+    /// The log's line at launch.
+    pub fn line(&self) -> String {
+        format!("sky layers: {}", self.describe())
+    }
+
+    /// The log's line when a knob changes them.
+    pub fn change_line(&self, before: &Self) -> String {
+        format!(
+            "sky layers: {} (was: {})",
+            self.describe(),
+            before.describe()
+        )
+    }
+}
+
+/// The sky for this frame: the room, its point, the facing the seam is
+/// behind, and its layers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sky {
     pub room: Room,
     pub point: Vec3,
     pub facing: Vec2,
+    pub layers: Layers,
 }
 
 impl Sky {
+    /// The sky of `room` with its seam behind `facing`, in the default
+    /// layers.
     pub fn new(room: Room, facing: Vec2) -> Self {
         Self {
             room,
             point: room.point(),
             facing,
+            layers: Layers::default(),
         }
     }
 
@@ -360,13 +499,28 @@ fn exit_along(l: f32, m: f32, half: f32) -> f32 {
 /// rectangle or its ceiling, whichever comes first; `p` itself if it is
 /// outside already. The WGSL's `xr_room_exit`.
 pub fn exit(room: &Room, p: Vec3, m: Vec3) -> Vec3 {
+    box_exit(room, p, m, 0.0)
+}
+
+/// Where the ray from `p` along `m` leaves `room`'s box grown by `grow`
+/// (m) in plan and above: a far layer's shell (board #5438). No floor: a
+/// ray going down leaves through a wall, under the floor, where the sky
+/// has no bands. `p` itself if it is outside already. The WGSL's
+/// `xr_box_exit`.
+pub fn box_exit(room: &Room, p: Vec3, m: Vec3, grow: f32) -> Vec3 {
     let across = Vec2::new(-room.axis.y, room.axis.x);
     let l = Vec2::new(p.x, p.z) - room.center;
     let mp = Vec2::new(m.x, m.z);
-    let ts = exit_along(l.dot(room.axis), mp.dot(room.axis), room.half.x);
-    let tt = exit_along(l.dot(across), mp.dot(across), room.half.y);
-    let ty = (room.ceiling_y - p.y) / m.y.max(1e-6);
+    let ts = exit_along(l.dot(room.axis), mp.dot(room.axis), room.half.x + grow);
+    let tt = exit_along(l.dot(across), mp.dot(across), room.half.y + grow);
+    let ty = (room.ceiling_y + grow - p.y) / m.y.max(1e-6);
     p + m * ts.min(tt).min(ty).max(0.0)
+}
+
+/// Where the view ray from `eye` through the surface point `p` meets the
+/// shell `grow` (m) behind `room`'s walls and ceiling.
+pub fn shell_hit(room: &Room, eye: Vec3, p: Vec3, grow: f32) -> Vec3 {
+    box_exit(room, p, (p - eye).normalize(), grow)
 }
 
 /// The rim fade at face point `uv` (m) on a face of half extents `half`,
@@ -387,8 +541,9 @@ pub fn rim(uv: Vec2, half: [f32; 2], fade: [f32; 4]) -> f32 {
     r.x * r.y
 }
 
-/// What `fs_sky` does at one fragment: the frame coordinates it calls the
-/// effect at and how it weighs them.
+/// What `fs_sky` does at one fragment for its near layer (the only one
+/// per face and on the floor): the frame coordinates it calls the effect
+/// at and how it weighs them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sample {
     /// The frame coordinate (px).
@@ -402,10 +557,30 @@ pub struct Sample {
     pub k: f32,
 }
 
+/// The room's box as the port block carries it (its floor is not).
+fn room_of(rows: &[[f32; 4]; UNIFORM_ROWS]) -> Room {
+    Room {
+        center: Vec2::new(rows[ROOM_ROW][0], rows[ROOM_ROW][1]),
+        axis: Vec2::new(rows[AXES_ROW][0], rows[AXES_ROW][1]),
+        half: Vec2::new(rows[ROOM_ROW][2], rows[ROOM_ROW][3]),
+        floor_y: 0.0,
+        ceiling_y: rows[POINT_ROW][3],
+        walls: 0,
+    }
+}
+
+/// The light every layer starts from at face point `uv`: the peak alpha,
+/// the strength and the rim.
+fn base_k(rows: &[[f32; 4]; UNIFORM_ROWS], uv: Vec2) -> f32 {
+    let half = [rows[4][0], rows[4][1]];
+    rows[6][3] * rows[5][0].clamp(0.0, 1.0) * rim(uv, half, rows[EDGES_ROW])
+}
+
 /// The fragment of a face with port block `rows` and the effect's
 /// `resolution` at face point `uv` (m), world point `world` (the lifted
-/// quad's), seen from `eye`: what `fs_sky` calls the effect with. `None`
-/// where it writes nothing without calling it (no light left).
+/// quad's), seen from `eye`: what `fs_sky` calls the effect with for the
+/// near layer. `None` where it does not call it for that layer (no light
+/// left).
 pub fn sample(
     rows: &[[f32; 4]; UNIFORM_ROWS],
     resolution: [f32; 2],
@@ -414,7 +589,7 @@ pub fn sample(
     eye: Vec3,
 ) -> Option<Sample> {
     let half = [rows[4][0], rows[4][1]];
-    let mut k = rows[6][3] * rows[5][0].clamp(0.0, 1.0) * rim(uv, half, rows[EDGES_ROW]);
+    let mut k = base_k(rows, uv);
     let map = rows[MODE_ROW][1];
     if map < 0.5 {
         let n = uv / Vec2::from(half) * 0.5 + 0.5;
@@ -429,16 +604,8 @@ pub fn sample(
     let mut d = world - point;
     let reflection = map > 1.5;
     if reflection {
-        let room = Room {
-            center: Vec2::new(rows[ROOM_ROW][0], rows[ROOM_ROW][1]),
-            axis: Vec2::new(rows[AXES_ROW][0], rows[AXES_ROW][1]),
-            half: Vec2::new(rows[ROOM_ROW][2], rows[ROOM_ROW][3]),
-            floor_y: 0.0,
-            ceiling_y: rows[POINT_ROW][3],
-            walls: 0,
-        };
         let (m, fade) = reflect(eye, world);
-        d = exit(&room, world, m) - point;
+        d = exit(&room_of(rows), world, m) - point;
         k *= REFLECT_GAIN * fade;
     }
     let a = angles(d, facing);
@@ -461,9 +628,93 @@ pub fn sample(
     })
 }
 
+/// One of the sky's far layers at a fragment ([`far`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Far {
+    /// The layer: 1 the middle, 2 the farthest.
+    pub layer: usize,
+    /// Where the view ray meets the layer's shell.
+    pub hit: Vec3,
+    /// The frame coordinate (px): the hit's direction from the sky's
+    /// point, turned and lowered on the frame by the layer's
+    /// [`LAYER_TURN_RAD`] and [`LAYER_DROP_RAD`].
+    pub at: Vec2,
+    /// What its light is scaled by: the near layer's peak alpha, strength
+    /// and rim, its share of the light ([`LAYER_LIGHT`]), and its own
+    /// fades: the zenith's, across the seam and under its bands. At 0
+    /// `fs_sky` does not call the effect for it.
+    pub k: f32,
+}
+
+/// The far layers of a sky fragment (mapped [`Map::Sky`]) with port block
+/// `rows`, as [`sample`] takes it: one for each layer past the near one
+/// that `rows` asks for (none per face, on the floor or with one layer),
+/// nearest first. The WGSL's `xr_sky_layer`.
+pub fn far(
+    rows: &[[f32; 4]; UNIFORM_ROWS],
+    resolution: [f32; 2],
+    uv: Vec2,
+    world: Vec3,
+    eye: Vec3,
+) -> Vec<Far> {
+    let mode = rows[MODE_ROW];
+    if !(0.5..1.5).contains(&mode[1]) {
+        return Vec::new();
+    }
+    let count = if mode[2] > 2.5 {
+        3
+    } else if mode[2] > 1.5 {
+        2
+    } else {
+        1
+    };
+    let (room, k0) = (room_of(rows), base_k(rows, uv));
+    let point = Vec3::from_slice(&rows[POINT_ROW][..3]);
+    let facing = Vec2::new(rows[AXES_ROW][2], rows[AXES_ROW][3]);
+    (1..count)
+        .map(|layer| {
+            let hit = shell_hit(&room, eye, world, SHELL_M[layer - 1] * mode[3]);
+            let a = angles(hit - point, facing);
+            let drop = LAYER_DROP_RAD[layer];
+            let k = k0
+                * LAYER_LIGHT[layer]
+                * zenith_fade(a.y)
+                * (1.0 - 2.0 * seam_weight(a.x))
+                * smoothstep(BANDS_FLOOR_RAD[0], BANDS_FLOOR_RAD[1], a.y + drop);
+            Far {
+                layer,
+                hit,
+                at: frame(
+                    Vec2::new(a.x + LAYER_TURN_RAD[layer], a.y + drop),
+                    resolution,
+                ),
+                k,
+            }
+        })
+        .collect()
+}
+
+/// A far `layer`'s light for the effect's output `c` at a scale of `k`:
+/// `surface_port::light`, its color then tinted by [`LAYER_TINT`].
+pub fn layer_light(c: [f32; 4], overlay: bool, k: f32, tint: [f32; 3], layer: usize) -> [f32; 4] {
+    let l = crate::surface_port::light(c, overlay, k, tint);
+    let t = LAYER_TINT[layer];
+    [l[0] * t[0], l[1] * t[1], l[2] * t[2], l[3]]
+}
+
+/// The premultiplied `back` under `front`: what a farther layer adds to
+/// what is drawn so far, as it would drawn first with the surfaces pass's
+/// blending. The alpha stays within 1.
+pub fn under(front: [f32; 4], back: [f32; 4]) -> [f32; 4] {
+    let t = 1.0 - front[3];
+    [0, 1, 2, 3].map(|i| front[i] + t * back[i])
+}
+
 /// `rows` (`surface_port::rows`) for a face mapped by `map` under `sky`,
 /// its rim fading on the edges `fade` marks (-u, +u, -v, +v). A face
-/// mapped per face keeps the rows as they are (every edge fading).
+/// mapped per face keeps the rows as they are (every edge fading). The
+/// sky's faces carry its layers (`mode.z` the count, `mode.w` the depth
+/// multiplier); the reflection is one layer and leaves them 0.
 pub fn rows(
     mut rows: [[f32; 4]; UNIFORM_ROWS],
     map: Map,
@@ -475,6 +726,11 @@ pub fn rows(
     }
     let (p, room) = (sky.point, sky.room);
     rows[MODE_ROW][1] = map.code();
+    if map == Map::Sky {
+        let count = sky.layers.count.clamp(1, LAYERS_MAX);
+        rows[MODE_ROW][2] = count as f32;
+        rows[MODE_ROW][3] = sky.layers.depth;
+    }
     rows[EDGES_ROW] = fade.map(|f| f32::from(u8::from(f)));
     rows[POINT_ROW] = [p.x, p.y, p.z, room.ceiling_y];
     rows[ROOM_ROW] = [room.center.x, room.center.y, room.half.x, room.half.y];
@@ -607,9 +863,11 @@ impl Logged {
 /// Appended after `surface_port::WRAPPER_WGSL` for a port that draws the
 /// sky (`surface_port::Port::sky`): a vertex stage that also hands on the
 /// world point and the eye, and `fs_sky`, which maps by `xr_port.mode.y`
-/// (0 per face as `fs_main` does, 1 the sky, 2 its reflection). The Rust
-/// copies are [`angles`], [`frame`], [`seam_weight`], [`zenith_fade`],
-/// [`reflect`], [`exit`], [`rim`] and [`sample`].
+/// (0 per face as `fs_main` does, 1 the sky, 2 its reflection) and on the
+/// sky draws `xr_port.mode.z` layers. The Rust copies are [`angles`],
+/// [`frame`], [`seam_weight`], [`zenith_fade`], [`reflect`],
+/// [`box_exit`], [`rim`], [`sample`] (the near layer), [`far`] (the far
+/// ones), [`layer_light`] and [`under`].
 pub const SKY_WGSL: &str = r"
 const XR_PI: f32 = 3.14159265;
 const XR_TAU: f32 = 6.28318531;
@@ -624,6 +882,19 @@ const XR_SKY_ZENITH: vec2<f32> = vec2<f32>(1.29, 1.47);
 // the floor's normal where it is full and where it is gone.
 const XR_REFLECT_GAIN: f32 = 0.4;
 const XR_REFLECT_COS: vec2<f32> = vec2<f32>(0.5, 0.906);
+// The layers (board #5438), the nearest first: the far shells' depths
+// behind the walls and the ceiling (m) at a depth multiplier of 1; each
+// layer's share of the light, its turn around the frame (rad of azimuth)
+// and how much lower its bands sit (rad of elevation); the elevations on
+// a far layer's frame where it is gone and whole under its lowest band;
+// the far two's tints.
+const XR_SKY_SHELL: vec2<f32> = vec2<f32>(1.5, 4.0);
+const XR_SKY_LIGHT: vec3<f32> = vec3<f32>(1.0, 0.6, 0.35);
+const XR_SKY_TURN: vec3<f32> = vec3<f32>(0.0, 2.1, 3.2);
+const XR_SKY_DROP: vec3<f32> = vec3<f32>(0.0, 0.09821429, 0.04910714);
+const XR_SKY_FLOOR: vec2<f32> = vec2<f32>(-0.44, -0.34);
+const XR_SKY_TINT_1: vec3<f32> = vec3<f32>(0.8, 0.9, 1.0);
+const XR_SKY_TINT_2: vec3<f32> = vec3<f32>(0.6, 0.78, 1.0);
 
 struct XrSkyOut {
     @builtin(position) pos: vec4<f32>,
@@ -696,16 +967,51 @@ fn xr_exit_along(l: f32, m: f32, half: f32) -> f32 {
     return (select(-half, half, m > 0.0) - l) / m;
 }
 
-// Where the ray from p along m leaves the room: a wall of its rectangle
-// in plan or its ceiling, whichever first.
-fn xr_room_exit(p: vec3<f32>, m: vec3<f32>) -> vec3<f32> {
+// Where the ray from p along m leaves the room's box grown by g (m) in
+// plan and above: a wall of its rectangle or its ceiling, whichever
+// first. No floor: a ray going down leaves through a wall.
+fn xr_box_exit(p: vec3<f32>, m: vec3<f32>, g: f32) -> vec3<f32> {
     let axis = xr_port.axes.xy;
     let across = vec2<f32>(-axis.y, axis.x);
     let l = p.xz - xr_port.room.xy;
-    let ts = xr_exit_along(dot(l, axis), dot(m.xz, axis), xr_port.room.z);
-    let tt = xr_exit_along(dot(l, across), dot(m.xz, across), xr_port.room.w);
-    let ty = (xr_port.sky.w - p.y) / max(m.y, 1e-6);
+    let ts = xr_exit_along(dot(l, axis), dot(m.xz, axis), xr_port.room.z + g);
+    let tt = xr_exit_along(dot(l, across), dot(m.xz, across), xr_port.room.w + g);
+    let ty = (xr_port.sky.w + g - p.y) / max(m.y, 1e-6);
     return p + m * max(min(min(ts, tt), ty), 0.0);
+}
+
+// Where the ray from p along m leaves the room itself.
+fn xr_room_exit(p: vec3<f32>, m: vec3<f32>) -> vec3<f32> {
+    return xr_box_exit(p, m, 0.0);
+}
+
+// A far layer at the world point seen from the eye: the view ray on past
+// the surface to the layer's shell (the room's box grown by depth), the
+// sky there by that point's direction from the sky's point, turned and
+// lowered on the frame. Its light is k0 (the near layer's before its
+// fades) times its share, faded by its own zenith, across the seam and
+// under its bands, and tinted; where none is left, nothing, and the
+// effect is not called.
+fn xr_sky_layer(
+    world: vec3<f32>,
+    eye: vec3<f32>,
+    k0: f32,
+    depth: f32,
+    light: f32,
+    turn: f32,
+    drop: f32,
+    tint: vec3<f32>,
+) -> vec4<f32> {
+    let hit = xr_box_exit(world, normalize(world - eye), depth);
+    let a = xr_sky_angles(hit - xr_port.sky.xyz);
+    let w = 0.5 * smoothstep(XR_PI - XR_SKY_SEAM, XR_PI, abs(a.x));
+    let k = k0 * light * (1.0 - smoothstep(XR_SKY_ZENITH.x, XR_SKY_ZENITH.y, a.y))
+        * (1.0 - 2.0 * w) * smoothstep(XR_SKY_FLOOR.x, XR_SKY_FLOOR.y, a.y + drop);
+    if k <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    let c = effect_main(xr_sky_frame(vec2<f32>(a.x + turn, a.y + drop)));
+    return xr_light(c, k) * vec4<f32>(tint, 1.0);
 }
 
 @fragment
@@ -718,6 +1024,8 @@ fn fs_sky(in: XrSkyOut) -> @location(0) vec4<f32> {
         let c = effect_main(vec4<f32>(vec2<f32>(n.x, 1.0 - n.y) * u.resolution, 0.0, 1.0));
         return xr_light(c, k);
     }
+    // The far layers start from the light before the near layer's fades.
+    let k0 = k;
     var d = in.world - xr_port.sky.xyz;
     let reflection = map > 1.5;
     if reflection {
@@ -735,16 +1043,35 @@ fn fs_sky(in: XrSkyOut) -> @location(0) vec4<f32> {
         // One evaluation: the reflection fades out across the seam.
         k *= 1.0 - 2.0 * w;
     }
-    if k <= 0.0 {
-        return vec4<f32>(0.0);
+    // The near layer, on the surface; nothing where no light is left.
+    var out = vec4<f32>(0.0);
+    if k > 0.0 {
+        var c = effect_main(xr_sky_frame(a));
+        if !reflection && w > 0.0 {
+            // Near the seam the other end's continuation, cross-faded.
+            let other = effect_main(xr_sky_frame(vec2<f32>(a.x - sign(a.x) * XR_TAU, a.y)));
+            c = mix(c, other, w);
+        }
+        out = xr_light(c, k);
     }
-    var c = effect_main(xr_sky_frame(a));
-    if !reflection && w > 0.0 {
-        // Near the seam the other end's continuation, cross-faded.
-        let other = effect_main(xr_sky_frame(vec2<f32>(a.x - sign(a.x) * XR_TAU, a.y)));
-        c = mix(c, other, w);
+    // The far layers on the sky (the reflection is one layer), each under
+    // what is drawn so far.
+    let layers = select(1.0, xr_port.mode.z, !reflection);
+    if layers > 1.5 {
+        let far = xr_sky_layer(
+            in.world, in.eye, k0, XR_SKY_SHELL.x * xr_port.mode.w,
+            XR_SKY_LIGHT.y, XR_SKY_TURN.y, XR_SKY_DROP.y, XR_SKY_TINT_1,
+        );
+        out += (1.0 - out.a) * far;
     }
-    return xr_light(c, k);
+    if layers > 2.5 {
+        let far = xr_sky_layer(
+            in.world, in.eye, k0, XR_SKY_SHELL.y * xr_port.mode.w,
+            XR_SKY_LIGHT.z, XR_SKY_TURN.z, XR_SKY_DROP.z, XR_SKY_TINT_2,
+        );
+        out += (1.0 - out.a) * far;
+    }
+    return out;
 }
 ";
 
@@ -965,12 +1292,33 @@ mod tests {
         let faces = sky_faces(&boxes, head);
         assert_eq!(faces.len(), 5);
         let at = |p: Vec3| frame(angles(p - sky.point, sky.facing), RESOLUTION);
-        // Every pair of faces that meet: the line where their lifted
-        // quads cross, and a point 0.5 mm into each from it (0.7 mm apart
-        // across a right angle).
-        let mut seams = 0;
+        let pairs = across_edges(&faces, sky.point);
+        for &((i, qa), (j, qb)) in &pairs {
+            let (a, b) = (&faces[i], &faces[j]);
+            let gap = at(qa).distance(at(qb));
+            assert!(gap < 1.0, "{gap} px across {a:?} / {b:?}");
+            // Per face, two walls' points land at the frame's two ends.
+            if a.normal.y.abs() < 0.5 && b.normal.y.abs() < 0.5 {
+                let per_face = |f: &Face, p: Vec3| {
+                    let res = crate::surface_port::resolution(f.half);
+                    crate::surface_port::frame_coord(uv_of(f, p), f.half, res) / Vec2::from(res)
+                };
+                let jump = (per_face(a, qa).x - per_face(b, qb).x).abs();
+                assert!(jump > 0.9, "{jump} of the frame");
+            }
+        }
+        // Four corners and four wall-to-ceiling edges, sampled.
+        assert!(pairs.len() >= 8 * 3, "{}", pairs.len());
+    }
+
+    /// Every pair of `faces` that meet: points along the line where their
+    /// lifted quads cross (around `middle`), and for each a point 0.5 mm
+    /// into either face from it (0.7 mm apart across a right angle), both
+    /// on their quads: (the face's index, the point) for each side.
+    fn across_edges(faces: &[Face], middle: Vec3) -> Vec<((usize, Vec3), (usize, Vec3))> {
+        let mut pairs = Vec::new();
         for (i, a) in faces.iter().enumerate() {
-            for b in &faces[i + 1..] {
+            for (j, b) in faces.iter().enumerate().skip(i + 1) {
                 let along = a.normal.cross(b.normal);
                 if along.length() < 0.5 {
                     continue;
@@ -979,40 +1327,26 @@ mod tests {
                 // A point on both lifted planes, near the room's middle.
                 let (pa, pb) = (a.center + a.normal * LIFT_M, b.center + b.normal * LIFT_M);
                 let m = Mat3::from_cols(a.normal, b.normal, along).transpose();
-                let x = m.inverse()
-                    * Vec3::new(a.normal.dot(pa), b.normal.dot(pb), along.dot(sky.point));
+                let x =
+                    m.inverse() * Vec3::new(a.normal.dot(pa), b.normal.dot(pb), along.dot(middle));
                 for s in [-0.6, -0.2, 0.0, 0.3, 0.7] {
                     let q = x + along * s;
                     // Into each face: away from the other's plane, along it.
                     let into_a = (b.normal - a.normal * a.normal.dot(b.normal)).normalize();
                     let into_b = (a.normal - b.normal * b.normal.dot(a.normal)).normalize();
                     let (qa, qb) = (q + into_a * 5e-4, q + into_b * 5e-4);
-                    let (ua, ub) = (uv_of(a, qa), uv_of(b, qb));
                     // Both on their quads, clear of the far ends.
-                    let inside = |f: &Face, uv: Vec2| {
+                    let inside = |f: &Face, p: Vec3| {
+                        let uv = uv_of(f, p);
                         uv.x.abs() < f.half[0] + 0.03 && uv.y.abs() < f.half[1] + 0.03
                     };
-                    if !inside(a, ua) || !inside(b, ub) {
-                        continue;
+                    if inside(a, qa) && inside(b, qb) {
+                        pairs.push(((i, qa), (j, qb)));
                     }
-                    let gap = at(qa).distance(at(qb));
-                    assert!(gap < 1.0, "{gap} px across {a:?} / {b:?}");
-                    // Per face, two walls' points land at the frame's two
-                    // ends.
-                    if a.normal.y.abs() < 0.5 && b.normal.y.abs() < 0.5 {
-                        let per_face = |f: &Face, uv: Vec2| {
-                            let res = crate::surface_port::resolution(f.half);
-                            crate::surface_port::frame_coord(uv, f.half, res) / Vec2::from(res)
-                        };
-                        let jump = (per_face(a, ua).x - per_face(b, ub).x).abs();
-                        assert!(jump > 0.9, "{jump} of the frame");
-                    }
-                    seams += 1;
                 }
             }
         }
-        // Four corners and four wall-to-ceiling edges, sampled.
-        assert!(seams >= 8 * 3, "{seams}");
+        pairs
     }
 
     use glam::Mat3;
@@ -1336,7 +1670,9 @@ mod tests {
         assert_eq!(rows(base, Map::Face, &sky, [false; 4]), base);
         let r = rows(base, Map::Sky, &sky, [true, false, true, false]);
         assert_eq!(r[..MODE_ROW], base[..MODE_ROW]);
-        assert_close!(r[MODE_ROW], [0.0, 1.0, 0.0, 0.0]);
+        // The sky's layers (board #5438): the count and the depth
+        // multiplier, the default two at 1.
+        assert_close!(r[MODE_ROW], [0.0, 1.0, 2.0, 1.0]);
         assert_close!(r[EDGES_ROW], [1.0, 0.0, 1.0, 0.0]);
         let p = sky.point;
         assert_close!(r[POINT_ROW], [p.x, p.y, p.z, room.ceiling_y]);
@@ -1423,6 +1759,15 @@ mod tests {
         assert_close!(constant(&module, "XR_REFLECT_COS"), REFLECT_COS);
         assert_close!(constant(&module, "XR_PI"), [PI]);
         assert_close!(constant(&module, "XR_TAU"), [TAU]);
+        // The layers' (board #5438).
+        assert_close!(constant(&module, "XR_SKY_SHELL"), SHELL_M);
+        assert_close!(constant(&module, "XR_SKY_LIGHT"), LAYER_LIGHT);
+        assert_close!(constant(&module, "XR_SKY_TURN"), LAYER_TURN_RAD);
+        assert_close!(constant(&module, "XR_SKY_DROP"), LAYER_DROP_RAD);
+        assert_close!(constant(&module, "XR_SKY_FLOOR"), BANDS_FLOOR_RAD);
+        assert_close!(constant(&module, "XR_SKY_TINT_1"), LAYER_TINT[1]);
+        assert_close!(constant(&module, "XR_SKY_TINT_2"), LAYER_TINT[2]);
+        assert_close!(LAYER_TINT[0], [1.0; 3]);
         // The rows' places: the struct's members in order, one row each.
         let (_, ty) = module
             .types
@@ -1482,5 +1827,474 @@ mod tests {
         );
         assert!(off.contains("seam toward (-1.00, 0.00)"), "{off}");
         assert!(off.contains("leave 90°"), "{off}");
+    }
+
+    /// `sky` with `count` layers at a depth multiplier of `depth`.
+    fn layered(sky: Sky, count: u32, depth: f32) -> Sky {
+        Sky {
+            layers: Layers { count, depth },
+            ..sky
+        }
+    }
+
+    /// The rows of `face` on the sky `sky`, every edge fading or none.
+    fn sky_rows(face: &Face, sky: &Sky, fade: bool) -> [[f32; 4]; UNIFORM_ROWS] {
+        let base = crate::surface_port::rows(face, 1.0, false, FIRST_ID, [1.0; 3]);
+        rows(base, Map::Sky, sky, [fade; 4])
+    }
+
+    /// Where the ray from `eye` through `p` leaves `room`'s box grown by
+    /// `grow`, found by marching in 0.1 mm steps.
+    fn marched_shell(room: &Room, eye: Vec3, p: Vec3, grow: f32) -> Vec3 {
+        let dir = (p - eye).normalize();
+        let across = Vec2::new(-room.axis.y, room.axis.x);
+        let inside = |q: Vec3| {
+            let l = Vec2::new(q.x, q.z) - room.center;
+            l.dot(room.axis).abs() <= room.half.x + grow
+                && l.dot(across).abs() <= room.half.y + grow
+                && q.y <= room.ceiling_y + grow
+        };
+        let mut n = 0u32;
+        while inside(p + dir * ((n + 1) as f32 * 1e-4)) {
+            n += 1;
+        }
+        p + dir * (n as f32 * 1e-4)
+    }
+
+    #[test]
+    fn the_view_ray_meets_each_shell_behind_the_surface_it_passes() {
+        // A 4.4 by 3.6 m room turned 23°, 2.5 m high.
+        let boxes = box_room(Vec2::new(0.3, -0.2), 0.4, 4.4, 3.6, 2.5);
+        let room = Room::fit(boxes.iter().copied()).unwrap();
+        let point = room.point();
+        let faces = sky_faces(&boxes, point);
+        let ax = Vec3::new(room.axis.x, 0.0, room.axis.y);
+        let ac = Vec3::new(-room.axis.y, 0.0, room.axis.x);
+        // How far a point is past the room's sides along its axis and
+        // across it, and over its ceiling.
+        let past = |q: Vec3| {
+            let l = q - Vec3::new(room.center.x, 0.0, room.center.y);
+            [
+                l.dot(ax).abs() - room.half.x,
+                l.dot(ac).abs() - room.half.y,
+                q.y - room.ceiling_y,
+            ]
+        };
+        // The face whose outside is toward `out`, and its point nearest
+        // `q` on the lifted quad.
+        let face = |out: Vec3| *faces.iter().find(|f| f.normal.dot(out) < -0.9).unwrap();
+        let onto = |f: &Face, q: Vec3| on(f, uv_of(f, q));
+        let middle = Vec3::new(room.center.x, 0.0, room.center.y);
+        for grow in SHELL_M {
+            let check = |eye: Vec3, p: Vec3| {
+                let hit = shell_hit(&room, eye, p, grow);
+                assert!(hit.distance(marched_shell(&room, eye, p, grow)) < 1e-3);
+                // On the line from the eye through the surface point,
+                // past it.
+                let (to_p, to_hit) = (p - eye, hit - eye);
+                assert!(to_p.normalize().dot(to_hit.normalize()) > 1.0 - 1e-6);
+                assert!(to_hit.length() > to_p.length() + grow - 1e-3);
+                (hit, past(hit))
+            };
+            // Square on: the wall ahead along the axis at eye height, from
+            // the point. The hit is `grow` past the wall, straight behind
+            // the surface point.
+            let wall = face(ax);
+            let p = onto(&wall, point + ax * room.half.x);
+            let (hit, [a, b, c]) = check(point, p);
+            assert!((a - grow).abs() < 1e-4 && b < 0.0 && c < 0.0, "{hit}");
+            assert!((hit - p).normalize().dot(ax) > 1.0 - 1e-6);
+            // At a slant: a wall across the axis, 45° off its normal, from
+            // an eye off the point.
+            let eye = point + Vec3::new(0.4, -0.1, 0.3);
+            let wall = face(ac);
+            let to_wall = room.half.y - (eye - middle).dot(ac);
+            let p = onto(&wall, eye + (ac + ax) * to_wall + Vec3::Y * 0.3);
+            let slant = (p - eye).normalize().dot(ac);
+            assert!(slant > 0.55 && slant < 0.75, "{slant}");
+            let (hit, [a, b, c]) = check(eye, p);
+            assert!((b - grow).abs() < 1e-4 && a < grow && c < grow, "{hit}");
+            // Near a corner: 10 cm from the end of the wall along the
+            // axis, seen across the room; past the wall the ray leaves
+            // through the shell's side beyond the next wall.
+            let eye = point - ac;
+            let wall = face(ax);
+            let p = onto(
+                &wall,
+                middle + ax * room.half.x + ac * (room.half.y - 0.1) + Vec3::Y * 1.4,
+            );
+            let (hit, [a, b, _]) = check(eye, p);
+            assert!((b - grow).abs() < 1e-4 && a < grow - 0.1, "{hit}");
+            // On the ceiling: straight up, through the shell's top...
+            let ceiling = face(Vec3::Y);
+            let p = onto(&ceiling, point + ax * 0.3 + Vec3::Y);
+            let (hit, [a, b, c]) = check(point, p);
+            assert!((c - grow).abs() < 1e-4 && a < 0.0 && b < 0.0, "{hit}");
+            // ...and at a slant near its edge, through the shell's side
+            // over the wall.
+            let eye = point - ax * 1.5;
+            let p = onto(&ceiling, middle + ax * (room.half.x - 0.1) + Vec3::Y * 2.5);
+            let (hit, [a, _, c]) = check(eye, p);
+            assert!((a - grow).abs() < 1e-4 && c > 0.0 && c < grow, "{hit}");
+        }
+    }
+
+    #[test]
+    fn a_far_layer_moves_against_the_wall_by_its_depth_as_the_head_moves() {
+        for dist in [2.0f32, 3.0] {
+            // A 5 m wide room, the wall ahead `dist` from the point.
+            let boxes = box_room(Vec2::ZERO, 0.0, 5.0, 2.0 * dist, 2.5);
+            let room = Room::fit(boxes.iter().copied()).unwrap();
+            for depth in [1.0, 2.0] {
+                let sky = layered(Sky::new(room, Vec2::new(0.0, -1.0)), 3, depth);
+                let wall = *sky_faces(&boxes, sky.point)
+                    .iter()
+                    .find(|f| f.normal.z > 0.9)
+                    .unwrap();
+                let r = sky_rows(&wall, &sky, true);
+                // Seated at the point, the wall straight ahead at eye
+                // height.
+                let eye = sky.point;
+                let p = on(&wall, uv_of(&wall, Vec3::new(eye.x, eye.y, -dist)));
+                let before = far(&r, RESOLUTION, uv_of(&wall, p), p, eye);
+                assert_eq!(before.len(), 2);
+                // The head 10 cm to the right. Where on the wall does each
+                // layer now show what it showed at p?
+                let moved = eye + Vec3::X * 0.1;
+                for f in &before {
+                    let to = f.hit - moved;
+                    let q = moved + to * (wall.normal.dot(p - moved) / wall.normal.dot(to));
+                    let after = far(&r, RESOLUTION, uv_of(&wall, q), q, moved)[f.layer - 1];
+                    // The same curtain: the same frame coordinate.
+                    assert!(after.at.distance(f.at) < 0.05, "{after:?} {f:?}");
+                    // Along the wall with the head, by the move times the
+                    // share of the layer's distance that lies past the
+                    // wall.
+                    let (to_wall, to_shell) =
+                        (wall.normal.dot(eye - p), wall.normal.dot(eye - f.hit));
+                    let want = 0.1 * (1.0 - to_wall / to_shell);
+                    let shift = q - p;
+                    assert!(
+                        (shift.x - want).abs() < 1e-4 && shift.y.abs() < 1e-4,
+                        "{shift} {want}"
+                    );
+                    // The shell is its depth behind the wall's center line
+                    // (the room's side); the quad is 4 cm in front of that
+                    // (the slab's half and the lift).
+                    assert!(
+                        (to_shell - dist - SHELL_M[f.layer - 1] * depth).abs() < 1e-4,
+                        "{to_shell}"
+                    );
+                    // Several centimeters at 2 to 3 m.
+                    assert!(shift.x > 0.03, "{shift}");
+                    eprintln!(
+                        "wall {to_wall:.2} m, skydepth {depth}: layer {} on its shell {:.2} m behind it moves {:.1} cm for a 10 cm head move",
+                        f.layer,
+                        to_shell - to_wall,
+                        100.0 * shift.x
+                    );
+                }
+                // The near layer stays on the wall: what it shows at p does
+                // not depend on the eye.
+                let uv = uv_of(&wall, p);
+                assert_eq!(
+                    sample(&r, RESOLUTION, uv, p, eye),
+                    sample(&r, RESOLUTION, uv, p, moved)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_far_layer_runs_on_across_a_corner_and_onto_the_ceiling() {
+        let boxes = box_room(Vec2::new(0.4, -0.3), 0.35, 4.6, 3.8, 2.45);
+        let room = Room::fit(boxes.iter().copied()).unwrap();
+        // A seated eye off the point, so the rays through a corner do not
+        // run along the shells' own corners.
+        let eye = Vec3::new(0.9, 1.15, 0.2);
+        let faces = sky_faces(&boxes, eye);
+        let pairs = across_edges(&faces, room.point());
+        assert!(pairs.len() >= 8 * 3, "{}", pairs.len());
+        for depth in [1.0, 2.5] {
+            let sky = layered(
+                Sky::new(room, facing(Quat::from_rotation_y(0.35))),
+                3,
+                depth,
+            );
+            let far_at = |i: usize, q: Vec3| {
+                let f = &faces[i];
+                far(&sky_rows(f, &sky, false), RESOLUTION, uv_of(f, q), q, eye)
+            };
+            for &((i, qa), (j, qb)) in &pairs {
+                let (a, b) = (far_at(i, qa), far_at(j, qb));
+                assert_eq!(a.len(), 2);
+                for (x, y) in a.iter().zip(&b) {
+                    // Rays 0.7 mm apart at the surface meet the shell
+                    // under a millimeter apart per meter of ray, and the
+                    // light runs on.
+                    let gap = x.hit.distance(y.hit) / x.hit.distance(eye);
+                    assert!(gap < 1e-3, "{gap}: {x:?} {y:?}");
+                    assert!((x.k - y.k).abs() < 1e-3, "{x:?} {y:?}");
+                    // So does the picture, away from the seam (where the
+                    // far layers fade out).
+                    let az = angles(x.hit - sky.point, sky.facing).x;
+                    if az.abs() < PI - SEAM_RAD {
+                        assert!(x.at.distance(y.at) < 1.0, "{x:?} {y:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn one_layer_is_the_sky_as_it_was() {
+        let boxes = box_room(Vec2::new(0.5, 0.0), 0.0, 4.0, 3.0, 2.4);
+        let room = Room::fit(boxes.iter().copied()).unwrap();
+        let sky = Sky::new(room, Vec2::new(0.6, -0.8));
+        let eye = Vec3::new(0.7, 1.1, 0.3);
+        for face in sky_faces(&boxes, eye) {
+            let base = crate::surface_port::rows(&face, 0.8, false, FIRST_ID, [1.0; 3]);
+            let [one, two, three] =
+                [1, 2, 3].map(|n| rows(base, Map::Sky, &layered(sky, n, 1.0), [true; 4]));
+            // The rows differ in the count alone.
+            assert_close!(one[MODE_ROW], [0.0, 1.0, 1.0, 1.0]);
+            for (r, n) in [(two, 2.0), (three, 3.0)] {
+                assert_close!(r[MODE_ROW][2], n);
+                let mut same = r;
+                same[MODE_ROW][2] = 1.0;
+                assert_eq!(same, one);
+            }
+            for uv in [
+                Vec2::ZERO,
+                Vec2::new(0.3, 0.4),
+                Vec2::new(-0.8, -0.5),
+                Vec2::new(1.1, 0.9),
+            ] {
+                let world = on(&face, uv);
+                // One layer: no far one. The near layer is the same
+                // whatever the count.
+                assert!(far(&one, RESOLUTION, uv, world, eye).is_empty());
+                let near = sample(&one, RESOLUTION, uv, world, eye);
+                for (r, n) in [(two, 1), (three, 2)] {
+                    assert_eq!(sample(&r, RESOLUTION, uv, world, eye), near);
+                    assert_eq!(far(&r, RESOLUTION, uv, world, eye).len(), n);
+                }
+            }
+        }
+        // The reflection and a face mapped per face are one layer whatever
+        // the count.
+        let floor = port_face(acting_face(boxes[4].1, boxes[4].2, boxes[4].3, eye));
+        let base = crate::surface_port::rows(&floor, 1.0, false, FIRST_ID, [1.0; 3]);
+        let uv = uv_of(&floor, Vec3::new(1.4, 0.0, -1.0));
+        for n in 1..=3 {
+            let s = layered(sky, n, 1.0);
+            let rf = rows(base, Map::Reflection, &s, [true; 4]);
+            assert_close!(rf[MODE_ROW], [0.0, 2.0, 0.0, 0.0]);
+            assert!(far(&rf, RESOLUTION, uv, on(&floor, uv), eye).is_empty());
+            assert_eq!(rows(base, Map::Face, &s, [true; 4]), base);
+            assert!(far(&base, RESOLUTION, uv, on(&floor, uv), eye).is_empty());
+        }
+        // Out of range, the count is held to one to three.
+        let wall = sky_faces(&boxes, eye)[0];
+        assert_close!(
+            sky_rows(&wall, &layered(sky, 0, 1.0), true)[MODE_ROW][2],
+            1.0
+        );
+        assert_close!(
+            sky_rows(&wall, &layered(sky, 7, 1.0), true)[MODE_ROW][2],
+            3.0
+        );
+        // With nothing under it the light is the near layer's, bit for bit.
+        let light = crate::surface_port::light([0.3, 0.7, 0.2, 1.0], false, 0.45, [1.0; 3]);
+        assert_eq!(
+            under(light, [0.0; 4]).map(f32::to_bits),
+            light.map(f32::to_bits)
+        );
+    }
+
+    #[test]
+    fn the_farther_a_layer_the_less_light_and_the_cooler() {
+        let boxes = box_room(Vec2::ZERO, 0.0, 4.0, 4.0, 2.5);
+        let room = Room::fit(boxes.iter().copied()).unwrap();
+        let sky = layered(Sky::new(room, Vec2::new(0.0, -1.0)), 3, 1.0);
+        // Seated at the point, each layer's hit lies in the fragment's
+        // direction, so its fades are the near layer's: ahead, 30° up.
+        let eye = sky.point;
+        let wall = *sky_faces(&boxes, eye)
+            .iter()
+            .find(|f| f.normal.z > 0.9)
+            .unwrap();
+        let r = sky_rows(&wall, &sky, true);
+        let world = on(
+            &wall,
+            uv_of(&wall, eye + Vec3::new(0.3, 2.0 * 0.52f32.tan(), -2.0)),
+        );
+        let uv = uv_of(&wall, world);
+        let near = sample(&r, RESOLUTION, uv, world, eye).unwrap();
+        let a = angles(world - sky.point, sky.facing);
+        for f in far(&r, RESOLUTION, uv, world, eye) {
+            assert_close!(f.k / near.k, LAYER_LIGHT[f.layer]);
+            // Its picture is the near layer's place turned around the
+            // frame and lowered.
+            let turned = Vec2::new(a.x + LAYER_TURN_RAD[f.layer], a.y + LAYER_DROP_RAD[f.layer]);
+            assert!(f.at.distance(frame(turned, RESOLUTION)) < 0.01, "{f:?}");
+        }
+        assert_close!(LAYER_LIGHT[0], 1.0);
+        // The tint: the near layer's light is the port's, bit for bit; the
+        // farther, the cooler; the coverage is not tinted.
+        let c = [0.7, 0.6, 0.5, 1.0];
+        let lit = |l: usize| layer_light(c, false, 0.4, [1.0; 3], l);
+        assert_eq!(
+            lit(0).map(f32::to_bits),
+            crate::surface_port::light(c, false, 0.4, [1.0; 3]).map(f32::to_bits)
+        );
+        let warmth = |l: usize| (lit(l)[0] / lit(l)[2], lit(l)[1] / lit(l)[2]);
+        assert!(warmth(0).0 > warmth(1).0 && warmth(1).0 > warmth(2).0);
+        assert!(warmth(0).1 > warmth(1).1 && warmth(1).1 > warmth(2).1);
+        for l in 1..3 {
+            assert_close!(lit(l)[3], lit(0)[3]);
+        }
+        // Under: a far layer fills in what the nearer ones do not cover,
+        // and the alpha stays within 1.
+        let full = [0.5, 0.4, 0.3, 1.0];
+        assert_close!(under(full, [0.2; 4]), full);
+        assert_close!(under([0.0; 4], [0.1, 0.2, 0.3, 0.4]), [0.1, 0.2, 0.3, 0.4]);
+        for i in 0..=10 {
+            for j in 0..=10 {
+                let (x, y) = (i as f32 / 10.0, j as f32 / 10.0);
+                let a = under([0.0, 0.0, 0.0, x], [0.0, 0.0, 0.0, y])[3];
+                assert_close!(a, 1.0 - (1.0 - x) * (1.0 - y));
+                assert!(a <= 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_far_layer_is_not_evaluated_where_it_adds_no_light() {
+        // A 3 m square room, seated at the point: each layer's hit lies in
+        // the fragment's direction.
+        let dist = 1.5;
+        let boxes = box_room(Vec2::ZERO, 0.0, 2.0 * dist, 2.0 * dist, 2.5);
+        let room = Room::fit(boxes.iter().copied()).unwrap();
+        let sky = layered(Sky::new(room, Vec2::new(0.0, -1.0)), 3, 1.0);
+        let eye = sky.point;
+        let faces = sky_faces(&boxes, eye);
+        let face = |n: Vec3| *faces.iter().find(|f| f.normal.dot(n) > 0.9).unwrap();
+        let at = |f: &Face, q: Vec3| {
+            let r = sky_rows(f, &sky, true);
+            let p = on(f, uv_of(f, q));
+            let uv = uv_of(f, p);
+            (
+                sample(&r, RESOLUTION, uv, p, eye),
+                far(&r, RESOLUTION, uv, p, eye),
+            )
+        };
+        // Straight overhead: each layer's own zenith fade, none left.
+        let (near, layers) = at(&face(Vec3::NEG_Y), eye + Vec3::Y * 2.0);
+        assert_eq!(near, None);
+        assert!(layers.iter().all(|f| f.k == 0.0), "{layers:?}");
+        // Straight behind, on the seam: the near layer cross-fades its two
+        // ends, the far ones fade out; 12° to the side they are whole.
+        let back = face(Vec3::NEG_Z);
+        let (near, layers) = at(&back, eye + Vec3::new(0.0, 0.5, dist));
+        assert!(near.unwrap().other.is_some());
+        assert!(layers.iter().all(|f| f.k < 1e-5), "{layers:?}");
+        let side = Vec3::new(dist * (SEAM_RAD + 0.01).tan(), 0.5, dist);
+        let (near, layers) = at(&back, eye + side);
+        let k = near.unwrap().k;
+        for f in &layers {
+            assert_close!(f.k, k * LAYER_LIGHT[f.layer]);
+        }
+        // Low on a wall, under every layer's bands (the lowest layer's
+        // drop under the fade's end): none left; at the fade's start, all
+        // of it.
+        let ahead = face(Vec3::Z);
+        let low = dist * (BANDS_FLOOR_RAD[0] - LAYER_DROP_RAD[1] - 0.02).tan();
+        assert!(eye.y + low > 0.1);
+        let (_, layers) = at(&ahead, eye + Vec3::new(0.0, low, -dist));
+        assert!(layers.iter().all(|f| f.k == 0.0), "{layers:?}");
+        let high = dist * BANDS_FLOOR_RAD[1].tan();
+        let (near, layers) = at(&ahead, eye + Vec3::new(0.0, high, -dist));
+        let k = near.unwrap().k;
+        for f in &layers {
+            assert_close!(f.k, k * LAYER_LIGHT[f.layer]);
+        }
+        // Where the floor fade starts aurora.wgsl's lowest band has left
+        // nothing: its center at the .pfx's spread, the waves' and the
+        // ripple's 0.12 and three widths of its widest glow (0.02 of the
+        // frame's height, 2.5 times at a full band), where exp(-9) of a
+        // band's light (at most 4) is left.
+        let spread = 1.25;
+        let width = (0.3 * 0.04 + 0.008) * 2.5;
+        let reach = HORIZON_RAD + HEIGHT_RAD * (0.5 - (3.0 / 7.0 * spread + 0.12 + 3.0 * width));
+        assert!(BANDS_FLOOR_RAD[1] <= reach, "{reach}");
+        assert!(4.0 * (-9.0f32).exp() < 1e-3);
+        // The middle layer's bands run halfway between the near layer's,
+        // the farthest's a quarter of the way.
+        assert_close!(BAND_SPACING_RAD, HEIGHT_RAD * spread / 7.0);
+        assert_close!(
+            LAYER_DROP_RAD,
+            [0.0, 0.5 * BAND_SPACING_RAD, 0.25 * BAND_SPACING_RAD]
+        );
+        // Turned around the frame, no band's two waves line up with
+        // another layer's: aurora.wgsl's waves run at 2 + 0.5 i and 2.3
+        // times that per frame height across, and a frame height is
+        // HEIGHT_RAD of azimuth.
+        let t = LAYER_TURN_RAD;
+        for turn in [t[1] - t[0], t[2] - t[0], t[2] - t[1]] {
+            for i in 0..7 {
+                for m in [1.0, 2.3] {
+                    let phase = ((2.0 + 0.5 * i as f32) * m * turn / HEIGHT_RAD).rem_euclid(TAU);
+                    assert!(phase.min(TAU - phase) > 0.39, "{turn} {i} {m}: {phase}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_layers_knobs_and_their_log_lines() {
+        let knobs = |layers: Option<&str>, depth: Option<&str>| {
+            Layers::from_knobs(|name| match name {
+                KNOB_LAYERS => layers.map(String::from),
+                KNOB_DEPTH => depth.map(String::from),
+                _ => None,
+            })
+        };
+        let at = |count, depth| Layers { count, depth };
+        assert_eq!(knobs(None, None), at(LAYERS_DEFAULT, 1.0));
+        assert_eq!(Layers::default(), at(2, 1.0));
+        assert_eq!(knobs(Some("1"), None), at(1, 1.0));
+        assert_eq!(knobs(Some(" 3 "), None), at(3, 1.0));
+        for wrong in ["0", "4", "two", ""] {
+            assert_eq!(knobs(Some(wrong), None), at(2, 1.0), "{wrong}");
+        }
+        assert_eq!(knobs(None, Some("2.5")), at(2, 2.5));
+        assert_eq!(knobs(None, Some("9")), at(2, DEPTH_MAX));
+        assert_eq!(knobs(None, Some("-1")), at(2, 0.0));
+        for wrong in ["nan", "inf", "deep"] {
+            assert_eq!(knobs(None, Some(wrong)), at(2, 1.0), "{wrong}");
+        }
+        assert_close!(at(3, 2.0).shells(), [3.0, 8.0]);
+        assert_eq!(
+            Layers::default().line(),
+            "sky layers: 2 (debug.fosfora.skylayers), the sky on the surfaces and a layer 1.50 m \
+             behind them at 0.6 of the light (debug.fosfora.skydepth 1.00)"
+        );
+        let three = at(3, 1.0).line();
+        assert!(
+            three.contains("layers 1.50 and 4.00 m behind them at 0.6 and 0.35 of the light"),
+            "{three}"
+        );
+        let change = at(1, 1.0).change_line(&at(3, 1.0));
+        assert!(
+            change.starts_with(
+                "sky layers: 1 (debug.fosfora.skylayers), the sky on the surfaces alone"
+            ),
+            "{change}"
+        );
+        assert!(
+            change.contains("(was: 3 (debug.fosfora.skylayers)"),
+            "{change}"
+        );
     }
 }
