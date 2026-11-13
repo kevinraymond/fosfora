@@ -1418,6 +1418,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         crate::roam::immerse_floor(roam.now().is_on(), seated_floor),
     );
     immersion.fix(unit_knob("debug.fosfora.immersefix"));
+    // Black holds the level at 1 whatever the music does (the knob's depth
+    // is a multiplier and never black).
+    immersion.set_held(immerse_knob.is_none() && menu_saved.immerse.holds());
     // Board #5409: the low level, live (polled with the once-a-second line).
     let mut immerse_low =
         crate::immerse::low_knob(debug_prop("debug.fosfora.immerselow").as_deref());
@@ -2533,6 +2536,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             depth.value()
                         );
                         immersion.set_depth(depth.value());
+                        immersion.set_held(depth.holds());
                         menu_saved.immerse = depth;
                         save_hand_menu(&menu_file, menu_saved);
                     }

@@ -1575,8 +1575,8 @@ fn recenter_row(room: bool, roam: crate::roam::Roam) -> Control<'static> {
 /// (the quad keeps its bottom edge and grows upward). The state is in the
 /// words, not a color; "Agent: none" with nothing to pick, and a press then
 /// does nothing. Board #5384: the Agent control takes the left cell, and
-/// the Immersion control the right one, each press the next of off, low
-/// and full ("Immersion: full"), so the row count does not change.
+/// the Immersion control the right one, each press the next of off, low,
+/// full and black ("Immersion: full"), so the row count does not change.
 fn agent_row(
     agent: Option<crate::agent::Control>,
     immerse: crate::immerse::Depth,

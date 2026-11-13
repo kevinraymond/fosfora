@@ -854,7 +854,7 @@ room to dim.
 **The depth.** How far the wearer lets it go: off (0), low (0.5) or full
 (1), full by default. It multiplies the level, the opening's included,
 and a change glides over 0.5 s. The hand menu's Agent row holds it in its
-right cell, "Immersion: full", each press the next of off, low and full;
+right cell, "Immersion: full", each press the next of off, low, full and black (the room held dark whatever the music does);
 a new row would push the debug panel's fullest block past its header. It
 is saved in `hand_menu.json` as `"immerse"`. By voice, "darker" and
 "lighter" step it ("dim the lights", "lights down", "lights up", "more

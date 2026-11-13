@@ -53,7 +53,10 @@
 //!
 //! **The depth** ([`Depth`]): how far the wearer lets it go, off (0), low
 //! (0.5) or full (1), multiplied into the level, the opening's included. A
-//! change glides over [`DEPTH_S`].
+//! change glides over [`DEPTH_S`]. Black is full held there
+//! ([`Immersion::set_held`]): the level glides to 1 and stays, through
+//! quiet passages and silence, for lying back with the room gone. The
+//! floor still applies, so roam keeps its share of the room.
 //!
 //! **What it drives.** The passthrough image's opacity,
 //! `1 - level * (1 - floor)` ([`Immersion::opacity`]), with the floor the
@@ -75,19 +78,27 @@ pub enum Depth {
     /// As dark as the floor allows.
     #[default]
     Full,
+    /// As dark as the floor allows, always: the level held at 1 whatever
+    /// the music does.
+    Black,
 }
 
 impl Depth {
     /// In the menu's cycle order.
-    pub const ALL: [Self; 3] = [Self::Off, Self::Low, Self::Full];
+    pub const ALL: [Self; 4] = [Self::Off, Self::Low, Self::Full, Self::Black];
 
     /// The multiplier on the level.
     pub fn value(self) -> f32 {
         match self {
             Self::Off => 0.0,
             Self::Low => 0.5,
-            Self::Full => 1.0,
+            Self::Full | Self::Black => 1.0,
         }
+    }
+
+    /// Whether the level is held at 1 whatever the music does.
+    pub fn holds(self) -> bool {
+        self == Self::Black
     }
 
     /// Its name in the log, `hand_menu.json` and the voice's replies.
@@ -96,6 +107,7 @@ impl Depth {
             Self::Off => "off",
             Self::Low => "low",
             Self::Full => "full",
+            Self::Black => "black",
         }
     }
 
@@ -105,6 +117,7 @@ impl Depth {
             Self::Off => "Immersion: off",
             Self::Low => "Immersion: low",
             Self::Full => "Immersion: full",
+            Self::Black => "Immersion: black",
         }
     }
 
@@ -112,22 +125,24 @@ impl Depth {
         Self::ALL.into_iter().find(|d| d.name() == name)
     }
 
-    /// The menu's press: off, low, full, then off again.
+    /// The menu's press: off, low, full, black, then off again.
     #[must_use]
     pub fn next(self) -> Self {
         match self {
             Self::Off => Self::Low,
             Self::Low => Self::Full,
-            Self::Full => Self::Off,
+            Self::Full => Self::Black,
+            Self::Black => Self::Off,
         }
     }
 
-    /// One step darker ("darker"), full at most.
+    /// One step darker ("darker"), black at most.
     #[must_use]
     pub fn deeper(self) -> Self {
         match self {
             Self::Off => Self::Low,
-            Self::Low | Self::Full => Self::Full,
+            Self::Low => Self::Full,
+            Self::Full | Self::Black => Self::Black,
         }
     }
 
@@ -135,15 +150,17 @@ impl Depth {
     #[must_use]
     pub fn lighter(self) -> Self {
         match self {
+            Self::Black => Self::Full,
             Self::Full => Self::Low,
             Self::Low | Self::Off => Self::Off,
         }
     }
 
-    /// The named depth nearest a multiplier (a launch override between two).
+    /// The named depth nearest a multiplier (a launch override between two);
+    /// never black, which no multiplier names.
     pub fn nearest(value: f32) -> Self {
         let off_by = |d: Self| (d.value() - value).abs();
-        Self::ALL
+        [Self::Off, Self::Low, Self::Full]
             .into_iter()
             .min_by(|a, b| off_by(*a).total_cmp(&off_by(*b)))
             .unwrap_or_default()
@@ -505,6 +522,10 @@ pub struct Immersion {
     /// `debug.fosfora.immersefix`: the level pinned, whatever the audio
     /// and the depth.
     fixed: Option<f32>,
+    /// The level held at 1 ([`Depth::Black`]), and how far that has glided
+    /// in, 0..1.
+    held: bool,
+    hold: f32,
 }
 
 impl Immersion {
@@ -529,6 +550,8 @@ impl Immersion {
             position: 0.0,
             events: Vec::new(),
             fixed: None,
+            held: false,
+            hold: 0.0,
         }
     }
 
@@ -578,6 +601,13 @@ impl Immersion {
         if self.fixed.is_some() {
             self.skip_opening("pinned");
         }
+    }
+
+    /// Hold the level at 1 whatever the music does ([`Depth::Black`]), or
+    /// let it follow the music again. Either way it glides over
+    /// [`DEPTH_S`].
+    pub fn set_held(&mut self, held: bool) {
+        self.held = held;
     }
 
     pub fn fixed(&self) -> Option<f32> {
@@ -717,7 +747,10 @@ impl Immersion {
             Opening::Done => self.follow_step(dt, &input, quiet, target),
         };
         self.shown_depth = approach(self.shown_depth, self.depth, dt, DEPTH_S);
-        self.level = self.fixed.unwrap_or(self.music * self.shown_depth);
+        self.hold = approach(self.hold, f32::from(u8::from(self.held)), dt, DEPTH_S);
+        self.level = self
+            .fixed
+            .unwrap_or((self.music * self.shown_depth).max(self.hold));
         self.level
     }
 
@@ -1522,23 +1555,62 @@ mod tests {
     }
 
     #[test]
+    fn black_holds_the_room_dark_through_silence_and_lets_go() {
+        let quiet = Input {
+            playing: false,
+            ..Input::default()
+        };
+        let mut im = Immersion::new(Depth::Black.value(), IMMERSE_FLOOR);
+        im.set_held(true);
+        // It glides in, music or not, and stays.
+        let mut level = 0.0;
+        for _ in 0..(72.0 * 6.0 * DEPTH_S) as usize {
+            level = im.step(1.0 / 72.0, quiet, None);
+        }
+        assert!(level > 0.99, "{level}");
+        assert!(im.opacity(level) < 0.01, "{}", im.opacity(level));
+        // A raised floor still keeps its share of the room.
+        im.set_floor(0.25);
+        let level = im.step(1.0 / 72.0, quiet, None);
+        assert!((im.opacity(level) - 0.25).abs() < 0.01);
+        // Let go in silence, the room comes back.
+        im.set_floor(IMMERSE_FLOOR);
+        im.set_held(false);
+        let mut level = 1.0;
+        for _ in 0..(72.0 * 6.0 * DEPTH_S) as usize {
+            level = im.step(1.0 / 72.0, quiet, None);
+        }
+        assert!(level < 0.01, "{level}");
+    }
+
+    #[test]
     fn the_depth_steps_names_and_nearest() {
-        use Depth::{Full, Low, Off};
+        use Depth::{Black, Full, Low, Off};
         assert_eq!(Depth::default(), Full);
-        assert_eq!([Off.next(), Low.next(), Full.next()], [Low, Full, Off]);
         assert_eq!(
-            [Off.deeper(), Low.deeper(), Full.deeper()],
-            [Low, Full, Full]
+            [Off.next(), Low.next(), Full.next(), Black.next()],
+            [Low, Full, Black, Off]
         );
         assert_eq!(
-            [Off.lighter(), Low.lighter(), Full.lighter()],
-            [Off, Off, Low]
+            [Off.deeper(), Low.deeper(), Full.deeper(), Black.deeper()],
+            [Low, Full, Black, Black]
+        );
+        assert_eq!(
+            [
+                Off.lighter(),
+                Low.lighter(),
+                Full.lighter(),
+                Black.lighter()
+            ],
+            [Off, Off, Low, Full]
         );
         for d in Depth::ALL {
             assert_eq!(Depth::from_name(d.name()), Some(d));
             assert!(d.label().starts_with("Immersion: "), "{}", d.label());
-            assert_eq!(Depth::nearest(d.value()), d);
+            assert_eq!(d.holds(), d == Black);
         }
+        // No multiplier names black: 1 is full.
+        assert_eq!([0.0, 0.5, 1.0].map(Depth::nearest), [Off, Low, Full]);
         assert_eq!(Depth::from_name("dark"), None);
         assert_eq!(
             [0.2, 0.3, 0.74, 0.76].map(Depth::nearest),

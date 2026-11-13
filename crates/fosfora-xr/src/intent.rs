@@ -940,6 +940,7 @@ fn immersion(ts: &[&str]) -> Option<ImmersionStep> {
         "off" | "none" => Depth::Off,
         "low" | "half" => Depth::Low,
         "full" | "on" | "max" => Depth::Full,
+        "black" | "blackout" | "always" => Depth::Black,
         _ => return None,
     };
     Some(ImmersionStep::To(depth))
@@ -2472,8 +2473,18 @@ mod tests {
         assert_eq!(outcomes, [Ok(im(To(Full))), Ok(Intent::NextEffect)]);
         // The steps from each depth, held at the ends.
         assert_eq!(
-            [Off, Low, Full].map(|d| Darker.resolve(d)),
-            [Low, Full, Full]
+            [Off, Low, Full, crate::immerse::Depth::Black].map(|d| Darker.resolve(d)),
+            [
+                Low,
+                Full,
+                crate::immerse::Depth::Black,
+                crate::immerse::Depth::Black
+            ]
+        );
+        // Black by name.
+        assert_eq!(
+            parse("Immersion black.", &v),
+            Ok(im(To(crate::immerse::Depth::Black)))
         );
         assert_eq!(
             [Off, Low, Full].map(|d| Lighter.resolve(d)),
