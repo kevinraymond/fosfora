@@ -97,6 +97,55 @@ installed debug build (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`):
 `scripts/xr/run.sh uninstall` first, which deletes the app's data on the
 headset, and the same going back to debug.
 
+## What the release build shows
+
+The debug and release APKs carry the same native library, so the app
+decides at launch from the APK itself. It reads `ApplicationInfo.flags`
+through JNI: `FLAG_DEBUGGABLE` set means the debug APK and the developer
+surface, as before; clear means the release surface. If the flags can't be
+read, the app shows the release surface. The launch logs one line, for
+example `build: release APK · release surface`.
+
+`debug.fosfora.devmenu 0|1` forces a surface on either APK, read at
+launch: `0` the release surface, `1` the developer's. Unset, the APK
+decides. This is how the release look is checked on the debug APK:
+
+```sh
+adb shell setprop debug.fosfora.devmenu 0   # release surface on the debug APK
+scripts/xr/run.sh launch
+adb shell setprop debug.fosfora.devmenu ""  # back to the APK's own
+```
+
+On the release surface:
+
+- **The hand menu** has no Debug panel row, no Pitcher toggle and no "All:
+  none" cell. The Pitcher and Debug panel row is gone and the rows under it
+  move up, so the menu is six rows instead of seven (nine with Edit room
+  on). The edge bars' control takes the whole cell "All: none" shared. The
+  debug panel stays off whatever `hand_menu.json` saved, the
+  `debug.fosfora.hud` knob is ignored, and the saved flag is left in the
+  file for the next developer launch. The voice commands for the hidden
+  rows ("pitcher on", "all none") change nothing and the label says
+  "That isn't available".
+- **The log** leaves out what the wearer said. Voice transcripts, the
+  grammar's and the agent's readings of them, and the agent's replies go
+  to the debug level, which the developer surface logs and the release one
+  doesn't. Timings and errors stay at info.
+- **Nothing is written under `debug/`.** The located room is saved to
+  `debug/anchors.json` only when `debug.fosfora.anchors` is `save` or
+  `replay`.
+
+On both surfaces the scan label reads "Loading your room" once the room is
+found, instead of "Room: N surfaces"; the count is in the log's
+`room scan: Found(N)` line. When the session ends on an error the app can't
+recover from, the wearer sees "Fosfora stopped: <reason>" in front of them
+for 4 s before the app exits (the session was lost, out of memory, a
+headset error, an app error). The app keeps drawing frames with only the
+label. When the runtime has already lost the session (`LOSS_PENDING`, an
+instance loss) or the next frame fails, nothing can be drawn: the app logs
+`fatal label: ... could not be drawn` or `... not shown` and exits as
+before. An error before the session starts has no label either.
+
 ## What Meta's store checks in the manifest
 
 From Meta's public "Android Manifest Settings" page and the
