@@ -965,8 +965,10 @@ pub fn span_deg(point: Vec3, (a, b): (Vec2, Vec2)) -> f32 {
 /// from, the seam's direction and `why` it is there, and what the hidden
 /// walls leave undrawn (`hidden_deg` of the turn).
 pub fn line(on: bool, sky: &Sky, why: &str, hidden_deg: f32) -> String {
-    // Adding 0 turns a -0 into 0, so the log never reads "-0.00".
+    // Adding 0 turns a -0 into 0, so the log never reads "-0.00" (nor
+    // "-0°": an empty sum of floats is -0).
     let (p, r, s) = (sky.point + 0.0, sky.room, sky.seam() + 0.0);
+    let hidden_deg = hidden_deg + 0.0;
     let from = if r.walls > 0 {
         format!(
             "the center of the scanned room's {} walls in plan ({:.2} x {:.2} m, floor {:.2}, ceiling {:.2})",
@@ -2161,6 +2163,9 @@ mod tests {
         );
         assert!(off.contains("seam toward (-1.00, 0.00)"), "{off}");
         assert!(off.contains("leave 90°"), "{off}");
+        // No hidden wall: an empty sum, -0.
+        let none: f32 = std::iter::empty::<f32>().sum();
+        assert!(super::line(true, &sky, "launch", none).ends_with("leave 0° of the turn undrawn"));
     }
 
     /// `sky` with `count` layers at a depth multiplier of `depth`.
