@@ -41,6 +41,14 @@
 //! kind's default and is never written: a UUID or `#<k>` naming one is
 //! refused, a kind leaves it out, and the panel's writer refuses it
 //! (`room_file.rs` keeps none either).
+//!
+//! A theme (board #5415, `themes.rs`) writes through the same path:
+//! [`RoomLanes::apply_theme`] sets every kind default with its look and
+//! every surface of the room, in one save and one log line, as
+//! [`RoomLanes::all_none`] does; the hand menu's Theme control, the voice's
+//! "theme drift" and the `debug.fosfora.theme` knob
+//! ([`RoomLanes::poll_theme_knob`]) all call it. [`RoomLanes::theme`] is
+//! what the control shows. Loading a room logs its theme.
 
 use std::path::PathBuf;
 
@@ -53,6 +61,7 @@ use crate::surfaces::{
     COLOR_KEY, RESERVED_BEHAVIORS, SURFACE_LANE_ROWS, SurfaceBehavior, kind_from_name, kind_name,
     lane_params, lane_row,
 };
+use crate::themes::{KnobPoll, Shown, Theme};
 
 /// The shortest UUID prefix the knob takes.
 pub const MIN_UUID_PREFIX: usize = 8;
@@ -376,6 +385,8 @@ pub struct RoomLanes {
     behaviors: Vec<SurfaceBehavior>,
     /// The knob value last applied (or refused), so it applies once.
     applied: Option<String>,
+    /// The `debug.fosfora.theme` knob (board #5415).
+    theme_knob: crate::themes::Knob,
 }
 
 impl RoomLanes {
@@ -390,6 +401,7 @@ impl RoomLanes {
             rows: [[0.0; 4]; SURFACE_LANE_ROWS],
             behaviors: Vec::new(),
             applied: None,
+            theme_knob: crate::themes::Knob::default(),
         }
     }
 
@@ -646,6 +658,112 @@ impl RoomLanes {
         self.commit(&lines);
     }
 
+    /// What the hand menu's Theme control shows for the room as it is now
+    /// (board #5415, `themes::Shown::of`): the saved theme, marked edited
+    /// once something was changed by hand, or with none saved Classic or
+    /// custom.
+    pub fn theme(&self) -> Shown {
+        Shown::of(&self.file)
+    }
+
+    /// Apply `theme` (board #5415): every named kind's default takes the
+    /// theme's look for the kind (behavior, color, band, strength), every
+    /// entry of those kinds takes it whole, hand assignments included, and
+    /// every surface of `boxes` gets an entry with it (the stage floor
+    /// under its UUID, as the knob's `#k`): the theme wins. A live plane
+    /// gets none and follows the theme through its kind's default; an
+    /// unlabeled anchor, which the theme has no look for, is left as it
+    /// is, as [`Self::all_none`] leaves it; a hidden wall is a wall. The
+    /// theme's name is saved with them, in one save and one log line that
+    /// names `source` (the menu, voice, the knob). An edit afterwards stays
+    /// and marks the theme edited ([`Self::theme`]).
+    pub fn apply_theme(&mut self, theme: Theme, boxes: &[LaneBox<'_>], source: &str) {
+        for (kind, look) in theme.looks() {
+            let room = boxes
+                .iter()
+                .filter(|b| b.kind == kind && !is_live(b))
+                .map(|b| b.uuid);
+            self.file
+                .set_kind_look(kind, look.behavior, look.strength, look.params(), room);
+        }
+        self.file.theme = Some(theme);
+        let entries = self
+            .file
+            .anchors
+            .iter()
+            .filter(|e| theme.look(e.kind).is_some())
+            .count();
+        let live = boxes.iter().filter(|b| is_live(b)).count();
+        let lines = [format!(
+            "theme {} ({source}): every kind default and every surface ({} in the room, {live} of them live planes on their kind's default, {entries} entries) -> {}",
+            theme.name(),
+            boxes.len(),
+            theme.summary()
+        )];
+        self.commit(&lines);
+    }
+
+    /// The hand menu's Theme control (and the voice's "next theme"): the
+    /// theme after the one the control shows ([`Shown::next`]), applied as
+    /// [`Self::apply_theme`] does. Returns it.
+    pub fn next_theme(&mut self, boxes: &[LaneBox<'_>], source: &str) -> Theme {
+        let theme = self.theme().next();
+        self.apply_theme(theme, boxes, source);
+        theme
+    }
+
+    /// The `debug.fosfora.theme` knob's value this poll (`themes::Knob`):
+    /// a theme's name applies it when the value changes, once; at launch a
+    /// value naming the room's own theme applies nothing. While the room is
+    /// on but has no anchors yet (`waiting`) it waits for them, as the
+    /// `surface` knob does. Poll it after [`Self::update`], so the room's
+    /// file is loaded. Like the menu it writes the saved room. Returns true
+    /// when it applied a theme.
+    pub fn poll_theme_knob(
+        &mut self,
+        value: Option<&str>,
+        waiting: bool,
+        boxes: &[LaneBox<'_>],
+    ) -> bool {
+        match self.theme_knob.poll(value, waiting, self.theme()) {
+            KnobPoll::Nothing => false,
+            KnobPoll::Kept(t) => {
+                info!(
+                    "room {}: debug.fosfora.theme {}: the room's theme already, nothing applied",
+                    room_label(self.room),
+                    t.name()
+                );
+                false
+            }
+            KnobPoll::Apply(t) => {
+                self.apply_theme(t, boxes, "the knob");
+                true
+            }
+            KnobPoll::Unknown(v) => {
+                warn!(
+                    "debug.fosfora.theme '{v}': no such theme ({}); nothing applied",
+                    crate::themes::listed(false)
+                );
+                false
+            }
+        }
+    }
+
+    /// The room's theme for the log: "theme drift", "theme drift, edited
+    /// since", "no theme saved: classic (the defaults)", "no theme saved:
+    /// custom (4 entries)".
+    fn theme_line(&self) -> String {
+        match (self.file.theme, self.theme()) {
+            (Some(t), Shown::Theme(_)) => format!("theme {}", t.name()),
+            (Some(t), _) => format!("theme {}, edited since", t.name()),
+            (None, Shown::Custom) => format!(
+                "no theme saved: custom ({} entries)",
+                self.file.anchors.len()
+            ),
+            (None, _) => "no theme saved: classic (the defaults)".to_owned(),
+        }
+    }
+
     /// The class cycle from one surface: the step after box `k`'s
     /// effective behavior in its kind's catalogue
     /// ([`SurfaceBehavior::next_for`]) becomes its kind's default and every
@@ -751,8 +869,15 @@ impl RoomLanes {
         }
     }
 
-    /// Load the current room's file, or the built-in defaults.
+    /// Load the current room's file, or the built-in defaults, and log its
+    /// theme (board #5415).
     fn load(&mut self) {
+        self.read();
+        info!("room {}: {}", room_label(self.room), self.theme_line());
+    }
+
+    /// Read the current room's file into `file`, or the built-in defaults.
+    fn read(&mut self) {
         self.revision += 1;
         self.file = RoomFile::default();
         let Some(room) = self.room else {
@@ -1779,6 +1904,305 @@ mod tests {
                 .iter()
                 .all(|e| plane_id(&e.uuid).is_none())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Board #5415: `room()` with a ceiling, a frame and a hidden wall
+    /// among the room's boxes, then a live wall, then the stage floor, as
+    /// the obstacle block orders them.
+    fn themed_room() -> Vec<LaneBox<'static>> {
+        use crate::surfaces::{KIND_CEILING, KIND_FRAME};
+        let mut boxes = room();
+        let stage = boxes.pop().expect("the stage floor");
+        boxes.extend([
+            LaneBox {
+                uuid: uuid(6),
+                kind: KIND_CEILING,
+                label: "CEILING",
+            },
+            LaneBox {
+                uuid: uuid(7),
+                kind: KIND_FRAME,
+                label: "WINDOW_FRAME",
+            },
+            LaneBox {
+                uuid: uuid(8),
+                kind: KIND_WALL,
+                label: "INVISIBLE_WALL_FACE",
+            },
+            LaneBox {
+                uuid: crate::live_planes::plane_uuid(3),
+                kind: KIND_WALL,
+                label: "live wall",
+            },
+            stage,
+        ]);
+        boxes
+    }
+
+    /// Hand assignments of every sort on `themed_room()`: a behavior by
+    /// index, a kind with a color, the panel's color and strength, a
+    /// cycle.
+    fn hand_assign(lanes: &mut RoomLanes, boxes: &[LaneBox<'_>]) {
+        // Unset first, so the same value applies again.
+        assert!(!lanes.poll_knob(None, false, boxes));
+        assert!(lanes.poll_knob(Some("#0=sparks@0.4,wall=pulse:3:2,#5=none"), false, boxes));
+        assert!(lanes.set_params(3, boxes, color(8)));
+        assert!(lanes.set_params(4, boxes, strength(0.2)));
+        assert!(lanes.cycle(6, boxes).is_ok());
+    }
+
+    /// Every surface of `boxes` runs `theme`'s look for its kind, by
+    /// [`RoomLanes::effective`] and [`RoomLanes::params_of`], as the
+    /// face and the panel read it.
+    fn on_theme(lanes: &RoomLanes, boxes: &[LaneBox<'_>], theme: Theme) {
+        for (k, b) in boxes.iter().enumerate() {
+            let look = theme.look(b.kind).expect("a named kind");
+            assert_eq!(
+                lanes.effective(k, boxes),
+                Some((look.behavior, look.strength)),
+                "#{k} {}",
+                b.label
+            );
+            let (c, band, s) = lanes.params_of(k, boxes);
+            assert_eq!((c, band), (look.color, look.band), "#{k} {}", b.label);
+            assert_close!(s, look.strength);
+        }
+    }
+
+    #[test]
+    fn a_theme_puts_every_surface_and_kind_default_on_it_over_hand_assignments() {
+        let (dir, _, _, _) = fresh("theme-wins");
+        let boxes = themed_room();
+        let id = room_of(&boxes);
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        for theme in [Theme::Drift, Theme::Tide, Theme::Aurora, Theme::Classic] {
+            hand_assign(&mut lanes, &boxes);
+            assert_ne!(lanes.theme(), Shown::Theme(theme));
+            lanes.apply_theme(theme, &boxes, "test");
+            on_theme(&lanes, &boxes, theme);
+            for (kind, look) in theme.looks() {
+                assert_eq!(lanes.file.kind_default(kind), look.behavior);
+                assert!(look.runs(lanes.file.resolve_kind(kind)));
+            }
+            assert_eq!(lanes.theme(), Shown::Theme(theme));
+            // The rows the sim and the pass read follow on the next update.
+            assert!(lanes.update(id, &boxes));
+            for (k, b) in boxes.iter().enumerate() {
+                let look = theme.look(b.kind).unwrap();
+                assert_close!(
+                    lanes.rows()[k],
+                    lane_row(look.behavior, look.strength, look.resolved_params())
+                );
+            }
+            // Saved: a relaunch finds the same, named.
+            let mut again = RoomLanes::new(dir.clone());
+            again.update(id, &boxes);
+            on_theme(&again, &boxes, theme);
+            assert_eq!(again.theme(), Shown::Theme(theme));
+            assert_eq!(again.file.theme, Some(theme));
+        }
+        // The live wall has no entry: it follows the wall's default.
+        assert!(
+            lanes
+                .file
+                .anchors
+                .iter()
+                .all(|e| plane_id(&e.uuid).is_none())
+        );
+        // One save, the stage floor's entry under its UUID with the rest.
+        let text = std::fs::read_to_string(room_path(&dir, id.unwrap())).unwrap();
+        assert!(text.contains(&uuid_hex(&STAGE_FLOOR_UUID)), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn classic_gives_exactly_a_fresh_room() {
+        let (dir, _, _, _) = fresh("theme-classic");
+        let boxes = themed_room();
+        let id = room_of(&boxes);
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        let (fresh_rows, fresh_behaviors) = lane_rows(&RoomFile::default(), &boxes);
+        hand_assign(&mut lanes, &boxes);
+        lanes.apply_theme(Theme::Drift, &boxes, "test");
+        lanes.apply_theme(Theme::Classic, &boxes, "test");
+        assert!(lanes.update(id, &boxes));
+        assert_close!(lanes.rows()[..], fresh_rows[..]);
+        assert_eq!(lanes.behaviors, fresh_behaviors);
+        // And as a fresh room goes on: the kind defaults are the built-ins
+        // with no look, so a behavior set by hand afterwards runs its own
+        // band, as it would have without the theme.
+        for (kind, _) in crate::surfaces::KIND_NAMES {
+            assert_eq!(
+                lanes.file.resolve_kind(kind),
+                RoomFile::default().resolve_kind(kind)
+            );
+        }
+        lanes.set_kind(KIND_TABLE, B::Pulse, &boxes);
+        assert_eq!(
+            lanes.params_of(0, &boxes),
+            (0, B::Pulse.default_band(), 1.0)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_edit_after_a_theme_stays_marks_it_edited_and_survives_a_reload() {
+        let (dir, boxes, id, mut lanes) = fresh("theme-edited");
+        lanes.apply_theme(Theme::Tide, &boxes, "test");
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Tide));
+        assert_eq!(lanes.theme().label(), "Theme: Tide");
+        // The panel's color on the desk: that alone changes, the rest stay
+        // on the theme.
+        let tide = Theme::Tide.look(KIND_TABLE).unwrap();
+        assert!(lanes.set_params(0, &boxes, color(4)));
+        assert_eq!(lanes.params_of(0, &boxes), (4, tide.band, tide.strength));
+        assert_eq!(
+            lanes.effective(0, &boxes),
+            Some((tide.behavior, tide.strength))
+        );
+        let wall = Theme::Tide.look(KIND_WALL).unwrap();
+        assert_eq!(lanes.params_of(1, &boxes), (wall.color, wall.band, 1.0));
+        assert_eq!(lanes.theme(), Shown::Edited(Theme::Tide));
+        assert_eq!(lanes.theme().label(), "Theme: Tide*");
+        // A relaunch: the edit and the name kept, still edited.
+        let mut again = RoomLanes::new(dir.clone());
+        again.update(id, &boxes);
+        assert_eq!(again.params_of(0, &boxes).0, 4);
+        assert_eq!(again.file.theme, Some(Theme::Tide));
+        assert_eq!(again.theme(), Shown::Edited(Theme::Tide));
+        // The edit undone: on the theme again.
+        assert!(again.set_params(0, &boxes, color(tide.color)));
+        assert_eq!(again.theme(), Shown::Theme(Theme::Tide));
+        // A kind by voice, All: none, a cycle: each an edit.
+        again.set_kind(KIND_WALL, B::Rings, &boxes);
+        assert_eq!(again.theme(), Shown::Edited(Theme::Tide));
+        // The control's press from an edited theme: the next one, on every
+        // surface.
+        assert_eq!(again.next_theme(&boxes, "test"), Theme::Aurora);
+        on_theme(&again, &boxes, Theme::Aurora);
+        again.all_none(&boxes);
+        assert_eq!(again.theme(), Shown::Edited(Theme::Aurora));
+        // The knob's clear: the fresh room, Classic, no theme saved.
+        assert!(again.poll_knob(Some("clear"), false, &boxes));
+        assert_eq!(again.file.theme, None);
+        assert_eq!(again.theme(), Shown::Theme(Theme::Classic));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_room_from_before_themes_shows_custom_or_classic_and_is_left_alone() {
+        let (dir, boxes, id, _) = fresh("theme-old");
+        let path = room_path(&dir, id.unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Saved before themes, with a hand assignment: custom.
+        let old = format!(
+            r#"{{ "version": 2,
+                "kind_defaults": {{ "table": "streamlines", "floor": "rings", "wall": "spectrum",
+                                    "ceiling": "none", "frame": "pulse", "other": "curls" }},
+                "anchors": [ {{ "uuid": "{}", "kind": "table", "behavior": "curls",
+                               "strength": 1.0 }} ] }}"#,
+            uuid_hex(&uuid(1))
+        );
+        std::fs::write(&path, &old).unwrap();
+        let mut lanes = RoomLanes::new(dir.clone());
+        assert!(lanes.update(id, &boxes));
+        assert_eq!(lanes.theme(), Shown::Custom);
+        assert_eq!(lanes.theme().label(), "Theme: custom");
+        assert_eq!(lanes.behavior(0), B::Curls);
+        // Nothing written until the wearer picks.
+        assert!(!lanes.update(id, &boxes));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        // The first press from custom: Classic, the start of the cycle.
+        assert_eq!(lanes.next_theme(&boxes, "test"), Theme::Classic);
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Classic));
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), old);
+        // Saved before themes with no entries: Classic.
+        let bare = r#"{ "version": 2, "kind_defaults": {}, "anchors": [] }"#;
+        std::fs::write(&path, bare).unwrap();
+        let mut fresh_file = RoomLanes::new(dir.clone());
+        fresh_file.update(id, &boxes);
+        assert_eq!(fresh_file.theme(), Shown::Theme(Theme::Classic));
+        assert_eq!(fresh_file.file.theme, None);
+        // A version 1 file reads too, its entries custom.
+        let v1 = format!(
+            r#"{{ "version": 1, "anchors": [ {{ "uuid": "{}", "kind": "wall",
+                 "behavior": "none" }} ] }}"#,
+            uuid_hex(&uuid(2))
+        );
+        std::fs::write(&path, &v1).unwrap();
+        let mut older = RoomLanes::new(dir.clone());
+        older.update(id, &boxes);
+        assert_eq!(older.theme(), Shown::Custom);
+        assert_eq!(older.behavior(1), B::None);
+        // No file at all: a fresh room, Classic.
+        let (dir2, boxes2, id2, none) = fresh("theme-none");
+        assert_eq!(none.theme(), Shown::Theme(Theme::Classic));
+        assert!(!room_path(&dir2, id2.unwrap()).exists());
+        let _ = boxes2;
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn the_control_steps_through_the_themes_and_wraps() {
+        let (dir, boxes, _, mut lanes) = fresh("theme-cycle");
+        let seen: Vec<Theme> = (0..5).map(|_| lanes.next_theme(&boxes, "test")).collect();
+        assert_eq!(
+            seen,
+            [
+                Theme::Drift,
+                Theme::Tide,
+                Theme::Aurora,
+                Theme::Classic,
+                Theme::Drift
+            ]
+        );
+        on_theme(&lanes, &boxes, Theme::Drift);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_theme_knob_applies_once_per_change_and_writes_the_room() {
+        let (dir, boxes, id, mut lanes) = fresh("theme-knob");
+        lanes.apply_theme(Theme::Drift, &boxes, "test");
+        let path = room_path(&dir, id.unwrap());
+        let saved = std::fs::read_to_string(&path).unwrap();
+        // A relaunch with the knob left on the room's theme: nothing
+        // applied, nothing written, even though a hand edit since.
+        let mut again = RoomLanes::new(dir.clone());
+        again.update(id, &boxes);
+        assert!(again.set_params(4, &boxes, strength(0.5)));
+        let edited = std::fs::read_to_string(&path).unwrap();
+        assert_ne!(edited, saved);
+        let revision = again.revision;
+        // Waiting for the anchors: nothing, not even the launch poll.
+        assert!(!again.poll_theme_knob(Some("drift"), true, &[]));
+        assert!(!again.poll_theme_knob(Some("drift"), false, &boxes));
+        assert_eq!(again.revision, revision);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+        assert_eq!(again.theme(), Shown::Edited(Theme::Drift));
+        // A change applies, once, and is saved.
+        assert!(again.poll_theme_knob(Some("aurora"), false, &boxes));
+        let revision = again.revision;
+        for _ in 0..3 {
+            assert!(!again.poll_theme_knob(Some("aurora"), false, &boxes));
+        }
+        assert_eq!(again.revision, revision);
+        on_theme(&again, &boxes, Theme::Aurora);
+        let mut third = RoomLanes::new(dir.clone());
+        third.update(id, &boxes);
+        assert_eq!(third.theme(), Shown::Theme(Theme::Aurora));
+        // An unknown name applies nothing.
+        assert!(!again.poll_theme_knob(Some("sunset"), false, &boxes));
+        assert_eq!(again.revision, revision);
+        // Each theme in turn, as a measuring script sets them.
+        for theme in Theme::ALL {
+            assert!(again.poll_theme_knob(Some(theme.name()), false, &boxes));
+            on_theme(&again, &boxes, theme);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
