@@ -427,8 +427,10 @@ impl Fill {
 }
 
 /// The darkest the passthrough gets in roam: the image's opacity at the
-/// full immersion level.
-pub const ROAM_FLOOR: f32 = 0.5;
+/// full immersion level, while the wearer is still. A quarter keeps people
+/// and obstacles as shapes the visuals play off without holding the eye;
+/// walking brings the whole room back ([`walk_factor`]).
+pub const ROAM_FLOOR: f32 = 0.25;
 
 /// The immersion floor (`Immersion::set_floor`): in roam [`ROAM_FLOOR`], or
 /// the seated one where that is lighter; seated, the seated one.
@@ -833,7 +835,7 @@ mod tests {
         // Seated, the level is untouched; in roam it is scaled.
         assert_close!(immerse_level(0.8, false, 0.0), 0.8);
         assert_close!(immerse_level(0.8, true, 0.5), 0.4);
-        // The floor: 0.5 in roam, a lighter seated one kept.
+        // The floor: 0.25 in roam, a lighter seated one kept.
         assert_close!(immerse_floor(true, 0.15), ROAM_FLOOR);
         assert_close!(immerse_floor(false, 0.15), 0.15);
         assert_close!(immerse_floor(true, 0.7), 0.7);

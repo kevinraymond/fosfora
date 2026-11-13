@@ -875,7 +875,7 @@ off looks as before. Giving the stage floor an emitting default in roam
 would have spawned sparks under a floor whose label says rings.
 
 **Immersion gives way to walking.** In roam the passthrough floor is
-`ROAM_FLOOR` (0.5), through `Immersion`'s floor, or the seated floor where
+`ROAM_FLOOR` (0.25), through `Immersion`'s floor, or the seated floor where
 that is lighter. The immersion level is scaled by head speed: all of it
 below `WALK_FULL_M_S` (0.3 m/s), none above `WALK_NONE_M_S` (0.8 m/s), a
 straight line between. The speed is the head's level travel per frame,
@@ -909,13 +909,13 @@ unworn.
 **Log.** At launch "roam: off", "roam: on (chosen)" or "roam: on
 (debug.fosfora.roam, not saved)", and the Space Setup line ("scene: Space
 Setup not asked yet: an empty scan opens it, once"). On each change "roam:
-on (no room) · the scan found no room · passthrough floor 0.50". Per follow
+on (no room) · the scan found no room · passthrough floor 0.25". Per follow
 "roam: the cloud follows the wearer, 1.24 m from the head, gliding over
 1.5 s". Per floor jump "roam: the stage floor at (4.10, -2.30), under the
 head". The fill "roam: nothing in reach emits on 'Embers': 'Flux Cloud'
 fills the space" and "roam off: back to 'Embers'". Once a second in roam
 while walking counts, "roam: head speed 0.62 m/s · immersion x0.36 (level
-0.30 of 0.84) · passthrough floor 0.50".
+0.30 of 0.84) · passthrough floor 0.25".
 
 ## Live planes (board #5391)
 
