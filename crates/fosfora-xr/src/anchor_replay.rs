@@ -22,6 +22,10 @@
 //! `room_file::room_id` of the saved UUIDs, so a replayed room opens the same
 //! `rooms/<id>.json` as the live one.
 //!
+//! Board #4204: the developer surface saves the room on every launch; the
+//! release surface saves none unless the knob asks, `debug.fosfora.anchors
+//! save` or `replay` ([`saves`]).
+//!
 //! Plain data, so it builds and tests on the desktop; `room.rs` does the
 //! writes and turns a replay into obstacle boxes.
 
@@ -40,6 +44,9 @@ pub const DEBUG_DIR: &str = "debug";
 pub const FILE_NAME: &str = "anchors.json";
 /// The knob's value that turns the replay on.
 pub const KNOB_REPLAY: &str = "replay";
+/// The knob's value that saves the room on the release surface without
+/// replaying it (board #4204).
+pub const KNOB_SAVE: &str = "save";
 /// How long a set of located anchors that is not the whole room must hold
 /// before it is saved.
 pub const STABLE_FOR: Duration = Duration::from_secs(2);
@@ -252,6 +259,14 @@ impl SaveRule {
 /// `debug.fosfora.anchors`: on for the exact value [`KNOB_REPLAY`] only.
 pub fn replay_knob(value: Option<&str>) -> bool {
     value == Some(KNOB_REPLAY)
+}
+
+/// Whether the located room is saved to `debug/anchors.json` (board
+/// #4204): always on the developer surface (`developer`), and on the
+/// release one only when the `debug.fosfora.anchors` knob asks, by
+/// [`KNOB_SAVE`] or [`KNOB_REPLAY`].
+pub fn saves(developer: bool, knob: Option<&str>) -> bool {
+    developer || matches!(knob.map(str::trim), Some(KNOB_SAVE | KNOB_REPLAY))
 }
 
 /// The replay's state over a launch.
@@ -502,5 +517,25 @@ mod tests {
         assert!(failed.should_load(0));
         assert!(!failed.should_load(0));
         assert!(!failed.active());
+    }
+
+    #[test]
+    fn the_release_surface_saves_the_room_only_when_the_knob_asks() {
+        for knob in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("1"),
+            Some("replay"),
+            Some("save"),
+        ] {
+            assert!(saves(true, knob), "{knob:?}");
+        }
+        assert!(!saves(false, None));
+        assert!(!saves(false, Some("")));
+        assert!(!saves(false, Some("1")));
+        assert!(saves(false, Some("save")));
+        assert!(saves(false, Some("replay")));
+        assert!(saves(false, Some(" save ")));
     }
 }

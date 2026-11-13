@@ -600,7 +600,7 @@ mod tests {
         );
         assert_eq!(
             scan_text(ScanState::Found(17), Roam::On(Why::Chosen)),
-            "Room: 17 surfaces"
+            crate::label::FOUND_LABEL
         );
     }
 

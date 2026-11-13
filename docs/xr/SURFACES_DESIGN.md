@@ -358,7 +358,8 @@ working through the slot.
 **The scan label.** The room editor's label, with no hit, says where
 the room scan is (`Room::scan_state`): "Scanning the room…" held while
 no query has returned anchors (the first, its retries, Space Setup),
-"Room: 17 surfaces" for 3 s when one does, "No room found. Rescan from
+"Loading your room" for 3 s when one does (until board #4204 it read
+"Room: 17 surfaces"; the count is now in the log only), "No room found. Rescan from
 the hand menu" for 6 s when the retries give up, each fading over
 0.4 s, re-posed every frame 1.2 m in front of the head along the view
 turned level, at eye height. The editor's label takes its place while

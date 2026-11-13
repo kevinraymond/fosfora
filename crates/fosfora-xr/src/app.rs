@@ -313,7 +313,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.rescan 1|query           (once the room is in: launch Space Setup and requery (1), or requery alone (query), replacing the anchors; the hand menu's "Rescan the room" over adb)
     //   adb shell setprop debug.fosfora.anchors replay           (board #3536, a measurement aid for unworn runs: a scene query that finds no anchors
     //       replays the last located room, saved on every launch to debug/anchors.json under the config dir when its located set changes,
-    //       as static boxes, until a query returns live anchors; unset or any other value off; read at launch)
+    //       as static boxes, until a query returns live anchors; unset or any other value off; read at launch. Board #4204: the release
+    //       surface saves the room only with replay or save, "save" saving without replaying)
     //   adb shell setprop debug.fosfora.floor 0|1                (the stage floor as an obstacle; default on in mr)
     //   adb shell setprop debug.fosfora.gravity 0.5              (downward settle drift m/s; default 0.5 in mr and world, 0 otherwise)
     //   adb shell setprop debug.fosfora.handpad 0.06             (m added to each hand joint's obstacle radius)
@@ -912,6 +913,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // and forced for a launch by the knob.
     let mut roam = crate::roam::RoamState::new(menu_saved.roam, switch("debug.fosfora.roam"));
     info!("{}", crate::roam::launch_line(&roam));
+    let anchors_knob = debug_prop("debug.fosfora.anchors");
     let mr = MrOptions {
         passthrough: toggle("debug.fosfora.passthrough", mixed),
         hands: toggle("debug.fosfora.hands", mixed),
@@ -926,9 +928,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             Some("query") => crate::room::Rescan::Query,
             _ => crate::room::Rescan::Off,
         },
-        anchor_replay: crate::anchor_replay::replay_knob(
-            debug_prop("debug.fosfora.anchors").as_deref(),
-        ),
+        anchor_replay: crate::anchor_replay::replay_knob(anchors_knob.as_deref()),
+        anchor_save: crate::anchor_replay::saves(surface.developer(), anchors_knob.as_deref()),
         env_depth,
         micro: toggle("debug.fosfora.micro", true),
         faces: crate::faces_layer::FacesOptions::from_knobs(
@@ -3399,7 +3400,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // The label: the room editor's after an action at its hit,
             // else the room scan's (board #3488), held in front of the
             // head: "Scanning the room…" until the query returns anchors,
-            // "Room: 17 surfaces" when it does, "No room found..." when
+            // "Loading your room" when it does, "No room found..." when
             // the retries give up.
             // Board #3751: the voice path's window, toggled by the left
             // fist (hand 0, board #5380: a fist opens it, the next closes

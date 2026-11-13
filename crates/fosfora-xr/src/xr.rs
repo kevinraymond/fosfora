@@ -73,6 +73,10 @@ pub struct MrOptions {
     /// Replay the saved room when the query finds no anchors
     /// (`debug.fosfora.anchors replay`, board #3536).
     pub anchor_replay: bool,
+    /// Save the located room to `debug/anchors.json` for a replay
+    /// (`anchor_replay::saves`, board #4204): the developer surface, or
+    /// the knob on the release one.
+    pub anchor_save: bool,
     /// The live environment depth as an occluder or its diagnostic
     /// (`debug.fosfora.envdepth*`); `None` creates no provider at all.
     pub env_depth: Option<EnvDepthOptions>,
@@ -602,6 +606,7 @@ impl XrSession {
                     mr.rescan_at_start,
                     config,
                     mr.anchor_replay,
+                    mr.anchor_save,
                 ) {
                     Ok(r) => Some(r),
                     Err(e) => {

@@ -176,6 +176,9 @@ pub struct Room {
     /// Board #3536: `debug/anchors.json` under the config dir, the last
     /// located room, written when the located set changes.
     replay_path: PathBuf,
+    /// Whether the located room is written to `replay_path` at all
+    /// (`anchor_replay::saves`, board #4204).
+    save: bool,
     save_rule: SaveRule,
     /// `debug.fosfora.anchors replay`: an empty query brings the saved room
     /// back as static boxes until live anchors arrive.
@@ -191,8 +194,8 @@ impl Room {
     /// (`XR_FB_scene_capture`) and the query reruns when it completes.
     /// With `rescan_at_start`, the first query that returns anchors is
     /// followed by a [`Self::rescan`] or a [`Self::requery`]. The located
-    /// room is saved under `config` (`anchor_replay::path`); with
-    /// `replay`, a query that finds no anchors replays it.
+    /// room is saved under `config` (`anchor_replay::path`) when `save`;
+    /// with `replay`, a query that finds no anchors replays it.
     pub fn new(
         session: &xr::Session<xr::Vulkan>,
         base: &xr::Space,
@@ -200,6 +203,7 @@ impl Room {
         rescan_at_start: Rescan,
         config: &Path,
         replay: bool,
+        save: bool,
     ) -> Result<Self> {
         let instance = session.instance().clone();
         let exts = instance.exts();
@@ -234,6 +238,7 @@ impl Room {
             labels: std::sync::Arc::default(),
             mesh_triangles: None,
             replay_path: crate::anchor_replay::path(config),
+            save,
             save_rule: SaveRule::default(),
             replay: Replay::new(replay),
         };
@@ -865,12 +870,14 @@ impl Room {
             );
         }
         let located_set = crate::room_file::room_id(self.boxes.iter().map(|b| b.uuid));
-        if self.save_rule.observe(
-            located_set,
-            self.boxes.len() == self.anchors.len(),
-            self.replay.active(),
-            now,
-        ) {
+        if self.save
+            && self.save_rule.observe(
+                located_set,
+                self.boxes.len() == self.anchors.len(),
+                self.replay.active(),
+                now,
+            )
+        {
             self.save_replay();
         }
     }

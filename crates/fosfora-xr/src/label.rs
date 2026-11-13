@@ -30,8 +30,9 @@
 //! anchors yet, retrying"; 0 anchors on eight launches in a row, Sep 30).
 //! The same label, with no hit, says where the room scan is
 //! ([`ScanLabel`], from `room.rs`'s [`ScanState`]): "Scanning the room…"
-//! held while the query has not returned anchors, "Room: 17 surfaces" for
-//! [`SCAN_FOUND_S`] when it does, "No room found. Rescan from the hand
+//! held while the query has not returned anchors, "Loading your room" for
+//! [`SCAN_FOUND_S`] when it does (board #4204: the count, "Room: 17
+//! surfaces" until then, is the log's alone), "No room found. Rescan from the hand
 //! menu" for [`SCAN_NONE_S`] when the retries give up, each fading over
 //! [`FADE_S`]; re-posed every frame [`SCAN_DISTANCE_M`] in front of the
 //! head at eye height ([`scan_billboard`]). The editor's label, while one
@@ -391,12 +392,16 @@ pub fn with_scene_permission(state: Option<ScanState>, waiting: bool) -> Option<
     }
 }
 
+/// The scan label's words once the scan has found the room (board #4204).
+pub const FOUND_LABEL: &str = "Loading your room";
+
 /// The scan label's words for `state`.
 pub fn scan_text(state: ScanState) -> String {
     match state {
         ScanState::Scanning => "Scanning the room\u{2026}".to_owned(),
-        ScanState::Found(1) => "Room: 1 surface".to_owned(),
-        ScanState::Found(n) => format!("Room: {n} surfaces"),
+        // Board #4204: the same words for any count; the log's
+        // "room scan: Found(17)" keeps the count.
+        ScanState::Found(_) => FOUND_LABEL.to_owned(),
         ScanState::None => "No room found. Rescan from the hand menu".to_owned(),
         ScanState::NotAllowed => "Allow spatial data to see the room".to_owned(),
     }
@@ -1032,8 +1037,9 @@ mod tests {
     #[test]
     fn the_scan_label_says_where_the_room_scan_is() {
         assert_eq!(scan_text(ScanState::Scanning), "Scanning the room\u{2026}");
-        assert_eq!(scan_text(ScanState::Found(17)), "Room: 17 surfaces");
-        assert_eq!(scan_text(ScanState::Found(1)), "Room: 1 surface");
+        // Board #4204: one generic line, whatever the count.
+        assert_eq!(scan_text(ScanState::Found(17)), "Loading your room");
+        assert_eq!(scan_text(ScanState::Found(1)), "Loading your room");
         assert_eq!(
             scan_text(ScanState::None),
             "No room found. Rescan from the hand menu"
@@ -1063,7 +1069,7 @@ mod tests {
         assert_eq!(l.now(), Some(("Scanning the room\u{2026}", 1.0)));
         // Found: named, then gone after 3 s and its fade.
         run(&mut l, Some(ScanState::Found(17)), 2.9);
-        assert_eq!(l.now(), Some(("Room: 17 surfaces", 1.0)));
+        assert_eq!(l.now(), Some((FOUND_LABEL, 1.0)));
         run(&mut l, Some(ScanState::Found(17)), 0.6);
         assert_eq!(l.now(), None);
         // A requery that returns the same count says nothing again;
@@ -1071,7 +1077,7 @@ mod tests {
         run(&mut l, Some(ScanState::Found(17)), 10.0);
         assert_eq!(l.now(), None);
         l.step(Some(ScanState::Found(18)), dt);
-        assert_eq!(l.now().map(|n| n.0), Some("Room: 18 surfaces"));
+        assert_eq!(l.now().map(|n| n.0), Some(FOUND_LABEL));
         // None: 6 s, then gone.
         let mut l = ScanLabel::default();
         run(&mut l, Some(ScanState::None), 5.9);
@@ -1120,7 +1126,7 @@ mod tests {
         l.step(with_scene_permission(Some(ScanState::Scanning), false), dt);
         assert_eq!(l.now(), Some(("Scanning the room\u{2026}", 1.0)));
         l.step(with_scene_permission(Some(ScanState::Found(17)), false), dt);
-        assert_eq!(l.now(), Some(("Room: 17 surfaces", 1.0)));
+        assert_eq!(l.now(), Some((FOUND_LABEL, 1.0)));
     }
 
     #[test]
