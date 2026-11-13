@@ -13,7 +13,9 @@
 //!   "kind_defaults": { "table": "streamlines", "floor": "rings", "wall": "spectrum",
 //!                      "ceiling": "none", "frame": "pulse", "other": "curls" },
 //!   "anchors": [ { "uuid": "<32 hex>", "kind": "table", "behavior": "curls",
-//!                  "strength": 1.0, "params": [5.0, 2.0] } ] }
+//!                  "strength": 1.0, "params": [5.0, 2.0] } ],
+//!   "theme": "drift",
+//!   "kind_looks": { "frame": { "strength": 0.6, "params": [6.0, 1.0] } } }
 //! ```
 //!
 //! An anchor with an entry runs the entry; one without runs its kind's
@@ -37,6 +39,23 @@
 //! built-ins; the next save writes version 2 with the full set. A version
 //! 2 file loads as it was saved.
 //!
+//! **Themes** (board #5415, `themes.rs`). Two optional fields, still
+//! version 2: `theme`, the name of the theme last applied, and
+//! `kind_looks`, the strength and the `params` a kind's surfaces without an
+//! entry run with its default behavior, which only a theme sets (a live
+//! plane, which never has an entry, follows a theme through them). Each is
+//! written only when set, so a room that never had a theme saves as it
+//! did. A file from before themes reads with no theme and no looks (full
+//! strength, the behavior's defaults); one that names an unknown theme
+//! reads with none and says so. A file written now reads in the build
+//! before themes too: its reader ignores fields it does not know, so the
+//! kind defaults and the entries, with their params, read as written, and
+//! only the name and the kind looks are lost (a live plane then runs its
+//! kind's behavior in its default color and band at full strength) until
+//! that build saves the room without them. An entry made where a surface
+//! ran its kind's default ([`RoomFile::assign`]) starts from the kind's
+//! look, so an edit by hand after a theme changes only what it names.
+//!
 //! The synthetic stage floor has no anchor: an assignment to it is kept
 //! under the all-zero UUID, which no anchor has, and never counts toward
 //! the room id.
@@ -54,6 +73,7 @@ use serde_json::{Map, Value, json};
 
 use crate::live_planes::plane_id;
 use crate::surfaces::{KIND_NAMES, SurfaceBehavior, kind_from_name, kind_name};
+use crate::themes::Theme;
 
 /// The room file's format version: 2 since D2 (board #3488), which reads
 /// a version 1 file without its kind defaults.
@@ -149,14 +169,40 @@ pub struct AnchorEntry {
     pub params: Option<[f32; 2]>,
 }
 
+/// What a kind's surfaces without an entry run besides its default
+/// behavior (board #5415): a theme's strength and parameters for the kind.
+/// The default, full strength and no params (the behavior's own), is what
+/// every kind ran before themes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KindLook {
+    /// 0..1.
+    pub strength: f32,
+    /// The lane's two spare values, as an entry's `params`; `None` runs the
+    /// behavior's defaults ([`default_params`]).
+    pub params: Option<[f32; 2]>,
+}
+
+impl Default for KindLook {
+    fn default() -> Self {
+        Self {
+            strength: 1.0,
+            params: None,
+        }
+    }
+}
+
 /// A room's assignments: a default per kind and an entry per assigned
-/// anchor.
+/// anchor, and the theme last applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoomFile {
     /// By kind, `KIND_NONE` (always none) to `KIND_OTHER`.
     kind_defaults: [SurfaceBehavior; 7],
+    /// By kind, as `kind_defaults`: what a theme set besides the behavior.
+    kind_looks: [KindLook; 7],
     /// At most one per UUID.
     pub anchors: Vec<AnchorEntry>,
+    /// The theme last applied (board #5415); `None` before any.
+    pub theme: Option<Theme>,
 }
 
 impl Default for RoomFile {
@@ -165,7 +211,9 @@ impl Default for RoomFile {
     fn default() -> Self {
         Self {
             kind_defaults: std::array::from_fn(|k| SurfaceBehavior::default_for(k as u32)),
+            kind_looks: [KindLook::default(); 7],
             anchors: Vec::new(),
+            theme: None,
         }
     }
 }
@@ -198,35 +246,59 @@ impl RoomFile {
         }
     }
 
+    /// What a theme set for `kind`'s surfaces without an entry besides the
+    /// behavior ([`KindLook`]); the default for a kind it never set and for
+    /// a kind without a name.
+    pub fn kind_look(&self, kind: u32) -> KindLook {
+        self.kind_looks
+            .get(kind as usize)
+            .copied()
+            .unwrap_or_default()
+    }
+
     /// The entry for `uuid`, if any.
     pub fn entry(&self, uuid: &[u8; 16]) -> Option<&AnchorEntry> {
         self.anchors.iter().find(|e| e.uuid == *uuid)
     }
 
-    /// What the surface `uuid` of `kind` runs: its entry's behavior,
-    /// strength and parameters, else its kind's default at full strength.
-    /// Parameters nothing set are the defaults ([`default_params`]).
-    pub fn resolve(&self, uuid: &[u8; 16], kind: u32) -> (SurfaceBehavior, f32, [f32; 2]) {
-        let (behavior, strength, params) = self
-            .entry(uuid)
-            .map_or((self.kind_default(kind), 1.0, None), |e| {
-                (e.behavior, e.strength, e.params)
-            });
+    /// What a surface of `kind` without an entry runs: the kind's default
+    /// behavior, at its look's strength and parameters ([`KindLook`]: full
+    /// strength and the behavior's defaults unless a theme set them).
+    pub fn resolve_kind(&self, kind: u32) -> (SurfaceBehavior, f32, [f32; 2]) {
+        let behavior = self.kind_default(kind);
+        let look = self.kind_look(kind);
         (
             behavior,
-            strength,
-            params.unwrap_or_else(|| default_params(behavior)),
+            look.strength,
+            look.params.unwrap_or_else(|| default_params(behavior)),
+        )
+    }
+
+    /// What the surface `uuid` of `kind` runs: its entry's behavior,
+    /// strength and parameters, else its kind's ([`Self::resolve_kind`]).
+    /// Parameters nothing set are the defaults ([`default_params`]).
+    pub fn resolve(&self, uuid: &[u8; 16], kind: u32) -> (SurfaceBehavior, f32, [f32; 2]) {
+        let Some(e) = self.entry(uuid) else {
+            return self.resolve_kind(kind);
+        };
+        (
+            e.behavior,
+            e.strength,
+            e.params.unwrap_or_else(|| default_params(e.behavior)),
         )
     }
 
     /// Assign `behavior` at `strength` (clamped to 0..1) to the surface
     /// `uuid` of `kind`, replacing its entry if it has one (its parameters
-    /// kept). Nothing for a live plane's UUID: it is never kept.
+    /// kept). A new entry starts from the parameters of its kind's look
+    /// ([`KindLook`], none unless a theme set them), what the surface ran
+    /// without it. Nothing for a live plane's UUID: it is never kept.
     pub fn assign(&mut self, uuid: [u8; 16], kind: u32, behavior: SurfaceBehavior, strength: f32) {
         if plane_id(&uuid).is_some() {
             return;
         }
         let strength = strength.clamp(0.0, 1.0);
+        let params = self.kind_look(kind).params;
         match self.anchors.iter_mut().find(|e| e.uuid == uuid) {
             Some(e) => {
                 e.kind = kind;
@@ -238,9 +310,49 @@ impl RoomFile {
                 kind,
                 behavior,
                 strength,
-                params: None,
+                params,
             }),
         }
+    }
+
+    /// A theme's look for `kind` (board #5415): `behavior` at `strength`
+    /// (clamped to 0..1) with `params` (`None`: the behavior's defaults)
+    /// becomes the kind's default with its look, every entry of the kind
+    /// takes all three, hand assignments included, and each surface in
+    /// `live` (the room's surfaces of that kind now) gets an entry with
+    /// them; a live plane gets none and follows the default. Nothing for a
+    /// kind without a name. Returns how many entries it wrote.
+    pub fn set_kind_look(
+        &mut self,
+        kind: u32,
+        behavior: SurfaceBehavior,
+        strength: f32,
+        params: Option<[f32; 2]>,
+        live: impl IntoIterator<Item = [u8; 16]>,
+    ) -> usize {
+        if !KIND_NAMES.iter().any(|(k, _)| *k == kind) {
+            return 0;
+        }
+        let strength = strength.clamp(0.0, 1.0);
+        self.kind_defaults[kind as usize] = behavior;
+        self.kind_looks[kind as usize] = KindLook { strength, params };
+        let mut written = 0;
+        for e in self.anchors.iter_mut().filter(|e| e.kind == kind) {
+            e.behavior = behavior;
+            e.strength = strength;
+            e.params = params;
+            written += 1;
+        }
+        for uuid in live.into_iter().filter(|u| plane_id(u).is_none()) {
+            if self.entry(&uuid).is_none_or(|e| e.kind != kind) {
+                self.assign(uuid, kind, behavior, strength);
+                if let Some(e) = self.anchors.iter_mut().find(|e| e.uuid == uuid) {
+                    e.params = params;
+                }
+                written += 1;
+            }
+        }
+        written
     }
 
     /// The class assignment: `behavior` at `strength` becomes `kind`'s
@@ -296,7 +408,9 @@ impl RoomFile {
     }
 
     /// The file's JSON ([`VERSION`]), every kind default, entries in UUID
-    /// order, an entry's `params` only when set; never a live plane's.
+    /// order, an entry's `params` only when set; never a live plane's. The
+    /// theme and the kind looks a theme set (board #5415) only when there
+    /// are some: a room that never had a theme saves as before themes.
     pub fn to_json(&self) -> String {
         let defaults: Map<String, Value> = KIND_NAMES
             .iter()
@@ -324,11 +438,31 @@ impl RoomFile {
                 entry
             })
             .collect();
-        let file = json!({
+        let mut file = json!({
             "version": VERSION,
             "kind_defaults": defaults,
             "anchors": anchors,
         });
+        let looks: Map<String, Value> = KIND_NAMES
+            .iter()
+            .filter(|&&(k, _)| self.kind_look(k) != KindLook::default())
+            .map(|&(k, name)| {
+                let look = self.kind_look(k);
+                let mut v = json!({ "strength": look.strength });
+                if let (Some(p), Some(obj)) = (look.params, v.as_object_mut()) {
+                    obj.insert("params".to_owned(), json!(p));
+                }
+                (name.to_owned(), v)
+            })
+            .collect();
+        if let Some(obj) = file.as_object_mut() {
+            if let Some(theme) = self.theme {
+                obj.insert("theme".to_owned(), json!(theme.name()));
+            }
+            if !looks.is_empty() {
+                obj.insert("kind_looks".to_owned(), Value::Object(looks));
+            }
+        }
         serde_json::to_string_pretty(&file).unwrap_or_default()
     }
 
@@ -337,8 +471,12 @@ impl RoomFile {
     /// that default or entry unset (the kind's built-in default), as does
     /// a bad UUID; a version 1 file's kind defaults give way to the
     /// built-ins and its entries' parameters are dropped (the module
-    /// docs), which the list says once. `Err` for text that is not a
-    /// version 1 or 2 room file.
+    /// docs), which the list says once. A version 2 file's `theme` names
+    /// the theme last applied (an unknown name reads as none, said once)
+    /// and its `kind_looks` the strength and params a theme set per kind
+    /// (an unknown kind or params that are not two numbers skipped, said
+    /// once each); a file without them has neither. `Err` for text that is
+    /// not a version 1 or 2 room file.
     pub fn from_json(text: &str) -> Result<(Self, Vec<String>), String> {
         let v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let obj = v.as_object().ok_or("not a JSON object")?;
@@ -414,7 +552,49 @@ impl RoomFile {
                 }
             }
         }
+        if version == VERSION {
+            file.read_theme(obj, &mut skipped);
+        }
         Ok((file, skipped))
+    }
+
+    /// A version 2 file's `theme` and `kind_looks` (board #5415), read
+    /// after the entries, which are read with no looks set and so keep the
+    /// params they were saved with.
+    fn read_theme(&mut self, obj: &Map<String, Value>, skipped: &mut Vec<String>) {
+        if let Some(v) = obj.get("theme") {
+            let name = v.as_str().unwrap_or("");
+            self.theme = Theme::from_name(name);
+            if self.theme.is_none() {
+                skipped.push(format!("theme: unknown theme '{name}', none"));
+            }
+        }
+        let Some(looks) = obj.get("kind_looks").and_then(Value::as_object) else {
+            return;
+        };
+        for (name, v) in looks {
+            let Some(kind) = kind_from_name(name) else {
+                skipped.push(format!("kind_looks: unknown kind '{name}'"));
+                continue;
+            };
+            let strength = v.get("strength").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+            let params = match v.get("params") {
+                None => None,
+                Some(p) => {
+                    let read = params_of(p);
+                    if read.is_none() {
+                        skipped.push(format!(
+                            "kind_looks.{name}: params {p} are not two numbers, left unset"
+                        ));
+                    }
+                    read
+                }
+            };
+            self.kind_looks[kind as usize] = KindLook {
+                strength: strength.clamp(0.0, 1.0),
+                params,
+            };
+        }
     }
 
     /// Read the room file at `path`.
@@ -867,5 +1047,208 @@ mod tests {
         let (read, skipped) = RoomFile::from_json(&text).expect("reads");
         assert!(read.anchors.is_empty());
         assert_eq!(skipped.len(), 1, "{skipped:?}");
+    }
+
+    /// Board #5415: a room as a theme leaves it, a hand edit on one wall
+    /// after it, the frames' look dimmed.
+    fn themed() -> RoomFile {
+        use SurfaceBehavior as B;
+        let mut file = RoomFile::default();
+        file.assign(uuid(1), KIND_WALL, B::Spectrum, 0.5);
+        file.set_params(uuid(1), [3.0, 0.0]);
+        let walls = file.set_kind_look(
+            KIND_WALL,
+            B::Aurora,
+            1.0,
+            Some([8.0, 0.0]),
+            [uuid(1), uuid(2)],
+        );
+        assert_eq!(walls, 2);
+        file.set_kind_look(
+            crate::surfaces::KIND_FRAME,
+            B::Pulse,
+            0.6,
+            Some([6.0, 1.0]),
+            [uuid(3)],
+        );
+        file.set_kind_look(KIND_TABLE, B::Streamlines, 1.0, None, [uuid(4)]);
+        file.theme = Some(Theme::Aurora);
+        file
+    }
+
+    #[test]
+    fn a_theme_and_its_kind_looks_round_trip() {
+        use SurfaceBehavior as B;
+        let file = themed();
+        // The hand assignment gave way: the wall's entry runs the look.
+        assert_eq!(
+            file.resolve(&uuid(1), KIND_WALL),
+            (B::Aurora, 1.0, [8.0, 0.0])
+        );
+        // A wall without an entry (a live plane's, or one the room gains
+        // later) runs the kind's look, its color and band too.
+        assert_eq!(
+            file.resolve(&uuid(9), KIND_WALL),
+            (B::Aurora, 1.0, [8.0, 0.0])
+        );
+        assert_eq!(
+            file.resolve(&uuid(9), crate::surfaces::KIND_FRAME),
+            (B::Pulse, 0.6, [6.0, 1.0])
+        );
+        let text = file.to_json();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["version"], 2);
+        assert_eq!(v["theme"], "aurora");
+        assert_eq!(v["kind_defaults"]["wall"], "aurora");
+        // Only the looks that differ from the default are written.
+        let looks = v["kind_looks"].as_object().unwrap();
+        assert_eq!(looks.len(), 2, "{text}");
+        assert_eq!(v["kind_looks"]["wall"]["params"], json!([8.0, 0.0]));
+        assert!((v["kind_looks"]["frame"]["strength"].as_f64().unwrap() - 0.6).abs() < 1e-6);
+        let (back, skipped) = RoomFile::from_json(&text).expect("reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let mut expected = file.clone();
+        expected.anchors.sort_by_key(|e| e.uuid);
+        assert_eq!(back, expected);
+        // Clear forgets the theme and the looks.
+        let mut cleared = back;
+        cleared.clear();
+        assert_eq!(cleared, RoomFile::default());
+    }
+
+    #[test]
+    fn a_room_from_before_themes_reads_with_none_and_saves_as_it_did() {
+        use SurfaceBehavior as B;
+        let text = format!(
+            r#"{{ "version": 2,
+                "kind_defaults": {{ "table": "curls", "floor": "rings", "wall": "spectrum",
+                                    "ceiling": "none", "frame": "pulse", "other": "curls" }},
+                "anchors": [
+                  {{ "uuid": "{}", "kind": "table", "behavior": "pulse", "strength": 0.5,
+                     "params": [4.0, 2.0] }} ] }}"#,
+            uuid_hex(&uuid(1))
+        );
+        let (file, skipped) = RoomFile::from_json(&text).expect("reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(file.theme, None);
+        for (kind, _) in KIND_NAMES {
+            assert_eq!(file.kind_look(kind), KindLook::default());
+        }
+        assert_eq!(
+            file.resolve(&uuid(1), KIND_TABLE),
+            (B::Pulse, 0.5, [4.0, 2.0])
+        );
+        assert_eq!(
+            file.resolve(&uuid(2), KIND_TABLE),
+            (B::Curls, 1.0, [0.0; 2])
+        );
+        // Saved again: no theme, no looks, the shape it had.
+        let out = file.to_json();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v.get("theme").is_none(), "{out}");
+        assert!(v.get("kind_looks").is_none(), "{out}");
+        assert_eq!(v.as_object().unwrap().len(), 3, "{out}");
+        // A version 1 file has neither, whatever it carries.
+        let (v1, _) = RoomFile::from_json(
+            r#"{ "version": 1, "anchors": [], "theme": "drift",
+                 "kind_looks": { "wall": { "strength": 0.5 } } }"#,
+        )
+        .expect("reads");
+        assert_eq!(v1, RoomFile::default());
+    }
+
+    #[test]
+    fn a_themed_room_reads_in_the_build_before_themes() {
+        use SurfaceBehavior as B;
+        // That build's reader is this one without the two fields: it never
+        // looks at them, so dropping them shows what it reads.
+        let file = themed();
+        let mut v: Value = serde_json::from_str(&file.to_json()).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        assert!(obj.remove("theme").is_some());
+        assert!(obj.remove("kind_looks").is_some());
+        let (old, skipped) = RoomFile::from_json(&v.to_string()).expect("reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        // Every entry reads as written, its params too; the kind defaults'
+        // behaviors as well.
+        for e in &file.anchors {
+            assert_eq!(old.resolve(&e.uuid, e.kind), file.resolve(&e.uuid, e.kind));
+        }
+        assert_eq!(old.kind_default(KIND_WALL), B::Aurora);
+        // Lost: the name, and a surface without an entry's color, band and
+        // strength.
+        assert_eq!(old.theme, None);
+        assert_eq!(
+            old.resolve(&uuid(9), KIND_WALL),
+            (B::Aurora, 1.0, default_params(B::Aurora))
+        );
+    }
+
+    #[test]
+    fn an_unknown_theme_or_kind_look_is_skipped_and_said() {
+        let text = r#"{ "version": 2, "anchors": [], "theme": "sunset",
+                        "kind_looks": { "sofa": { "strength": 0.5 },
+                                        "wall": { "strength": 0.5, "params": "teal" },
+                                        "floor": { "strength": 2.0 } } }"#;
+        let (file, skipped) = RoomFile::from_json(text).expect("reads");
+        assert_eq!(skipped.len(), 3, "{skipped:?}");
+        assert!(skipped[0].contains("sunset"), "{skipped:?}");
+        assert_eq!(file.theme, None);
+        assert_eq!(
+            file.kind_look(KIND_WALL),
+            KindLook {
+                strength: 0.5,
+                params: None
+            }
+        );
+        // Clamped like an entry's strength.
+        assert!((file.kind_look(KIND_FLOOR).strength - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_new_entry_starts_from_its_kinds_look_and_live_planes_get_none() {
+        use crate::live_planes::plane_uuid;
+        use SurfaceBehavior as B;
+        let mut file = themed();
+        // A hand edit on a wall without an entry: the look's color and
+        // band, its own strength.
+        file.assign(uuid(7), KIND_WALL, B::Pulse, 0.3);
+        assert_eq!(
+            file.resolve(&uuid(7), KIND_WALL),
+            (B::Pulse, 0.3, [8.0, 0.0])
+        );
+        // A kind without a look: no params, as before themes.
+        file.assign(uuid(8), KIND_OTHER, B::Curls, 1.0);
+        assert_eq!(file.entry(&uuid(8)).unwrap().params, None);
+        // A live plane gets no entry from a look; the stage floor does.
+        let live = plane_uuid(2);
+        let n = file.set_kind_look(
+            KIND_FLOOR,
+            B::Streamlines,
+            1.0,
+            Some([5.0, 0.0]),
+            [live, STAGE_FLOOR_UUID],
+        );
+        assert_eq!(n, 1);
+        assert!(file.entry(&live).is_none());
+        assert_eq!(
+            file.resolve(&live, KIND_FLOOR),
+            (B::Streamlines, 1.0, [5.0, 0.0])
+        );
+        assert_eq!(
+            file.resolve(&STAGE_FLOOR_UUID, KIND_FLOOR),
+            (B::Streamlines, 1.0, [5.0, 0.0])
+        );
+        // An entry saved under another kind takes the kind it has now.
+        file.assign(uuid(5), KIND_TABLE, B::None, 1.0);
+        file.set_kind_look(KIND_OTHER, B::Pulse, 0.8, None, [uuid(5)]);
+        let e = file.entry(&uuid(5)).unwrap();
+        assert_eq!((e.kind, e.behavior, e.params), (KIND_OTHER, B::Pulse, None));
+        // A kind without a name takes nothing.
+        assert_eq!(
+            file.set_kind_look(crate::surfaces::KIND_NONE, B::Pulse, 1.0, None, [uuid(6)]),
+            0
+        );
+        assert!(file.entry(&uuid(6)).is_none());
     }
 }
