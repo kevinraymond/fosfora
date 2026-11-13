@@ -560,11 +560,17 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   chunky shifting outlines around every thing and between the items of one
   pile, and a shelf 3 m out was a black block. It is on by default
   (`debug.fosfora.depthlight 0` turns it off).
-  - **What is lit.** The mesh in the eye pass, where it still occludes.
-    With geometry first on, that is what no room box explains. It writes
+  - **What is lit.** The mesh, where it still occludes. With geometry
+    first on, that is what no room box explains. The eye pass's mesh writes
     the same depth as before, so the particles are hidden behind real
     things as they were. The hands are not part of it, since the runtime
     removes them from the map and the hand mesh occludes them.
+  - **Where the points draw.** In the faces layer when there is one (the
+    default with passthrough), from its own mesh at twice the eye's step:
+    at half the eye's resolution that is a quarter of the fragments, and
+    the runtime's upsample keeps the soft points soft. The eye pass's mesh
+    then writes the depth and the veil of its own light (the edge bars).
+    Without a faces layer the eye pass draws the points.
   - **The veil: what shows through what.** The map no longer hides the
     surfaces' light (the sky, the lit faces, the edge bars) with its hard
     cutout at every level. Those draw first, tested against the room's
@@ -575,18 +581,30 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     it as before and the passthrough shows the thing, with a faint light
     on it. At level 0.5 half of the surfaces' light shows through it, over
     the passthrough at half. With the room black (level 1) all of it shows,
-    and the thing is only its points. The faces layer gets the same erase:
-    its pass draws its surfaces, then the mesh with the veil alone. The
-    points add their light to what is behind rather than cover it; an
+    and the thing is only its points. The faces layer gets the same erase
+    from its own mesh. At level 0 the veil erases all, so both passes draw
+    the mesh first, as without the light, and nothing behind a real thing
+    shades; at level 1 it erases nothing, so the eye pass's mesh writes
+    depth alone. The points add their light to what is behind rather than cover it; an
     "over" of the points' own coverage needs it in the layer's alpha, which
     takes a second output or a second draw. In between the veil still
     follows the map's coarse silhouette, in proportion. A fold of the mesh
     erases twice. `depthlightveil 0` keeps the hard cutout at every level,
     the mesh drawn before the surfaces as in the first version.
-  - **The points.** Cells on a lattice in each of the world's three axis
-    planes, a soft point anywhere in each cell, its size varied by cell,
-    swelling with the music and twinkling at its own rate. A surface uses
-    the planes it faces (the normal's fourth powers), so the map's noise,
+  - **The points.** A tile of soft points made once and uploaded as a
+    256 x 256 texture, 16 cells a side with a point anywhere in each: per
+    texel, the distance to the nearest point's center, and that point's
+    size, twinkle phase and rank. The fragment reads it once per plane and
+    octave at the world position and makes the point by thresholds: the
+    fill's radius times its size, swelling with the music, shrinking where
+    a mass ends, present where its rank is under the fill, twinkling at
+    its own rate with a triangle wave. Each plane and octave reads the tile
+    from its own place; it repeats every 16 cells, 64 cm 1 m from the eye.
+    The first version hashed four cells per plane and octave in every
+    fragment, with a sine and a square root each, and cost about 4 ms on
+    the Quest 3 for a pile filling 15 % of the view. A surface uses the
+    planes it faces (the normal's fourth powers; a second plane only
+    between about 35 and 55 degrees off an axis), so the map's noise,
     which moves the surface along the view ray, barely moves a point: on a
     surface turned 20 degrees from the eye, 4 mm of noise moves one by 5 %
     of a cell at most, a pixel or two. A point
@@ -594,14 +612,15 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     and as the mesh's vertices slide over the surface. A quarter of a
     surface is covered (`depthlightfill`). A cell is 4 cm across 1 m from
     the eye, about 30 pixels, and doubles with each octave of the
-    distance, the next octave fading in over the last 40 % of each, so a
+    distance, the next octave fading in over the last quarter of each, so a
     thing keeps its look on screen near or far and the noise, larger far
     away, stays small against the cells. Where cells shrink to a few pixels
     (a surface seen edge-on, the fringe that leans back at a step) the
     points fade out; fading them into their mean instead drew a faint line
     of glow along every step in renders of recorded depth. The height
     bands of the first version stay as a slow wave of light through the
-    points, one every 20 cm, drifting up, the crests tinted toward the
+    points, one every 20 cm, drifting up, a triangle wave rather than a
+    cosine, the crests tinted toward the
     top's color. A surface that faces up takes the top's color. The colors
     are the theme's: the color it gives other surfaces, and the key's tint
     where the theme uses it. Aurora draws teal and the key's tint; a room
@@ -627,34 +646,40 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     (default 1; 0 is the frame as it was, depth only with no color write
     and the old order), `depthlightgain` (0 to 4, default 1),
     `depthlightfill` (0.05 to 0.33, default 0.25: the largest point must
-    stay within half a cell) and `depthlightveil 0|1` (default 1). It needs
-    the mesh. With the full-screen pass (`envdepthmesh 0`, or
+    stay within half a cell), `depthlightveil 0|1` (default 1) and
+    `depthlightpoints 0|1` (default 1; 0 draws no points but keeps the
+    light's passes and order, to cost the points apart). It needs the
+    mesh. With the full-screen pass (`envdepthmesh 0`, or
     `envdepthfilter 0` or 1) or under `envdepthshow` it is off, and the
     `depth light:` launch line says so. The `geomfirstshow` tint replaces
     it while on. The log gives the state at launch, each change, and the
     colors when the theme changes.
-  - **Cost.** Per vertex of the eye mesh (26K per eye at step 2), in the
-    vertex stage where the map is already read: four more texel loads,
-    five rays, two one-sided differences, a cross product, a rotation, two
-    square roots and three smoothsteps. None of it feeds the position. Per
-    fragment of the eye mesh: one `fwidth`, then where the vertex keeps
-    light the points of one octave (two in the last 40 % of each) in one
-    plane (two or three where the surface faces between axes), four cells
-    each, a cell being two integer hashes, a sine, a square root, a length
-    and a smoothstep; then the wave's cosine and smoothstep, and the blend.
-    Typically four to eight cells, at most twenty-four. No texture, no
-    discard and no `frag_depth`, so early depth testing works as before.
-    The veil makes every fragment the mesh covers blend. The surfaces
-    behind a real thing are no longer rejected by its depth, so they shade
-    there too, and the faces pass adds the mesh at its own step with a
-    constant fragment. A person 1 m away covers about 15 % of an eye's
-    pixels and a quarter at 0.7 m. Not yet measured on the Quest 3.
+  - **Cost.** Per vertex of the mesh that draws the points (the faces
+    layer's, 6.6K an eye at step 4; the eye's, 26K, without a faces
+    layer), in the vertex stage where the map is already read: four more
+    texel loads, five rays, two one-sided differences, a cross product, a
+    rotation, two square roots and three smoothsteps. None of it feeds the
+    position. Per fragment of that mesh: one `fwidth`, a normalize, the
+    planes' weights, a `log2` and a square root, then one read of the tile
+    (two in the last quarter of an octave or between two axes, at most
+    six) with about forty arithmetic operations each, then the wave and
+    the blend; no sine or cosine. No discard and no `frag_depth`, so early
+    depth testing works as before. The eye pass's mesh adds a constant
+    fragment while the veil erases (levels between 0 and 1) and nothing
+    over the depth-only occluder otherwise. Between those levels the
+    surfaces behind a real thing shade where its depth rejected them
+    before. A person 1 m away covers about 15 % of an eye's pixels and a
+    quarter at 0.7 m. The first points measured 55 to 63 fps on the Quest
+    3 in such a view; this version is not yet measured.
   - **What it does not do.** It does not change what occludes the
     particles: the depth written, geometry first's rule and the hand
     removal are as before. It does not sharpen the map's edge, which still
-    shows between levels 0 and 1 as the veil's coarse outline. Where no box
-    explains a wall (no scan, roam, geometry first off) the wall is points
-    too.
+    shows between levels 0 and 1 as the veil's coarse outline, in the faces
+    layer the coarser one of its own mesh. Where no box explains a wall (no
+    scan, roam, geometry first off) the wall is points too. In the faces
+    layer the masses come from its mesh at twice the step, so a thing
+    narrower than about four depth texels can fall between its vertices
+    and carry no points.
 - **Edge bars (board #5420, `edge_bars.rs`).** Bars rise and fall along
   the edges of each plane and box, so the room's outline is drawn as the
   spectrum. It is on by default (`debug.fosfora.edgebars 0` turns it
