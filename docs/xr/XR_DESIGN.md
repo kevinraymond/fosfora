@@ -551,94 +551,110 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     does not sharpen an edge no box explains.
 - **Depth light (board #5439, `depth_light.rs`).** With the room dark,
   what the live depth map still occludes was a black cutout with the map's
-  coarse edge: a vacuum's handle a couple of feet away, a chair, a person,
-  the wearer's own legs. No box or plane fits a vacuum's handle, but the
-  map already is a surface on every object, so the occluder's mesh now
-  draws light as well as depth. It is on by default
+  coarse edge: a vacuum's handle a couple of feet away, a chair, a pile, a
+  person, the wearer's own legs. No box or plane fits a vacuum's handle,
+  but the map already is a surface on every object. So the occluder's mesh
+  now draws those things as points of light fixed in the room, and with
+  the room dark the sky shows through between them. The first version lit
+  them as a fill fading to dark at the silhouette; worn, that read as
+  chunky shifting outlines around every thing and between the items of one
+  pile, and a shelf 3 m out was a black block. It is on by default
   (`debug.fosfora.depthlight 0` turns it off).
   - **What is lit.** The mesh in the eye pass, where it still occludes.
     With geometry first on, that is what no room box explains. It writes
-    the same depth as before. The hands are not part of it, since the
-    runtime removes them from the map and the hand mesh occludes them.
-    The faces pass keeps its depth-only mesh, which only has to hide the
-    surfaces' light.
-  - **The look.** Bands of light at even heights, one every 12 cm, wrap
-    the object and drift up with the music over a steady share of the
-    light (35 % of a crest). A band at one height bends over the object's
-    form, which reads with one eye. Each vertex takes a normal from the
-    map's gradient one mesh step either way, and the light shades from
-    all of it where the surface faces the eye to half of it edge-on. A
-    surface that faces up (a seat, a shelf, a knee) takes the top's color
-    and its bands keep 30 % of their swing, so a whole top does not flash
-    as a band passes its height. The sides take the color the theme gives
-    other surfaces and the tops the key's tint where the theme uses it.
-    Aurora draws teal sides and tops in the key's tint; a room with no
-    theme draws other's own green. The crests follow the theme's band for
-    other surfaces (the rms for Aurora), smoothed, and keep 40 % of their
-    light in silence. No ported effect runs per fragment.
-  - **The silhouette.** It fades to dark against dark. Across a
-    silhouette the gradient spans the depth jump, so the normal lies
-    nearly edge-on to the eye and the facing fade takes the light to
-    nothing at the last vertex on the object and at the first one behind
-    it. The light fades out over the mesh cell inside the silhouette, and
-    the fringe triangles that lean back to the background carry none. A
-    vertex whose distance jumps from a neighbor's by more than 6 to 12 % of
-    its own has none either. That keeps something thinner than two mesh
-    steps dark wherever it lies on the texel grid, where the gradient
-    alone missed the jump in some places and lit it as the head moved. On
-    recorded frames of the office, a rim brightening toward the silhouette
-    and a lit fringe both drew the mesh's stair steps in light, so the
-    coarse edge was still the first thing seen. Dark against dark leaves
-    the steps visible only where a bright curtain of sky passes right
-    behind the edge.
-  - **Stable in time.** The bands depend on the world height alone, so
-    they stay put while the map jitters. Noise moves a point along a
-    nearly level eye ray, which changes its height by a small share of the
-    noise. On three office recordings with the head still, the height
-    under a texel within 3 m moved between read-backs by 0.4 to 1.2 cm at
-    the 95th percentile, a tenth of a band at most.
-    The vertex's share uses smooth fades only: the facing (none past 81
-    degrees, all of it under 53) and the distance from the eye (all of it
-    to 1.5 m, none past 3 m, where the map's noise grows). A vertex
-    without data, or next to one, has none. A band thinner than six pixels
-    fades toward its mean and is gone at two. The drift is integrated on
-    the CPU, so the phase moves smoothly whatever the music does.
-  - **How bright.** Premultiplied over the cleared target, like the
-    surfaces' light. The peak alpha rises with the immersion level from
-    0.05 with the room plain to 0.33 at full immersion, about a third of a
-    lit surface's full alpha, times `depthlightgain`. With the room visible
-    it is barely there, and with the room black it carries the object
-    while the sky and the surfaces stay the subject.
-  - **Draw order.** With the light on, the box and hand occluders draw
-    before the mesh, so a hand or a box in front of a lit object hides its
-    light. Each occluder keeps the nearest depth, so the depth buffer ends
-    the same in either order. Off, the order is as before.
+    the same depth as before, so the particles are hidden behind real
+    things as they were. The hands are not part of it, since the runtime
+    removes them from the map and the hand mesh occludes them.
+  - **The veil: what shows through what.** The map no longer hides the
+    surfaces' light (the sky, the lit faces, the edge bars) with its hard
+    cutout at every level. Those draw first, tested against the room's
+    boxes and the hands alone; the mesh then erases the share `1 - level`
+    of them where it lies in front (in color and alpha, so a pixel it
+    erases stays clear over the passthrough) and adds its points. With the
+    room visible (level 0), a real thing hides the surfaces' light behind
+    it as before and the passthrough shows the thing, with a faint light
+    on it. At level 0.5 half of the surfaces' light shows through it, over
+    the passthrough at half. With the room black (level 1) all of it shows,
+    and the thing is only its points. The faces layer gets the same erase:
+    its pass draws its surfaces, then the mesh with the veil alone. The
+    points add their light to what is behind rather than cover it; an
+    "over" of the points' own coverage needs it in the layer's alpha, which
+    takes a second output or a second draw. In between the veil still
+    follows the map's coarse silhouette, in proportion. A fold of the mesh
+    erases twice. `depthlightveil 0` keeps the hard cutout at every level,
+    the mesh drawn before the surfaces as in the first version.
+  - **The points.** Cells on a lattice in each of the world's three axis
+    planes, a soft point anywhere in each cell, its size varied by cell,
+    swelling with the music and twinkling at its own rate. A surface uses
+    the planes it faces (the normal's fourth powers), so the map's noise,
+    which moves the surface along the view ray, barely moves a point: on a
+    surface turned 20 degrees from the eye, 4 mm of noise moves one by 5 %
+    of a cell at most, a pixel or two. A point
+    depends on the world position alone, so it stays put as the head moves
+    and as the mesh's vertices slide over the surface. A quarter of a
+    surface is covered (`depthlightfill`). A cell is 4 cm across 1 m from
+    the eye, about 30 pixels, and doubles with each octave of the
+    distance, the next octave fading in over the last 40 % of each, so a
+    thing keeps its look on screen near or far and the noise, larger far
+    away, stays small against the cells. Where cells shrink to a few pixels
+    (a surface seen edge-on, the fringe that leans back at a step) the
+    points fade out; fading them into their mean instead drew a faint line
+    of glow along every step in renders of recorded depth. The height
+    bands of the first version stay as a slow wave of light through the
+    points, one every 20 cm, drifting up, the crests tinted toward the
+    top's color. A surface that faces up takes the top's color. The colors
+    are the theme's: the color it gives other surfaces, and the key's tint
+    where the theme uses it. Aurora draws teal and the key's tint; a room
+    with no theme other's own green.
+  - **Masses.** Inside a mass a step between things draws nothing: the
+    normal is the one-sided gradient toward the neighbor nearer in depth,
+    so a step does not tilt it, and nothing thins. A step of half a meter,
+    or a quarter of the distance when that is larger, parts two masses:
+    the far side keeps no points at its edge and the near side half their
+    area, so the fringe between them carries the near side's points
+    shrinking out and the mass behind starts again a cell away, with the
+    sky between. A pile stays one mass; the pile and the shelf behind it
+    are two. Something thinner than a mesh step is all near side, so a
+    vacuum's handle carries points at half their area.
+  - **Far things keep their color.** The light is all there to 1.5 m, falls
+    to 0.35 of it by 3 m, and stays there as far as the map has data: a
+    shelf 3 m out is a dim constellation in the theme's color.
+  - **How bright.** A point's center rises with the immersion level from
+    0.06 with the room plain to 0.8 with it black, times `depthlightgain`,
+    the wave and the twinkle. At a quarter covered the light averages well
+    under a lit surface's.
   - **Knobs**, read at launch and polled once a second: `depthlight 0|1`
-    (default 1; 0 is the frame as it was, depth only with no color write)
-    and `depthlightgain` (0 to 4, default 1). It needs the mesh. With the
-    full-screen pass (`envdepthmesh 0`, or `envdepthfilter 0` or 1) or
-    under `envdepthshow` it is off, and the `depth light:` launch line says
-    so. The `geomfirstshow` tint replaces it while on. The log gives the
-    state at launch, each change, and the colors when the theme changes.
-  - **Cost.** Per vertex of the eye mesh (26K per eye at step 2): four
-    more texel loads for the neighbors, four rays, a cross product, a
-    rotation, two square roots, a division and three smoothsteps, in the
-    vertex stage where the map is already read. None of it feeds the position. Per
-    fragment: one `fwidth`, one cosine, a smoothstep and about twenty
-    other arithmetic operations, blended. There is no texture, no loop, no
-    discard and no `frag_depth`, so early depth testing works as before. A
-    person 1 m away covers about 15 % of an eye's pixels and a quarter at
-    0.7 m, a vacuum's handle 0.6 m away about 1 %. With the whole map lit
-    (geometry first off, or no boxes) it is every pixel the map covers. Not
-    yet measured on the Quest 3.
-  - **What it does not do.** It does not change what occludes. The depth
-    written, geometry first's rule and the hand removal are as before. It
-    does not sharpen the coarse edge, only darkens it. It lights whatever
-    the map sees, so where no box explains a wall (no scan, roam, geometry
-    first off) the wall within 3 m is lit too. Past 3 m an object is still
-    a dark shape. So is anything narrower than about six depth texels
-    (4 cm at 1 m, 2.5 cm at 0.6 m), where no vertex has all four
-    neighbors on the object.
+    (default 1; 0 is the frame as it was, depth only with no color write
+    and the old order), `depthlightgain` (0 to 4, default 1),
+    `depthlightfill` (0.05 to 0.33, default 0.25: the largest point must
+    stay within half a cell) and `depthlightveil 0|1` (default 1). It needs
+    the mesh. With the full-screen pass (`envdepthmesh 0`, or
+    `envdepthfilter 0` or 1) or under `envdepthshow` it is off, and the
+    `depth light:` launch line says so. The `geomfirstshow` tint replaces
+    it while on. The log gives the state at launch, each change, and the
+    colors when the theme changes.
+  - **Cost.** Per vertex of the eye mesh (26K per eye at step 2), in the
+    vertex stage where the map is already read: four more texel loads,
+    five rays, two one-sided differences, a cross product, a rotation, two
+    square roots and three smoothsteps. None of it feeds the position. Per
+    fragment of the eye mesh: one `fwidth`, then where the vertex keeps
+    light the points of one octave (two in the last 40 % of each) in one
+    plane (two or three where the surface faces between axes), four cells
+    each, a cell being two integer hashes, a sine, a square root, a length
+    and a smoothstep; then the wave's cosine and smoothstep, and the blend.
+    Typically four to eight cells, at most twenty-four. No texture, no
+    discard and no `frag_depth`, so early depth testing works as before.
+    The veil makes every fragment the mesh covers blend. The surfaces
+    behind a real thing are no longer rejected by its depth, so they shade
+    there too, and the faces pass adds the mesh at its own step with a
+    constant fragment. A person 1 m away covers about 15 % of an eye's
+    pixels and a quarter at 0.7 m. Not yet measured on the Quest 3.
+  - **What it does not do.** It does not change what occludes the
+    particles: the depth written, geometry first's rule and the hand
+    removal are as before. It does not sharpen the map's edge, which still
+    shows between levels 0 and 1 as the veil's coarse outline. Where no box
+    explains a wall (no scan, roam, geometry first off) the wall is points
+    too.
 - **Edge bars (board #5420, `edge_bars.rs`).** Bars rise and fall along
   the edges of each plane and box, so the room's outline is drawn as the
   spectrum. It is on by default (`debug.fosfora.edgebars 0` turns it
