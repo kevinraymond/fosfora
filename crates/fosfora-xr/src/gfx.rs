@@ -109,12 +109,13 @@ pub struct Gfx {
     live_outlines: Option<(wgpu::RenderPipeline, Vec<QuadBinding>)>,
     live_outline_count: std::cell::Cell<usize>,
     /// The edge bars (board #5420, `set_edge_bars`, `edge_bars.rs`): the
-    /// surfaces pass's pipeline state with one uniform of strips, the first
-    /// `edge_bar_count` drawn instanced after the live outlines. Built the
-    /// first time there are strips to draw; `None` inside when its
-    /// pipeline did not validate.
-    edge_bars: std::cell::OnceCell<Option<(wgpu::RenderPipeline, QuadBinding)>>,
-    edge_bar_count: std::cell::Cell<u32>,
+    /// surfaces pass's pipeline state with one uniform of strips and
+    /// tunnels, drawn instanced after the live outlines: the first
+    /// `edge_counts.0` strips, then the `edge_counts.1` tunnels after them
+    /// (board #5431). Built the first time there is something to draw;
+    /// `None` inside when its pipelines did not validate.
+    edge_bars: std::cell::OnceCell<Option<EdgeBars>>,
+    edge_counts: std::cell::Cell<(u32, u32)>,
     /// The eye camera's bind group layout, for pipelines built later.
     eye_layout: wgpu::BindGroupLayout,
     /// Whether the eye pass draws the world effect (`set_world_visible`;
@@ -172,6 +173,14 @@ pub struct PortFace {
 struct QuadBinding {
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+}
+
+/// The edge bars' two pipelines on their one uniform (`edge_bars.rs`): the
+/// strips (on the face and standing) and the in mode's tunnels.
+struct EdgeBars {
+    strips: wgpu::RenderPipeline,
+    tunnels: wgpu::RenderPipeline,
+    binding: QuadBinding,
 }
 
 /// A posed, textured quad the panel's pipeline draws (the hand menu, the
@@ -518,7 +527,7 @@ impl Gfx {
             live_outlines: None,
             live_outline_count: std::cell::Cell::new(0),
             edge_bars: std::cell::OnceCell::new(),
-            edge_bar_count: std::cell::Cell::new(0),
+            edge_counts: std::cell::Cell::new((0, 0)),
             eye_layout,
             ghost,
             ghost_count: std::cell::Cell::new(0),
@@ -922,52 +931,77 @@ impl Gfx {
     }
 
     /// The edge bars for this frame (board #5420): `rows` from
-    /// `edge_bars::rows`, of which the first `strips` strips draw, in one
-    /// instanced draw per eye. The pipeline and its uniform are built the
-    /// first time there are strips; only the rows in use are written. No
-    /// strips writes nothing and hides them.
-    pub fn set_edge_bars(&self, rows: &[[f32; 4]], strips: usize) {
+    /// `edge_bars::rows`, of which the first `strips` strips and the
+    /// `tunnels` tunnels after them draw, each kind in one instanced draw
+    /// per eye. The pipelines and their uniform are built the first time
+    /// there is something to draw; one write of only the rows in use.
+    /// Nothing writes nothing and hides them.
+    pub fn set_edge_bars(&self, rows: &[[f32; 4]], strips: usize, tunnels: usize) {
         use crate::edge_bars::{HEAD_ROWS, MAX_STRIPS, STRIP_ROWS};
-        let n = strips
-            .min(MAX_STRIPS)
-            .min(rows.len().saturating_sub(HEAD_ROWS) / STRIP_ROWS);
-        if n > 0
-            && let Some((_, binding)) = self.edge_bars.get_or_init(|| self.build_edge_bars())
+        let records = rows.len().saturating_sub(HEAD_ROWS) / STRIP_ROWS;
+        let strips = strips.min(MAX_STRIPS).min(records);
+        let tunnels = tunnels.min(MAX_STRIPS - strips).min(records - strips);
+        if strips + tunnels > 0
+            && let Some(edge) = self.edge_bars.get_or_init(|| self.build_edge_bars())
         {
-            let used = &rows[..HEAD_ROWS + n * STRIP_ROWS];
+            let used = &rows[..HEAD_ROWS + (strips + tunnels) * STRIP_ROWS];
             self.queue
-                .write_buffer(&binding.uniform, 0, bytemuck::cast_slice(used));
-            self.edge_bar_count.set(n as u32);
+                .write_buffer(&edge.binding.uniform, 0, bytemuck::cast_slice(used));
+            self.edge_counts.set((strips as u32, tunnels as u32));
         } else {
-            self.edge_bar_count.set(0);
+            self.edge_counts.set((0, 0));
         }
     }
 
-    /// The edge bars' pipeline and uniform, inside an error scope: on a
-    /// validation error (logged) they stay off, as an invalid pipeline in
-    /// the eye pass would lose the whole frame.
-    fn build_edge_bars(&self) -> Option<(wgpu::RenderPipeline, QuadBinding)> {
+    /// The edge bars' two pipelines and their uniform, inside an error
+    /// scope: on a validation error (logged) they stay off, as an invalid
+    /// pipeline in the eye pass would lose the whole frame.
+    fn build_edge_bars(&self) -> Option<EdgeBars> {
         self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let built = build_surface_pipeline(
+        let label = "xr-edge-bars";
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(crate::edge_bars::EDGE_BARS_WGSL.into()),
+            });
+        let (layout, mut bindings) = surface_uniforms(
             &self.device,
             &self.eye_layout,
-            crate::edge_bars::EDGE_BARS_WGSL,
-            "xr-edge-bars",
+            label,
             crate::edge_bars::UNIFORM_ROWS,
+            1,
         );
+        let built = EdgeBars {
+            strips: surface_render_pipeline(
+                &self.device,
+                &layout,
+                &shader,
+                ("vs_main", "fs_main"),
+                label,
+            ),
+            tunnels: surface_render_pipeline(
+                &self.device,
+                &layout,
+                &shader,
+                ("vs_tunnel", "fs_tunnel"),
+                "xr-edge-tunnels",
+            ),
+            binding: bindings.swap_remove(0),
+        };
         // wgpu's native futures are ready on the first poll.
         let scope = std::pin::pin!(self.device.pop_error_scope());
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         match std::future::Future::poll(scope, &mut cx) {
             std::task::Poll::Ready(None) => {
                 info!(
-                    "edge bars: pipeline built, a {}-byte uniform",
+                    "edge bars: pipelines built (strips, tunnels), a {}-byte uniform",
                     crate::edge_bars::UNIFORM_BYTES
                 );
                 Some(built)
             }
             std::task::Poll::Ready(Some(e)) => {
-                error!("edge bars: off, the pipeline did not validate: {e}");
+                error!("edge bars: off, the pipelines did not validate: {e}");
                 None
             }
             std::task::Poll::Pending => {
@@ -1361,16 +1395,21 @@ impl Gfx {
                 }
             }
             // Board #5420: the edge bars, on the surfaces' terms, after
-            // every occluder and the lit faces: one instanced draw, a quad
-            // per strip.
-            let strips = self.edge_bar_count.get();
-            if strips > 0
-                && let Some(Some((pipeline, binding))) = self.edge_bars.get()
+            // every occluder and the lit faces: one instanced draw of a
+            // quad per strip, and (board #5431) one of a quad per tunnel,
+            // on the same uniform.
+            let (strips, tunnels) = self.edge_counts.get();
+            if strips + tunnels > 0
+                && let Some(Some(edge)) = self.edge_bars.get()
             {
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &eye.bind_group, &[]);
-                pass.set_bind_group(1, &binding.bind_group, &[]);
-                pass.draw(0..6, 0..strips);
+                for (pipeline, n) in [(&edge.strips, strips), (&edge.tunnels, tunnels)] {
+                    if n > 0 {
+                        pass.set_pipeline(pipeline);
+                        pass.set_bind_group(0, &eye.bind_group, &[]);
+                        pass.set_bind_group(1, &edge.binding.bind_group, &[]);
+                        pass.draw(0..6, 0..n);
+                    }
+                }
             }
             if let Some(p) = particles {
                 p.draw(&mut pass, i);
@@ -1889,11 +1928,27 @@ fn build_surface_slots(
     rows: usize,
     slots: usize,
 ) -> (wgpu::RenderPipeline, Vec<QuadBinding>) {
-    let bytes = 16 * rows as u64;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
+    let (layout, bindings) = surface_uniforms(device, eye_layout, label, rows, slots);
+    let pipeline = surface_render_pipeline(device, &layout, &shader, ("vs_main", "fs_main"), label);
+    (pipeline, bindings)
+}
+
+/// The surface quads' pipeline layout (the eye camera at group 0, a
+/// uniform of `rows` vec4s at group 1) and `slots` uniforms of it, each
+/// with its own bind group: [`build_surface_slots`]'s, and the edge bars'
+/// two pipelines share one.
+fn surface_uniforms(
+    device: &wgpu::Device,
+    eye_layout: &wgpu::BindGroupLayout,
+    label: &str,
+    rows: usize,
+    slots: usize,
+) -> (wgpu::PipelineLayout, Vec<QuadBinding>) {
+    let bytes = 16 * rows as u64;
     let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(label),
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -1934,12 +1989,26 @@ fn build_surface_slots(
         bind_group_layouts: &[eye_layout, &uniform_layout],
         push_constant_ranges: &[],
     });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    (layout, bindings)
+}
+
+/// A surface quad's render pipeline from `shader`'s `(vertex, fragment)`
+/// entry points on `layout`: the beam's setup (premultiplied alpha,
+/// depth-tested, no depth write, no culling) plus the depth bias toward
+/// the camera ([`build_surface_pipeline`]).
+fn surface_render_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    (vs, fs): (&str, &str),
+    label: &str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
-        layout: Some(&layout),
+        layout: Some(layout),
         vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
+            module: shader,
+            entry_point: Some(vs),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[],
         },
@@ -1951,8 +2020,8 @@ fn build_surface_slots(
         depth_stencil: Some(surface_depth_state()),
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
+            module: shader,
+            entry_point: Some(fs),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: SWAPCHAIN_FORMAT,
@@ -1962,8 +2031,7 @@ fn build_surface_slots(
         }),
         multiview: None,
         cache: None,
-    });
-    (pipeline, bindings)
+    })
 }
 
 /// The surface quads' depth state: tested against the occluders, not

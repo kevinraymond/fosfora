@@ -143,8 +143,9 @@ pub struct Controls {
     /// control; board #5393). The app sets it; a press only asks.
     pub roam: crate::roam::Roam,
     /// How the edge bars draw (the hand menu's Edges control, not saved;
-    /// board #5420). The app sets it; a press only asks.
-    pub edges: crate::edge_bars::Mode,
+    /// board #5420): the theme's mode per kind, or one forced on every
+    /// kind (board #5431). The app sets it; a press only asks.
+    pub edges: crate::edge_bars::Choice,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -193,9 +194,9 @@ pub enum Action {
     SetImmersion(crate::immerse::Depth),
     /// The Roam control asked for roam on or off (saved; board #5393).
     SetRoam(bool),
-    /// The Edges control asked for this mode of the edge bars (not saved;
-    /// board #5420).
-    SetEdges(crate::edge_bars::Mode),
+    /// The Edges control asked for this choice of the edge bars' modes
+    /// (not saved; board #5420, #5431).
+    SetEdges(crate::edge_bars::Choice),
     /// The Theme control: the next theme, applied to the whole room and
     /// saved with it (board #5415).
     NextTheme,
@@ -248,7 +249,8 @@ enum Target {
     CycleImmersion,
     /// The Roam control: on from off, off from on (board #5393).
     ToggleRoam,
-    /// The Edges control: the edge bars' next mode (board #5420).
+    /// The Edges control: the edge bars' next choice: theme, off, face,
+    /// stand, in (board #5420, #5431).
     CycleEdges,
     /// The Theme control: the next theme (board #5415).
     CycleTheme,
@@ -726,7 +728,7 @@ impl Hud {
             // The app keeps roam's why (chosen, no room) and sets
             // `controls.roam`.
             Some(Target::ToggleRoam) => actions.push(Action::SetRoam(!controls.roam.is_on())),
-            // The app applies the mode and sets `controls.edges`.
+            // The app applies the choice and sets `controls.edges`.
             Some(Target::CycleEdges) => actions.push(Action::SetEdges(controls.edges.next())),
             // The app applies the next theme from the room as it is; the
             // control shows it from the next frame's view.
@@ -1590,9 +1592,10 @@ fn agent_row(
 
 /// The cloud's row, over the music's in both layouts: its toggle, and
 /// every surface to none (step 2c) sharing a cell with the edge bars'
-/// mode (board #5420), a half each, as Recenter and Rescan share theirs.
-/// The state is in the words, not a color.
-fn cloud_row(on: bool, editing: bool, edges: crate::edge_bars::Mode) -> Control<'static> {
+/// choice (board #5420, #5431: "Edges theme" or the mode forced on every
+/// kind), a half each, as Recenter and Rescan share theirs. The state is in
+/// the words, not a color.
+fn cloud_row(on: bool, editing: bool, edges: crate::edge_bars::Choice) -> Control<'static> {
     Control::Pair([
         Some(Cell::Button(
             Target::ToggleCloud,

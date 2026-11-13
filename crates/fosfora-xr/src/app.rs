@@ -436,14 +436,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the sensor's noise at its range, 0..0.5; live)
     //   adb shell setprop debug.fosfora.geomfirstshow 0|1        (diagnostic: the eye pass's depth map occluder drawn with a magenta tint where it still
     //       occludes, still writing depth, geometry first on or off, for an unworn screencap; live)
-    //   adb shell setprop debug.fosfora.edgebars 0|1|2           (board #5420, edge_bars.rs: the room's outline drawn as the spectrum, bars along the edges of
+    //   adb shell setprop debug.fosfora.edgebars 0|1|2|3         (board #5420, edge_bars.rs: the room's outline drawn as the spectrum, bars along the edges of
     //       every plane and box drawn as an occluder (hidden walls and the stage floor left out), in the surface's color, while music
-    //       plays; 1 the bars lie on each face and grow in from its edges, 2 they stand off each edge along the face's normal, 0 off; default 1;
+    //       plays; unset each kind of surface in its theme's mode (board #5431, themes.rs); 1 the bars lie on each face and grow in from its
+    //       edges, 2 they stand off each edge along the face's normal, 3 each face a tunnel behind it with the bars on its inner walls
+    //       growing into depth, 0 off, each forced on every kind; the hand menu's Edges control holds until the value changes;
     //       live: polled once a second)
     //   adb shell setprop debug.fosfora.edgebarsgain 1           (edge bars: brightness multiplier, 0..4; 1 = peak alpha 0.25 with the room plain, 0.7 at full
     //       immersion; live)
     //   adb shell setprop debug.fosfora.edgebarsheight 0.12      (edge bars: the tallest bar as a fraction of its face's smaller side, 0..0.5, then clamped
     //       to 2..20 cm; live)
+    //   adb shell setprop debug.fosfora.edgebarsdepth 0.6        (edge bars in: the tunnel's depth as a fraction of its face's smaller side, 0..2, then
+    //       clamped to 0.15..1.5 m; live)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
     //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 0 reads texture row 0 as the bottom of the view, the default; the
     //       runtime renders the map in GL order, verified by envdepthcheck against the room's boxes; 1 as the top)
@@ -1461,12 +1465,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         agent: available.control(agent_pick),
         immerse: immerse_knob.map_or(menu_saved.immerse, crate::immerse::Depth::nearest),
         roam: roam.now(),
-        edges: edge_bars.mode,
+        edges: edge_bars.choice,
     };
-    // Board #5420: the hand menu's Edges control holds its mode over the
-    // knob's until the knob's own mode changes; the knob's last mode.
-    let mut edge_menu: Option<crate::edge_bars::Mode> = None;
-    let mut edge_knob = edge_bars.mode;
+    // Board #5420: the hand menu's Edges control holds its choice over the
+    // knob's until the knob's own value changes (board #5431: the theme's
+    // modes, or one forced on every kind).
+    let mut edge_override = crate::edge_bars::Override::new(edge_bars.choice);
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
     let mut density_set = vec![1.0f32; world_effects.len()];
@@ -1527,15 +1531,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     });
     // Board #5420: the edge bars show the wall spectrum's bars; with the
     // wall spectrum off they keep bars of their own, the same count,
-    // updated only while they are on. Whether music plays, the strips and
-    // their rows (reused each frame), and what was last logged.
+    // updated only while they are on. Whether music plays, the bars' recent
+    // past for the in mode's rungs (board #5431), the strips and tunnels
+    // and their rows (reused each frame), and what was last logged.
     let mut edge_canvas = canvas
         .is_none()
         .then(|| crate::canvas::Canvas::new(canvas_bars, 1.0));
     let mut edge_presence = crate::edge_bars::Presence::default();
-    let mut edge_strips: Vec<crate::edge_bars::Strip> = Vec::new();
+    let mut edge_history = crate::edge_bars::History::default();
+    let mut edge_outline = crate::edge_bars::Outline::default();
     let mut edge_rows: Vec<[f32; 4]> = Vec::new();
     let mut edge_logged: Option<(usize, usize, bool)> = None;
+    let mut edge_kinds_logged: Option<Vec<(u32, crate::edge_bars::Mode)>> = None;
     info!(
         "wall spectrum {}",
         canvas.as_ref().map_or("off".to_owned(), |c| format!(
@@ -2532,12 +2539,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // Board #5393: the Roam control or a spoken "roam" /
                     // "stay here", the wearer's choice, saved; it takes
                     // over from the knob.
-                    Action::SetEdges(mode) => {
-                        let now = crate::edge_bars::EdgeBarsOptions { mode, ..edge_bars };
+                    Action::SetEdges(choice) => {
+                        let now = crate::edge_bars::EdgeBarsOptions {
+                            choice,
+                            ..edge_bars
+                        };
                         info!("{} (the hand menu)", now.change_line(&edge_bars, occluders));
                         edge_bars = now;
-                        edge_menu = Some(mode);
-                        controls.edges = mode;
+                        edge_override.press(choice);
+                        controls.edges = choice;
                     }
                     Action::SetRoam(on) => {
                         let change = roam.set(on);
@@ -4081,13 +4091,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // Board #5420: an outlined scanned box's color index is its
                 // lane's, whatever its behavior draws (a live shape takes
                 // its kind's palette color, below).
-                let edge_growth = edge_bars.mode.growth();
+                let edge_on = !edge_bars.choice.off();
                 let lane_color = |k: usize| {
                     lane_rows.get(k).map_or(0, |&r| {
                         crate::surfaces::lane_params(r, surface_lanes.behavior(k)).0
                     })
                 };
-                let edge_key = edge_growth.is_some()
+                let edge_key = edge_on
                     && occluders
                     && (0..scanned_n).any(|k| {
                         !room_boxes[k].hidden && lane_color(k) == crate::surfaces::COLOR_KEY
@@ -4182,7 +4192,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // but is not outlined), the live planes and closed boxes at
                 // their fade, and the stage floor, never outlined. None
                 // while the boxes are not occluders; nothing in silence.
-                if let Some(growth) = edge_growth {
+                if edge_on {
                     if let Some(c) = edge_canvas.as_mut() {
                         c.update(dt, &hop.frame.mel);
                     }
@@ -4195,8 +4205,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .as_ref()
                         .or(edge_canvas.as_ref())
                         .map_or(&[][..], crate::canvas::Canvas::heights);
+                    edge_history.step(dt, heights);
+                    // Board #5431: each shape in its kind's mode under the
+                    // room's theme, or the mode forced on every kind.
+                    let edge_mode = |_kind: u32| edge_bars.choice.mode(crate::edge_bars::Mode::Face);
+                    let kinds: Vec<(u32, crate::edge_bars::Mode)> = crate::surfaces::KIND_NAMES
+                        .iter()
+                        .map(|&(kind, _)| (kind, edge_mode(kind)))
+                        .collect();
+                    if edge_kinds_logged.as_ref() != Some(&kinds) {
+                        info!(
+                            "edge bars: per kind {}",
+                            crate::edge_bars::kinds_line(&kinds)
+                        );
+                        edge_kinds_logged = Some(kinds);
+                    }
                     let mut drawn = crate::edge_bars::Drawn::default();
-                    edge_strips.clear();
+                    edge_outline.clear();
                     if occluders && presence > 0.0 {
                         use crate::edge_bars::{Look, Shape};
                         let shape = |b: &ObstacleBox, look: Option<Look>| Shape {
@@ -4217,34 +4242,41 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                             audio.key_tint,
                                         ),
                                         fade: 1.0,
+                                        mode: edge_mode(b.kind),
                                     },
                                     Some(i) => Look {
                                         color: crate::surfaces::palette(b.kind),
                                         fade: live_levels.get(i).copied().unwrap_or(1.0),
+                                        mode: edge_mode(b.kind),
                                     },
                                 });
                                 shape(b, look)
                             })
                             .chain(floor_box.iter().map(|b| shape(b, None)))
                             .collect();
-                        drawn = crate::edge_bars::strips(
+                        drawn = crate::edge_bars::outline(
                             &shapes,
                             head,
-                            growth,
                             edge_bars.height,
+                            edge_bars.depth,
                             heights.len(),
                             crate::edge_bars::peak_alpha(immerse_level, edge_bars.gain) * presence,
-                            &mut edge_strips,
+                            &mut edge_outline,
                         );
                     }
-                    if edge_strips.is_empty() {
-                        gfx.set_edge_bars(&[], 0);
+                    if edge_outline.is_empty() {
+                        gfx.set_edge_bars(&[], 0, 0);
                     } else {
-                        crate::edge_bars::rows(heights, &edge_strips, &mut edge_rows);
-                        gfx.set_edge_bars(&edge_rows, edge_strips.len());
+                        crate::edge_bars::rows(heights, &edge_history, &edge_outline, &mut edge_rows);
+                        gfx.set_edge_bars(
+                            &edge_rows,
+                            edge_outline.strips.len(),
+                            edge_outline.tunnels.len(),
+                        );
                     }
-                    // Logged when what is outlined changes; the strip count
-                    // follows the head, so it is only reported.
+                    // Logged when what is outlined changes; the strip and
+                    // tunnel counts follow the head, so they are only
+                    // reported.
                     let silent = presence <= 0.0;
                     let now = (drawn.planes, drawn.volumes, silent);
                     if edge_logged != Some(now) {
@@ -4252,8 +4284,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         edge_logged = Some(now);
                     }
                 } else if edge_logged.take().is_some() {
-                    gfx.set_edge_bars(&[], 0);
+                    gfx.set_edge_bars(&[], 0, 0);
                     edge_presence = crate::edge_bars::Presence::default();
+                    edge_history = crate::edge_bars::History::default();
+                    edge_kinds_logged = None;
                 }
             }
             if let Some(scene) = scene {
@@ -4632,16 +4666,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     session.set_env_depth_geom(now);
                 }
             }
-            // Board #5420: the edge bars' knobs, live.
+            // Board #5420: the edge bars' knobs, live; the Edges control's
+            // choice over the knob's until the knob's value changes.
             let mut now = crate::edge_bars::EdgeBarsOptions::from_knobs(system_prop);
-            if now.mode != edge_knob {
-                edge_knob = now.mode;
-                edge_menu = None;
-            }
-            if let Some(mode) = edge_menu {
-                now.mode = mode;
-            }
-            controls.edges = now.mode;
+            now.choice = edge_override.poll(now.choice);
+            controls.edges = now.choice;
             if now != edge_bars {
                 info!("{}", now.change_line(&edge_bars, occluders));
                 edge_bars = now;
