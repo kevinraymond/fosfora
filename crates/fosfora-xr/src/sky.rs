@@ -1130,18 +1130,25 @@ fn xr_pixel_ray(frag: vec2<f32>) -> vec3<f32> {
     return cross(a - ndc.x * c, b - ndc.y * c);
 }
 
-// Whether this face keeps its fragment at face point uv, the view ray
-// from the eye along d (pointing past the fragment): at each joined edge,
-// from its cut_from on, only if the ray meets this face's drawn plane
-// before the neighbor's, ahead of the eye. Both faces at a join compute
-// the same two distances from the same inputs, so exactly one keeps it.
-fn xr_keeps(uv: vec2<f32>, eye: vec3<f32>, d: vec3<f32>) -> bool {
+// Whether this face keeps its fragment at face point uv and world point
+// world, on the pixel at frag, seen from eye: at each joined edge, from
+// its cut_from on, only if the pixel's view ray meets this face's drawn
+// plane before the neighbor's, ahead of the eye. Both faces at a join
+// compute the same two distances from the same inputs, so exactly one
+// keeps it. The ray is solved only near a joined edge.
+fn xr_keeps(uv: vec2<f32>, world: vec3<f32>, eye: vec3<f32>, frag: vec2<f32>) -> bool {
     let own = xr_port.plane;
     var toward = array<f32, 4>(-uv.x, uv.x, -uv.y, uv.y);
+    var d = vec3<f32>(0.0);
     for (var e = 0u; e < 4u; e++) {
         let q = xr_port.cut[e];
         if toward[e] < xr_port.cut_from[e] || all(q.xyz == vec3<f32>(0.0)) {
             continue;
+        }
+        if all(d == vec3<f32>(0.0)) {
+            // Pointing past the fragment.
+            d = xr_pixel_ray(frag);
+            d *= sign(dot(d, world - eye));
         }
         let own_first = xr_before(own, q);
         let p1 = select(q, own, own_first);
@@ -1238,8 +1245,7 @@ fn fs_sky(in: XrSkyOut) -> @location(0) vec4<f32> {
     }
     // Where a joined neighbor's plane is met first, it draws: nothing
     // (sky.rs, join).
-    let ray = xr_pixel_ray(in.pos.xy);
-    if !xr_keeps(in.uv, in.eye, ray * sign(dot(ray, in.world - in.eye))) {
+    if !xr_keeps(in.uv, in.world, in.eye, in.pos.xy) {
         return vec4<f32>(0.0);
     }
     // The far layers start from the light before the near layer's fades.
