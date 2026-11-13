@@ -319,7 +319,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
     //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default,
     //       gravity = settle drift; tri/pull do not apply)
-    //   adb shell setprop debug.fosfora.hud 0|1                  (the debug panel on the hand menu, set and saved; unset = the menu's saved toggle)
+    //   adb shell setprop debug.fosfora.hud 0|1                  (the debug panel on the hand menu, set and saved; unset = the menu's saved toggle;
+    //       ignored on the release surface, which has no debug panel)
+    //   adb shell setprop debug.fosfora.devmenu 0|1              (board #4204: the release surface (0) or the developer's (1) on either APK; unset =
+    //       the APK's debuggable flag decides. Release: no Debug panel, Pitcher or "All: none" in the hand menu, the saved debug
+    //       panel ignored, transcripts out of the log, no debug/anchors.json; read at launch)
     //   adb shell setprop debug.fosfora.hudtest 1                (diagnostic: the debug panel parked ahead of the view, untracked, for a screencap)
     //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: hands' sim spheres extend Go-Go style past a comfortable reach; default on in mr/world)
     //   adb shell setprop debug.fosfora.reachat 0.30             (reach: shoulder-to-palm distance, m, within which the hand is 1:1)
@@ -550,6 +554,26 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let permissions = Permissions::new(app)
         .inspect_err(|e| error!("permissions: {e:#}; carrying on as if granted"))
         .ok();
+    // Board #4204: the debug and the release APK carry the same library;
+    // the APK's debuggable flag says which this is. The release surface
+    // hides the developer's rows, keeps the transcripts out of the log
+    // and saves no room for replay; `debug.fosfora.devmenu 0|1` forces
+    // either surface.
+    let build = match permissions.as_ref().map(Permissions::app_flags) {
+        Some(Ok(flags)) => crate::release::Build::from_flags(flags),
+        Some(Err(e)) => {
+            error!("build: {e:#}; taken as release");
+            crate::release::Build::Unknown
+        }
+        None => crate::release::Build::Unknown,
+    };
+    let devmenu_knob = debug_prop(crate::release::KNOB);
+    let surface = crate::release::Surface::at_launch(build, devmenu_knob.as_deref());
+    info!(
+        "{}",
+        crate::release::launch_line(build, devmenu_knob.as_deref(), surface)
+    );
+    log::set_max_level(crate::release::app_log_level(surface));
     let granted_at_launch = |name: &str| {
         permissions.as_ref().is_none_or(|p| {
             p.granted(name).unwrap_or_else(|e| {
@@ -1373,25 +1397,29 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // debug panel's -/+ rows drive these values from then on; with it off
     // they stay the knobs'. While the menu is up its pinches are its own.
     let hud_test = toggle("debug.fosfora.hudtest", false);
-    let debug_on = match debug_prop("debug.fosfora.hud").as_deref() {
-        Some("1") => {
-            menu_saved.debug = true;
-            save_hand_menu(&menu_file, menu_saved);
-            true
-        }
-        Some("0") => {
-            menu_saved.debug = false;
-            save_hand_menu(&menu_file, menu_saved);
-            false
-        }
-        _ => menu_saved.debug,
-    };
-    info!(
-        "hand menu: debug panel {}",
-        if debug_on { "on" } else { "off" }
+    // Board #4204: the release surface has no debug panel, ignores the
+    // knob and leaves the saved flag in the file.
+    let panel = crate::release::debug_panel(
+        surface,
+        menu_saved.debug,
+        debug_prop("debug.fosfora.hud").as_deref(),
     );
-    let mut hud =
-        (hud_test || mr.hands && session.has_hands()).then(|| Hud::new(&mut gfx, debug_on));
+    if let Some(on) = panel.save {
+        menu_saved.debug = on;
+        save_hand_menu(&menu_file, menu_saved);
+    }
+    let debug_on = panel.on;
+    info!(
+        "hand menu: debug panel {}{}",
+        if debug_on { "on" } else { "off" },
+        if surface.developer() {
+            ""
+        } else {
+            " (release surface)"
+        }
+    );
+    let mut hud = (hud_test || mr.hands && session.has_hands())
+        .then(|| Hud::new(&mut gfx, debug_on, surface));
     // Board #3789: the thermal governor (`governor.rs`) steps the cloud
     // density, so it acts in world mode only; the knob's default follows
     // the brief (on in world and mr), and mr has nothing to step.

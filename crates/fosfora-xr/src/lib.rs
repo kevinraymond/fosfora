@@ -70,6 +70,7 @@ mod player;
 pub mod playlist;
 pub mod pose;
 pub mod reach;
+pub mod release;
 pub mod ripple;
 pub mod roam;
 #[cfg(target_os = "android")]

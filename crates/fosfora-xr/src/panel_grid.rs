@@ -18,6 +18,8 @@
 //! #5385): its two end boxes and the middle between them are three
 //! targets ([`end_box`]).
 
+use crate::release::Surface;
+
 /// Texture size (pixels) and egui scale: 3200 px per meter on the 20 x 46
 /// cm panel, about the display's density at arm's length.
 pub const TEX_W: u32 = 640;
@@ -34,29 +36,77 @@ pub const ROW_GAP: f32 = 6.0;
 pub const COL_GAP: f32 = 6.0;
 /// The -/+ and Prev/Next boxes at a cell's or a row's ends.
 pub const END_BOX_W: f32 = 40.0;
-/// The hand menu's rows with Edit room off: the world effect's `<` `>`
-/// row on top (board #3336: the effect cycle left the bare pinch-hold),
-/// then, in both layouts at the bottom of the block, Recenter and Rescan
-/// (in the menu since board #4192, so the scan label's "Rescan from the
-/// hand menu" has a row to find; since board #5393 the two share the left
-/// cell and Roam has the right one), over the agent's provider (board #3776),
-/// over the pitcher and debug toggles, over the room editor's (board
-/// #3326), over the cloud's (step 2c), over the music's (board #3472). The
-/// debug panel shows the effect row at the top of its block, over the
-/// steppers.
+/// The hand menu's rows with Edit room off on the developer surface: the
+/// world effect's `<` `>` row on top (board #3336: the effect cycle left
+/// the bare pinch-hold), then, in both layouts at the bottom of the block,
+/// Recenter and Rescan (in the menu since board #4192, so the scan label's
+/// "Rescan from the hand menu" has a row to find; since board #5393 the
+/// two share the left cell and Roam has the right one), over the agent's
+/// provider (board #3776), over the pitcher and debug toggles, over the
+/// room editor's (board #3326), over the cloud's (step 2c), over the
+/// music's (board #3472). The debug panel shows the effect row at the top
+/// of its block, over the steppers. The release surface (board #4204)
+/// leaves out the pitcher and debug row ([`menu`]).
 pub const MENU_ROWS: usize = 7;
 /// The rows Edit room adds under its own (board #3472, D3): the pointed
 /// surface's color, band and strength.
 pub const SURFACE_ROWS: usize = 3;
 
-/// The hand menu's rows: [`MENU_ROWS`], and the [`SURFACE_ROWS`] with
-/// them while Edit room is on.
-pub const fn menu_rows(editing: bool) -> usize {
-    if editing {
-        MENU_ROWS + SURFACE_ROWS
-    } else {
-        MENU_ROWS
+/// One row of the hand menu (`hud.rs` paints each).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuRow {
+    /// The world effect's `<` `>`.
+    Effect,
+    /// Recenter and Rescan, a half each, beside Roam.
+    Recenter,
+    /// The Agent control beside the Immersion control.
+    Agent,
+    /// The Pitcher toggle beside the Debug panel toggle: the developer
+    /// surface's only.
+    Developer,
+    /// Edit room beside its status.
+    Edit,
+    /// The pointed surface's color, band or strength (Edit room on), by
+    /// its index in the three.
+    SurfaceParam(usize),
+    /// The Particles toggle beside the edge bars' control, which shares
+    /// its cell with "All: none" on the developer surface (`all_none`)
+    /// and has the cell to itself on the release one.
+    Cloud { all_none: bool },
+    /// The Music cell beside Voice and Theme.
+    Music,
+}
+
+/// The hand menu's rows on `surface`, top to bottom. The release surface
+/// (board #4204) leaves out the developer row (Pitcher and Debug panel)
+/// and the "All: none" half, whose cell the edge bars' control fills: the
+/// rows close up and no cell or half stands empty.
+pub fn menu(surface: Surface, editing: bool) -> Vec<MenuRow> {
+    let developer = surface.developer();
+    let mut rows = vec![MenuRow::Effect, MenuRow::Recenter, MenuRow::Agent];
+    if developer {
+        rows.push(MenuRow::Developer);
     }
+    rows.push(MenuRow::Edit);
+    if editing {
+        rows.extend((0..SURFACE_ROWS).map(MenuRow::SurfaceParam));
+    }
+    rows.push(MenuRow::Cloud {
+        all_none: developer,
+    });
+    rows.push(MenuRow::Music);
+    rows
+}
+
+/// The hand menu's row count on `surface`: [`MENU_ROWS`] on the developer
+/// surface and one fewer on the release one, and the [`SURFACE_ROWS`]
+/// with them while Edit room is on ([`menu`]'s length).
+pub const fn menu_rows(surface: Surface, editing: bool) -> usize {
+    let base = match surface {
+        Surface::Developer => MENU_ROWS,
+        Surface::Release => MENU_ROWS - 1,
+    };
+    if editing { base + SURFACE_ROWS } else { base }
 }
 
 /// The hand menu's height (points) with `rows` rows: the top of the
@@ -93,19 +143,39 @@ pub const STEPPERS: usize = 10;
 /// debug panel's own row until the menu took them (board #4192), so the
 /// count did not change.
 pub const fn debug_rows(editing: bool) -> usize {
-    STEPPERS.div_ceil(2) + menu_rows(editing)
+    STEPPERS.div_ceil(2) + menu_rows(Surface::Developer, editing)
 }
 
 // A stepper's label over its value in one row, and the menu's title over
 // its top row, in either menu.
 const _: () = assert!(FONT_LABEL + FONT_VALUE <= ROW_H - 4.0);
 const _: () = assert!(
-    MARGIN + FONT_TITLE * 1.4 + menu_rows(false) as f32 * (ROW_GAP + ROW_H) + MARGIN
-        <= menu_h(menu_rows(false))
+    MARGIN
+        + FONT_TITLE * 1.4
+        + menu_rows(Surface::Developer, false) as f32 * (ROW_GAP + ROW_H)
+        + MARGIN
+        <= menu_h(menu_rows(Surface::Developer, false))
 );
 const _: () = assert!(
-    MARGIN + FONT_TITLE * 1.4 + menu_rows(true) as f32 * (ROW_GAP + ROW_H) + MARGIN
-        <= menu_h(menu_rows(true))
+    MARGIN
+        + FONT_TITLE * 1.4
+        + menu_rows(Surface::Developer, true) as f32 * (ROW_GAP + ROW_H)
+        + MARGIN
+        <= menu_h(menu_rows(Surface::Developer, true))
+);
+const _: () = assert!(
+    MARGIN
+        + FONT_TITLE * 1.4
+        + menu_rows(Surface::Release, false) as f32 * (ROW_GAP + ROW_H)
+        + MARGIN
+        <= menu_h(menu_rows(Surface::Release, false))
+);
+const _: () = assert!(
+    MARGIN
+        + FONT_TITLE * 1.4
+        + menu_rows(Surface::Release, true) as f32 * (ROW_GAP + ROW_H)
+        + MARGIN
+        <= menu_h(menu_rows(Surface::Release, true))
 );
 // The debug panel's header over its fullest control block: Edit room on.
 const _: () = assert!(
@@ -273,8 +343,13 @@ mod tests {
     #[test]
     fn the_rows_tile_the_block_bottom_up() {
         for (bottom, n) in [false, true].into_iter().flat_map(|editing| {
-            let menu = menu_rows(editing);
-            [(PANEL_H, debug_rows(editing)), (menu_h(menu), menu)]
+            let menu = menu_rows(Surface::Developer, editing);
+            let release = menu_rows(Surface::Release, editing);
+            [
+                (PANEL_H, debug_rows(editing)),
+                (menu_h(menu), menu),
+                (menu_h(release), release),
+            ]
         }) {
             let top = block_top(bottom, n);
             let base = row(bottom, 0).max[1] + ROW_GAP * 0.5;
@@ -316,8 +391,10 @@ mod tests {
         // under the pointer stays under it; and when Edit room grows the
         // menu, so its bottom rows stay where they were.
         for editing in [false, true] {
-            let h = menu_h(menu_rows(editing));
-            assert_close!(h - row(h, 0).max[1], MARGIN);
+            for surface in [Surface::Developer, Surface::Release] {
+                let h = menu_h(menu_rows(surface, editing));
+                assert_close!(h - row(h, 0).max[1], MARGIN);
+            }
         }
         let panel = PANEL_H - row(PANEL_H, 0).max[1];
         assert_close!(panel, MARGIN);
@@ -400,15 +477,122 @@ mod tests {
         // Agent row under those since board #3776), or ten with Edit room
         // on, 40 points taller for each past the first. No row or font
         // shrinks for them.
-        assert_eq!((menu_rows(false), menu_rows(true)), (7, 10));
-        assert_close!(menu_h(menu_rows(false)), 324.0);
-        assert_close!(menu_h(menu_rows(true)), 444.0);
+        let dev = Surface::Developer;
+        assert_eq!((menu_rows(dev, false), menu_rows(dev, true)), (7, 10));
+        assert_close!(menu_h(menu_rows(dev, false)), 324.0);
+        assert_close!(menu_h(menu_rows(dev, true)), 444.0);
+        // The release surface (board #4204): one row fewer, 40 points
+        // shorter.
+        let rel = Surface::Release;
+        assert_eq!((menu_rows(rel, false), menu_rows(rel, true)), (6, 9));
+        assert_close!(menu_h(menu_rows(rel, false)), 284.0);
+        assert_close!(menu_h(menu_rows(rel, true)), 404.0);
         for editing in [false, true] {
-            let n = menu_rows(editing);
-            assert!(block_top(menu_h(n), n) >= MARGIN + FONT_TITLE * 1.4);
-            assert!(menu_h(n) <= PANEL_H);
+            for surface in [dev, rel] {
+                let n = menu_rows(surface, editing);
+                assert!(block_top(menu_h(n), n) >= MARGIN + FONT_TITLE * 1.4);
+                assert!(menu_h(n) <= PANEL_H);
+            }
         }
         // The texture is unchanged: 640 x 1472 at 1.6 px per point.
         assert_eq!((PANEL_W, PANEL_H), (400.0, 920.0));
+    }
+
+    #[test]
+    fn the_developer_menu_holds_every_row() {
+        use MenuRow::*;
+        assert_eq!(
+            menu(Surface::Developer, false),
+            [
+                Effect,
+                Recenter,
+                Agent,
+                Developer,
+                Edit,
+                Cloud { all_none: true },
+                Music
+            ]
+        );
+        assert_eq!(
+            menu(Surface::Developer, true),
+            [
+                Effect,
+                Recenter,
+                Agent,
+                Developer,
+                Edit,
+                SurfaceParam(0),
+                SurfaceParam(1),
+                SurfaceParam(2),
+                Cloud { all_none: true },
+                Music
+            ]
+        );
+    }
+
+    #[test]
+    fn the_release_menu_hides_the_developer_rows_and_closes_up() {
+        use MenuRow::*;
+        // Board #4204: no Pitcher or Debug panel row, no "All: none" half;
+        // the rows under the gone one move up a row and the edge bars'
+        // control takes the whole cell.
+        assert_eq!(
+            menu(Surface::Release, false),
+            [
+                Effect,
+                Recenter,
+                Agent,
+                Edit,
+                Cloud { all_none: false },
+                Music
+            ]
+        );
+        assert_eq!(
+            menu(Surface::Release, true),
+            [
+                Effect,
+                Recenter,
+                Agent,
+                Edit,
+                SurfaceParam(0),
+                SurfaceParam(1),
+                SurfaceParam(2),
+                Cloud { all_none: false },
+                Music
+            ]
+        );
+        for editing in [false, true] {
+            for surface in [Surface::Developer, Surface::Release] {
+                let rows = menu(surface, editing);
+                assert_eq!(rows.len(), menu_rows(surface, editing));
+                // Each row once, and the release menu is the developer's
+                // with the developer row out: the same order, no blank
+                // row in its place.
+                for (i, r) in rows.iter().enumerate() {
+                    assert!(!rows[i + 1..].contains(r), "{r:?} twice");
+                }
+            }
+            let dev: Vec<MenuRow> = menu(Surface::Developer, editing)
+                .into_iter()
+                .filter(|r| *r != Developer)
+                .map(|r| match r {
+                    Cloud { .. } => Cloud { all_none: false },
+                    r => r,
+                })
+                .collect();
+            assert_eq!(menu(Surface::Release, editing), dev);
+            // The bottom rows sit where the developer menu has them, the
+            // quad's bottom edge the same: only the top moves down.
+            let (d, r) = (
+                menu_rows(Surface::Developer, editing),
+                menu_rows(Surface::Release, editing),
+            );
+            for k in 0..r {
+                let in_dev = row(menu_h(d), k).max[1] - menu_h(d);
+                let in_rel = row(menu_h(r), k).max[1] - menu_h(r);
+                assert_close!(in_dev, in_rel);
+            }
+            assert_close!(menu_h(d) - menu_h(r), ROW_H + ROW_GAP);
+        }
     }
 }

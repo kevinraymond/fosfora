@@ -16,6 +16,9 @@
 //! Edit room on, three more rows under the editor's (board #3472, D3):
 //! the color, the band and the strength of the surface under the beam,
 //! each stepped with `<` and `>`, the menu growing upward to hold them.
+//! The release surface (board #4204, `release.rs`) shows the menu without
+//! the pitcher's and the debug panel's row and without "All: none", the
+//! rows closed up (`panel_grid::menu`), and never the debug panel.
 //! With debug on the same quad grows upward into the debug
 //! panel (frame timing, the effect, hands, reach, anchor and audio, and
 //! controls for what can change without a restart), the menu rows still
@@ -319,6 +322,9 @@ fn with_alpha(c: Color32, a: u8) -> Color32 {
 pub struct Hud {
     /// The debug panel is on (else the hand menu shows only its toggle).
     debug: bool,
+    /// The developer's surface or the release one (board #4204): the
+    /// release menu has no Pitcher or Debug panel row and no "All: none".
+    surface: crate::release::Surface,
     /// Edit room was on at the last render: the menu holds the surface
     /// rows, and the quad is placed tall enough for them.
     editing: bool,
@@ -343,9 +349,9 @@ pub struct Hud {
 }
 
 impl Hud {
-    /// Build the hand menu, with the debug panel on or off, and hand its
-    /// texture to `gfx`.
-    pub fn new(gfx: &mut Gfx, debug: bool) -> Self {
+    /// Build the hand menu for `surface`, with the debug panel on or off
+    /// (always off on the release surface), and hand its texture to `gfx`.
+    pub fn new(gfx: &mut Gfx, debug: bool, surface: crate::release::Surface) -> Self {
         let texture = gfx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("xr-hud"),
             size: wgpu::Extent3d {
@@ -377,7 +383,8 @@ impl Hud {
             s.spacing.item_spacing = Vec2::new(8.0, 5.0);
         });
         Self {
-            debug,
+            debug: debug && surface.developer(),
+            surface,
             editing: false,
             placement: PalmPanel::default(),
             touch: Touch::default(),
@@ -479,7 +486,7 @@ impl Hud {
         if self.debug {
             TEX_H as f32 / PIXELS_PER_POINT
         } else {
-            grid::menu_h(grid::menu_rows(self.editing))
+            grid::menu_h(grid::menu_rows(self.surface, self.editing))
         }
     }
 
@@ -606,6 +613,7 @@ impl Hud {
         let mut hovered = None;
         let mut crowded = false;
         let debug = self.debug;
+        let surface = self.surface;
         let output = self.ctx.run(raw, |ctx| {
             egui::CentralPanel::default()
                 .frame(
@@ -623,7 +631,7 @@ impl Hud {
                     if debug {
                         crowded = panel_ui(ui, view, &history, controls, rows);
                     } else {
-                        menu_ui(ui, controls, view, rows);
+                        menu_ui(ui, controls, view, surface, rows);
                     }
                     // The cursor: a filled dot while pressed, else a ring.
                     // For a poke the ring shrinks as the fingertip closes
@@ -1416,6 +1424,7 @@ fn panel_ui(
         controls.cloud,
         controls.edit_room,
         controls.edges,
+        true,
     ));
     block.push(music_row(
         controls.music,
@@ -1428,28 +1437,41 @@ fn panel_ui(
     header_end > grid::block_top(bottom, block.len())
 }
 
-/// The hand menu with the debug panel off: a title over its rows, the
-/// surface rows among them while Edit room is on.
-fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Rows<'_>) {
+/// The hand menu with the debug panel off: a title over its rows
+/// (`panel_grid::menu`), the surface rows among them while Edit room is
+/// on. The release surface (board #4204) has no Pitcher and Debug panel
+/// row and no "All: none" half; the rows close up.
+fn menu_ui(
+    ui: &mut egui::Ui,
+    controls: &Controls,
+    view: &View<'_>,
+    surface: crate::release::Surface,
+    mut rows: Rows<'_>,
+) {
     ui.label(RichText::new("Fosfora").strong().size(FONT_TITLE));
     let editing = controls.edit_room;
-    let mut block = Vec::with_capacity(grid::menu_rows(editing));
-    block.push(effect_row(view.effect));
-    block.push(recenter_row(view.room, controls.roam));
-    block.push(agent_row(controls.agent, controls.immerse));
-    block.push(menu_row(false, controls.pitcher));
-    block.push(edit_row(editing, view.edit_status));
-    if editing {
-        block.extend(surface_rows(view.surface_params));
-    }
-    block.push(cloud_row(controls.cloud, editing, controls.edges));
-    block.push(music_row(
-        controls.music,
-        view.track,
-        controls.voice,
-        view.theme,
-    ));
-    debug_assert_eq!(block.len(), grid::menu_rows(editing));
+    let layout = grid::menu(surface, editing);
+    let mut params = surface_rows(view.surface_params).into_iter();
+    let block: Vec<Control<'_>> = layout
+        .iter()
+        .filter_map(|row| {
+            Some(match *row {
+                grid::MenuRow::Effect => effect_row(view.effect),
+                grid::MenuRow::Recenter => recenter_row(view.room, controls.roam),
+                grid::MenuRow::Agent => agent_row(controls.agent, controls.immerse),
+                grid::MenuRow::Developer => menu_row(false, controls.pitcher),
+                grid::MenuRow::Edit => edit_row(editing, view.edit_status),
+                grid::MenuRow::SurfaceParam(_) => params.next()?,
+                grid::MenuRow::Cloud { all_none } => {
+                    cloud_row(controls.cloud, editing, controls.edges, all_none)
+                }
+                grid::MenuRow::Music => {
+                    music_row(controls.music, view.track, controls.voice, view.theme)
+                }
+            })
+        })
+        .collect();
+    debug_assert_eq!(block.len(), grid::menu_rows(surface, editing));
     rows.block(ui, grid::menu_h(block.len()), &block);
 }
 
@@ -1593,9 +1615,15 @@ fn agent_row(
 /// The cloud's row, over the music's in both layouts: its toggle, and
 /// every surface to none (step 2c) sharing a cell with the edge bars'
 /// choice (board #5420, #5431: "Edges theme" or the mode forced on every
-/// kind), a half each, as Recenter and Rescan share theirs. The state is in
-/// the words, not a color.
-fn cloud_row(on: bool, editing: bool, edges: crate::edge_bars::Choice) -> Control<'static> {
+/// kind), a half each, as Recenter and Rescan share theirs. Without
+/// `all_none` (the release surface, board #4204) the edge bars' choice
+/// has the cell to itself. The state is in the words, not a color.
+fn cloud_row(
+    on: bool,
+    editing: bool,
+    edges: crate::edge_bars::Choice,
+    all_none: bool,
+) -> Control<'static> {
     Control::Pair([
         Some(Cell::Button(
             Target::ToggleCloud,
@@ -1612,10 +1640,14 @@ fn cloud_row(on: bool, editing: bool, edges: crate::edge_bars::Choice) -> Contro
         )),
         // Every surface to none in one press, for telling what a single
         // assignment does afterwards (board #3326).
-        Some(Cell::Halves([
-            Half::one(Target::AllNone, "All: none"),
-            Half::one(Target::CycleEdges, edges.label()),
-        ])),
+        Some(if all_none {
+            Cell::Halves([
+                Half::one(Target::AllNone, "All: none"),
+                Half::one(Target::CycleEdges, edges.label()),
+            ])
+        } else {
+            Cell::Button(Target::CycleEdges, edges.label())
+        }),
     ])
 }
 

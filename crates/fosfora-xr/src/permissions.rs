@@ -272,6 +272,28 @@ mod device {
             .context("ApplicationInfo.nativeLibraryDir")
         }
 
+        /// The app's `ApplicationInfo.flags`, whose `FLAG_DEBUGGABLE` tells
+        /// the debug APK from the release one (`release::Build`, board
+        /// #4204): both carry the same native library.
+        pub fn app_flags(&self) -> Result<i32> {
+            let mut env = self
+                .vm
+                .attach_current_thread()
+                .context("attaching to the VM")?;
+            call(&mut env, |env| {
+                let info = env
+                    .call_method(
+                        self.activity.as_obj(),
+                        "getApplicationInfo",
+                        "()Landroid/content/pm/ApplicationInfo;",
+                        &[],
+                    )?
+                    .l()?;
+                env.get_field(&info, "flags", "I")?.i()
+            })
+            .context("ApplicationInfo.flags")
+        }
+
         /// The app's target SDK (`ApplicationInfo.targetSdkVersion`), which
         /// picks the storage permission's name (`storage`).
         pub fn target_sdk(&self) -> Result<u32> {
