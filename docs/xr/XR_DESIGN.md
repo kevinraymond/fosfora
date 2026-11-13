@@ -581,7 +581,11 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     nearly edge-on to the eye and the facing fade takes the light to
     nothing at the last vertex on the object and at the first one behind
     it. The light fades out over the mesh cell inside the silhouette, and
-    the fringe triangles that lean back to the background carry none. On
+    the fringe triangles that lean back to the background carry none. A
+    vertex whose distance jumps from a neighbor's by more than 6 to 12 % of
+    its own has none either. That keeps something thinner than two mesh
+    steps dark wherever it lies on the texel grid, where the gradient
+    alone missed the jump in some places and lit it as the head moved. On
     recorded frames of the office, a rim brightening toward the silhouette
     and a lit fringe both drew the mesh's stair steps in light, so the
     coarse edge was still the first thing seen. Dark against dark leaves
@@ -618,21 +622,23 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     state at launch, each change, and the colors when the theme changes.
   - **Cost.** Per vertex of the eye mesh (26K per eye at step 2): four
     more texel loads for the neighbors, four rays, a cross product, a
-    rotation, two square roots and two smoothsteps, in the vertex stage
-    where the map is already read. None of it feeds the position. Per
-    fragment: one `fwidth`, one cosine, a smoothstep and about a dozen
-    multiply-adds, blended. There is no texture, no loop, no discard and no
-    `frag_depth`, so early depth testing works as before. A person 1 m
-    away covers about a quarter of an eye's pixels, and the wearer's legs
-    lying back about as much. With the whole map lit (geometry first off,
-    or no boxes) it is every pixel the map covers. Not yet measured on the
-    Quest 3.
+    rotation, two square roots, a division and three smoothsteps, in the
+    vertex stage where the map is already read. None of it feeds the position. Per
+    fragment: one `fwidth`, one cosine, a smoothstep and about twenty
+    other arithmetic operations, blended. There is no texture, no loop, no
+    discard and no `frag_depth`, so early depth testing works as before. A
+    person 1 m away covers about 15 % of an eye's pixels and a quarter at
+    0.7 m, a vacuum's handle 0.6 m away about 1 %. With the whole map lit
+    (geometry first off, or no boxes) it is every pixel the map covers. Not
+    yet measured on the Quest 3.
   - **What it does not do.** It does not change what occludes. The depth
     written, geometry first's rule and the hand removal are as before. It
     does not sharpen the coarse edge, only darkens it. It lights whatever
     the map sees, so where no box explains a wall (no scan, roam, geometry
     first off) the wall within 3 m is lit too. Past 3 m an object is still
-    a dark shape.
+    a dark shape. So is anything narrower than about six depth texels
+    (4 cm at 1 m, 2.5 cm at 0.6 m), where no vertex has all four
+    neighbors on the object.
 - **Edge bars (board #5420, `edge_bars.rs`).** Bars rise and fall along
   the edges of each plane and box, so the room's outline is drawn as the
   spectrum. It is on by default (`debug.fosfora.edgebars 0` turns it

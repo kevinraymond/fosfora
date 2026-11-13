@@ -29,7 +29,12 @@
 //! to the eye and the facing fade ([`GRAZE`]) takes the light to 0 at the
 //! last vertex on the object and at the first one behind it. The light
 //! fades out over the mesh cell inside the silhouette, and the fringe
-//! triangles that lean back to the background carry none. On recorded
+//! triangles that lean back to the background carry none. A vertex whose
+//! distance jumps from a neighbor's by more than [`JUMP`] has none either,
+//! which keeps something thinner than two mesh steps dark wherever it lies
+//! on the texel grid, instead of lit in some places and not in others as
+//! the head moves (its two neighbors along a row both land on the
+//! background, so the gradient between them misses the jump). On recorded
 //! frames of a real office the two other treatments, a rim brightening
 //! toward the silhouette and the fringe lit along with the object, drew the
 //! mesh's stair steps in light, so the coarse edge was still the first
@@ -69,15 +74,15 @@
 //!
 //! **Cost.** Per vertex of the eye mesh (161 x 161, 26K per eye at the
 //! default step 2): four more texel loads (the neighbors), four rays, a
-//! cross product, a rotation, two square roots and two smoothsteps, in the
-//! vertex stage where the map is already read. None of it feeds the
-//! position, so a binning pass that computes positions alone skips it. Per
-//! fragment: one `fwidth`, one cosine, one smoothstep and about a dozen
-//! multiply-adds, blended; no texture, no loop, no discard and no
-//! `frag_depth`, so early depth testing works as before. A person 1 m away
-//! covers about a quarter of an eye's pixels, the wearer's legs lying back
-//! about as much; with the whole map lit (geometry first off, or no boxes)
-//! it is every pixel the map covers.
+//! cross product, a rotation, two square roots, a division and three
+//! smoothsteps, in the vertex stage where the map is already read. None of
+//! it feeds the position, so a binning pass that computes positions alone
+//! skips it. Per fragment: one `fwidth`, one cosine, one smoothstep and
+//! about twenty other arithmetic operations, blended; no texture, no loop,
+//! no discard and no `frag_depth`, so early depth testing works as before.
+//! A person 1 m away covers about 15 % of an eye's pixels and a quarter at
+//! 0.7 m, a vacuum's handle 0.6 m away about 1 %. With the whole map lit
+//! (geometry first off, or no boxes) it is every pixel the map covers.
 //!
 //! **Knobs**, read at launch and polled once a second
 //! ([`DepthLightOptions::from_knobs`]): `debug.fosfora.depthlight 0|1`
@@ -92,7 +97,9 @@
 //! written, geometry first's rule and the hand removal are as before. It
 //! does not sharpen the coarse edge, only darkens it. It lights what the
 //! map sees, so where no box explains a wall (no scan, roam, geometry first
-//! off) the wall within 3 m is lit too.
+//! off) the wall within 3 m is lit too. Past 3 m an object is still a dark
+//! shape. So is anything narrower than about six depth texels (4 cm at 1 m,
+//! 2.5 cm at 0.6 m), where no vertex has all four neighbors on it.
 //!
 //! Plain numbers in, so it builds and tests on the desktop:
 //! [`vertex_light`] mirrors the WGSL's `mesh_light` and [`fragment`] its
@@ -114,7 +121,7 @@ pub const KNOB_GAIN: &str = "debug.fosfora.depthlightgain";
 
 /// Rows of [`rows`], the end of `struct EnvEye` from `light` on
 /// (`env_depth::LIGHT_ROW`).
-pub const ROWS: usize = 5;
+pub const ROWS: usize = 6;
 /// The height of one band of light (m): crests 12 cm apart, about eight on
 /// a seated person's torso and legs.
 pub const BAND_SPACING_M: f32 = 0.12;
@@ -136,6 +143,14 @@ pub const GRAZE: [f32; 2] = [0.15, 0.6];
 /// The distance from the eye (m) where the light starts to fade out and
 /// where it is gone.
 pub const FADE_M: [f32; 2] = [1.5, 3.0];
+/// The largest jump from the vertex's distance to a neighbor's, as a share
+/// of the vertex's, where the light starts to fade out and where it is
+/// gone: a silhouette's jump. The facing fade catches most of them; this
+/// catches a vertex on something thinner than two mesh steps, whose two
+/// neighbors along an axis both lie on the background, so the gradient
+/// between them does not see the jump. The noise on a surface within 3 m
+/// moves a neighbor by a percent or two of the distance (the recordings).
+pub const JUMP: [f32; 2] = [0.06, 0.12];
 /// Bands per pixel (the `fwidth` of the band count) where the bands start
 /// to fade into their mean and where they are gone: six pixels a band and
 /// two.
@@ -382,6 +397,7 @@ pub fn rows(drive: &Drive, peak: f32, [side, top]: [[f32; 3]; 2]) -> [[f32; 4]; 
             AA_BANDS_PER_PX[1],
             CREST_MEAN,
         ],
+        [JUMP[0], JUMP[1], 0.0, 0.0],
     ]
 }
 
@@ -404,8 +420,9 @@ pub struct VertexLight {
 /// (`r.mesh_step`), with the light's `rows` and the map's stored values
 /// through `stored`: the occluder's clip position, the world point, and
 /// the share from the normal (the gradient one mesh step either way along
-/// each axis, clamped to the map), the facing and the distance from the
-/// eye. No share without data at the vertex or a neighbor.
+/// each axis, clamped to the map), the facing, the distance from the eye
+/// and the largest jump to a neighbor ([`JUMP`]). No share without data at
+/// the vertex or a neighbor.
 pub fn vertex_light(
     r: &EyeReprojection,
     rows: &[[f32; 4]; ROWS],
@@ -443,10 +460,18 @@ pub fn vertex_light(
         let ny = if facing < 0.0 { -n.y } else { n.y };
         up = (ny / len).clamp(0.0, 1.0);
         let f = facing.abs();
-        let [fade, shape] = [rows[3], rows[4]];
+        let [fade, shape, jumps] = [rows[3], rows[4], rows[5]];
+        let d0 = dist.unwrap_or(0.0);
+        let jump = d
+            .iter()
+            .flatten()
+            .map(|&x| (x - d0).abs())
+            .fold(0.0, f32::max)
+            / d0;
         weight = smoothstep(fade[2], fade[3], f)
             * (shape[0] + (1.0 - shape[0]) * f)
-            * (1.0 - smoothstep(fade[0], fade[1], range));
+            * (1.0 - smoothstep(fade[0], fade[1], range))
+            * (1.0 - smoothstep(jumps[0], jumps[1], jump));
     }
     VertexLight {
         clip,
@@ -470,7 +495,7 @@ pub fn crest(rows: &[[f32; 4]; ROWS], y: f32) -> f32 {
 /// facing up `up`, where the band count changes by `fw` across a pixel
 /// (`fwidth`).
 pub fn fragment(rows: &[[f32; 4]; ROWS], world_y: f32, weight: f32, up: f32, fw: f32) -> [f32; 4] {
-    let [light, side, top, _, shape] = *rows;
+    let [light, side, top, _, shape, _] = *rows;
     let contrast = (1.0 - smoothstep(shape[1], shape[2], fw)) * (1.0 + (top[3] - 1.0) * up);
     let band = (shape[3] + (crest(rows, world_y) - shape[3]) * contrast) * light[3];
     let steady = side[3];
@@ -630,6 +655,41 @@ mod tests {
         // The wall beside it: past the light's reach.
         let beside = vertex_light(&r, &rows, vertex_near(&r, Vec3::new(0.4, 1.0, -3.5)), &map);
         assert_close!(beside.weight, 0.0);
+    }
+
+    #[test]
+    fn something_thinner_than_two_mesh_steps_stays_dark_in_every_alignment() {
+        // Poles in front of a wall 2 m out, slid across the texel grid by
+        // quarter texels: a vertex on a pole narrower than two steps has
+        // both neighbors along the row on the wall, so the gradient
+        // between them sees no jump; the jump to the vertex itself does.
+        let rows = lit_rows();
+        let r = eye_at(Vec3::new(0.0, 1.2, 0.0), Quat::IDENTITY);
+        let near_wall = |o, d| plane(o, d, Vec3::new(0.0, 0.0, -2.0), Vec3::Z);
+        let texel_m = |dist: f32| dist * (FOV.right.tan() - FOV.left.tan()) / MAP as f32;
+        let brightest = |dist: f32, width_texels: f32, shift: f32| {
+            let x = shift * texel_m(dist);
+            let c = Vec3::new(x, 0.0, -dist);
+            let radius = width_texels * texel_m(dist) / 2.0;
+            let map = map_of(&r, move |o, d| {
+                nearest([pole(o, d, c, radius), near_wall(o, d)])
+            });
+            let mid = vertex_near(&r, Vec3::new(x, 1.2, -dist));
+            // Only the vertices on the pole: the wall behind is lit too.
+            (0..9)
+                .map(|k| [mid[0] + k * STEP - 4 * STEP, mid[1]])
+                .filter(|&t| r.texel_distance(map(t)).is_some_and(|d| d < dist + 0.1))
+                .map(|t| vertex_light(&r, &rows, t, &map).weight)
+                .fold(0.0, f32::max)
+        };
+        for dist in [0.6, 1.0] {
+            for shift in [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75] {
+                // Three texels across: dark wherever it lies.
+                assert_close!(brightest(dist, 3.0, shift), 0.0);
+                // Seven: lit wherever it lies.
+                assert!(brightest(dist, 7.0, shift) > 0.9, "{dist} {shift}");
+            }
+        }
     }
 
     #[test]
@@ -978,9 +1038,10 @@ mod tests {
                 CREST_MEAN
             ]
         );
+        assert_close!(rows[5], [JUMP[0], JUMP[1], 0.0, 0.0]);
         // Every fade runs low to high, as smoothstep needs.
         const { assert!(FADE_M[0] < FADE_M[1] && GRAZE[0] < GRAZE[1]) };
-        const { assert!(AA_BANDS_PER_PX[0] < AA_BANDS_PER_PX[1]) };
+        const { assert!(AA_BANDS_PER_PX[0] < AA_BANDS_PER_PX[1] && JUMP[0] < JUMP[1]) };
         // The rows end the occluder's uniform, from `light` on.
         assert_eq!(LIGHT_ROW + ROWS, UNIFORM_ROWS);
         let module = naga::front::wgsl::parse_str(ENV_DEPTH_WGSL).expect("WGSL parses");
@@ -1006,6 +1067,7 @@ mod tests {
             "light_top",
             "light_fade",
             "light_shape",
+            "light_jump",
         ]
         .into_iter()
         .enumerate()

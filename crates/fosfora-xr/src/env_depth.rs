@@ -589,6 +589,9 @@ struct EnvEye {
     // x the shading's floor; y, z the bands per pixel where the bands
     // start and finish fading into their mean; w that mean
     light_shape: vec4<f32>,
+    // x, y the jump to a neighbor, as a share of the vertex's distance,
+    // where the light starts and finishes fading out; z, w unused
+    light_jump: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> env: EnvEye;
 @group(0) @binding(1) var depth_map: texture_depth_2d_array;
@@ -798,8 +801,10 @@ struct LightOut {
 // across the vertex, one mesh step either way along each axis; the share
 // fades out where the surface turns edge-on to the eye (a silhouette's
 // jump turns it fully), shades with the facing, and fades out with the
-// distance from the eye. No share without data at the vertex or at any of
-// the four neighbors.
+// distance from the eye. It fades out too where a neighbor's distance
+// jumps from the vertex's, which the gradient misses when the vertex sits
+// on something thinner than two steps. No share without data at the vertex
+// or at any of the four neighbors.
 fn mesh_light(i: u32) -> LightOut {
     let t = mesh_texel(i);
     let dist = texel_distance(vec2<i32>(t));
@@ -832,9 +837,12 @@ fn mesh_light(i: u32) -> LightOut {
         // The normal on the side the eye sees.
         up = clamp(select(n.y, -n.y, facing < 0.0) / len, 0.0, 1.0);
         let f = abs(facing);
+        let step = abs(d - vec4<f32>(dist));
+        let jump = max(max(step.x, step.y), max(step.z, step.w)) / dist;
         weight = smoothstep(env.light_fade.z, env.light_fade.w, f)
             * mix(env.light_shape.x, 1.0, f)
-            * (1.0 - smoothstep(env.light_fade.x, env.light_fade.y, range));
+            * (1.0 - smoothstep(env.light_fade.x, env.light_fade.y, range))
+            * (1.0 - smoothstep(env.light_jump.x, env.light_jump.y, jump));
     }
     out.world = vec4<f32>(p, weight);
     out.up = up;
