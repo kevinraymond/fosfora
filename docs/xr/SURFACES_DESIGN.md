@@ -934,22 +934,25 @@ room first, so each theme has to look complete there.
 
 **What a theme is** (`themes.rs`). A name and, for each kind of surface
 (table, floor, wall, ceiling, frame, other), a behavior, a color index, an
-audio band and a strength. The module is plain data: the table, lookup by
+audio band, a strength and, since board #5431, how the edge bars draw that
+kind's edges. The module is plain data: the table, lookup by
 name, the next theme in the cycle, what a room file shows, and the knob's
 launch rule. No theme adds a shader or a behavior. Every pairing below is
 on its kind's own list (`SurfaceBehavior::catalogue`), so none of the
 pairings first proposed needed changing.
 
-**The four.** Each cell is behavior, color, band, strength.
+**The five.** Each cell is behavior, color, band, strength. The first
+four draw the edge bars on the face for every kind; Mirror's edge mode is
+in its cells.
 
-| kind | Classic | Drift | Tide | Aurora |
-| --- | --- | --- | --- | --- |
-| table | streamlines, own (blue), rms, 1 | streamlines, teal, rms, 1 | curls, rose, rms, 1 | streamlines, teal, rms, 1 |
-| floor | rings, own (violet), bass, 1 | rings, blue, bass, 1 | curls, violet, rms, 1 | streamlines, green, rms, 1 |
-| wall | spectrum, own (warm white), rms, 1 | streamlines, blue, rms, 1 | pulse, violet, bass, 1 | aurora, the key's tint, rms, 1 |
-| ceiling | none, own (amber), rms, 1 | rings, blue, bass, 1 | pulse, violet, bass, 1 | aurora, green, rms, 1 |
-| frame | pulse, own (amber), bass, 1 | pulse, teal, bass, 0.6 | rings, rose, bass, 1 | pulse, teal, bass, 1 |
-| other | curls, own (green), rms, 1 | curls, teal, rms, 1 | pulse, rose, bass, 1 | curls, teal, rms, 1 |
+| kind | Classic | Drift | Tide | Aurora | Mirror |
+| --- | --- | --- | --- | --- | --- |
+| table | streamlines, own (blue), rms, 1 | streamlines, teal, rms, 1 | curls, rose, rms, 1 | streamlines, teal, rms, 1 | none, blue, rms, 1, edges in |
+| floor | rings, own (violet), bass, 1 | rings, blue, bass, 1 | curls, violet, rms, 1 | streamlines, green, rms, 1 | rings, blue, bass, 1, edges on the face |
+| wall | spectrum, own (warm white), rms, 1 | streamlines, blue, rms, 1 | pulse, violet, bass, 1 | aurora, the key's tint, rms, 1 | none, warm white, rms, 1, edges in |
+| ceiling | none, own (amber), rms, 1 | rings, blue, bass, 1 | pulse, violet, bass, 1 | aurora, green, rms, 1 | none, warm white, rms, 1, edges in |
+| frame | pulse, own (amber), bass, 1 | pulse, teal, bass, 0.6 | rings, rose, bass, 1 | pulse, teal, bass, 1 | none, blue, rms, 1, edges in |
+| other | curls, own (green), rms, 1 | curls, teal, rms, 1 | pulse, rose, bass, 1 | curls, teal, rms, 1 | none, blue, rms, 1, edges in |
 
 Classic is today's defaults (`default_for`), each kind's own color, so
 applying it gives exactly a fresh room. It is the only theme with the wall
@@ -966,6 +969,39 @@ signal dumps of real songs. Every strength is 1 except Drift's frames at
 in the calm theme. The rings and the ported Aurora do not read the band
 (D3's table), so it only matters there if a hand edit later changes the
 behavior.
+
+**Mirror** (board #5431). The owner wore the edge bars and the themes and
+saw every theme draw the same edges, so a theme now says what the edges do
+per kind of surface: off, on the face, standing or in (`edge_bars::Mode`,
+`XR_DESIGN.md`, Edge bars). Mirror is the theme the edges carry, after
+Aurora in the cycle. Walls, the ceiling, tables, frames and other surfaces
+run no behavior and their edges go in: each face a window into a tunnel of
+rungs, the LED infinity mirror the owner asked for. From the chair the
+walls and the ceiling fill the view, so that is where the tunnels are. The
+floor keeps the rings with the bars on its face, as a pit under a seated
+wearer's feet is left for the owner to ask for. Warm white on the walls and
+the ceiling, blue on the rest, the floor's rings included.
+
+**The edges per kind.** The edge bars draw each shape in its kind's mode
+under the room's saved theme (`themes::edge_mode`), edited since or not: a
+hand edit changes behaviors and colors, not the theme's edges. A room with
+no theme saved, fresh or custom, draws every kind on the face. The mode
+comes from the saved name alone, so nothing new is written to the room
+file. A build without Mirror reads a room saved on it as one naming an
+unknown theme: no theme, Mirror's looks kept, every kind on the face. A
+live plane takes its kind's mode, a hidden wall and the stage floor
+are still not outlined, and an unlabeled anchor draws on the face. Faces on
+the face and standing are both strips, so a frame of mixed modes is one
+buffer write and at most two draws per eye, the strips and the tunnels.
+
+**The Edges control over the theme.** The hand menu's Edges control (the
+right half of the cloud row's right cell) now steps theme, off, face,
+stand, in, and back to theme. "Edges theme", the default, follows the
+theme; each of the others forces that mode on every kind. The knob
+`debug.fosfora.edgebars` does the same: unset follows the theme, 0 to 3
+force (0 off, 1 face, 2 stand, 3 in). The control's choice holds until
+the knob's value changes, as before, and neither is saved: a relaunch
+follows the theme again unless the knob is set.
 
 **The theme wins** (`RoomLanes::apply_theme`). Applying a theme sets every
 kind default and every surface of the room to the kind's look, hand
@@ -1009,8 +1045,8 @@ the kind looks are lost until that build saves the room.
 **The control.** "Theme" over the theme's name ("Drift", "Drift*",
 "custom") in the right half of the music row's right cell, with Voice in
 the left half, in both layouts (debug panel on and off). Each press steps
-to the next theme (Classic, Drift, Tide, Aurora, Classic; from custom, to
-Classic) and applies it once the frame's boxes are in, as All: none does.
+to the next theme (Classic, Drift, Tide, Aurora, Mirror, Classic; from
+custom, to Classic) and applies it once the frame's boxes are in, as All: none does.
 It works with the ray and the pinch like every other cell. Adding a row
 would push the debug panel's fullest block into its header, and every full
 cell holds a control the wearer reaches for, so the control shares a cell
@@ -1026,12 +1062,14 @@ to aurora", "change the theme to tide", "use the classic theme" name a
 theme. "next theme", "another theme", "change the theme" step it as a
 press does. The reply names the theme it came to ("theme: Aurora"). A name
 no theme has replies with the list: No theme called "sunset": Classic,
-Drift, Tide or Aurora. The word "theme" has to start or end the sentence,
+Drift, Tide, Aurora or Mirror. "mirror theme" and "set the theme to
+mirror" work through the same grammar, with no new phrase. The word
+"theme" has to start or end the sentence,
 so "drift" or "aurora" alone keep meaning what they did. The agent's
 actions have no theme, and an unknown theme is not forwarded to it.
 
-**The knob.** `debug.fosfora.theme <name>` (classic, drift, tide, aurora)
-is polled once a second after the lanes' update and applies that theme
+**The knob.** `debug.fosfora.theme <name>` (classic, drift, tide, aurora,
+mirror) is polled once a second after the lanes' update and applies that theme
 when its value changes, once. At launch, a value naming the room's own
 theme, edited or not, applies nothing, so a value left over from an
 earlier run neither rewrites the room nor wipes an edit. Like the menu, it
@@ -1044,14 +1082,15 @@ adb shell setprop debug.fosfora.theme classic   # then capture
 adb shell setprop debug.fosfora.theme drift     # then capture
 adb shell setprop debug.fosfora.theme tide      # then capture
 adb shell setprop debug.fosfora.theme aurora    # then capture
+adb shell setprop debug.fosfora.theme mirror    # then capture
 adb shell setprop debug.fosfora.theme '""'
 ```
 
 or one launch per theme with `scripts/xr/gpu-stages.sh --with
 "music=1;gov=0" --cond "classic=theme=classic" --cond "drift=theme=drift"
---cond "tide=theme=tide" --cond "aurora=theme=aurora" --only
-"classic,drift,tide,aurora"`. Back up `rooms/` first: the room ends on
-the last theme.
+--cond "tide=theme=tide" --cond "aurora=theme=aurora" --cond
+"mirror=theme=mirror" --only "classic,drift,tide,aurora,mirror"`. Back up
+`rooms/` first: the room ends on the last theme.
 
 **Logs.** Loading a room: `room <id>: theme drift`, `theme drift, edited
 since`, `no theme saved: classic (the defaults)` or `no theme saved:
@@ -1059,8 +1098,12 @@ custom (4 entries)`. Applying one: `room <id>: theme drift (the menu):
 every kind default and every surface (18 in the room, 1 of them live
 planes on their kind's default, 17 entries) -> table streamlines@1.00 teal
 rms · floor rings@1.00 blue bass · …, saved rooms/<id>.json`, the source
-being the menu, voice or the knob. The knob also logs a launch value it
-kept and an unknown name.
+being the menu, voice or the knob; a kind whose edges are not on the face
+adds them, `wall none@1.00 warm white rms edges in`. The knob also logs a
+launch value it kept and an unknown name. The edge bars log the mode per
+kind whenever it changes: `edge bars: per kind table in · floor face ·
+wall in · ceiling in · frame in · other in (theme mirror)`, or `(no theme
+saved)`, or `(forced on every kind)`.
 
 **Not yet.** The worn look of each theme seated in the scanned room, the
 screencaps of the control, and each theme's cost in `MEASURED.md`.
@@ -1070,5 +1113,6 @@ streamlines on the floor (1.7), the biggest faces all on costly shaders.
 Every face on a ported effect cost about 2.9 ms in D2b, so expect about
 that. Drift comes next (streamlines on every wall), then Tide (the cheap
 pulse on the walls and the ceiling, the curls on the floor), then Classic
-(about 1 ms, as in D2a). A theme does not pick the world effect or the
-edge bars' mode.
+(about 1 ms, as in D2a). A theme does not pick the world effect. Since
+board #5431 it does pick the edge bars' mode per kind; Mirror's worn look
+and its cost seated are still to take.

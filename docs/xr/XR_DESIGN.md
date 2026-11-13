@@ -552,7 +552,9 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
 - **Edge bars (board #5420, `edge_bars.rs`).** Bars rise and fall along
   the edges of each plane and box, so the room's outline is drawn as the
   spectrum. It is on by default (`debug.fosfora.edgebars 0` turns it
-  off).
+  off). Each kind of surface draws in the mode its theme names (board
+  #5431, `SURFACES_DESIGN.md`, Themes): on the face, standing, in (a
+  tunnel behind the face, below) or off.
   - **What is drawn where.** The shapes are the boxes drawn as occluders
     this frame: the scanned boxes, and the live planes and closed boxes
     while they are shown, at their fade. Hidden walls and the stage floor
@@ -601,15 +603,109 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     face's own box never hides its strips: the 1 cm lift alone keeps a
     strip over 400 float steps in front of the face's depth at 4 m, more
     at grazing angles, and the bias only adds to that. One uniform of
-    31,008 bytes holds up to 384 strips. A frame writes only the rows it
-    uses, and each eye draws them in one instanced call. The strips cover
-    27 % of a 4 x 2.5 m wall, up to 46 % of a square face under 1.7 m,
-    and 24 % of a 4 x 4 x 2.5 m room's walls, floor and ceiling. The
-    fragment has no loop: a merged bar's mean comes from two running sums.
-  - **Knobs**, read at launch and polled once a second: `edgebars 0|1|2`
-    (default 1), `edgebarsgain` (0 to 4, default 1) and `edgebarsheight`
-    (0 to 0.5, default 0.12). The `edge bars:` log lines give the state at
-    launch, each change, and what is outlined.
+    33,456 bytes holds up to 384 strips and tunnels together, a tunnel in
+    a strip's 80 bytes, after the strips. A frame writes only the rows it
+    uses: 2,736 bytes of bar sums (this frame's and the in mode's
+    history, 2,448 more than before the in mode, in every mode) and 80 per
+    strip or tunnel. Each eye draws the strips in one instanced call and
+    the tunnels in another, so a frame of mixed modes is still one write
+    and at most two draws per eye. The strips cover 27 % of a 4 x 2.5 m
+    wall, up to 46 % of a square face under 1.7 m, and 24 % of a 4 x 4 x
+    2.5 m room's walls, floor and ceiling. The fragment has no loop: a
+    merged bar's mean comes from two running sums.
+  - **In** (`edgebars 3`, board #5431). The owner's reference is an LED
+    infinity mirror: a frame of lights whose copies recede into the box
+    behind the glass, each smaller with distance, a tunnel of light with a
+    dark center. Each outlined face becomes a window into such a tunnel: a
+    box behind the face with the face's outline as its opening (moved
+    clear of its neighbors as the strips are), its four inner walls
+    running straight back along the inward normal. The bars lie on the
+    inner walls and grow away from the rim into depth.
+    - *How it is drawn.* Nothing is drawn behind the face: the face's own
+      occluder writes depth there, and whatever stands in front of the
+      face must still hide the tunnel. The face's quad is drawn instead,
+      lifted and depth-tested as the strips are, and its fragment finds
+      where the view ray through the pixel meets the inner walls. The ray
+      crossed the opening inside it, so it leaves the box through the wall
+      ahead of it along each of the face's axes, or through the end. The
+      nearer of those two walls is the one it meets: the nearest of the
+      four planes, with the two behind the ray left out, which costs two
+      divisions and a minimum, no loop and no march. That gives a wall, a
+      point along its edge and a depth. Where the ray reaches the end
+      first nothing is drawn (alpha 0), so the center stays dark and the
+      passthrough or the surface's own effect shows there. The eye
+      pass's camera uniform carries only `view_proj`, so the vertex stage
+      solves the eye's position from it: the one point it maps to clip x,
+      y and w all 0. The tunnel is therefore at its true place for each
+      eye and each head position: lean and the far rungs shift against
+      the rim, which holds with one eye, by motion alone.
+    - *Rungs.* On each inner wall the spectrum runs along the edge as on
+      the face: the same bands, ends, merging and corners. A bar is a
+      stack of lit rungs at even depths, like the mirror's receding
+      frames, not a solid fill: ten at full height, each 0.3 of the
+      spacing wide, a rung lit where its bar reached its depth (half lit
+      when the bar's height times the depth is exactly there). The rungs
+      line up across all four walls, so a loud moment reads as whole
+      frames lit deep into the wall and a quiet one as the rim alone. The
+      rim rung runs along the whole edge while music plays, gaps included,
+      at the line's 0.6 and up to 1 where its bar is loud. Each rung is 0.8
+      of the one in front (the last 0.13), so the far end fades into dark.
+      A rung thinner than a pixel dims by the share of the pixel it covers
+      instead of flickering, and a face seen nearly edge-on fades out
+      between 0.05 and 0.2 of the cosine of the view ray to its normal
+      (87 to 78 degrees off it).
+    - *Sound travels in.* Rung k shows the bars from k steps of 60 ms ago,
+      so a hit starts at the rim and reaches the last rung in 0.54 s. The
+      history keeps each bar's loudest over each step, so a hit between
+      two steps is not lost, and steps by time, so 72 and 90 Hz behave
+      alike. Its rows' running sums go in the same uniform as this
+      frame's, one block of 17 rows per rung. The fragment reads one row's
+      two sums either way, so the history is the mode, not a knob.
+    - *Scale.* The tunnel's depth is `edgebarsdepth` (default 0.6) of the
+      face's smaller side, clamped to 0.15 to 1.5 m, so a 40 cm box and a
+      4 m wall both read as a tunnel: 24 cm into the box, 1.5 m into a 4 x
+      2.5 m wall. `edgebarsgain` applies as on the face.
+    - *Cost.* A tunnel covers its whole face, where the strips covered
+      its rims. Seated in a room whose walls and ceiling go in, that is
+      most of each eye's 1680 x 1760 pixels, each shaded once (what stands
+      in front fails the depth test, and the shader never discards, so
+      early depth testing holds). The fragment: one intersection, a floor
+      for the rung, the bar's mean from two running sums of that rung's
+      row, two smoothsteps across the bar's slot, a power for the dimming
+      and a square root for the grazing fade; no texture, no loop. That
+      is less work than the surfaces pass's rings (a loop of eight) or
+      streamlines (noise) and far less than a ported effect. For scale,
+      `MEASURED.md` records Drift (streamlines on every wall, rings on the
+      ceiling) at 0.10 ms of App over the saved room and Aurora (the
+      ported effect on every wall and the ceiling) at 0.37 ms. The other
+      modes draw as they did; they write the 2,448 bytes of history too.
+    - *Tested on the desktop:* the intersection square on, grazing and
+      from each side, the center ray reaching the end, the parallax (the
+      same world point on a far rung from two head positions), the rung
+      spacing and dimming, the history's stepping at 72 and 90 Hz, the
+      depth scale and clamps, the fragment's Rust copy at chosen points,
+      the shader validated with naga and its struct size checked. An
+      ignored GPU test (`tests/edge_bars_gpu.rs`) renders the tunnel and
+      compares it with the Rust copy pixel by pixel.
+    - *To capture and measure* (not yet run on the device). The mode knob
+      is live, so one seated launch in the scanned room captures every
+      mode at the same spot: `music 1`, `gov 0` and `immersefix 1` set
+      first, then `edgebars 0`, `1`, `2` and `3` in turn, a screen capture
+      2 s after each, and `edgebars ""` with `theme mirror` last (back up
+      `rooms/` first: the theme writes the room). For the cost, one launch
+      per mode: `scripts/xr/gpu-stages.sh --with
+      "music=1;gov=0;immersefix=1" --cond "off=edgebars=0" --cond
+      "face=edgebars=1" --cond "stand=edgebars=2" --cond "in=edgebars=3"
+      --cond "off2=edgebars=0" --only "off,face,stand,in,off2"`, and the
+      eye surface's render is the number to read.
+  - **Knobs**, read at launch and polled once a second: `edgebars`
+    (unset each kind in its theme's mode; 0 off, 1 on the face, 2
+    standing, 3 in, each forced on every kind; the hand menu's Edges
+    control holds its choice until the value changes), `edgebarsgain` (0
+    to 4, default 1), `edgebarsheight` (0 to 0.5, default 0.12) and
+    `edgebarsdepth` (0 to 2, default 0.6). The `edge bars:` log lines give
+    the state at launch, each change, the mode per kind when it changes,
+    and what is outlined.
   - **What it does not do.** It is a layer over every shape, not a lane
     behavior: the lanes keep drawing, and no room file or lane format
     changes. Off, the frame is what it was, with no strips, no buffer
@@ -619,6 +715,21 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     is hidden if it is still inside. A face larger than the wall it sits
     on draws its outline past the wall's edge, where a neighboring wall
     hides it or it floats in the open.
+  - **Where the tunnel looks wrong.** Where boxes overlap, only the
+    nearest face's tunnel shows (a face behind another box's occluder
+    fails the depth test), so a tunnel is cut where a neighbor's box pokes
+    through its face. Two faces within the 1 cm lift of each other, such
+    as a wall scanned twice, both draw, and two tunnels of different
+    depths add up. A box off its object puts the opening where the box
+    is: the rim floats off the real edge, and the passthrough through the
+    dark center shows the mismatch. A face at a grazing angle shows a
+    sliver of the far wall's first rungs and then fades out. A tunnel is
+    drawn whatever is behind the face, so 1.5 m behind a thin wall, or 24
+    cm behind the front of a shallow shelf, it reaches into the next room
+    or out through the back; the illusion does not know. A volume's
+    tunnels behind two of its faces cross inside it, each seen only
+    through its own face. `edgebars 3` forces the floor in too, a pit
+    under a seated wearer's feet.
 - **Sim.** An obstacle uniform block (64 spheres, 32 boxes, restitution,
   margin) read by `collide()` after integration: push out along the sphere
   normal or the nearest box face, reflect the inward velocity (restitution
