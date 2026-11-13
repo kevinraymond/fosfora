@@ -24,7 +24,8 @@
 //! The five. The four first ones color by one rule: the room's planes
 //! (walls, floor, ceiling) one color, what stands in it (tables, frames,
 //! other) the other, so a table reads against the floor and a frame
-//! against its wall. They keep the edge bars on the face for every kind.
+//! against its wall. Classic, Drift and Tide keep the edge bars on the
+//! face for every kind.
 //!
 //! - **Classic**: today's defaults ([`SurfaceBehavior::default_for`]),
 //!   each kind's own color, the behavior's band, full strength. Applying it
@@ -37,9 +38,12 @@
 //! - **Tide**: walls the pulse, the floor curls, tables curls, the ceiling
 //!   the pulse, frames the rings, other surfaces the pulse. The planes
 //!   violet, the rest rose.
-//! - **Aurora**: walls and the ceiling the desktop's Aurora, the floor and
-//!   tables streamlines, frames the pulse, other surfaces the curls. The
-//!   walls the key's tint, the floor and the ceiling green, the rest teal.
+//! - **Aurora** (board #5436): one sky. Walls and the ceiling the
+//!   desktop's Aurora, drawn as one sky around the room (`sky.rs`), the
+//!   floor its reflection, all three in the key's tint and their edges
+//!   off, so nothing cuts the sky at a corner. Tables, frames and other
+//!   surfaces run no behavior and their edges go in, teal: tunnels of
+//!   light under the sky.
 //! - **Mirror**: the edges carry it. Walls, the ceiling, tables, frames and
 //!   other surfaces run no behavior and their edges go in, each face a
 //!   tunnel of light; the floor keeps the rings with the bars on its face,
@@ -63,7 +67,6 @@ use crate::surfaces::{
 const BLUE: u32 = 1;
 const VIOLET: u32 = 2;
 const WARM_WHITE: u32 = 3;
-const GREEN: u32 = 5;
 const TEAL: u32 = 6;
 const ROSE: u32 = 7;
 
@@ -216,13 +219,14 @@ impl Theme {
                 KIND_FRAME => look(B::Rings, ROSE, BAND_BASS, 1.0, face),
                 _ => look(B::Pulse, ROSE, BAND_BASS, 1.0, face),
             },
+            // Board #5436: the sky on the walls and the ceiling, its
+            // reflection on the floor, one tint over all three so the
+            // sky has no seam of color at the ceiling's edge.
             Self::Aurora => match kind {
-                KIND_TABLE => look(B::Streamlines, TEAL, BAND_RMS, 1.0, face),
-                KIND_FLOOR => look(B::Streamlines, GREEN, BAND_RMS, 1.0, face),
-                KIND_WALL => look(B::Aurora, COLOR_KEY, BAND_RMS, 1.0, face),
-                KIND_CEILING => look(B::Aurora, GREEN, BAND_RMS, 1.0, face),
-                KIND_FRAME => look(B::Pulse, TEAL, BAND_BASS, 1.0, face),
-                _ => look(B::Curls, TEAL, BAND_RMS, 1.0, face),
+                KIND_FLOOR | KIND_WALL | KIND_CEILING => {
+                    look(B::Aurora, COLOR_KEY, BAND_RMS, 1.0, Mode::Off)
+                }
+                _ => look(B::None, TEAL, BAND_RMS, 1.0, Mode::In),
             },
             Self::Mirror => match kind {
                 KIND_TABLE => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
@@ -506,14 +510,7 @@ mod tests {
         );
         assert_eq!(
             behaviors(Theme::Aurora),
-            [
-                B::Streamlines,
-                B::Streamlines,
-                B::Aurora,
-                B::Aurora,
-                B::Pulse,
-                B::Curls
-            ]
+            [B::None, B::Aurora, B::Aurora, B::Aurora, B::None, B::None]
         );
         assert_eq!(
             behaviors(Theme::Mirror),
@@ -525,7 +522,7 @@ mod tests {
             assert_eq!(spectrum, theme == Theme::Classic, "{theme:?}");
         }
         // The colors: Drift blue and teal, Tide violet and rose, Aurora
-        // green and teal with the key's tint on the walls.
+        // the key's tint on the sky and teal on the rest.
         let colors = |t: Theme| -> Vec<u32> { t.looks().map(|(_, l)| l.color).collect() };
         assert!(
             colors(Theme::Drift)
@@ -537,12 +534,11 @@ mod tests {
                 .iter()
                 .all(|c| [VIOLET, ROSE].contains(c))
         );
-        assert!(
-            colors(Theme::Aurora)
-                .iter()
-                .all(|c| [GREEN, TEAL, COLOR_KEY].contains(c))
-        );
-        assert_eq!(Theme::Aurora.look(KIND_WALL).unwrap().color, COLOR_KEY);
+        for (kind, l) in Theme::Aurora.looks() {
+            let sky = [KIND_FLOOR, KIND_WALL, KIND_CEILING].contains(&kind);
+            let want = if sky { COLOR_KEY } else { TEAL };
+            assert_eq!(l.color, want, "{}", kind_name(kind));
+        }
         // Mirror: warm white on the walls and the ceiling, blue on the
         // rest.
         for (kind, l) in Theme::Mirror.looks() {
@@ -629,14 +625,33 @@ mod tests {
             // A kind without a name: on the face.
             assert_eq!(theme.edges(KIND_NONE), Mode::Face);
         }
-        // The four old themes keep the bars on the face for every kind, as
-        // they were worn.
-        for theme in [Theme::Classic, Theme::Drift, Theme::Tide, Theme::Aurora] {
+        // Classic, Drift and Tide keep the bars on the face for every
+        // kind, as they were worn.
+        for theme in [Theme::Classic, Theme::Drift, Theme::Tide] {
             assert!(
                 theme.looks().all(|(_, l)| l.edges == Mode::Face),
                 "{theme:?}"
             );
         }
+        // Aurora (board #5436): the sky's planes off, so nothing cuts it
+        // at a corner, the rest in.
+        for (kind, l) in Theme::Aurora.looks() {
+            let sky = [KIND_FLOOR, KIND_WALL, KIND_CEILING].contains(&kind);
+            let want = if sky { Mode::Off } else { Mode::In };
+            assert_eq!(l.edges, want, "{}", kind_name(kind));
+            assert_eq!(l.behavior == B::Aurora, sky, "{}", kind_name(kind));
+            assert_eq!(l.behavior == B::None, !sky, "{}", kind_name(kind));
+        }
+        assert!(
+            Theme::Aurora
+                .summary()
+                .contains("floor aurora@1.00 key rms edges off")
+        );
+        assert!(
+            Theme::Aurora
+                .summary()
+                .contains("table none@1.00 teal rms edges in")
+        );
         // Mirror: in everywhere but the floor, which keeps the rings and
         // the bars on its face; no surface behavior but the floor's.
         for (kind, l) in Theme::Mirror.looks() {
