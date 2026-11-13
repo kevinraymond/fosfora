@@ -3277,3 +3277,27 @@ three. The rate read 70 to 72 in every condition, one layer included.
 A headset on the desk does not move, so the captures show only that each
 layer adds its own curtains between the nearer ones, dimmer and cooler. The
 depth is a worn question.
+
+## The depth light: unscanned things as lit shapes (board #5439)
+
+Quest 3, OS v209, 4.5 h after a reboot, unworn on the desk in a dark room,
+seated launch in the scanned room (21 anchors replayed), world mode, 72 Hz,
+the governor off, music playing, immersion held at 1, the Aurora theme, the
+sky at 2 layers. One launch per condition, 22 s to settle, then 30 s of the
+runtime's App GPU time, no profiler.
+
+| Depth light | App med | p90 | max |
+|---|---|---|---|
+| off | 9.85 ms | 10.50 | 10.54 |
+| on | 10.14 | 10.55 | 10.75 |
+| off | 9.64 | 10.18 | 10.42 |
+| on | 9.66 | 10.40 | 10.59 |
+
+The light costs 0.0 to 0.3 ms, inside the spread between two launches of the
+same condition. The rate held 72 Hz in all four.
+
+Captures at the same spot: with the light off, the clutter a meter in front
+of the headset and a thing at the left edge of the view are black cutouts
+in the sky. With it on they are shapes with teal bands on their sides and
+the key's tint on their tops, dark toward their silhouettes. The ceiling
+fan, past the 3 m fade, stays a black cutout. Not yet worn.
