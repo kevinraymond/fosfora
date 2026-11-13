@@ -549,6 +549,90 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     box explains loses its occlusion for up to one mesh cell plus the
     margin, which matters only for what is behind that background. It
     does not sharpen an edge no box explains.
+- **Depth light (board #5439, `depth_light.rs`).** With the room dark,
+  what the live depth map still occludes was a black cutout with the map's
+  coarse edge: a vacuum's handle a couple of feet away, a chair, a person,
+  the wearer's own legs. No box or plane fits a vacuum's handle, but the
+  map already is a surface on every object, so the occluder's mesh now
+  draws light as well as depth. It is on by default
+  (`debug.fosfora.depthlight 0` turns it off).
+  - **What is lit.** The mesh in the eye pass, where it still occludes.
+    With geometry first on, that is what no room box explains. It writes
+    the same depth as before. The hands are not part of it, since the
+    runtime removes them from the map and the hand mesh occludes them.
+    The faces pass keeps its depth-only mesh, which only has to hide the
+    surfaces' light.
+  - **The look.** Bands of light at even heights, one every 12 cm, wrap
+    the object and drift up with the music over a steady share of the
+    light (35 % of a crest). A band at one height bends over the object's
+    form, which reads with one eye. Each vertex takes a normal from the
+    map's gradient one mesh step either way, and the light shades from
+    all of it where the surface faces the eye to half of it edge-on. A
+    surface that faces up (a seat, a shelf, a knee) takes the top's color
+    and its bands keep 30 % of their swing, so a whole top does not flash
+    as a band passes its height. The sides take the color the theme gives
+    other surfaces and the tops the key's tint where the theme uses it.
+    Aurora draws teal sides and tops in the key's tint; a room with no
+    theme draws other's own green. The crests follow the theme's band for
+    other surfaces (the rms for Aurora), smoothed, and keep 40 % of their
+    light in silence. No ported effect runs per fragment.
+  - **The silhouette.** It fades to dark against dark. Across a
+    silhouette the gradient spans the depth jump, so the normal lies
+    nearly edge-on to the eye and the facing fade takes the light to
+    nothing at the last vertex on the object and at the first one behind
+    it. The light fades out over the mesh cell inside the silhouette, and
+    the fringe triangles that lean back to the background carry none. On
+    recorded frames of the office, a rim brightening toward the silhouette
+    and a lit fringe both drew the mesh's stair steps in light, so the
+    coarse edge was still the first thing seen. Dark against dark leaves
+    the steps visible only where a bright curtain of sky passes right
+    behind the edge.
+  - **Stable in time.** The bands depend on the world height alone, so
+    they stay put while the map jitters. Noise moves a point along a
+    nearly level eye ray, which changes its height by a small share of the
+    noise. On three office recordings with the head still, the height
+    under a texel within 3 m moved between read-backs by 0.4 to 1.2 cm at
+    the 95th percentile, a tenth of a band at most.
+    The vertex's share uses smooth fades only: the facing (none past 81
+    degrees, all of it under 53) and the distance from the eye (all of it
+    to 1.5 m, none past 3 m, where the map's noise grows). A vertex
+    without data, or next to one, has none. A band thinner than six pixels
+    fades toward its mean and is gone at two. The drift is integrated on
+    the CPU, so the phase moves smoothly whatever the music does.
+  - **How bright.** Premultiplied over the cleared target, like the
+    surfaces' light. The peak alpha rises with the immersion level from
+    0.05 with the room plain to 0.33 at full immersion, about a third of a
+    lit surface's full alpha, times `depthlightgain`. With the room visible
+    it is barely there, and with the room black it carries the object
+    while the sky and the surfaces stay the subject.
+  - **Draw order.** With the light on, the box and hand occluders draw
+    before the mesh, so a hand or a box in front of a lit object hides its
+    light. Each occluder keeps the nearest depth, so the depth buffer ends
+    the same in either order. Off, the order is as before.
+  - **Knobs**, read at launch and polled once a second: `depthlight 0|1`
+    (default 1; 0 is the frame as it was, depth only with no color write)
+    and `depthlightgain` (0 to 4, default 1). It needs the mesh. With the
+    full-screen pass (`envdepthmesh 0`, or `envdepthfilter 0` or 1) or
+    under `envdepthshow` it is off, and the `depth light:` launch line says
+    so. The `geomfirstshow` tint replaces it while on. The log gives the
+    state at launch, each change, and the colors when the theme changes.
+  - **Cost.** Per vertex of the eye mesh (26K per eye at step 2): four
+    more texel loads for the neighbors, four rays, a cross product, a
+    rotation, two square roots and two smoothsteps, in the vertex stage
+    where the map is already read. None of it feeds the position. Per
+    fragment: one `fwidth`, one cosine, a smoothstep and about a dozen
+    multiply-adds, blended. There is no texture, no loop, no discard and no
+    `frag_depth`, so early depth testing works as before. A person 1 m
+    away covers about a quarter of an eye's pixels, and the wearer's legs
+    lying back about as much. With the whole map lit (geometry first off,
+    or no boxes) it is every pixel the map covers. Not yet measured on the
+    Quest 3.
+  - **What it does not do.** It does not change what occludes. The depth
+    written, geometry first's rule and the hand removal are as before. It
+    does not sharpen the coarse edge, only darkens it. It lights whatever
+    the map sees, so where no box explains a wall (no scan, roam, geometry
+    first off) the wall within 3 m is lit too. Past 3 m an object is still
+    a dark shape.
 - **Edge bars (board #5420, `edge_bars.rs`).** Bars rise and fall along
   the edges of each plane and box, so the room's outline is drawn as the
   spectrum. It is on by default (`debug.fosfora.edgebars 0` turns it

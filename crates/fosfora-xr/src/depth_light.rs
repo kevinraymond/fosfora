@@ -6,8 +6,8 @@
 //! first on (`geom_first.rs`) that is exactly what no room box explains: a
 //! chair, a vacuum, a pile, a person, the wearer's own legs. The mesh
 //! writes the same depth as before and now color too. The hands are not
-//! part of it: the runtime removes them from the map and the hand mesh
-//! occludes them. The faces pass keeps its depth-only copy.
+//! part of it, since the runtime removes them from the map and the hand
+//! mesh occludes them. The faces pass keeps its depth-only copy.
 //!
 //! **The look** ([`fragment`]). Bands of light at even heights, one every
 //! [`BAND_SPACING_M`], wrap the object and drift up with the music, over a
@@ -15,52 +15,54 @@
 //! dark. A band at one height bends over the object's form, which reads
 //! with one eye. Its profile is a squared raised cosine, mean
 //! [`CREST_MEAN`]. Each vertex has a normal from the map's gradient
-//! ([`vertex_light`]): the light shades from 1 where the surface faces the
+//! ([`vertex_light`]). The light shades from 1 where the surface faces the
 //! eye to [`SHADE_FLOOR`] edge-on, and a surface that faces up (a seat, a
 //! shelf, a knee) takes the top's color with the bands at [`TOP_CONTRAST`],
 //! so a whole top does not flash as a band passes its height. The colors
-//! are the theme's ([`colors`]): the sides take the color the theme gives
+//! are the theme's ([`colors`]). The sides take the color the theme gives
 //! other surfaces, the tops the key's tint where the theme uses it. Aurora
 //! draws teal sides and tops in the key's tint; a room with no theme draws
 //! other's own green on both.
 //!
-//! **The silhouette: dark against dark.** The gradient across a silhouette
-//! spans the depth jump, so the normal there lies nearly edge-on to the eye
-//! and the facing fade ([`GRAZE`]) takes the light to 0 at the last vertex
-//! on the object and at the first one behind it. The light fades out over
-//! the mesh cell inside the silhouette, and the fringe triangles that lean
-//! back to the background carry none. On recorded frames of a real office
-//! the two other treatments drew the mesh's stair steps in light: a rim
-//! brightening toward the silhouette, and the fringe lit along with the
-//! object. Dark against dark leaves the steps visible only where a bright
-//! curtain of sky passes right behind the edge.
+//! **The silhouette.** It fades to dark against dark. The gradient across a
+//! silhouette spans the depth jump, so the normal there lies nearly edge-on
+//! to the eye and the facing fade ([`GRAZE`]) takes the light to 0 at the
+//! last vertex on the object and at the first one behind it. The light
+//! fades out over the mesh cell inside the silhouette, and the fringe
+//! triangles that lean back to the background carry none. On recorded
+//! frames of a real office the two other treatments, a rim brightening
+//! toward the silhouette and the fringe lit along with the object, drew the
+//! mesh's stair steps in light, so the coarse edge was still the first
+//! thing seen. Dark against dark leaves the steps visible only where a
+//! bright curtain of sky passes right behind the edge.
 //!
 //! **Stable in time.** The bands are a function of the world height alone,
-//! so a surface keeps its pattern while the map jitters: noise moves a
+//! so a surface keeps its pattern while the map jitters. Noise moves a
 //! point along a nearly level eye ray, which changes its height by a small
-//! fraction of the noise. On the recordings the height under one texel
-//! moved less than 1.2 cm between read-backs 95 % of the time, a tenth of a
-//! band. The vertex's share uses smooth fades only: the facing ([`GRAZE`])
-//! and the distance from the eye ([`FADE_M`]: all of it to 1.5 m, none past
-//! 3 m, where the map's noise grows and clutter is too far to matter). A
-//! vertex without data, or next to one, has none. A band narrower than a
-//! few pixels fades into its mean ([`AA_BANDS_PER_PX`]) instead of
-//! aliasing. The drift is integrated on the CPU ([`Drive`]): the phase
-//! moves continuously, faster with the music, and wraps at a whole band.
+//! fraction of the noise. On three office recordings with the head still,
+//! the height under a texel within 3 m moved between read-backs by 0.4 to
+//! 1.2 cm at the 95th percentile, a tenth of a band at most. The vertex's
+//! share uses smooth fades only: the facing ([`GRAZE`]) and the distance
+//! from the eye ([`FADE_M`], all of it to 1.5 m and none past 3 m, where
+//! the map's noise grows and clutter is too far to matter). A vertex
+//! without data, or next to one, has none. A band narrower than a few
+//! pixels fades into its mean ([`AA_BANDS_PER_PX`]) instead of aliasing.
+//! The drift is integrated on the CPU ([`Drive`]), so the phase moves
+//! continuously, faster with the music, and wraps at a whole band.
 //!
 //! **How bright** ([`peak_alpha`]). Premultiplied over the cleared target,
 //! as the surfaces' light is. The peak alpha rises with the immersion level
 //! from [`ALPHA_LOW`] with the room plain (barely there over the real
 //! object) to [`ALPHA_HIGH`] at full immersion, about a third of a lit
-//! surface's full alpha, so the sky and the surfaces stay the subject; times
-//! `depthlightgain`. The crests follow the band the theme gives other
-//! surfaces ([`band`]; the rms for Aurora), smoothed ([`MUSIC_ATTACK_S`],
-//! [`MUSIC_RELEASE_S`]), and keep [`MUSIC_FLOOR`] of their light in
-//! silence.
+//! surface's full alpha, so the sky and the surfaces stay the subject.
+//! `depthlightgain` multiplies it. The crests follow the band the theme
+//! gives other surfaces ([`band`]; the rms for Aurora), smoothed
+//! ([`MUSIC_ATTACK_S`], [`MUSIC_RELEASE_S`]), and keep [`MUSIC_FLOOR`] of
+//! their light in silence.
 //!
 //! **Draw order.** With the light on, the eye pass draws the box and hand
 //! occluders first and the map's mesh after them, so the mesh lights only
-//! what is in front of every other occluder: a hand or a box in front of a
+//! what is in front of every other occluder. A hand or a box in front of a
 //! lit object hides its light. The depth buffer ends the same, since every
 //! occluder keeps the nearest depth (compare `Less` or `LessEqual`)
 //! whatever the order. Off, the order is as before.
@@ -79,14 +81,14 @@
 //!
 //! **Knobs**, read at launch and polled once a second
 //! ([`DepthLightOptions::from_knobs`]): `debug.fosfora.depthlight 0|1`
-//! (default 1; 0 is the frame as it was: depth only, no color write, the
-//! old order) and `depthlightgain` (0 to [`GAIN_MAX`], default 1). It needs
-//! the occluder's mesh: with the full-screen pass (`envdepthmesh 0`, or
-//! `envdepthfilter 0` or 1) or the gray diagnostic (`envdepthshow`) it is
-//! off, and the log says so ([`blocked`]). `geomfirstshow`'s tint replaces
-//! it while on.
+//! (default 1; 0 is the frame as it was, with depth only, no color write
+//! and the old order) and `depthlightgain` (0 to [`GAIN_MAX`], default 1).
+//! It needs the occluder's mesh. With the full-screen pass
+//! (`envdepthmesh 0`, or `envdepthfilter 0` or 1) or the gray diagnostic
+//! (`envdepthshow`) it is off, and the log says so ([`blocked`]).
+//! `geomfirstshow`'s tint replaces it while on.
 //!
-//! **What it does not do.** It does not change what occludes: the depth
+//! **What it does not do.** It does not change what occludes. The depth
 //! written, geometry first's rule and the hand removal are as before. It
 //! does not sharpen the coarse edge, only darkens it. It lights what the
 //! map sees, so where no box explains a wall (no scan, roam, geometry first
