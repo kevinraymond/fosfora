@@ -7,15 +7,18 @@
 //! hand them on, the mapping, the seam's cross-fade, the zenith fade, the
 //! reflection's ray and its fades, the rim per edge and the early out, as
 //! the shader runs them; and that `fs_sky` mapping per face writes what
-//! `fs_main` writes. `#[ignore]`d like the other GPU tests (they need an
-//! adapter); run it with `cargo test -p fosfora-xr --test sky_gpu --
-//! --ignored`.
+//! `fs_main` writes. Since the layers (board #5438) the comparison takes
+//! the far layers too (`sky::far`, under the near one) at one, two and
+//! three layers, and one layer is held bit for bit to the sky as it was
+//! before them (`sky_before_layers.wgsl`). `#[ignore]`d like the other GPU
+//! tests (they need an adapter); run it with `cargo test -p fosfora-xr
+//! --test sky_gpu -- --ignored`.
 #![cfg(not(target_os = "android"))]
 
 use std::f32::consts::FRAC_PI_2;
 
 use fosfora_xr::math::{self, Fov};
-use fosfora_xr::sky::{self, Map, RESOLUTION, Room, Sky};
+use fosfora_xr::sky::{self, Layers, Map, RESOLUTION, Room, Sky};
 use fosfora_xr::surface_fx::LIFT_M;
 use fosfora_xr::surface_port::{self, FIRST_ID, UNIFORM_ROWS, WRAPPER_WGSL, port_face};
 use fosfora_xr::surfaces::{
@@ -84,18 +87,33 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
     }
 }
 
-/// The probe through the port's `entries` over `rows` at `res`, from a
-/// camera `view_proj`, into a float target cleared to -1: each pixel's
-/// premultiplied RGBA.
+/// The probe composed with the wrapper and `sky` (the sky's stages:
+/// `sky::SKY_WGSL`, or [`BEFORE_LAYERS`]).
+fn probe_source(sky: &str) -> String {
+    format!("{PROBE}{WRAPPER_WGSL}{sky}")
+}
+
+/// `fs_sky` as it was before the layers (board #5438): one layer must draw
+/// what it drew, bit for bit.
+const BEFORE_LAYERS: &str = include_str!("sky_before_layers.wgsl");
+
+/// The probe's uniform: its resolution.
+fn probe_uniform(res: [f32; 2]) -> Vec<u8> {
+    bytemuck::cast_slice(&res).to_vec()
+}
+
+/// `source` through the port's `entries` over `rows` with the effect's
+/// uniform `u`, from a camera `view_proj`, into a float target cleared to
+/// -1: each pixel's premultiplied RGBA.
 fn render(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    source: &str,
     entries: (&str, &str),
     view_proj: Mat4,
     rows: &[[f32; 4]; UNIFORM_ROWS],
-    res: [f32; 2],
+    u: &[u8],
 ) -> Vec<[f32; 4]> {
-    let source = format!("{PROBE}{WRAPPER_WGSL}{}", sky::SKY_WGSL);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("sky"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -126,7 +144,7 @@ fn render(
         multiview: None,
         cache: None,
     });
-    let u = uniform(device, queue, bytemuck::cast_slice(&res));
+    let u = uniform(device, queue, u);
     let eye = uniform(
         device,
         queue,
@@ -272,11 +290,14 @@ struct Tally {
     mixed: usize,
     faded: usize,
     dark: usize,
+    /// Pixels where a far layer was evaluated (board #5438).
+    layered: usize,
     worst: f32,
 }
 
 /// `face` drawn with `rows` from `eye` looking at `target`, compared with
-/// `sky::sample` under every pixel clear of the face's border.
+/// `sky::sample` and `sky::far` under every pixel clear of the face's
+/// border, the far layers under the near one.
 fn compare(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -296,10 +317,11 @@ fn compare(
     let got = render(
         device,
         queue,
+        &probe_source(sky::SKY_WGSL),
         ("vs_sky", "fs_sky"),
         view_proj,
         rows,
-        RESOLUTION,
+        &probe_uniform(RESOLUTION),
     );
     let inverse = view_proj.inverse();
     // The eye as the vertex stage solves it from the camera.
@@ -332,7 +354,7 @@ fn compare(
             {
                 continue;
             }
-            let want = match sky::sample(rows, RESOLUTION, uv, p, solved) {
+            let mut want = match sky::sample(rows, RESOLUTION, uv, p, solved) {
                 None => {
                     t.dark += 1;
                     [0.0; 4]
@@ -353,6 +375,17 @@ fn compare(
                     [c.x * s.k, c.y * s.k, 0.0, s.k]
                 }
             };
+            // The far layers, each under what is drawn so far; one with no
+            // light left is not evaluated.
+            let far = sky::far(rows, RESOLUTION, uv, p, solved);
+            if far.iter().any(|f| f.k > 0.0) {
+                t.layered += 1;
+            }
+            for f in far.iter().filter(|f| f.k > 0.0) {
+                let c = probe(f.at, RESOLUTION);
+                let light = sky::layer_light([c.x, c.y, 0.0, 1.0], true, f.k, [1.0; 3], f.layer);
+                want = sky::under(want, light);
+            }
             let g = got[(py * W + px) as usize];
             let err = g
                 .iter()
@@ -394,9 +427,9 @@ fn the_sky_shader_matches_its_rust_copy() {
         .map(face_of)
         .collect();
     let joined = sky::join(&faces);
-    let rows_of = |face: &Face, map: Map, fade: [bool; 4]| {
+    let rows_of = |face: &Face, map: Map, fade: [bool; 4], sky: &Sky| {
         let base = surface_port::rows(face, 0.9, true, FIRST_ID, [1.0; 3]);
-        sky::rows(base, map, &sky, fade)
+        sky::rows(base, map, sky, fade)
     };
     let ahead = Vec3::new(sky.facing.x, 0.0, sky.facing.y);
     let sky_face = |dir: Vec3| {
@@ -406,48 +439,67 @@ fn the_sky_shader_matches_its_rust_copy() {
             .copied()
             .expect("a face that way")
     };
-    let mut views = Vec::new();
     // The wall ahead, the wall behind with the seam on it, the ceiling
-    // overhead with the zenith fade and the seam's wedge.
-    for (dir, target) in [
-        (ahead, eye + ahead * 2.0 + Vec3::Y * 0.3),
-        (-ahead, eye - ahead * 2.0 + Vec3::Y * 0.4),
-        (Vec3::Y, eye + Vec3::Y * 2.0 - ahead * 0.3),
-    ] {
-        let (face, fade) = sky_face(dir);
-        let rows = rows_of(&face, Map::Sky, fade);
-        views.push(("sky", compare(&device, &queue, &face, &rows, eye, target)));
+    // overhead with the zenith fade and the seam's wedge: in one, two and
+    // three layers, and three on shells 2.5 times as deep (board #5438).
+    for (count, depth) in [(1, 1.0), (2, 1.0), (3, 1.0), (3, 2.5)] {
+        let sky = Sky {
+            layers: Layers { count, depth },
+            ..sky
+        };
+        let views: Vec<Tally> = [
+            (ahead, eye + ahead * 2.0 + Vec3::Y * 0.3),
+            (-ahead, eye - ahead * 2.0 + Vec3::Y * 0.4),
+            (Vec3::Y, eye + Vec3::Y * 2.0 - ahead * 0.3),
+        ]
+        .into_iter()
+        .map(|(dir, target)| {
+            let (face, fade) = sky_face(dir);
+            let rows = rows_of(&face, Map::Sky, fade, &sky);
+            compare(&device, &queue, &face, &rows, eye, target)
+        })
+        .collect();
+        for t in &views {
+            eprintln!("sky, {count} layers at depth {depth}: {t:?}");
+            assert!(t.compared > (W * H / 8) as usize, "{t:?}");
+            // Every view lit; the far layers wherever they are asked for.
+            assert!(t.lit > 1000, "{t:?}");
+            if count == 1 {
+                assert_eq!(t.layered, 0, "{t:?}");
+            } else {
+                assert!(t.layered > 1000, "{t:?}");
+            }
+        }
+        // The seam mixed on the back wall and the ceiling, not ahead; the
+        // zenith faded overhead.
+        assert!(
+            views[1].mixed > 1000 && views[2].mixed > 100 && views[0].mixed == 0,
+            "{views:?}"
+        );
+        assert!(views[2].faded > 1000 && views[2].dark > 100, "{views:?}");
     }
-    // The floor's reflection, ahead and behind over the seam.
+    // The floor's reflection, ahead and behind over the seam: one layer,
+    // whatever the sky's count.
     let floor = face_of(&boxes[4]);
-    let rows = rows_of(&floor, Map::Reflection, [true; 4]);
-    for target in [eye + ahead * 2.0 - Vec3::Y, eye - ahead * 1.5 - Vec3::Y] {
-        views.push((
-            "reflection",
-            compare(&device, &queue, &floor, &rows, eye, target),
-        ));
+    let three = Sky {
+        layers: Layers {
+            count: 3,
+            depth: 1.0,
+        },
+        ..sky
+    };
+    let rows = rows_of(&floor, Map::Reflection, [true; 4], &three);
+    let views: Vec<Tally> = [eye + ahead * 2.0 - Vec3::Y, eye - ahead * 1.5 - Vec3::Y]
+        .into_iter()
+        .map(|target| compare(&device, &queue, &floor, &rows, eye, target))
+        .collect();
+    for t in &views {
+        eprintln!("reflection: {t:?}");
+        assert!(t.compared > (W * H / 8) as usize, "{t:?}");
+        assert!(t.lit > 1000 && t.layered == 0 && t.mixed == 0, "{t:?}");
     }
-    for (what, t) in &views {
-        eprintln!("{what}: {t:?}");
-        assert!(t.compared > (W * H / 8) as usize, "{what}: {t:?}");
-    }
-    let sum = |f: fn(&Tally) -> usize| views.iter().map(|(_, t)| f(t)).collect::<Vec<_>>();
-    // Every view lit; the seam mixed on the back wall and the ceiling;
-    // the zenith faded overhead; the reflection dark toward the feet.
-    assert!(sum(|t| t.lit).iter().all(|&n| n > 1000), "{views:?}");
-    assert!(
-        views[1].1.mixed > 1000 && views[2].1.mixed > 100,
-        "{views:?}"
-    );
-    assert!(views[0].1.mixed == 0 && views[3].1.mixed == 0, "{views:?}");
-    assert!(
-        views[2].1.faded > 1000 && views[2].1.dark > 100,
-        "{views:?}"
-    );
-    assert!(
-        views[3].1.faded > 1000 && views[4].1.dark > 100,
-        "{views:?}"
-    );
+    // Dark toward the feet.
+    assert!(views[0].faded > 1000 && views[1].dark > 100, "{views:?}");
 
     // Per face, fs_sky writes what fs_main writes.
     let (face, _) = sky_face(ahead);
@@ -461,15 +513,26 @@ fn the_sky_shader_matches_its_rust_copy() {
         down: -0.9,
     };
     let view_proj = math::view_projection(look.to_array(), eye.to_array(), fov, 0.05, 100.0);
+    let source = probe_source(sky::SKY_WGSL);
+    let u = probe_uniform(res);
     let main = render(
         &device,
         &queue,
+        &source,
         ("vs_main", "fs_main"),
         view_proj,
         &base,
-        res,
+        &u,
     );
-    let per_face = render(&device, &queue, ("vs_sky", "fs_sky"), view_proj, &base, res);
+    let per_face = render(
+        &device,
+        &queue,
+        &source,
+        ("vs_sky", "fs_sky"),
+        view_proj,
+        &base,
+        &u,
+    );
     let drawn = main.iter().filter(|p| p[3] >= 0.0).count();
     assert!(drawn > (W * H / 4) as usize, "{drawn}");
     let worst = main
@@ -493,19 +556,133 @@ fn half_to_f32(h: u16) -> f32 {
 }
 
 /// The real Aurora, composed as the app composes it: the core's loader's
-/// preamble, the entry renamed, the wrapper and the sky's stages.
-fn aurora_source() -> String {
+/// preamble, the entry renamed, the wrapper and the sky's stages `sky`
+/// (`sky::SKY_WGSL`, or [`BEFORE_LAYERS`]).
+fn aurora_source(sky: &str) -> String {
     let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
     let _ = fosfora_app::effect::loader::set_assets_dir(assets);
     let loader = fosfora_app::effect::EffectLoader::new();
     let port = &surface_port::PORTS[0];
     assert_eq!(port.name, "aurora");
     let renamed = surface_port::rename_entry(port.shader).expect("the entry renames");
-    format!(
-        "{}\n{WRAPPER_WGSL}{}",
-        loader.prepend_library(&renamed),
-        sky::SKY_WGSL
-    )
+    format!("{}\n{WRAPPER_WGSL}{sky}", loader.prepend_library(&renamed))
+}
+
+/// One layer draws what the sky drew before the layers, bit for bit
+/// (board #5438): `fs_sky` at one layer against its copy from before
+/// (`sky_before_layers.wgsl`), over the probe and over the real Aurora, on
+/// the wall ahead, the wall behind across the seam, the ceiling, the
+/// floor's reflection ahead and behind, and per face; and with the count
+/// at 0, as the rows were before the layers.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn one_layer_draws_what_the_sky_drew_before_the_layers_bit_for_bit() {
+    let (device, queue) = gpu();
+    let boxes = room();
+    let sky = Sky {
+        layers: Layers {
+            count: 1,
+            depth: 1.0,
+        },
+        ..Sky::new(
+            Room::fit(boxes.iter().copied()).expect("walls"),
+            sky::facing(Quat::from_rotation_y(0.35)),
+        )
+    };
+    let eye = sky.point + Vec3::new(0.45, -0.05, 0.3);
+    let face_of = |b: &(u32, Vec3, Quat, Vec3)| port_face(acting_face(b.1, b.2, b.3, eye));
+    let faces: Vec<Face> = boxes
+        .iter()
+        .filter(|b| b.0 != KIND_FLOOR)
+        .map(face_of)
+        .collect();
+    let joined = sky::join(&faces);
+    let ahead = Vec3::new(sky.facing.x, 0.0, sky.facing.y);
+    let sky_face = |dir: Vec3| {
+        joined
+            .iter()
+            .find(|(f, _)| f.normal.dot(dir) < -0.9)
+            .copied()
+            .expect("a face that way")
+    };
+    // Each face's rows, its effect's resolution and glow, and where the
+    // view looks.
+    let mut drawn = Vec::new();
+    for (dir, target) in [
+        (ahead, eye + ahead * 2.0 + Vec3::Y * 0.3),
+        (-ahead, eye - ahead * 2.0 + Vec3::Y * 0.4),
+        (Vec3::Y, eye + Vec3::Y * 2.0 - ahead * 0.3),
+    ] {
+        let (face, fade) = sky_face(dir);
+        let base = surface_port::rows(&face, 0.9, false, FIRST_ID, [1.0; 3]);
+        drawn.push((
+            sky::rows(base, Map::Sky, &sky, fade),
+            RESOLUTION,
+            0.3,
+            target,
+        ));
+    }
+    let floor = face_of(&boxes[4]);
+    let base = surface_port::rows(&floor, 0.9, false, FIRST_ID, [1.0; 3]);
+    for target in [eye + ahead * 2.0 - Vec3::Y, eye - ahead * 1.5 - Vec3::Y] {
+        let rows = sky::rows(base, Map::Reflection, &sky, [true; 4]);
+        drawn.push((rows, RESOLUTION, 0.8, target));
+    }
+    let (face, _) = sky_face(ahead);
+    let base = surface_port::rows(&face, 0.9, false, FIRST_ID, [1.0; 3]);
+    let res = surface_port::resolution(face.half);
+    drawn.push((base, res, 0.3, face.center));
+    let fov = Fov {
+        left: -0.8,
+        right: 0.8,
+        up: 0.8,
+        down: -0.8,
+    };
+    let sources = [
+        (
+            "probe",
+            probe_source(sky::SKY_WGSL),
+            probe_source(BEFORE_LAYERS),
+        ),
+        (
+            "aurora",
+            aurora_source(sky::SKY_WGSL),
+            aurora_source(BEFORE_LAYERS),
+        ),
+    ];
+    for (name, now, before) in &sources {
+        for (i, (rows, res, glow, target)) in drawn.iter().enumerate() {
+            let u = if *name == "probe" {
+                probe_uniform(*res)
+            } else {
+                aurora_uniform(150, *res, *glow)
+            };
+            let look = Quat::from_rotation_arc(Vec3::NEG_Z, (*target - eye).normalize());
+            let view_proj =
+                math::view_projection(look.to_array(), eye.to_array(), fov, 0.05, 100.0);
+            let entries = ("vs_sky", "fs_sky");
+            let was = render(&device, &queue, before, entries, view_proj, rows, &u);
+            // The rows as the app fills them now (one layer), and as it
+            // filled them before the layers (the count 0).
+            let mut zero = *rows;
+            zero[sky::MODE_ROW][2] = 0.0;
+            for r in [rows, &zero] {
+                let is = render(&device, &queue, now, entries, view_proj, r, &u);
+                let differ = is
+                    .iter()
+                    .zip(&was)
+                    .filter(|(a, b)| a.map(f32::to_bits) != b.map(f32::to_bits))
+                    .count();
+                let lit = was.iter().filter(|p| p[3] > 0.01).count();
+                eprintln!(
+                    "{name}, view {i} (count {}): {lit} lit pixels, {differ} differ",
+                    r[sky::MODE_ROW][2]
+                );
+                assert!(lit > 1000, "{name} {i}: {lit}");
+                assert_eq!(differ, 0, "{name} {i}");
+            }
+        }
+    }
 }
 
 /// Aurora's uniform at `frame` of the synthetic groove, its `.pfx`
@@ -691,17 +868,25 @@ fn write_ppm(path: &std::path::Path, pixels: &[[f32; 4]], w: usize) {
     std::fs::write(path, out).expect("writing the dump");
 }
 
+/// The most light (mean alpha) around the sky's zenith overhead, by the
+/// layer count. Each layer fades by its own elevation, so from an eye off
+/// the point a far layer's dark center lies a little to the side of the
+/// near one's, and a trace of its rings reaches in (on an RTX 4090: under
+/// 5e-4 with two layers, under 1.5e-3 with three).
+const ZENITH_DARK: [f32; 3] = [1e-3, 1e-3, 2e-3];
+
 /// The real Aurora on the room's walls, ceiling and floor from a seated
-/// eye, the sky on and per face, over a bar of the synthetic groove.
-/// Checks the look's coarse facts (light near the horizon all around,
-/// rings on the ceiling and a dark center straight overhead, a fainter
-/// reflection) and, with `FOSFORA_SKY_DUMP=<dir>`, writes each view as a
+/// eye, per face and as the sky in one, two and three layers (board
+/// #5438), over a bar of the synthetic groove. Checks the look's coarse
+/// facts (light near the horizon all around, rings on the ceiling and a
+/// dark center straight overhead, a fainter reflection, more light with
+/// more layers) and, with `FOSFORA_SKY_DUMP=<dir>`, writes each view as a
 /// PPM for looking at.
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn aurora_renders_as_one_sky_with_a_dark_zenith_and_a_fainter_floor() {
     let (device, queue) = gpu();
-    let source = aurora_source();
+    let source = aurora_source(sky::SKY_WGSL);
     let dump = std::env::var_os("FOSFORA_SKY_DUMP").map(std::path::PathBuf::from);
     let boxes = room();
     let sky = Sky::new(
@@ -736,7 +921,16 @@ fn aurora_renders_as_one_sky_with_a_dark_zenith_and_a_fainter_floor() {
     ];
     let mut mean_at = std::collections::BTreeMap::new();
     for frame in [40u32, 150] {
-        for on in [true, false] {
+        // 0 per face (the sky off), else the sky in that many layers.
+        for layers in [0u32, 1, 2, 3] {
+            let on = layers > 0;
+            let sky = Sky {
+                layers: Layers {
+                    count: layers.max(1),
+                    depth: 1.0,
+                },
+                ..sky
+            };
             let mut joined_i = joined.iter();
             let drawn: Vec<_> = faces
                 .iter()
@@ -772,6 +966,8 @@ fn aurora_renders_as_one_sky_with_a_dark_zenith_and_a_fainter_floor() {
                     math::view_projection(look.to_array(), eye.to_array(), fov, 0.05, 100.0);
                 let pixels = render_room(&device, &queue, &source, &drawn, view_proj, size);
                 assert!(pixels.iter().all(|p| p.iter().all(|x| x.is_finite())));
+                // Premultiplied light over nothing: the alpha within 1.
+                assert!(pixels.iter().all(|p| p[3] <= 1.0 + 1e-3));
                 let s = size as usize;
                 let mean = |x0: f32, x1: f32, y0: f32, y1: f32| {
                     let (xs, ys) = (
@@ -798,14 +994,14 @@ fn aurora_renders_as_one_sky_with_a_dark_zenith_and_a_fainter_floor() {
                 } else {
                     f32::NAN
                 };
-                mean_at.insert((frame, on, name), [mean(0.0, 1.0, 0.0, 1.0), at_zenith]);
+                mean_at.insert((frame, layers, name), [mean(0.0, 1.0, 0.0, 1.0), at_zenith]);
                 if let Some(dir) = &dump {
-                    let sky_on = if on { "sky" } else { "per-face" };
-                    write_ppm(
-                        &dir.join(format!("{sky_on}_{name}_{frame}.ppm")),
-                        &pixels,
-                        s,
-                    );
+                    let what = if on {
+                        format!("sky{layers}")
+                    } else {
+                        "per-face".to_owned()
+                    };
+                    write_ppm(&dir.join(format!("{what}_{name}_{frame}.ppm")), &pixels, s);
                 }
             }
         }
@@ -817,15 +1013,31 @@ fn aurora_renders_as_one_sky_with_a_dark_zenith_and_a_fainter_floor() {
         );
     }
     for frame in [40u32, 150] {
-        let at = |on: bool, name: &str| mean_at[&(frame, on, name)];
-        // The sky lights every way the seated wearer looks.
-        for name in ["ahead", "behind", "lying-back", "overhead"] {
-            assert!(at(true, name)[0] > 0.01, "{frame} {name}");
+        let at = |layers: u32, name: &str| mean_at[&(frame, layers, name)];
+        for layers in 1..=3 {
+            // The sky lights every way the seated wearer looks.
+            for name in ["ahead", "behind", "lying-back", "overhead"] {
+                assert!(at(layers, name)[0] > 0.01, "{frame} {layers} {name}");
+            }
+            // Around the sky's zenith it is dark: the fade.
+            assert!(
+                at(layers, "overhead")[1] < ZENITH_DARK[layers as usize - 1],
+                "{frame} {layers}"
+            );
+            // The floor's reflection is lit, one layer whatever the count,
+            // and fainter than the sky ahead.
+            let floor = at(layers, "floor")[0];
+            assert!(
+                floor > 1e-3 && floor < at(layers, "ahead")[0],
+                "{frame} {layers}"
+            );
         }
-        // Around the sky's zenith it is dark: the fade.
-        assert!(at(true, "overhead")[1] < 1e-3, "{frame}");
-        // The floor's reflection is lit and fainter than the sky ahead.
-        let floor = at(true, "floor")[0];
-        assert!(floor > 1e-3 && floor < at(true, "ahead")[0], "{frame}");
+        // More layers, more light, every way the wearer looks.
+        for name in ["ahead", "behind", "lying-back", "overhead"] {
+            assert!(
+                at(1, name)[0] < at(2, name)[0] && at(2, name)[0] < at(3, name)[0],
+                "{frame} {name}"
+            );
+        }
     }
 }
