@@ -666,6 +666,13 @@ impl RoomLanes {
         Shown::of(&self.file)
     }
 
+    /// The theme saved with the room, edited since or not; `None` with none
+    /// saved. The edge bars draw each kind in its mode (board #5431,
+    /// `themes::edge_mode`), so nothing else is saved for them.
+    pub fn saved_theme(&self) -> Option<Theme> {
+        self.file.theme
+    }
+
     /// Apply `theme` (board #5415): every named kind's default takes the
     /// theme's look for the kind (behavior, color, band, strength), every
     /// entry of those kinds takes it whole, hand assignments included, and
@@ -2149,13 +2156,14 @@ mod tests {
     #[test]
     fn the_control_steps_through_the_themes_and_wraps() {
         let (dir, boxes, _, mut lanes) = fresh("theme-cycle");
-        let seen: Vec<Theme> = (0..5).map(|_| lanes.next_theme(&boxes, "test")).collect();
+        let seen: Vec<Theme> = (0..6).map(|_| lanes.next_theme(&boxes, "test")).collect();
         assert_eq!(
             seen,
             [
                 Theme::Drift,
                 Theme::Tide,
                 Theme::Aurora,
+                Theme::Mirror,
                 Theme::Classic,
                 Theme::Drift
             ]

@@ -370,7 +370,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       5 green, 6 teal, 7 rose, 8 the key's tint), band 0..3 (rms, bass, mid, high), e.g. "table=curls:5:2@0.8"; "clear" drops
     //       every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
-    //   adb shell setprop debug.fosfora.theme drift                (board #5415, themes.rs: classic, drift, tide or aurora, the whole room's
+    //   adb shell setprop debug.fosfora.theme drift                (board #5415, themes.rs: classic, drift, tide, aurora or mirror, the whole room's
     //       look as the hand menu's Theme control sets it, every surface and kind default, hand assignments included; writes the saved
     //       room as the control does; live: polled once a second, applied once when the value changes, after the room's anchors are in;
     //       at launch a value naming the room's own theme (edited since or not) applies nothing; to apply the same theme again set it
@@ -4207,16 +4207,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .map_or(&[][..], crate::canvas::Canvas::heights);
                     edge_history.step(dt, heights);
                     // Board #5431: each shape in its kind's mode under the
-                    // room's theme, or the mode forced on every kind.
-                    let edge_mode = |_kind: u32| edge_bars.choice.mode(crate::edge_bars::Mode::Face);
+                    // room's saved theme, or the mode forced on every kind.
+                    let edge_theme = surface_lanes.saved_theme();
+                    let edge_mode = |kind: u32| {
+                        edge_bars
+                            .choice
+                            .mode(crate::themes::edge_mode(edge_theme, kind))
+                    };
                     let kinds: Vec<(u32, crate::edge_bars::Mode)> = crate::surfaces::KIND_NAMES
                         .iter()
                         .map(|&(kind, _)| (kind, edge_mode(kind)))
                         .collect();
                     if edge_kinds_logged.as_ref() != Some(&kinds) {
                         info!(
-                            "edge bars: per kind {}",
-                            crate::edge_bars::kinds_line(&kinds)
+                            "edge bars: per kind {} ({})",
+                            crate::edge_bars::kinds_line(&kinds),
+                            match (edge_bars.choice, edge_theme) {
+                                (crate::edge_bars::Choice::Force(_), _) => {
+                                    "forced on every kind".to_owned()
+                                }
+                                (_, Some(t)) => format!("theme {}", t.name()),
+                                (_, None) => "no theme saved".to_owned(),
+                            }
                         );
                         edge_kinds_logged = Some(kinds);
                     }

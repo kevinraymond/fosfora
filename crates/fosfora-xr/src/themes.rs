@@ -1,11 +1,19 @@
 //! Themes (board #5415): the whole room's look in one press. A theme is a
 //! name and, for each kind of surface (table, floor, wall, ceiling, frame,
-//! other), a behavior, a color index, an audio band and a strength
-//! ([`Look`]). Applying one (`lanes::RoomLanes::apply_theme`) sets every
-//! kind default and every anchor of the room to its kind's look, hand
-//! assignments included: the theme wins. Its name is saved with the room
-//! (`room_file.rs`); an edit by hand afterwards stays, and the hand menu's
-//! Theme control then shows the theme as edited ("Drift*", [`Shown`]).
+//! other), a behavior, a color index, an audio band, a strength and how the
+//! edge bars draw its edges ([`Look`]). Applying one
+//! (`lanes::RoomLanes::apply_theme`) sets every kind default and every
+//! anchor of the room to its kind's look, hand assignments included: the
+//! theme wins. Its name is saved with the room (`room_file.rs`); an edit by
+//! hand afterwards stays, and the hand menu's Theme control then shows the
+//! theme as edited ("Drift*", [`Shown`]).
+//!
+//! **Edges** (board #5431). Each look names an edge mode
+//! (`edge_bars::Mode`: off, on the face, standing, in), and the edge bars
+//! draw each shape in its kind's ([`edge_mode`]) unless the Edges control
+//! or `debug.fosfora.edgebars` forces one on every kind. The mode comes from
+//! the saved theme's name, edited or not, so nothing new is written to the
+//! room file; a room with no theme saved has every kind on the face.
 //!
 //! Plain data, so it builds and tests on the desktop: the table, lookup by
 //! name, the cycle, what a room file shows, and the launch rule of the
@@ -13,10 +21,10 @@
 //! shader: each is built from the catalogue (`SurfaceBehavior::catalogue`),
 //! every pairing on its kind's own list.
 //!
-//! The four, each with one rule for its colors: the room's planes (walls,
-//! floor, ceiling) one color, what stands in it (tables, frames, other)
-//! the other, so a table reads against the floor and a frame against its
-//! wall.
+//! The five. The four first ones color by one rule: the room's planes
+//! (walls, floor, ceiling) one color, what stands in it (tables, frames,
+//! other) the other, so a table reads against the floor and a frame
+//! against its wall. They keep the edge bars on the face for every kind.
 //!
 //! - **Classic**: today's defaults ([`SurfaceBehavior::default_for`]),
 //!   each kind's own color, the behavior's band, full strength. Applying it
@@ -32,12 +40,18 @@
 //! - **Aurora**: walls and the ceiling the desktop's Aurora, the floor and
 //!   tables streamlines, frames the pulse, other surfaces the curls. The
 //!   walls the key's tint, the floor and the ceiling green, the rest teal.
+//! - **Mirror**: the edges carry it. Walls, the ceiling, tables, frames and
+//!   other surfaces run no behavior and their edges go in, each face a
+//!   tunnel of light; the floor keeps the rings with the bars on its face,
+//!   so nothing opens under a seated wearer's feet. Warm white on the walls
+//!   and the ceiling, blue on the rest.
 //!
 //! Every band is the behavior's own ([`SurfaceBehavior::default_band`]):
 //! the rms for the flows, the bass for the rings and the pulse, as Drift
 //! asks; a band per theme waits for signal dumps of real songs to choose it
 //! by. Every strength is 1 but Drift's frames.
 
+use crate::edge_bars::Mode;
 use crate::room_file::RoomFile;
 use crate::surface_fx::{BAND_BASS, BAND_RMS};
 use crate::surfaces::{
@@ -48,6 +62,7 @@ use crate::surfaces::{
 /// Color indices (`surfaces::SURFACE_PALETTE`, from 1) the themes use.
 const BLUE: u32 = 1;
 const VIOLET: u32 = 2;
+const WARM_WHITE: u32 = 3;
 const GREEN: u32 = 5;
 const TEAL: u32 = 6;
 const ROSE: u32 = 7;
@@ -63,15 +78,25 @@ pub struct Look {
     pub band: u32,
     /// 0..1.
     pub strength: f32,
+    /// How the edge bars draw this kind's edges (board #5431). Not saved:
+    /// it follows the saved theme's name.
+    pub edges: Mode,
 }
 
 impl Look {
-    const fn new(behavior: SurfaceBehavior, color: u32, band: u32, strength: f32) -> Self {
+    const fn new(
+        behavior: SurfaceBehavior,
+        color: u32,
+        band: u32,
+        strength: f32,
+        edges: Mode,
+    ) -> Self {
         Self {
             behavior,
             color,
             band,
             strength,
+            edges,
         }
     }
 
@@ -111,11 +136,18 @@ pub enum Theme {
     Drift,
     Tide,
     Aurora,
+    Mirror,
 }
 
 impl Theme {
     /// Every theme, in the cycle's order.
-    pub const ALL: [Self; 4] = [Self::Classic, Self::Drift, Self::Tide, Self::Aurora];
+    pub const ALL: [Self; 5] = [
+        Self::Classic,
+        Self::Drift,
+        Self::Tide,
+        Self::Aurora,
+        Self::Mirror,
+    ];
 
     /// The name the room file, the knob and the log use.
     pub fn name(self) -> &'static str {
@@ -124,6 +156,7 @@ impl Theme {
             Self::Drift => "drift",
             Self::Tide => "tide",
             Self::Aurora => "aurora",
+            Self::Mirror => "mirror",
         }
     }
 
@@ -134,6 +167,7 @@ impl Theme {
             Self::Drift => "Drift",
             Self::Tide => "Tide",
             Self::Aurora => "Aurora",
+            Self::Mirror => "Mirror",
         }
     }
 
@@ -146,7 +180,7 @@ impl Theme {
     }
 
     /// The next theme in the cycle, wrapping: Classic, Drift, Tide,
-    /// Aurora, Classic.
+    /// Aurora, Mirror, Classic.
     #[must_use]
     pub fn next(self) -> Self {
         let i = Self::ALL.iter().position(|&t| t == self).unwrap_or(0);
@@ -160,36 +194,51 @@ impl Theme {
         use SurfaceBehavior as B;
         KIND_NAMES.iter().find(|(k, _)| *k == kind)?;
         let look = Look::new;
+        let face = Mode::Face;
         Some(match self {
             Self::Classic => {
                 let behavior = B::default_for(kind);
-                look(behavior, 0, behavior.default_band(), 1.0)
+                look(behavior, 0, behavior.default_band(), 1.0, face)
             }
             Self::Drift => match kind {
-                KIND_TABLE => look(B::Streamlines, TEAL, BAND_RMS, 1.0),
-                KIND_FLOOR => look(B::Rings, BLUE, BAND_BASS, 1.0),
-                KIND_WALL => look(B::Streamlines, BLUE, BAND_RMS, 1.0),
-                KIND_CEILING => look(B::Rings, BLUE, BAND_BASS, 1.0),
-                KIND_FRAME => look(B::Pulse, TEAL, BAND_BASS, 0.6),
-                _ => look(B::Curls, TEAL, BAND_RMS, 1.0),
+                KIND_TABLE => look(B::Streamlines, TEAL, BAND_RMS, 1.0, face),
+                KIND_FLOOR => look(B::Rings, BLUE, BAND_BASS, 1.0, face),
+                KIND_WALL => look(B::Streamlines, BLUE, BAND_RMS, 1.0, face),
+                KIND_CEILING => look(B::Rings, BLUE, BAND_BASS, 1.0, face),
+                KIND_FRAME => look(B::Pulse, TEAL, BAND_BASS, 0.6, face),
+                _ => look(B::Curls, TEAL, BAND_RMS, 1.0, face),
             },
             Self::Tide => match kind {
-                KIND_TABLE => look(B::Curls, ROSE, BAND_RMS, 1.0),
-                KIND_FLOOR => look(B::Curls, VIOLET, BAND_RMS, 1.0),
-                KIND_WALL => look(B::Pulse, VIOLET, BAND_BASS, 1.0),
-                KIND_CEILING => look(B::Pulse, VIOLET, BAND_BASS, 1.0),
-                KIND_FRAME => look(B::Rings, ROSE, BAND_BASS, 1.0),
-                _ => look(B::Pulse, ROSE, BAND_BASS, 1.0),
+                KIND_TABLE => look(B::Curls, ROSE, BAND_RMS, 1.0, face),
+                KIND_FLOOR => look(B::Curls, VIOLET, BAND_RMS, 1.0, face),
+                KIND_WALL => look(B::Pulse, VIOLET, BAND_BASS, 1.0, face),
+                KIND_CEILING => look(B::Pulse, VIOLET, BAND_BASS, 1.0, face),
+                KIND_FRAME => look(B::Rings, ROSE, BAND_BASS, 1.0, face),
+                _ => look(B::Pulse, ROSE, BAND_BASS, 1.0, face),
             },
             Self::Aurora => match kind {
-                KIND_TABLE => look(B::Streamlines, TEAL, BAND_RMS, 1.0),
-                KIND_FLOOR => look(B::Streamlines, GREEN, BAND_RMS, 1.0),
-                KIND_WALL => look(B::Aurora, COLOR_KEY, BAND_RMS, 1.0),
-                KIND_CEILING => look(B::Aurora, GREEN, BAND_RMS, 1.0),
-                KIND_FRAME => look(B::Pulse, TEAL, BAND_BASS, 1.0),
-                _ => look(B::Curls, TEAL, BAND_RMS, 1.0),
+                KIND_TABLE => look(B::Streamlines, TEAL, BAND_RMS, 1.0, face),
+                KIND_FLOOR => look(B::Streamlines, GREEN, BAND_RMS, 1.0, face),
+                KIND_WALL => look(B::Aurora, COLOR_KEY, BAND_RMS, 1.0, face),
+                KIND_CEILING => look(B::Aurora, GREEN, BAND_RMS, 1.0, face),
+                KIND_FRAME => look(B::Pulse, TEAL, BAND_BASS, 1.0, face),
+                _ => look(B::Curls, TEAL, BAND_RMS, 1.0, face),
+            },
+            Self::Mirror => match kind {
+                KIND_TABLE => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
+                KIND_FLOOR => look(B::Rings, BLUE, BAND_BASS, 1.0, face),
+                KIND_WALL => look(B::None, WARM_WHITE, BAND_RMS, 1.0, Mode::In),
+                KIND_CEILING => look(B::None, WARM_WHITE, BAND_RMS, 1.0, Mode::In),
+                KIND_FRAME => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
+                _ => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
             },
         })
+    }
+
+    /// How the edge bars draw the edges of a surface of `kind` under this
+    /// theme (board #5431); on the face for a kind without a name.
+    pub fn edges(self, kind: u32) -> Mode {
+        self.look(kind).map_or(Mode::Face, |l| l.edges)
     }
 
     /// The assignments the theme makes: each named kind
@@ -201,17 +250,24 @@ impl Theme {
     }
 
     /// The looks in one line for the log, kind by kind: "table
-    /// streamlines@1.00 teal rms · floor rings@1.00 blue bass · …".
+    /// streamlines@1.00 teal rms · floor rings@1.00 blue bass · …", and the
+    /// edge mode where it is not on the face: "wall none@1.00 warm white
+    /// rms edges in".
     pub fn summary(self) -> String {
         self.looks()
             .map(|(kind, l)| {
+                let edges = if l.edges == Mode::Face {
+                    String::new()
+                } else {
+                    format!(" edges {}", l.edges.name())
+                };
                 format!(
-                    "{} {}@{:.2} {} {}",
+                    "{} {}@{:.2} {} {}{edges}",
                     crate::surfaces::kind_name(kind),
                     l.behavior.name(),
                     l.strength,
                     crate::surfaces::color_name(l.color),
-                    crate::surface_fx::band_name(l.band)
+                    crate::surface_fx::band_name(l.band),
                 )
             })
             .collect::<Vec<_>>()
@@ -229,6 +285,14 @@ impl Theme {
                     .is_none_or(|look| look.runs(file.resolve(&e.uuid, e.kind)))
             })
     }
+}
+
+/// How the edge bars draw the edges of a surface of `kind` in a room whose
+/// saved theme is `theme` (board #5431): the theme's mode for the kind,
+/// edited since or not; on the face with no theme saved (a fresh room, or
+/// custom).
+pub fn edge_mode(theme: Option<Theme>, kind: u32) -> Mode {
+    theme.map_or(Mode::Face, |t| t.edges(kind))
 }
 
 /// What the hand menu's Theme control shows for a room file ([`Self::of`]).
@@ -344,9 +408,9 @@ impl Knob {
     }
 }
 
-/// The themes' names for a reply or a warning: "classic, drift, tide or
-/// aurora" ([`Theme::name`]) or with `titles` "Classic, Drift, Tide or
-/// Aurora".
+/// The themes' names for a reply or a warning: "classic, drift, tide,
+/// aurora or mirror" ([`Theme::name`]) or with `titles` "Classic, Drift,
+/// Tide, Aurora or Mirror".
 pub fn listed(titles: bool) -> String {
     let names: Vec<&str> = Theme::ALL
         .iter()
@@ -395,7 +459,7 @@ mod tests {
             let behavior = B::default_for(kind);
             assert_eq!(
                 look,
-                Look::new(behavior, 0, behavior.default_band(), 1.0),
+                Look::new(behavior, 0, behavior.default_band(), 1.0, Mode::Face),
                 "{}",
                 kind_name(kind)
             );
@@ -404,7 +468,7 @@ mod tests {
         }
         // A fresh room runs Classic.
         assert!(Theme::Classic.runs_in(&RoomFile::default()));
-        for theme in [Theme::Drift, Theme::Tide, Theme::Aurora] {
+        for theme in [Theme::Drift, Theme::Tide, Theme::Aurora, Theme::Mirror] {
             assert!(!theme.runs_in(&RoomFile::default()), "{theme:?}");
         }
     }
@@ -451,6 +515,10 @@ mod tests {
                 B::Curls
             ]
         );
+        assert_eq!(
+            behaviors(Theme::Mirror),
+            [B::None, B::Rings, B::None, B::None, B::None, B::None]
+        );
         // Only Classic runs the wall spectrum.
         for theme in Theme::ALL {
             let spectrum = theme.looks().any(|(_, l)| l.behavior == B::Spectrum);
@@ -475,6 +543,16 @@ mod tests {
                 .all(|c| [GREEN, TEAL, COLOR_KEY].contains(c))
         );
         assert_eq!(Theme::Aurora.look(KIND_WALL).unwrap().color, COLOR_KEY);
+        // Mirror: warm white on the walls and the ceiling, blue on the
+        // rest.
+        for (kind, l) in Theme::Mirror.looks() {
+            let want = if [KIND_WALL, KIND_CEILING].contains(&kind) {
+                WARM_WHITE
+            } else {
+                BLUE
+            };
+            assert_eq!(l.color, want, "{}", kind_name(kind));
+        }
         // Every band the behavior's own: Drift's rms, but the bass where
         // the behavior's default is the bass.
         for theme in Theme::ALL {
@@ -493,7 +571,7 @@ mod tests {
     fn names_and_the_cycle() {
         assert_eq!(
             Theme::ALL.map(Theme::name),
-            ["classic", "drift", "tide", "aurora"]
+            ["classic", "drift", "tide", "aurora", "mirror"]
         );
         for t in Theme::ALL {
             assert_eq!(Theme::from_name(t.name()), Some(t));
@@ -514,20 +592,82 @@ mod tests {
         }
         assert_eq!(
             seen,
-            [Theme::Drift, Theme::Tide, Theme::Aurora, Theme::Classic]
+            [
+                Theme::Drift,
+                Theme::Tide,
+                Theme::Aurora,
+                Theme::Mirror,
+                Theme::Classic
+            ]
         );
         // The control's press: the next after the one shown, edited or
-        // not; custom starts the cycle.
+        // not; custom starts the cycle. Mirror comes after Aurora.
         assert_eq!(Shown::Theme(Theme::Drift).next(), Theme::Tide);
-        assert_eq!(Shown::Edited(Theme::Aurora).next(), Theme::Classic);
+        assert_eq!(Shown::Edited(Theme::Aurora).next(), Theme::Mirror);
+        assert_eq!(Shown::Theme(Theme::Mirror).next(), Theme::Classic);
         assert_eq!(Shown::Custom.next(), Theme::Classic);
         // The words.
         assert_eq!(Shown::Theme(Theme::Drift).label(), "Theme: Drift");
         assert_eq!(Shown::Edited(Theme::Drift).label(), "Theme: Drift*");
         assert_eq!(Shown::Custom.label(), "Theme: custom");
         assert_eq!(Shown::Edited(Theme::Classic).value(), "Classic*");
-        assert_eq!(listed(true), "Classic, Drift, Tide or Aurora");
-        assert_eq!(listed(false), "classic, drift, tide or aurora");
+        assert_eq!(listed(true), "Classic, Drift, Tide, Aurora or Mirror");
+        assert_eq!(listed(false), "classic, drift, tide, aurora or mirror");
+    }
+
+    #[test]
+    fn every_theme_names_an_edge_mode_per_kind() {
+        for theme in Theme::ALL {
+            for (kind, l) in theme.looks() {
+                assert!(
+                    Mode::ALL.contains(&l.edges),
+                    "{theme:?} {}",
+                    kind_name(kind)
+                );
+                assert_eq!(theme.edges(kind), l.edges);
+            }
+            // A kind without a name: on the face.
+            assert_eq!(theme.edges(KIND_NONE), Mode::Face);
+        }
+        // The four old themes keep the bars on the face for every kind, as
+        // they were worn.
+        for theme in [Theme::Classic, Theme::Drift, Theme::Tide, Theme::Aurora] {
+            assert!(
+                theme.looks().all(|(_, l)| l.edges == Mode::Face),
+                "{theme:?}"
+            );
+        }
+        // Mirror: in everywhere but the floor, which keeps the rings and
+        // the bars on its face; no surface behavior but the floor's.
+        for (kind, l) in Theme::Mirror.looks() {
+            let floor = kind == KIND_FLOOR;
+            let want = if floor { Mode::Face } else { Mode::In };
+            assert_eq!(l.edges, want, "{}", kind_name(kind));
+            assert_eq!(l.behavior == B::Rings, floor, "{}", kind_name(kind));
+            assert_eq!(l.behavior == B::None, !floor, "{}", kind_name(kind));
+        }
+        // The room's theme decides; with none saved (fresh or custom),
+        // every kind on the face.
+        for (kind, _) in KIND_NAMES {
+            assert_eq!(edge_mode(None, kind), Mode::Face);
+            assert_eq!(
+                edge_mode(Some(Theme::Mirror), kind),
+                Theme::Mirror.edges(kind)
+            );
+        }
+        assert_eq!(edge_mode(Some(Theme::Mirror), KIND_WALL), Mode::In);
+        // The log names a mode only where it is not on the face.
+        assert!(!Theme::Drift.summary().contains("edges"));
+        assert!(
+            Theme::Mirror
+                .summary()
+                .contains("wall none@1.00 warm white rms edges in")
+        );
+        assert!(
+            Theme::Mirror
+                .summary()
+                .contains("floor rings@1.00 blue bass \u{b7}")
+        );
     }
 
     #[test]

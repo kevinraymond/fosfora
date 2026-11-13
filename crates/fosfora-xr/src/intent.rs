@@ -2312,6 +2312,9 @@ mod tests {
                 ("Change the theme.", next),
                 ("theme next", next),
                 ("Set the theme to the next one.", next),
+                // Board #5431: Mirror through the same grammar.
+                ("Mirror theme.", to(Theme::Mirror)),
+                ("Set the theme to mirror", to(Theme::Mirror)),
                 // The words around them still mean what they did.
                 ("Next effect.", Intent::NextEffect),
                 ("next", Intent::NextEffect),
@@ -2339,7 +2342,7 @@ mod tests {
         };
         assert_eq!(
             miss_text(&miss),
-            "No theme called \"sunset\": Classic, Drift, Tide or Aurora"
+            "No theme called \"sunset\": Classic, Drift, Tide, Aurora or Mirror"
         );
         // Not the agent's to take: the reply stands.
         assert!(!crate::agent::forwards(&miss.reason));
@@ -2387,7 +2390,8 @@ mod tests {
             (aurora.color, aurora.band, aurora.strength)
         );
         // "next theme" names the one it stepped to.
-        assert_eq!(say("Next theme.", &mut lanes).label, "theme: Classic");
+        assert_eq!(say("Next theme.", &mut lanes).label, "theme: Mirror");
+        assert_eq!(say("next theme", &mut lanes).label, "theme: Classic");
         assert_eq!(say("next theme", &mut lanes).label, "theme: Drift");
         assert_eq!(lanes.theme(), Shown::Theme(Theme::Drift));
         // An edit by voice after it: edited, and the next press goes on.
@@ -2398,7 +2402,7 @@ mod tests {
         let r = say("Theme sunset.", &mut lanes);
         assert_eq!(
             r.label,
-            "No theme called \"sunset\": Classic, Drift, Tide or Aurora"
+            "No theme called \"sunset\": Classic, Drift, Tide, Aurora or Mirror"
         );
         assert_close!(r.seconds, MISS_S);
         assert_eq!(lanes.theme(), Shown::Theme(Theme::Tide));

@@ -2866,6 +2866,67 @@ mod tests {
     }
 
     #[test]
+    fn the_themes_mode_per_kind_reaches_the_outline() {
+        use crate::surfaces::{KIND_FLOOR, KIND_TABLE, KIND_WALL};
+        use crate::themes::{Theme, edge_mode};
+        // The app's rule: each shape in the choice's mode for its kind's
+        // mode under the room's saved theme.
+        let room = |choice: Choice, theme: Option<Theme>| {
+            [
+                (wall(), KIND_WALL),
+                (floor(), KIND_FLOOR),
+                (table(), KIND_TABLE),
+            ]
+            .map(|(s, kind)| Shape {
+                look: s.look.map(|l| Look {
+                    mode: choice.mode(edge_mode(theme, kind)),
+                    ..l
+                }),
+                ..s
+            })
+        };
+        let draw = |shapes: &[Shape]| {
+            let mut out = Outline::default();
+            outline(
+                shapes,
+                HEAD,
+                HEIGHT_FRACTION,
+                DEPTH_FRACTION,
+                24,
+                0.25,
+                &mut out,
+            );
+            out
+        };
+        // Mirror: the wall and the table's two faces in, the floor's rings
+        // with the bars on its face.
+        let out = draw(&room(Choice::Theme, Some(Theme::Mirror)));
+        assert_eq!(out.tunnels.len(), 3);
+        assert_eq!(out.strips.len(), 4);
+        assert!(out.strips.iter().all(|s| s.inset > 0.0));
+        assert!(near(out.tunnels[0].normal, Vec3::Z), "the wall first");
+        // Drift, or no theme saved: every kind on the face, as worn.
+        for theme in [Some(Theme::Drift), None] {
+            let out = draw(&room(Choice::Theme, theme));
+            assert!(out.tunnels.is_empty());
+            assert_eq!(out.strips.len(), 16);
+        }
+        // Forced, every kind in that mode whatever the theme.
+        let out = draw(&room(Choice::Force(Mode::Standing), Some(Theme::Mirror)));
+        assert!(out.tunnels.is_empty());
+        assert!(out.strips.len() == 16 && out.strips.iter().all(|s| s.inset == 0.0));
+        let out = draw(&room(Choice::Force(Mode::In), Some(Theme::Drift)));
+        assert_eq!((out.strips.len(), out.tunnels.len()), (0, 4));
+        assert!(draw(&room(Choice::Force(Mode::Off), Some(Theme::Mirror))).is_empty());
+        // One buffer for the mix: the strips, then the tunnels.
+        let out = draw(&room(Choice::Theme, Some(Theme::Mirror)));
+        let mut r = Vec::new();
+        rows(&[0.5; 24], &History::default(), &out, &mut r);
+        assert_eq!(r.len(), HEAD_ROWS + 7 * STRIP_ROWS);
+        assert_close!(r[0][1], 4.0);
+    }
+
+    #[test]
     fn a_tunnel_runs_its_bars_from_the_same_low_ends_as_the_strips() {
         // Each strip's low end, in the tunnel's frame, is where the
         // tunnel's along-the-edge position is 0: the same band meets
