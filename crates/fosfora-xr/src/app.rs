@@ -448,6 +448,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       to 2..20 cm; live)
     //   adb shell setprop debug.fosfora.edgebarsdepth 0.6        (edge bars in: the tunnel's depth as a fraction of its face's smaller side, 0..2, then
     //       clamped to 0.15..1.5 m; live)
+    //   adb shell setprop debug.fosfora.sky 0|1                  (board #5436, sky.rs: Aurora on the walls and the ceiling as one sky mapped from the
+    //       room's center at a seated eye height, the seam behind the facing at launch or the last recenter, and its reflection
+    //       on a floor; 0 puts Aurora back on per-face mapping everywhere, so the two can be captured and costed in one launch;
+    //       default 1; logs the state, the point and the seam whenever one changes; live: polled once a second)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
     //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 0 reads texture row 0 as the bottom of the view, the default; the
     //       runtime renders the map in GL order, verified by envdepthcheck against the room's boxes; 1 as the top)
@@ -1688,6 +1692,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // too).
     let mut surface_clock = crate::surface_fx::Clock::default();
     let mut surfaces_lit: Option<([usize; 6], usize)> = None;
+    // Board #5436: the sky (`sky.rs`). Its knob, polled once a second
+    // below; the facing its seam is behind, taken at launch (the first
+    // frame) and at each recenter, with which of the two it was; what the
+    // log last said about it.
+    let mut sky_on = switch_now("debug.fosfora.sky").unwrap_or(true);
+    let mut sky_facing: Option<(glam::Vec2, &'static str)> = None;
+    let mut sky_logged: Option<crate::sky::Logged> = None;
     // Board #3489, D2b: the desktop's single-pass fragment effects on
     // surfaces (`surface_port.rs`). The eight are composed with the
     // libraries the assets carry and their pipelines built here, once;
@@ -2390,6 +2401,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     Action::Recenter => {
                         anchor = [input.head[0], MR_CUBE_Y, input.head[2]];
                         moved = true;
+                        // Board #5436: the sky's seam goes behind the
+                        // wearer's facing now.
+                        let rot = glam::Quat::from_array(input.head_rot);
+                        sky_facing = Some((crate::sky::facing(rot), "the last recenter"));
                     }
                     Action::RescanRoom => rescan = true,
                     Action::SetDebug(on) => {
@@ -3978,6 +3993,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // picked above (`debug.fosfora.canvas 0`: none), on its face
             // oriented for the bars; another box on the spectrum is dark.
             {
+                use crate::sky::Map;
                 use crate::surfaces::{KIND_CEILING, KIND_FLOOR, SurfaceBehavior};
                 let head = glam::Vec3::from(input.head);
                 let stage_k = room_boxes.len();
@@ -4010,8 +4026,44 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 for e in surface_ports.iter_mut().flatten() {
                     e.advance(dt);
                 }
+                // Board #5436: the sky. The room is the scanned walls' (a
+                // hidden wall closes its outline), or the stage floor's
+                // stand-in without any; the seam behind the facing at
+                // launch or the last recenter. Logged when the knob, the
+                // point, the seam or the hidden walls' share changes.
+                let (facing, facing_at) = *sky_facing.get_or_insert_with(|| {
+                    (
+                        crate::sky::facing(glam::Quat::from_array(input.head_rot)),
+                        "launch",
+                    )
+                });
+                let scanned_box = |b: &ObstacleBox| {
+                    (
+                        b.kind,
+                        glam::Vec3::from(b.center),
+                        glam::Quat::from_array(b.rot),
+                        glam::Vec3::from(b.half),
+                    )
+                };
+                let sky_room = crate::sky::Room::fit(input.room_boxes.iter().map(scanned_box))
+                    .unwrap_or_else(|| crate::sky::Room::stage(floor_at, stage_floor_y));
+                let sky = crate::sky::Sky::new(sky_room, facing);
+                let hidden_deg: f32 = input
+                    .room_boxes
+                    .iter()
+                    .filter(|b| b.hidden && b.kind == crate::surfaces::KIND_WALL)
+                    .map(|b| {
+                        let (_, c, r, h) = scanned_box(b);
+                        crate::sky::span_deg(sky.point, crate::sky::wall_segment(c, r, h))
+                    })
+                    .sum();
+                let key = crate::sky::Logged::of(sky_on, &sky, facing_at, hidden_deg);
+                if sky_logged != Some(key) {
+                    info!("{}", crate::sky::line(sky_on, &sky, facing_at, hidden_deg));
+                    sky_logged = Some(key);
+                }
                 // The ported faces this frame: effect, face, kind,
-                // behavior, strength and color index.
+                // behavior, strength, color index and mapping.
                 let mut ported = Vec::new();
                 let mut spectrum_sign = 1.0;
                 for (k, b) in room_boxes.iter().chain(floor_box.iter()).enumerate() {
@@ -4064,6 +4116,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // (`surface_port::tint`: index 0 leaves its colors its
                     // own); the band is not read, a port follows its own
                     // audio bindings.
+                    // Board #5436: Aurora on a wall or the ceiling is the
+                    // sky, on a floor its reflection (`sky::Map`).
                     if let (Some(i), Some(_)) = (behavior.port(), surface_ports.as_ref()) {
                         counts[5] += 1;
                         ported.push((
@@ -4073,6 +4127,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             behavior,
                             strength,
                             color,
+                            Map::of(sky_on, behavior, b.kind),
                         ));
                         continue;
                     }
@@ -4113,7 +4168,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 if slots.iter().any(|s| s.color == crate::surfaces::COLOR_KEY)
                     || ported
                         .iter()
-                        .any(|&(.., color)| color == crate::surfaces::COLOR_KEY)
+                        .any(|&(.., color, _)| color == crate::surfaces::COLOR_KEY)
                     || edge_key
                 {
                     let hue = fosfora_app::bindings::sources::collect_audio(&f)
@@ -4121,13 +4176,45 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .map_or(0.5, |v| v.0);
                     audio.key_tint = crate::surfaces::key_tint(hue);
                 }
+                // Board #5436: the sky's faces drop the rim fade on every
+                // edge another of them continues (a corner, a wall under
+                // the ceiling); every other face keeps it all round. The
+                // sky and its reflection run at the sky's resolution, the
+                // reflection at its own params (a wider glow).
+                let sky_faces: Vec<_> = ported
+                    .iter()
+                    .filter(|p| p.6 == Map::Sky)
+                    .map(|p| p.1)
+                    .collect();
+                let mut joined = crate::sky::continued(&sky_faces).into_iter();
                 let mut port_faces: Vec<_> = surface_ports
                     .as_ref()
                     .map(|effects| {
                         ported
                             .iter()
-                            .map(|&(i, face, kind, behavior, strength, color)| {
+                            .map(|&(i, face, kind, behavior, strength, color, map)| {
                                 let effect = &effects[i];
+                                let fade = match map {
+                                    Map::Sky => joined.next().unwrap_or_default().map(|c| !c),
+                                    _ => [true; 4],
+                                };
+                                let (resolution, params) = match map {
+                                    Map::Face => (
+                                        crate::surface_port::resolution(face.half),
+                                        effect.params(),
+                                    ),
+                                    Map::Sky => (crate::sky::RESOLUTION, effect.params()),
+                                    Map::Reflection => {
+                                        (crate::sky::RESOLUTION, effect.reflection_params())
+                                    }
+                                };
+                                let rows = crate::surface_port::rows(
+                                    &face,
+                                    strength,
+                                    effect.overlay,
+                                    behavior.id(),
+                                    crate::surface_port::tint(color, kind, audio.key_tint),
+                                );
                                 crate::gfx::PortFace {
                                     effect: i,
                                     uniforms: crate::surface_port::uniforms(
@@ -4135,17 +4222,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                         audio.clock,
                                         dt,
                                         frame_index,
-                                        crate::surface_port::resolution(face.half),
-                                        effect.params(),
+                                        resolution,
+                                        params,
                                     ),
                                     rows: crate::immerse::lift_rows(
-                                        crate::surface_port::rows(
-                                            &face,
-                                            strength,
-                                            effect.overlay,
-                                            behavior.id(),
-                                            crate::surface_port::tint(color, kind, audio.key_tint),
-                                        ),
+                                        crate::sky::rows(rows, map, &sky, fade),
                                         immerse_level,
                                     ),
                                 }
@@ -4694,6 +4775,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     scene.alive_count(),
                     scene.emitter_weight()
                 );
+            }
+            // Board #5436: the sky's knob, live; the surfaces pass logs the
+            // sky's line on the next frame.
+            let now = switch_now("debug.fosfora.sky").unwrap_or(true);
+            if now != sky_on {
+                info!(
+                    "sky: debug.fosfora.sky {}",
+                    if now {
+                        "1, one sky"
+                    } else {
+                        "0, Aurora per face"
+                    }
+                );
+                sky_on = now;
             }
             // Board #5397: the live planes' knobs, live, and their line
             // once a second while they run.

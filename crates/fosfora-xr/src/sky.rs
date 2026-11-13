@@ -537,6 +537,30 @@ pub fn line(on: bool, sky: &Sky, why: &str, hidden_deg: f32) -> String {
     )
 }
 
+/// What [`line`] says, to the centimeter and the degree it prints: the
+/// app logs the line again when this changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Logged {
+    on: bool,
+    point_cm: [i32; 3],
+    facing: [i32; 2],
+    hidden_deg: i32,
+    why: &'static str,
+}
+
+impl Logged {
+    pub fn of(on: bool, sky: &Sky, why: &'static str, hidden_deg: f32) -> Self {
+        let cm = |v: f32| (v * 100.0).round() as i32;
+        Self {
+            on,
+            point_cm: sky.point.to_array().map(cm),
+            facing: sky.facing.to_array().map(cm),
+            hidden_deg: hidden_deg.round() as i32,
+            why,
+        }
+    }
+}
+
 /// Appended after `surface_port::WRAPPER_WGSL` for a port that draws the
 /// sky (`surface_port::Port::sky`): a vertex stage that also hands on the
 /// world point and the eye, and `fs_sky`, which maps by `xr_port.mode.y`
