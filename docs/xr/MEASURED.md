@@ -3225,3 +3225,31 @@ The first captures showed the rim and a few dashes where a bar was loud,
 not a tunnel. With the faint frames, the ceiling and the walls show the
 opening's outline repeated into depth and the furniture's faces their own
 rungs. Not yet worn.
+
+## Aurora as one sky, and its reflection on the floor (board #5436)
+
+Quest 3, OS v209, about 3 h after a reboot, unworn on the desk in a dark
+room, seated launch in the scanned room (21 anchors replayed, 6.17 x 5.49 m,
+ceiling 2.67 m), world mode, 72 Hz, the governor off, music playing,
+immersion held at 1. One launch per condition, 22 s to settle, then 30 s of
+the runtime's App GPU time, no profiler.
+
+| Theme | App med | p90 | max |
+|---|---|---|---|
+| Classic | 8.66 ms | 9.14 | 9.25 |
+| Aurora, the sky and its reflection | 8.97 | 9.37 | 9.50 |
+| Aurora, per face (`sky 0`) | 8.94 | 9.43 | 9.48 |
+| Mirror | 9.00 | 9.59 | 9.63 |
+| Aurora, the sky, again | 9.38 | 9.86 | 9.91 |
+
+The sky costs what Aurora per face costs, inside the spread between two
+launches of the same condition (0.4 ms). The rate held 72 Hz; stale frames
+ran 75 to 142 per 30 s in every condition, Classic included, the seated
+question already open.
+
+The log gave the sky's point as the center of the room's 4 walls at 1.20 m
+over the floor, the seam behind the facing at launch, and no hidden wall.
+Captures at the same spot: with the sky on, the curtains run from the wall
+onto the ceiling without a break and the floor shows them fainter; per face,
+each wall and the ceiling starts its own picture and the floor is a bright
+wash. Not yet worn.
