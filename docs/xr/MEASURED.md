@@ -3307,3 +3307,42 @@ same setup, the depth light on, the headset facing the floor and one wall):
 two layers 8.59 / 8.68 / 8.74 ms, 72 Hz. The wall to ceiling join was not in
 that view, so the fix is checked only by the desktop render at the eye
 buffer's size; the wall to floor line in the capture is clean.
+
+## The depth light as points, and what it cost first (board #5439)
+
+Quest 3, OS v209, unworn on the desk in a dark room, seated launch in the
+scanned room (21 anchors replayed), world mode, 72 Hz, the governor off,
+music playing, immersion held at 1, the Aurora theme, the sky at 2 layers.
+One launch per condition, 22 s to settle, then 30 s of the runtime's App GPU
+time, no profiler.
+
+The first version of the points computed them per fragment (up to 24 hashed
+cells) in the eye pass. With one pile a meter away covering about 15 % of
+each eye:
+
+| Depth light | App med | p90 | max | stale | rate |
+|---|---|---|---|---|---|
+| off | 9.11 ms | 9.23 | 9.27 | 0 | 72 |
+| points, the sky through them | 14.37 | 15.56 | 15.74 | 495 | 58 |
+| points, the hard cutout (`depthlightveil 0`) | 13.00 | 14.03 | 14.28 | 320 | 63 |
+| off | 9.08 | 9.19 | 9.20 | 0 | 72 |
+| points, the sky through them | 14.89 | 16.37 | 16.45 | 586 | 55 |
+
+About 4 ms for the points and 1.5 ms for the veil: over the frame. The points
+now come from a 256 x 256 tile made at startup and draw in the faces layer,
+and the veil draws only where it has work. The headset had been moved by
+then and its view held almost nothing unscanned, so the measure that counts
+is the worst case, geometry first off, where every pixel the depth map
+covers carries the light:
+
+| Depth light, `geomfirst 0` | App med | p90 | max | rate |
+|---|---|---|---|---|
+| off | 9.11 ms | 9.50 | 9.55 | 72 |
+| points, the sky through them | 9.91 | 9.96 | 10.15 | 72 |
+| points, the hard cutout | 9.10 | 9.43 | 9.45 | 72 |
+| off | 9.49 | 9.83 | 9.88 | 72 |
+
+At most 0.8 ms with the whole map lit, and nothing measurable in the view
+with little unscanned in it (9.00 to 9.40 ms across six launches, off and on
+alike). In the captures the pile is a scatter of points over an unbroken
+sky, with no outline. Not yet worn in this form.
