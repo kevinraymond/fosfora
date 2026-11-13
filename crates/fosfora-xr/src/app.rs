@@ -1842,6 +1842,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let started = Instant::now();
     let mut stats = FrameStats::default();
     let mut destroyed = false;
+    // Board #4204: the error the loop ended on, for the fatal label.
+    let mut fatal: Option<Fatal> = None;
     let mut last_t = 0.0f32;
     let mut frame_index = 0u64;
     let mut beat_env = 0.0f32;
@@ -1986,8 +1988,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             break;
         }
 
-        if session.poll_events()? == Flow::Exit {
-            break;
+        // Board #4204: an error ends the loop with the fatal label (after
+        // it), not at once.
+        match session.poll_events() {
+            Ok(Flow::Continue) => {}
+            Ok(Flow::Exit) => break,
+            Ok(Flow::Lost) => {
+                fatal = Some(Fatal::Lost);
+                break;
+            }
+            Err(e) => {
+                fatal = Some(Fatal::Error(e));
+                break;
+            }
         }
         if !session.is_running() {
             continue;
@@ -2117,7 +2130,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         let mut rescan = false;
         // Board #3789: this frame's app GPU time, for the governor.
         let mut gpu_frame: Option<f32> = None;
-        session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
+        let framed = session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
             // Board #3789: the governor's signal, taken after the frame.
             gpu_frame = input.perf.app_gpu_ms;
             // Board #5397: a snapshot just in from the live planes' worker:
@@ -4537,7 +4550,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     (0.7 + 0.9 * f.rms) * (1.0 + 0.5 * beat_env) * boost,
                 );
             }
-        })?;
+        });
+        if let Err(e) = framed {
+            fatal = Some(Fatal::Error(e));
+            break;
+        }
         frame_index += 1;
         // Board #5397: a depth read-back that landed this frame goes to the
         // live planes' worker, with the time it was acquired at, for the
@@ -5149,6 +5166,32 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
     }
 
+    // Board #4204: the wearer sees why the app stops, where the session
+    // can still draw.
+    if let Some(f) = &fatal {
+        let text = crate::release::fatal_text(f.stop());
+        match f {
+            Fatal::Lost => error!(
+                "fatal label: the session is already gone, nothing can be drawn; \"{text}\" not shown"
+            ),
+            Fatal::Error(_) => {
+                match show_fatal(
+                    app,
+                    &mut session,
+                    &gfx,
+                    &mut label_texture,
+                    &mut stats,
+                    &text,
+                ) {
+                    Ok(frames) => info!("fatal label: \"{text}\" shown for {frames} frames"),
+                    Err(e) => error!(
+                        "fatal label: \"{text}\" could not be drawn ({e:#}); exiting without it"
+                    ),
+                }
+            }
+        }
+    }
+
     drop(session);
     drop(hud);
     drop(scene);
@@ -5158,7 +5201,92 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     drop(particles);
     drop(static_quad);
     drop(gfx);
-    Ok(())
+    fatal.map_or(Ok(()), |f| Err(f.into_error()))
+}
+
+/// Why the main loop ended on an error (board #4204).
+enum Fatal {
+    /// The runtime is losing the session or the instance.
+    Lost,
+    /// A call the loop cannot go on after failed.
+    Error(anyhow::Error),
+}
+
+impl Fatal {
+    /// Why, in the wearer's words: an OpenXR result in the error's chain
+    /// by its name, else the app's own.
+    fn stop(&self) -> crate::release::Stop {
+        match self {
+            Self::Lost => crate::release::Stop::SessionLost,
+            Self::Error(e) => e
+                .chain()
+                .find_map(|c| c.downcast_ref::<openxr::sys::Result>())
+                .map_or(crate::release::Stop::App, |r| {
+                    crate::release::Stop::of_xr(&format!("{r:?}"))
+                }),
+        }
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        match self {
+            Self::Lost => anyhow::anyhow!("the runtime is losing the session"),
+            Self::Error(e) => e,
+        }
+    }
+}
+
+/// Board #4204: the fatal label, "Fosfora stopped: <reason>", alone in
+/// front of the wearer for [`crate::release::FATAL_S`] before the app
+/// exits. The frames go on without an effect, the hand menu or the beams;
+/// the first frame that fails, a session that stops running or ends, or
+/// the activity going away ends the label early (`Err`, why). Returns the
+/// frames it showed in.
+fn show_fatal(
+    app: &AndroidApp,
+    session: &mut XrSession,
+    gfx: &Gfx,
+    label: &mut crate::label::LabelTexture,
+    stats: &mut FrameStats,
+    text: &str,
+) -> Result<u32> {
+    let until = Instant::now() + Duration::from_secs_f32(crate::release::FATAL_S);
+    let mut frames = 0;
+    while Instant::now() < until {
+        let mut destroyed = false;
+        app.poll_events(Some(Duration::ZERO), |event| {
+            if let PollEvent::Main(MainEvent::Destroy) = event {
+                destroyed = true;
+            }
+        });
+        if let Ok(mut events) = app.input_events_iter() {
+            while events.next(|_| android_activity::InputStatus::Unhandled) {}
+        }
+        anyhow::ensure!(!destroyed, "the activity was destroyed");
+        anyhow::ensure!(
+            session.poll_events()? == Flow::Continue,
+            "the session ended"
+        );
+        anyhow::ensure!(session.is_running(), "the session is not running");
+        session.frame(gfx, [0.0; 4], stats, None, None, |input, _| {
+            gfx.set_panel_pose(None);
+            for slot in 0..crate::gfx::BEAM_SLOTS {
+                gfx.set_beam(slot, None);
+            }
+            let head = glam::Vec3::from(input.head);
+            let head_rot = glam::Quat::from_array(input.head_rot);
+            label.show(
+                gfx,
+                Some((
+                    text,
+                    1.0,
+                    None,
+                    crate::label::scan_billboard(head, head_rot),
+                )),
+            );
+        })?;
+        frames += 1;
+    }
+    Ok(frames)
 }
 
 /// A 256x256 opaque test card for the S5 quad: a gray ramp with a bright

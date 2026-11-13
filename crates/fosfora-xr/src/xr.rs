@@ -322,7 +322,11 @@ impl XrContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
     Continue,
+    /// The runtime ends the session as asked (EXITING).
     Exit,
+    /// The runtime is losing the session or the instance (LOSS_PENDING,
+    /// instance loss pending): nothing more can be drawn (board #4204).
+    Lost,
 }
 
 /// One eye's swapchain, its images wrapped for wgpu: the eye's own, or
@@ -749,16 +753,20 @@ impl XrSession {
                             self.session.end().context("xrEndSession")?;
                             self.running = false;
                         }
-                        xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
+                        xr::SessionState::EXITING => {
                             info!("session {state:?}: leaving the main loop");
                             return Ok(Flow::Exit);
+                        }
+                        xr::SessionState::LOSS_PENDING => {
+                            warn!("session {state:?}: leaving the main loop");
+                            return Ok(Flow::Lost);
                         }
                         _ => {}
                     }
                 }
                 xr::Event::InstanceLossPending(_) => {
                     warn!("instance loss pending: leaving the main loop");
-                    return Ok(Flow::Exit);
+                    return Ok(Flow::Lost);
                 }
                 xr::Event::EventsLost(e) => warn!("lost {} events", e.lost_event_count()),
                 xr::Event::DisplayRefreshRateChangedFB(e) => {
