@@ -3164,3 +3164,33 @@ Screen captures at the same spot with the bars off, on the face and standing
 show the walls outlined in their colors and the scanned furniture in its own,
 the bars meeting on the same band at the corners, and furniture in front
 hiding the wall's bars behind it. Not yet worn.
+
+## Themes: each one's cost seated (board #5415)
+
+Quest 3, OS v209, three minutes after a reboot, unworn on the desk, seated
+launch in the scanned room (21 anchors replayed), world mode, 72 Hz, the
+governor off, music playing, immersion held at 1, the edge bars on, 300K
+particles alive. One launch per theme (`debug.fosfora.theme`), 20 s to
+settle, then 30 s of the runtime's App GPU time, no profiler attached.
+
+| Room | App med | p90 | max | stale | rate |
+|---|---|---|---|---|---|
+| as saved (most surfaces on none) | 9.07 ms | 9.43 | 9.49 | 0 | 72 |
+| Classic | 9.25 | 9.47 | 9.52 | 0 | 72 |
+| Drift | 9.17 | 9.38 | 9.46 | 0 | 72 |
+| Tide | 9.16 | 9.35 | 9.51 | 0 | 72 |
+| Aurora | 9.44 | 9.70 | 9.72 | 0 | 72 |
+
+Every theme holds 72 Hz with no stale frame. Aurora, the ported effect on
+every wall and the ceiling, costs the most: 0.37 ms over the saved room,
+with 4.2 ms of the 13.9 ms frame left.
+
+Before the reboot, 44 h after the last one and with the render-stage
+profiler attached (`scripts/xr/gpu-stages.sh`), the same five read App 11.06,
+12.19 to 12.91, 13.23, 12.60 and 13.85 ms, and the faces surface's render
+0.01, 0.13, 0.28, 0.20 and 0.55 ms. The order is the same; the absolute
+numbers are the uptime's and the profiler's, as the 9.6 to 14 ms drift
+recorded earlier.
+
+Screen captures of each theme at the same spot show the four looks apart at
+a glance. Not yet worn.
