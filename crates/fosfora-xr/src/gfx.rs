@@ -795,6 +795,7 @@ impl Gfx {
                     &layouts,
                     port.name,
                     source,
+                    port.entries(),
                     SWAPCHAIN_FORMAT,
                     Some(surface_depth_state()),
                 )

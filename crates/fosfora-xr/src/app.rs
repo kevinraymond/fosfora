@@ -4135,7 +4135,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                         audio.clock,
                                         dt,
                                         frame_index,
-                                        face.half,
+                                        crate::surface_port::resolution(face.half),
                                         effect.params(),
                                     ),
                                     rows: crate::immerse::lift_rows(

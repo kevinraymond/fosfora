@@ -58,6 +58,14 @@
 //! the wall and its left the wearer's left; on a level face the box's own
 //! axes are kept (they do not turn with the head), with `u` signed so the
 //! frame is not mirrored seen from the face's side.
+//!
+//! **The sky** (board #5436, `sky.rs`). Aurora ([`Port::sky`]) is composed
+//! with `sky::SKY_WGSL` after the wrapper and drawn by its `vs_sky` and
+//! `fs_sky` ([`Port::entries`]): on a wall or the ceiling it maps the
+//! direction from one point in the room to its frame, so the room shows one
+//! picture, and on a floor that picture's reflection. On any other face, or
+//! with `debug.fosfora.sky 0`, `fs_sky` maps per face exactly as `fs_main`
+//! does. The other seven are composed and drawn as before.
 
 use glam::Vec2;
 
@@ -65,14 +73,31 @@ use crate::surface_fx::{LIFT_M, STREAM_EDGE_M};
 use crate::surfaces::Face;
 
 /// One ported effect: the `.pfx` stem (its catalogue name), its shader and
-/// its `.pfx`, both the core's files, and the float inputs a surface runs
-/// at another value than the `.pfx`'s default (name, value).
+/// its `.pfx`, both the core's files, the float inputs a surface runs at
+/// another value than the `.pfx`'s default (name, value), whether it draws
+/// the sky (`sky.rs`), and the float inputs its reflection on a floor runs
+/// at besides those.
 #[derive(Debug, Clone, Copy)]
 pub struct Port {
     pub name: &'static str,
     pub shader: &'static str,
     pub pfx: &'static str,
     pub overrides: &'static [(&'static str, f32)],
+    pub sky: bool,
+    pub reflection: &'static [(&'static str, f32)],
+}
+
+impl Port {
+    /// The vertex and fragment entries its pipeline draws with: the sky's
+    /// (`vs_sky`, `fs_sky`) for a port that draws the sky, else the
+    /// wrapper's.
+    pub fn entries(&self) -> (&'static str, &'static str) {
+        if self.sky {
+            ("vs_sky", "fs_sky")
+        } else {
+            ("vs_main", "fs_main")
+        }
+    }
 }
 
 macro_rules! port {
@@ -85,13 +110,24 @@ macro_rules! port {
             shader: include_str!(concat!("../../../assets/shaders/", $name, ".wgsl")),
             pfx: include_str!(concat!("../../../assets/effects/", $name, ".pfx")),
             overrides: $overrides,
+            sky: false,
+            reflection: &[],
         }
     };
 }
 
 /// The eight, in catalogue order: ids [`FIRST_ID`] to 15.
 pub const PORTS: [Port; 8] = [
-    port!("aurora"),
+    // Board #5436: Aurora draws the sky on walls and the ceiling and its
+    // reflection on a floor. The reflection's glow is twice the sky's
+    // (0.8 against the `.pfx`'s 0.3: 0.04 of the frame's height against
+    // 0.02), so its curtains spread along the view direction, as on a
+    // rough floor.
+    Port {
+        sky: true,
+        reflection: &[("glow_width", 0.8)],
+        ..port!("aurora")
+    },
     port!("prism"),
     port!("shards"),
     port!("astrolabe"),
@@ -115,8 +151,9 @@ pub const PEAK_ALPHA: f32 = 0.5;
 pub const PX_PER_M: f32 = 512.0;
 pub const RES_MIN: f32 = 256.0;
 pub const RES_MAX: f32 = 2048.0;
-/// Rows of [`rows`], `struct XrPort` in [`WRAPPER_WGSL`].
-pub const UNIFORM_ROWS: usize = 8;
+/// Rows of [`rows`], `struct XrPort` in [`WRAPPER_WGSL`]: the eight of
+/// D2b and the sky's four (`sky::EDGES_ROW` on).
+pub const UNIFORM_ROWS: usize = 12;
 /// A face steeper than this (|normal.y| under it) is a wall for
 /// [`port_face`]; anything flatter is level.
 pub const WALL_NORMAL_Y: f32 = 0.7;
@@ -175,7 +212,8 @@ pub fn port_face(face: Face) -> Face {
 /// id `id`, tinted `tint` ([`tint`]): the corners (lifted as the surfaces
 /// pass lifts them); `face` (the half extents, the lift, the id); `params`
 /// (the strength); `color` (the tint, the peak alpha); `mode` (x 1 for an
-/// overlay).
+/// overlay, y 0: mapped per face); `edges` (the rim fades on every edge);
+/// the sky's rows zero (`sky::rows` fills them).
 pub fn rows(
     face: &Face,
     strength: f32,
@@ -191,6 +229,7 @@ pub fn rows(
     rows[5] = [strength.clamp(0.0, 1.0), 0.0, 0.0, 0.0];
     rows[6] = [tint[0], tint[1], tint[2], PEAK_ALPHA];
     rows[7] = [f32::from(u8::from(overlay)), 0.0, 0.0, 0.0];
+    rows[8] = [1.0; 4];
     rows
 }
 
@@ -249,8 +288,9 @@ pub fn edge_fade(uv: Vec2, half: [f32; 2]) -> f32 {
 /// Appended to every ported effect ([`compose`]): the port block, the
 /// surfaces pass's vertex stage and the fragment entry that calls the
 /// effect (`effect_main`, [`rename_entry`]) and turns its output into
-/// premultiplied light. The names carry an `xr` prefix so they cannot
-/// meet one of the core's.
+/// premultiplied light (`xr_light`, which `sky::SKY_WGSL`'s `fs_sky`
+/// shares). The names carry an `xr` prefix so they cannot meet one of the
+/// core's.
 pub const WRAPPER_WGSL: &str = r"
 struct XrEye { view_proj: mat4x4<f32> }
 struct XrPort {
@@ -264,8 +304,19 @@ struct XrPort {
     // rgb the tint (white: the effect's own colors), w the peak alpha
     color: vec4<f32>,
     // x 1 for an overlay (its own premultiplied alpha), 0 for an opaque
-    // effect (its luminance is the coverage)
+    // effect (its luminance is the coverage); y the mapping (sky.rs): 0
+    // per face, 1 the sky, 2 its reflection
     mode: vec4<f32>,
+    // The sky's (sky.rs). Per edge (-u, +u, -v, +v) 1 where the rim
+    // fades, 0 where it runs to the edge
+    edges: vec4<f32>,
+    // xyz the sky's point, w the ceiling's height
+    sky: vec4<f32>,
+    // the room in plan: xy its center (x, z), zw its half extents along
+    // its axis and across it
+    room: vec4<f32>,
+    // xy the room's axis (x, z), zw the facing the seam is behind (x, z)
+    axes: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> xr_eye: XrEye;
 @group(1) @binding(1) var<uniform> xr_port: XrPort;
@@ -292,6 +343,18 @@ fn vs_main(@builtin(vertex_index) i: u32) -> XrVsOut {
     return out;
 }
 
+// The effect's output c as premultiplied light at a scale of k: an
+// overlay's coverage its alpha, an opaque effect's its luminance.
+fn xr_light(c: vec4<f32>, k: f32) -> vec4<f32> {
+    let rgb = clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    var cover = dot(rgb, XR_LUMA);
+    if xr_port.mode.x > 0.5 {
+        cover = c.a;
+    }
+    // The tint after the coverage: it colors the light, never its alpha.
+    return vec4<f32>(rgb * xr_port.color.rgb, clamp(cover, 0.0, 1.0)) * k;
+}
+
 @fragment
 fn fs_main(in: XrVsOut) -> @location(0) vec4<f32> {
     // 0..1 across the face, then the effect's frame: y down, in pixels.
@@ -300,14 +363,8 @@ fn fs_main(in: XrVsOut) -> @location(0) vec4<f32> {
     let c = effect_main(fc);
     let edge = smoothstep(0.0, XR_EDGE_M, xr_port.face.x - abs(in.uv.x))
         * smoothstep(0.0, XR_EDGE_M, xr_port.face.y - abs(in.uv.y));
-    let rgb = clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
-    var cover = dot(rgb, XR_LUMA);
-    if xr_port.mode.x > 0.5 {
-        cover = c.a;
-    }
     let k = xr_port.color.w * clamp(xr_port.params.x, 0.0, 1.0) * edge;
-    // The tint after the coverage: it colors the light, never its alpha.
-    return vec4<f32>(rgb * xr_port.color.rgb, clamp(cover, 0.0, 1.0)) * k;
+    return xr_light(c, k);
 }
 ";
 
@@ -326,27 +383,33 @@ mod core_side {
     use fosfora_app::gpu::uniforms::{ShaderUniforms, mirror_audio_features, shader_time};
     use fosfora_app::params::{ParamStore, ParamValue};
 
-    use super::{PORTS, Port, WRAPPER_WGSL, rename_entry, resolution};
+    use super::{PORTS, Port, WRAPPER_WGSL, rename_entry};
+    use crate::sky::SKY_WGSL;
 
     /// `source` (an effect's shader) as a port's module: its entry renamed,
     /// the loader's uniform block and libraries before it, the wrapper
-    /// after it.
-    pub fn compose(loader: &EffectLoader, source: &str) -> Result<String> {
+    /// after it, and for a port that draws the `sky` the sky's stages
+    /// after that.
+    pub fn compose(loader: &EffectLoader, source: &str, sky: bool) -> Result<String> {
         let renamed = rename_entry(source).map_err(|e| anyhow!(e))?;
+        let sky = if sky { SKY_WGSL } else { "" };
         Ok(format!(
-            "{}\n{WRAPPER_WGSL}",
+            "{}\n{WRAPPER_WGSL}{sky}",
             loader.prepend_library(&renamed)
         ))
     }
 
     /// One ported effect, ready for a pipeline: its composed source,
-    /// whether it is an overlay (`alpha: true` in its `.pfx`), and its
-    /// packed parameters with their rates.
+    /// whether it is an overlay (`alpha: true` in its `.pfx`), its packed
+    /// parameters with their rates, and those of its reflection on a floor
+    /// ([`Port::reflection`]).
     pub struct Effect {
         pub name: &'static str,
         pub overlay: bool,
         pub source: String,
         defaults: [f32; 16],
+        /// The slots the reflection runs at another value, and the value.
+        reflection: Vec<(usize, f32)>,
         rates: RateState,
         params: [f32; 16],
     }
@@ -373,21 +436,33 @@ mod core_side {
             }
             let mut store = ParamStore::new();
             store.load_from_defs(&pfx.inputs);
-            for &(input, value) in port.overrides {
-                ensure!(
-                    matches!(store.get(input), Some(ParamValue::Float(_))),
-                    "{name}.pfx has no float input `{input}`"
-                );
-                store.set(input, ParamValue::Float(value));
-            }
+            let set = |store: &mut ParamStore, overrides: &[(&str, f32)]| {
+                for &(input, value) in overrides {
+                    ensure!(
+                        matches!(store.get(input), Some(ParamValue::Float(_))),
+                        "{name}.pfx has no float input `{input}`"
+                    );
+                    store.set(input, ParamValue::Float(value));
+                }
+                Ok(())
+            };
+            set(&mut store, port.overrides)?;
             let defaults = store.pack_to_buffer();
+            set(&mut store, port.reflection)?;
+            let reflected = store.pack_to_buffer();
+            let reflection = (0..16)
+                .filter(|&i| reflected[i].to_bits() != defaults[i].to_bits())
+                .map(|i| (i, reflected[i]))
+                .collect();
             let slots =
                 rates::layout(&pfx.inputs, &pfx.rates).map_err(|e| anyhow!("{name}.pfx: {e}"))?;
             Ok(Self {
                 name,
                 overlay: pfx.alpha,
-                source: compose(loader, port.shader).with_context(|| format!("{name}.wgsl"))?,
+                source: compose(loader, port.shader, port.sky)
+                    .with_context(|| format!("{name}.wgsl"))?,
                 defaults,
+                reflection,
                 rates: RateState::new(slots),
                 params: defaults,
             })
@@ -405,6 +480,16 @@ mod core_side {
         pub fn params(&self) -> [f32; 16] {
             self.params
         }
+
+        /// The `u.params` of its reflection on a floor this frame: this
+        /// frame's, with [`Port::reflection`]'s inputs set.
+        pub fn reflection_params(&self) -> [f32; 16] {
+            let mut p = self.params;
+            for &(i, v) in &self.reflection {
+                p[i] = v;
+            }
+            p
+        }
     }
 
     /// The eight ([`PORTS`]), composed with the libraries `loader` read
@@ -415,15 +500,16 @@ mod core_side {
 
     /// The effect's uniform for one lit face this frame: `features`
     /// mirrored in as the desktop does, `clock` (the surfaces' clock, s)
-    /// as the time, the frame's `dt` and index, the virtual resolution of
-    /// a face of half extents `half`, and the effect's `params`.
-    /// Everything else zero.
+    /// as the time, the frame's `dt` and index, the virtual `resolution`
+    /// (a face's, [`super::resolution`] of its half extents, or the sky's,
+    /// `sky::RESOLUTION`), and the effect's `params`. Everything else
+    /// zero.
     pub fn uniforms(
         features: &AudioFeatures,
         clock: f32,
         dt: f32,
         frame: u64,
-        half: [f32; 2],
+        resolution: [f32; 2],
         params: [f32; 16],
     ) -> ShaderUniforms {
         let mut u: ShaderUniforms = bytemuck::Zeroable::zeroed();
@@ -431,7 +517,7 @@ mod core_side {
         u.time = shader_time(f64::from(clock));
         u.delta_time = dt;
         u.frame_index = frame as f32;
-        u.resolution = resolution(half);
+        u.resolution = resolution;
         u.params = params;
         u
     }
@@ -472,14 +558,15 @@ mod core_side {
     }
 
     /// One port's pipeline over [`layouts`]: `source` ([`compose`]) drawn
-    /// as the surfaces pass draws (premultiplied over the target, no
-    /// culling), into `format` with the depth state the caller's pass
-    /// uses.
+    /// by its `entries` (vertex, fragment; [`Port::entries`]) as the
+    /// surfaces pass draws (premultiplied over the target, no culling),
+    /// into `format` with the depth state the caller's pass uses.
     pub fn pipeline(
         device: &wgpu::Device,
         layouts: &[wgpu::BindGroupLayout; 2],
         label: &str,
         source: &str,
+        entries: (&str, &str),
         format: wgpu::TextureFormat,
         depth_stencil: Option<wgpu::DepthStencilState>,
     ) -> wgpu::RenderPipeline {
@@ -497,7 +584,7 @@ mod core_side {
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: Some("vs_main"),
+                entry_point: Some(entries.0),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[],
             },
@@ -510,7 +597,7 @@ mod core_side {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(entries.1),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
@@ -657,14 +744,24 @@ mod tests {
                 .iter()
                 .map(|e| (e.name.as_str(), e.stage))
                 .collect();
-            assert_eq!(
-                stages,
-                [
-                    ("vs_main", naga::ShaderStage::Vertex),
-                    ("fs_main", naga::ShaderStage::Fragment)
-                ],
-                "{name}"
-            );
+            let mut want = vec![
+                ("vs_main", naga::ShaderStage::Vertex),
+                ("fs_main", naga::ShaderStage::Fragment),
+            ];
+            // Aurora alone draws the sky (board #5436): its own stages
+            // after the wrapper's, and its pipeline draws with them.
+            assert_eq!(port.sky, name == "aurora", "{name}");
+            if port.sky {
+                want.extend([
+                    ("vs_sky", naga::ShaderStage::Vertex),
+                    ("fs_sky", naga::ShaderStage::Fragment),
+                ]);
+                assert_eq!(port.entries(), ("vs_sky", "fs_sky"));
+            } else {
+                assert_eq!(port.entries(), ("vs_main", "fs_main"));
+                assert!(port.reflection.is_empty(), "{name}");
+            }
+            assert_eq!(stages, want, "{name}");
             // The layouts' sizes are the module's.
             assert_eq!(
                 struct_span(&module, "PhosphorUniforms"),
@@ -676,16 +773,21 @@ mod tests {
             // Of the desktop's seven bindings the entries read `u` alone,
             // so group 0's layout is binding 0 and nothing stands in for
             // the textures.
-            assert_eq!(
-                globals_used(&module, &info, "fs_main"),
-                ["u", "xr_port"],
-                "{name}"
-            );
-            assert_eq!(
-                globals_used(&module, &info, "vs_main"),
-                ["xr_eye", "xr_port"],
-                "{name}"
-            );
+            let (vs, fs) = port.entries();
+            for fs in ["fs_main", fs] {
+                assert_eq!(
+                    globals_used(&module, &info, fs),
+                    ["u", "xr_port"],
+                    "{name} {fs}"
+                );
+            }
+            for vs in ["vs_main", vs] {
+                assert_eq!(
+                    globals_used(&module, &info, vs),
+                    ["xr_eye", "xr_port"],
+                    "{name} {vs}"
+                );
+            }
         }
     }
 
@@ -763,12 +865,24 @@ mod tests {
             let fresh = Effect::new(&loader, &PORTS[i]).expect("the port loads");
             assert_close!(e.params(), fresh.params(), "{}", e.name);
         }
-        // An override that names no float input is refused.
+        // An override that names no float input is refused, for the
+        // reflection too.
         let mut wrong = PORTS[7];
         wrong.overrides = &[("punch", 0.0)];
         assert!(Effect::new(&loader, &wrong).is_err());
         wrong.overrides = &[("missing", 0.0)];
         assert!(Effect::new(&loader, &wrong).is_err());
+        let mut wrong = PORTS[0];
+        wrong.reflection = &[("missing", 0.0)];
+        assert!(Effect::new(&loader, &wrong).is_err());
+
+        // Aurora's reflection (board #5436): this frame's params with its
+        // glow width (slot 2) at 0.8, the rates as they run; the others'
+        // reflection is their params.
+        assert_close!(effects[0].reflection_params()[..4], [0.5, 0.5, 0.8, 0.5]);
+        for e in &effects[1..] {
+            assert_close!(e.reflection_params(), e.params(), "{}", e.name);
+        }
     }
 
     #[test]
@@ -776,7 +890,7 @@ mod tests {
         let f = fosfora_app::headless::loop_driver::synth_features(100, 72, 120.0);
         let mut params = [0.0; 16];
         params[2] = 0.25;
-        let u = uniforms(&f, 12.5, 1.0 / 72.0, 100, [1.0, 0.4], params);
+        let u = uniforms(&f, 12.5, 1.0 / 72.0, 100, resolution([1.0, 0.4]), params);
         assert_close!(u.time, 12.5);
         assert_close!(u.delta_time, 1.0 / 72.0);
         assert_close!(u.frame_index, 100.0);
@@ -904,7 +1018,8 @@ mod tests {
     fn the_wrappers_constants_are_the_modules() {
         let source = format!(
             "struct U {{ resolution: vec2<f32> }}\n@group(0) @binding(0) var<uniform> u: U;\n\
-             fn effect_main(fc: vec4<f32>) -> vec4<f32> {{ return fc; }}\n{WRAPPER_WGSL}"
+             fn effect_main(fc: vec4<f32>) -> vec4<f32> {{ return fc; }}\n{WRAPPER_WGSL}{}",
+            crate::sky::SKY_WGSL
         );
         let (module, _) = validate(&source, "the wrapper");
         let constant = |name: &str| {
@@ -944,6 +1059,12 @@ mod tests {
         assert_close!(r[5], [0.8, 0.0, 0.0, 0.0]);
         assert_close!(r[6], [1.0, 1.0, 1.0, PEAK_ALPHA]);
         assert_close!(r[7], [1.0, 0.0, 0.0, 0.0]);
+        // Mapped per face, the rim fading on every edge, the sky's rows
+        // empty (board #5436).
+        assert_close!(r[8], [1.0; 4]);
+        for row in &r[9..] {
+            assert_close!(*row, [0.0; 4]);
+        }
         let amber = crate::surfaces::AMBER;
         let opaque = rows(&face, 2.0, false, FIRST_ID, amber);
         assert_close!(opaque[5][0], 1.0);
@@ -1069,6 +1190,7 @@ mod tests {
         fn draw(
             gpu: &Gpu,
             source: &str,
+            entries: (&str, &str),
             overlay: bool,
             u: &ShaderUniforms,
             half: [f32; 2],
@@ -1079,7 +1201,15 @@ mod tests {
             );
             let format = wgpu::TextureFormat::Rgba16Float;
             gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let pipeline = pipeline(&gpu.device, &gpu.layouts, "port", source, format, None);
+            let pipeline = pipeline(
+                &gpu.device,
+                &gpu.layouts,
+                "port",
+                source,
+                entries,
+                format,
+                None,
+            );
             let (face, fit) = flat(half);
             let u_buffer = uniform(gpu, bytemuck::bytes_of(u));
             let eye = uniform(gpu, bytemuck::cast_slice(&fit.to_cols_array()));
@@ -1198,7 +1328,8 @@ mod tests {
         /// A fragment effect with the ported shaders' header that returns
         /// `body`.
         fn probe(loader: &EffectLoader, body: &str) -> String {
-            compose(loader, &format!("{ENTRY}\n    {body}\n}}\n")).expect("the probe composes")
+            compose(loader, &format!("{ENTRY}\n    {body}\n}}\n"), false)
+                .expect("the probe composes")
         }
 
         fn features(frame: u32) -> fosfora_app::audio::AudioFeatures {
@@ -1230,7 +1361,7 @@ mod tests {
             // Each of the eight: its pipeline on the two layouts (group 0
             // binding 0 alone) and a draw, with no validation error, and
             // light somewhere in a bar of the synthetic groove.
-            for e in &mut effects {
+            for (e, port) in effects.iter_mut().zip(&PORTS) {
                 let mut lit = 0usize;
                 for frame in [20u32, 150, 290, 430] {
                     e.advance(frame as f32 / 72.0);
@@ -1239,10 +1370,10 @@ mod tests {
                         frame as f32 / 72.0,
                         1.0 / 72.0,
                         u64::from(frame),
-                        half,
+                        resolution(half),
                         e.params(),
                     );
-                    let (pixels, w) = draw(&gpu, &e.source, e.overlay, &u, half);
+                    let (pixels, w) = draw(&gpu, &e.source, port.entries(), e.overlay, &u, half);
                     for p in &pixels {
                         assert!(p.iter().all(|x| x.is_finite()), "{}", e.name);
                         assert!((0.0..=PEAK_ALPHA + 1e-3).contains(&p[3]), "{}", e.name);
@@ -1260,16 +1391,23 @@ mod tests {
             // fade and nothing on the edge.
             let black = probe(&loader, "return vec4f(0.0, 0.0, 0.0, 1.0);");
             let white = probe(&loader, "return vec4f(1.0);");
-            let u = uniforms(&features(0), 0.0, 1.0 / 72.0, 0, half, [0.0; 16]);
-            let (pixels, _) = draw(&gpu, &black, false, &u, half);
+            let u = uniforms(
+                &features(0),
+                0.0,
+                1.0 / 72.0,
+                0,
+                resolution(half),
+                [0.0; 16],
+            );
+            let (pixels, _) = draw(&gpu, &black, ("vs_main", "fs_main"), false, &u, half);
             assert!(pixels.iter().all(|p| p.iter().all(|x| x.abs() < 1e-6)));
-            let (pixels, w) = draw(&gpu, &white, false, &u, half);
+            let (pixels, w) = draw(&gpu, &white, ("vs_main", "fs_main"), false, &u, half);
             let h = pixels.len() / w;
             assert!((pixels[h / 2 * w + w / 2][3] - PEAK_ALPHA).abs() < 1e-3);
             assert!(pixels[h / 2 * w][3] < 0.1 * PEAK_ALPHA);
             // The same black as an overlay with full alpha is a dark
             // cover: the mode is what tells them apart.
-            let (pixels, w) = draw(&gpu, &black, true, &u, half);
+            let (pixels, w) = draw(&gpu, &black, ("vs_main", "fs_main"), true, &u, half);
             assert!((pixels[h / 2 * w + w / 2][3] - PEAK_ALPHA).abs() < 1e-3);
 
             // Which way is up: the effect's uv (0, 0) is the frame's top
@@ -1279,7 +1417,7 @@ mod tests {
                 &loader,
                 "let uv = frag_coord.xy / u.resolution; return vec4f(uv, 0.0, 1.0);",
             );
-            let (pixels, w) = draw(&gpu, &uv, true, &u, half);
+            let (pixels, w) = draw(&gpu, &uv, ("vs_main", "fs_main"), true, &u, half);
             let h = pixels.len() / w;
             let at = |fx: f32, fy: f32| {
                 let p = pixels[(fy * h as f32) as usize * w + (fx * w as f32) as usize];
@@ -1296,8 +1434,15 @@ mod tests {
             // the bottom.
             let bezel = &effects[4];
             assert_eq!(bezel.name, "bezel");
-            let u = uniforms(&features(150), 2.0, 1.0 / 72.0, 150, half, bezel.params());
-            let (pixels, w) = draw(&gpu, &bezel.source, true, &u, half);
+            let u = uniforms(
+                &features(150),
+                2.0,
+                1.0 / 72.0,
+                150,
+                resolution(half),
+                bezel.params(),
+            );
+            let (pixels, w) = draw(&gpu, &bezel.source, ("vs_main", "fs_main"), true, &u, half);
             let top = mean_alpha(&pixels, w, 0.06, 0.24);
             let bottom = mean_alpha(&pixels, w, 0.76, 0.94);
             assert!(top > 1.2 * bottom, "top {top}, bottom {bottom}");
