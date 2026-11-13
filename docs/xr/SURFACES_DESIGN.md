@@ -542,6 +542,214 @@ cost rows in `MEASURED.md` and the worn gate are the reviewer's. A
 tint from the lane's color index, and the effects' parameters from the
 panel (D3).
 
+## The sky (Nov 13, board #5436)
+
+**Why.** The owner wore the five themes and picked Aurora as the look to
+work on: to lie back and be immersed. Seated, the walls and the ceiling
+fill the view, and Aurora was drawn once per face: every wall and the
+ceiling ran its own copy of the picture, so the curtains stopped at each
+corner and started again and the room read as panels. Now Aurora on the
+walls and the ceiling is one sky that wraps the room, and the floor
+reflects it. `sky.rs` holds the plain-number side and the shader
+(`SKY_WGSL`), and `surface_port.rs` composes Aurora with it.
+
+**The mapping.** On a wall or the ceiling Aurora no longer maps the
+face's (u, v) to its frame. The fragment's world point is taken as a
+direction from one fixed point in the room: its azimuth about the point
+runs along the frame's x and its elevation up the frame's y. Every wall
+and the ceiling then show one continuous picture: the curtains run
+around the room and rise onto the ceiling, where the azimuth converges
+above the point. Aurora alone is composed with the sky's stages
+(`vs_sky`, `fs_sky`); the vertex stage also hands on the world point and
+the eye, solved from `view_proj` as the tunnel does. Its per-face path
+is `fs_main`'s, and the other seven ports are composed and drawn as
+before.
+
+**The point** is fixed in the room, not the head, so the sky does not
+swim when the wearer moves: the center of the scanned walls in plan at a
+seated eye height, 1.2 m over the floor (kept 0.3 m under the ceiling).
+The walls' footprints (each one's center line, hidden walls included,
+since they close the room's outline) are fit with a rectangle turned to
+the longest wall, and its center is the point. The floor is the scanned
+floor's top, else the walls' foot; the ceiling the scanned ceiling's
+underside, else the walls' top. Without a scanned wall (roam, live
+planes alone) the point is the stage floor's center, which is the
+stage's origin seated and follows the head in roam (it re-centers 3 m
+away), and the room is a 5 m square around it with a 2.5 m ceiling. Live
+planes never move the point: they come and go as the wearer looks
+around, which is why the space fit leaves them out too.
+
+**The seam.** The effect's noise is not periodic in x and the core's
+shader is unchanged, so the turn has one seam. It is behind the seated
+wearer: the frame's middle column is the direction the wearer faced at
+launch (the first frame) or at the last recenter (the hand menu's
+Recenter, or "recenter"), leveled, and the frame's two ends meet
+opposite it. It stays there until the next recenter. Within 0.2 rad
+(11.5°) of the seam on either side the effect is evaluated a second time
+at the other end's continuation and the two cross-fade, half and half on
+the seam: 23° of the turn, behind the wearer, cost two evaluations.
+
+**The frame's shape.** Elevation maps to y linearly, from the horizon at
+the frame's bottom row to 1.1 rad (63°) at its top: what a 2.5 m wall
+spans seen from 2 m, so the curtains keep about the proportions they had
+on one wall. The frame is a whole turn wide at the same 1024 pixels per
+radian (6434 by 1126), so at the horizon a degree across is a degree up.
+At the `.pfx`'s band spread the bands sit at -2°, 9°, 20°, 31°, 43°, 54°
+and 65° of elevation, brilliance lowest and sub-bass highest, as on a
+wall, where the frame's bottom is the floor. With the walls 2 m from the
+point and a 2.4 m ceiling, brilliance, presence and upper-mid run around
+the walls from eye level up, mid along the ceiling's edge, and low-mid,
+bass and sub-bass ring the ceiling.
+
+**The zenith.** Overhead the azimuth converges: a frame row shrinks to a
+point there and the noise would pinch and alias. The light fades out
+between 74° and 84° of elevation, above the highest band's reach (65°
+plus its 7.6° of wave), so the rings close in on a dark center: on a
+ceiling 1.2 m over the point, dark within 0.13 m of the point's zenith
+and back to full 0.34 m out. At 84° the finest detail (the shimmer, 10
+to a frame height) is still 13 display pixels a period at 20 pixels a
+degree, so nothing aliases where light is left. A fragment with no light
+left (the dark center, and on the floor the reflection's dead zone)
+returns without calling the effect.
+
+**The rim.** The surfaces pass fades every face out over its last 5 cm.
+Two walls in a corner both faded there, which left a dark line down the
+corner, and a wall and the ceiling did the same along the ceiling's
+edge. On the sky's faces an edge another of them continues (its middle
+within 10 cm of another sky face) drops the fade and is cut back to the
+neighbor's drawn plane: each quad is lifted 1 cm off its face and runs
+on into its neighbors' 2 cm slabs, so uncut, two quads would draw the
+same sky twice along the corner, a bright line (seen on the desktop
+render before the cut). Cut, they meet on one line. An edge with nothing
+beyond it (a wall's foot, the side of a hidden wall) keeps its extent
+and the fade.
+
+**Hidden walls** stay undrawn, so a room closed by one has a hole in the
+sky there: the wall's span from the point, from under the horizon to the
+ceiling's edge. A 4 m hidden wall 2 m from the point leaves 90° of the
+turn's lower part open; the ceiling over it still carries the rings. The
+log says how much of the turn the hidden walls leave undrawn.
+
+**The reflection.** Aurora is now on the floor's list too (last, so the
+floor's cycle is nine long and Aurora is on three lists), and on a floor
+it draws the sky's reflection. For each floor fragment the view ray from
+the eye is reflected about the floor and followed to where it leaves the
+room's box (its walls in plan and its ceiling), and the sky is shown in
+the direction of that point from the sky's point: the floor shows what
+the walls and the ceiling show, as a mirror would, and moves with the
+head. The tests check it against the mirrored eye's line through the
+floor point. It reads as light on a dark, slightly rough floor: 0.4 of
+the sky; full where the view ray meets the floor at 60° from straight
+down or flatter (toward the walls) and gone from 25° in (toward the
+feet, 0.56 m around a seated wearer); and its glow widened to 0.8 of its
+range (0.04 of the frame's height against the sky's 0.02), which spreads
+each curtain along the frame's y, which on the floor is the view
+direction. One evaluation per fragment: across the seam the reflection
+fades out over the same 23° instead of cross-fading. The stage floor is
+drawn as a surface when the room has no scanned floor, so it reflects
+too.
+
+**The cost**, from the shader's IR (naga's expressions, a proxy for its
+ALU work, not a device number). One evaluation of Aurora runs about
+1,900: seven bands, each a gradient noise of about 210 and two sines,
+and the shimmer's noise. Around it `fs_main` adds about 90, a sky
+fragment about 210 (the angles, the rim per edge, the fades) and a
+reflection fragment about 310 (the reflected ray and the box besides).
+So a sky fragment costs about 6 % more than a per-face one, a reflection
+fragment about 5 % more than a sky one and nothing past the wrapper
+inside its dead zone, and the seam's 23° about twice. Seated, the Aurora
+theme cost 0.37 ms of App over the saved room before (`MEASURED.md`,
+Themes). The sky adds about 6 % to each wall and ceiling fragment; on
+the floor an evaluation of Aurora replaces the streamlines, which cost
+about the same per full view in D2b (1.5 and 1.7 ms on the stage floor),
+and draws nothing near the feet; tables, frames and other surfaces trade
+their behaviors for the tunnels. Expect about the same cost, within a
+few tenths of a millisecond.
+
+**What stays.** The tint, the strength, the peak alpha, the immersion's
+lift, occlusion by what stands in front, and the edge fade wherever no
+sky face continues it. Aurora on a table, a frame or any other surface
+maps per face as before, and the other seven ports are untouched. The
+port block grows from 8 rows to 12 for every port: the rim per edge, the
+point and the ceiling, the room in plan, its axis and the facing.
+
+**The knob.** `debug.fosfora.sky 0|1`, default 1, read at launch and
+polled once a second: 0 puts Aurora back on per-face mapping everywhere,
+so both can be captured and costed in one launch. The log gives `sky: on
+(debug.fosfora.sky) · point (x, y, z), the center of the scanned room's
+4 walls in plan (4.60 x 3.80 m, floor 0.02, ceiling 2.43), 1.20 m over
+the floor · seam toward (x, z), behind the facing at launch · hidden
+walls leave 0° of the turn undrawn` at launch and whenever the state,
+the point, the seam or the hidden walls' share changes ("the last
+recenter" after one; "no scanned walls: the stage floor's center"
+without a room), and `sky: debug.fosfora.sky 0, Aurora per face` on a
+change of the knob.
+
+To capture the sky on and off at the same spot unworn (after the
+headless setup; back up `rooms/` first, the theme writes the room): set
+`music 1`, `gov 0`, `immersefix 1` and `theme aurora`, launch seated in
+the scanned room, then `sky 1` and `sky 0` in turn with a screen capture
+2 s after each, and `sky ""` last. For the cost, one launch per
+condition, reading the eye surface's (or the faces surface's) render:
+`scripts/xr/gpu-stages.sh --with "music=1;gov=0;immersefix=1" --cond
+"classic=theme=classic" --cond "sky=theme=aurora;sky=1" --cond
+"face=theme=aurora;sky=0" --cond "sky2=theme=aurora;sky=1" --only
+"classic,sky,face,sky2"`.
+
+**Tested on the desktop** (`sky.rs`): the room's point from a box room
+turned 30° and from an L-shaped one, with and without a scanned floor
+and ceiling, under a low ceiling, and the stage's stand-in; the facing
+from the head, looking down and up included; the frame's turn and the
+seam's place for two facings; two points 0.5 mm either side of every
+corner and the wall-to-ceiling edge land under a pixel apart on the sky,
+and two walls' most of a frame apart per face; the cross-fade across the
+seam and the reflection's fade there; the bands' elevations against the
+zenith fade and the shimmer's period at its end; the reflection against
+the mirrored eye's line for three eyes and four floor points, and that
+it moves with the head; the rim and the cut on a box room and with a
+wall hidden; the mapping per kind and with the knob off; the rows;
+`SKY_WGSL` validated with naga, its constants and the port block's
+layout against the Rust. Two ignored GPU tests (`tests/sky_gpu.rs`):
+`fs_sky` over a probe against `sky::sample` pixel by pixel in five views
+(894,919 pixels on an RTX 4090, worst 2.1e-4 of light, at a slant inside
+a rim) and per face against `fs_main` (3e-8); and the real Aurora on the
+whole room from a seated eye (`FOSFORA_SKY_DUMP=<dir>` writes the
+views).
+
+**Where it will look wrong.**
+- *A room that is not a box*: the point is the center of the walls'
+  bounding rectangle, which in an L-shaped room can sit near the inside
+  corner or outside the floor, and the reflection takes the rectangle
+  for the walls, so where the L turns, the floor reflects the sky as if
+  the walls stood on the rectangle.
+- *A wall the scan missed*: no face, so a hole the wall's size, as a
+  hidden wall leaves, and the rectangle shrinks to the walls it has,
+  moving the point.
+- *A sloped ceiling*: the sky follows it (the mapping is by direction),
+  but the room's box has one ceiling height, the lowest underside, so the
+  reflection of the high side is off.
+- *The seam*: the 23° cross-fade shows as two sets of curtains braiding
+  into each other behind the wearer, and the reflection is dark there.
+  After a wearer turns their chair it is wherever they no longer face
+  until a recenter.
+- *The zenith*: a dark disc 0.25 m across over the point, back to full
+  light 0.7 m across; lying back off the point, it is off to one side,
+  not straight overhead.
+- *A floor with a rug box on it*: the rug is its own box, not the floor,
+  so its occluder hides the reflection under it and, as any other
+  surface in the theme, its top is a tunnel going down into the floor:
+  the pit under the feet Mirror kept the floor out of. The reflection
+  takes the room as empty, so a table never blocks it either.
+- *The music's weight*: the bass bands ring the ceiling and the walls at
+  eye level carry the upper bands, so in a bass-heavy song a seated
+  wearer looking ahead sees the quieter curtains, and the floor, which
+  reflects mostly the low elevations, the quietest.
+- *A gap in the scan*: two walls more than 10 cm apart at a corner keep
+  their fades, and the dark line comes back there.
+
+**Not yet.** The device: the cost rows in `MEASURED.md`, the captures of
+the sky on and off, and the worn look seated and lying back.
+
 ## D2c: the surfaces in their own layer (Oct 9, board #3793)
 
 **Why.** The worn A/B (`MEASURED.md`, "Worn A/B of the frame cost", and
@@ -941,34 +1149,44 @@ launch rule. No theme adds a shader or a behavior. Every pairing below is
 on its kind's own list (`SurfaceBehavior::catalogue`), so none of the
 pairings first proposed needed changing.
 
-**The five.** Each cell is behavior, color, band, strength. The first
-four draw the edge bars on the face for every kind; Mirror's edge mode is
-in its cells.
+**The five.** Each cell is behavior, color, band, strength. Classic,
+Drift and Tide draw the edge bars on the face for every kind; Aurora's
+and Mirror's edge modes are in their cells.
 
 | kind | Classic | Drift | Tide | Aurora | Mirror |
 | --- | --- | --- | --- | --- | --- |
-| table | streamlines, own (blue), rms, 1 | streamlines, teal, rms, 1 | curls, rose, rms, 1 | streamlines, teal, rms, 1 | none, blue, rms, 1, edges in |
-| floor | rings, own (violet), bass, 1 | rings, blue, bass, 1 | curls, violet, rms, 1 | streamlines, green, rms, 1 | rings, blue, bass, 1, edges on the face |
-| wall | spectrum, own (warm white), rms, 1 | streamlines, blue, rms, 1 | pulse, violet, bass, 1 | aurora, the key's tint, rms, 1 | none, warm white, rms, 1, edges in |
-| ceiling | none, own (amber), rms, 1 | rings, blue, bass, 1 | pulse, violet, bass, 1 | aurora, green, rms, 1 | none, warm white, rms, 1, edges in |
-| frame | pulse, own (amber), bass, 1 | pulse, teal, bass, 0.6 | rings, rose, bass, 1 | pulse, teal, bass, 1 | none, blue, rms, 1, edges in |
-| other | curls, own (green), rms, 1 | curls, teal, rms, 1 | pulse, rose, bass, 1 | curls, teal, rms, 1 | none, blue, rms, 1, edges in |
+| table | streamlines, own (blue), rms, 1 | streamlines, teal, rms, 1 | curls, rose, rms, 1 | none, teal, rms, 1, edges in | none, blue, rms, 1, edges in |
+| floor | rings, own (violet), bass, 1 | rings, blue, bass, 1 | curls, violet, rms, 1 | aurora (the reflection), the key's tint, rms, 1, edges off | rings, blue, bass, 1, edges on the face |
+| wall | spectrum, own (warm white), rms, 1 | streamlines, blue, rms, 1 | pulse, violet, bass, 1 | aurora (the sky), the key's tint, rms, 1, edges off | none, warm white, rms, 1, edges in |
+| ceiling | none, own (amber), rms, 1 | rings, blue, bass, 1 | pulse, violet, bass, 1 | aurora (the sky), the key's tint, rms, 1, edges off | none, warm white, rms, 1, edges in |
+| frame | pulse, own (amber), bass, 1 | pulse, teal, bass, 0.6 | rings, rose, bass, 1 | none, teal, rms, 1, edges in | none, blue, rms, 1, edges in |
+| other | curls, own (green), rms, 1 | curls, teal, rms, 1 | pulse, rose, bass, 1 | none, teal, rms, 1, edges in | none, blue, rms, 1, edges in |
 
 Classic is today's defaults (`default_for`), each kind's own color, so
-applying it gives exactly a fresh room. It is the only theme with the wall
-spectrum, since the edge bars carry the spectrum on every edge in every
-theme. Drift is the calm one. The other three color by one rule: the
-room's planes (walls, floor, ceiling) take one color and what stands in it
-(tables, frames, other surfaces) the other, so a table reads against the
-floor and a frame against its wall. Aurora puts the key's tint on the
-walls and gives the floor and the ceiling green. Every band is the
+applying it gives exactly a fresh room. It is the only theme with the
+wall spectrum, since the edge bars carry the spectrum on every edge in
+every theme. Drift is the calm one. The other three color by one rule:
+the room's planes (walls, floor, ceiling) take one color and what stands
+in it (tables, frames, other surfaces) the other, so a table reads
+against the floor and a frame against its wall. Every band is the
 behavior's own, the rms for the flows and the bass for the rings and the
-pulse, which is Drift's rule as asked; picking a band per theme waits for
-signal dumps of real songs. Every strength is 1 except Drift's frames at
-0.6, because the pulse jumps on the downbeat and is the one restless look
-in the calm theme. The rings and the ported Aurora do not read the band
-(D3's table), so it only matters there if a hand edit later changes the
-behavior.
+pulse, which is Drift's rule as asked; picking a band per theme waits
+for signal dumps of real songs. Every strength is 1 except Drift's
+frames at 0.6, because the pulse jumps on the downbeat and is the one
+restless look in the calm theme. The rings and the ported Aurora do not
+read the band (D3's table), so it only matters there if a hand edit
+later changes the behavior.
+
+**Aurora, finished** (board #5436). The owner wore the five and picked
+Aurora to work on. Walls and the ceiling run Aurora, which is now one
+sky around the room, and the floor runs it too, which on a floor is the
+sky's reflection ("The sky", above). All three take the key's tint: the
+ceiling was green against the walls' key tint, which would cut the one
+sky with a line of color at the ceiling's edge. Their edge bars are off,
+so nothing cuts the sky at a corner. Tables, frames and other surfaces
+run no behavior with their edges in, teal: tunnels of light under the
+sky. The band column is the behavior's own as everywhere; Aurora reads
+its own bands.
 
 **Mirror** (board #5431). The owner wore the edge bars and the themes and
 saw every theme draw the same edges, so a theme now says what the edges do
@@ -1107,11 +1325,12 @@ saved)`, or `(forced on every kind)`.
 
 **Not yet.** The worn look of each theme seated in the scanned room, the
 screencaps of the control, and each theme's cost in `MEASURED.md`.
-Aurora should cost the most: the ported Aurora on every wall and the
-ceiling (1.2 to 1.5 ms per full view of one face in D2b) and the
-streamlines on the floor (1.7), the biggest faces all on costly shaders.
-Every face on a ported effect cost about 2.9 ms in D2b, so expect about
-that. Drift comes next (streamlines on every wall), then Tide (the cheap
+Aurora should cost the most: the ported Aurora on every wall, the
+ceiling and, since board #5436, the floor as its reflection (1.2 to 1.5
+ms per full view of one face in D2b), the biggest faces all on the
+costly shader. Every face on a ported effect cost about 2.9 ms in D2b, so
+expect about that; its tables, frames and other surfaces now run the
+edge bars' tunnels instead. Drift comes next (streamlines on every wall), then Tide (the cheap
 pulse on the walls and the ceiling, the curls on the floor), then Classic
 (about 1 ms, as in D2a). A theme does not pick the world effect. Since
 board #5431 it does pick the edge bars' mode per kind; Mirror's worn look
