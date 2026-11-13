@@ -370,6 +370,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       5 green, 6 teal, 7 rose, 8 the key's tint), band 0..3 (rms, bass, mid, high), e.g. "table=curls:5:2@0.8"; "clear" drops
     //       every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
+    //   adb shell setprop debug.fosfora.theme drift                (board #5415, themes.rs: classic, drift, tide or aurora, the whole room's
+    //       look as the hand menu's Theme control sets it, every surface and kind default, hand assignments included; writes the saved
+    //       room as the control does; live: polled once a second, applied once when the value changes, after the room's anchors are in;
+    //       at launch a value naming the room's own theme (edited since or not) applies nothing; to apply the same theme again set it
+    //       to "" first; an unknown name applies nothing and is logged)
     //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
     //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (board #3488,
     //       the default first after none: table none, streamlines, curls, pulse, embers, sparks; floor none, rings, streamlines, curls,
@@ -1715,6 +1720,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #3472, D3: a surface row's step this frame (which parameter,
     // up or down), applied the same way to the surface under the beam.
     let mut surface_step: Option<(crate::lanes::Param, bool)> = None;
+    // Board #5415: the Theme control's press this frame, applied the same
+    // way: the next theme on the frame's boxes.
+    let mut next_theme = false;
     // Closest thumb-index approach per hand since the last log (meters):
     // shows near-miss pinches that never crossed the threshold.
     let mut tip_min = [f32::MAX; 2];
@@ -2155,6 +2163,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // which may have changed.
                 wall_pick = crate::canvas::WallPick::default();
             }
+            // Board #5415: the theme knob, after the update so the room's
+            // file is loaded; a theme it applies is in the next frame's
+            // rows.
+            if frame_index.is_multiple_of(72) {
+                surface_lanes.poll_theme_knob(
+                    system_prop("debug.fosfora.theme").as_deref(),
+                    has_room && input.room_id.is_none(),
+                    &lane_boxes,
+                );
+            }
             // S7: hands and room as obstacles. I5: pinch gestures.
             for (h, d) in input.hands.tip_distance.iter().enumerate() {
                 if let Some(d) = d {
@@ -2308,6 +2326,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let mut actions = std::mem::take(&mut voice_actions);
             if let Some(h) = hud.as_mut() {
                 if hud_test || h.shown() {
+                    let theme = surface_lanes.theme().value();
                     let view = View {
                         mode: mode_name,
                         effect: world.then(|| {
@@ -2341,6 +2360,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             .hit()
                             .filter(|_| controls.edit_room)
                             .map(|h| surface_lanes.params_of(h.index, &lane_boxes)),
+                        theme: &theme,
                     };
                     for action in h.render(&gfx, &view, &mut controls) {
                         info!("debug panel: {action:?}");
@@ -2468,6 +2488,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // Logged with the cloud's change, below.
                     Action::SetCloud(_) => {}
                     Action::AllNone => all_none = true,
+                    Action::NextTheme => next_theme = true,
                     Action::SurfaceParam(param, up) => surface_step = Some((param, up)),
                     Action::SetMusic(on) => music.set(on),
                     // Board #5385: the Music row's `<` `>` and the voice's
@@ -2543,6 +2564,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 all_none = false;
                 info!("edit room: every surface -> none (the panel)");
                 surface_lanes.all_none(&lane_boxes);
+            }
+            // Board #5415: the next theme on the whole room, saved; the
+            // lanes log what it set.
+            if next_theme {
+                next_theme = false;
+                surface_lanes.next_theme(&lane_boxes, "the menu");
             }
             // Board #3472, D3: a surface row's step, on the surface under
             // the beam (the editor holds its hit while the panel is up, so

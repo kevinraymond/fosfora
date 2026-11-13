@@ -11,7 +11,8 @@
 //! board #3326), under that the cloud's toggle (`room_edit::Cloud`), and
 //! at the bottom the music's play/stop (`music.rs`, board #3472), with the
 //! track's title and `<` `>` for the previous and the next track around
-//! it (board #5385, `playlist.rs`). With
+//! it (board #5385, `playlist.rs`), and the Voice toggle and the Theme
+//! control sharing the cell beside it (board #5415). With
 //! Edit room on, three more rows under the editor's (board #3472, D3):
 //! the color, the band and the strength of the surface under the beam,
 //! each stepped with `<` and `>`, the menu growing upward to hold them.
@@ -195,6 +196,9 @@ pub enum Action {
     /// The Edges control asked for this mode of the edge bars (not saved;
     /// board #5420).
     SetEdges(crate::edge_bars::Mode),
+    /// The Theme control: the next theme, applied to the whole room and
+    /// saved with it (board #5415).
+    NextTheme,
 }
 
 impl Controls {
@@ -246,6 +250,8 @@ enum Target {
     ToggleRoam,
     /// The Edges control: the edge bars' next mode (board #5420).
     CycleEdges,
+    /// The Theme control: the next theme (board #5415).
+    CycleTheme,
 }
 
 /// Frame-loop numbers from the last one-second window.
@@ -292,6 +298,9 @@ pub struct View<'a> {
     /// (`lanes::RoomLanes::params_of`) for the surface rows; `None` with no
     /// surface under the beam or Edit room off.
     pub surface_params: Option<(u32, u32, f32)>,
+    /// The Theme control's value (board #5415, `themes::Shown::value`):
+    /// "Drift", "Drift*" when edited since, "custom".
+    pub theme: &'a str,
 }
 
 /// The panel's colors (board #3523): the Blue and orange theme, the same
@@ -719,6 +728,9 @@ impl Hud {
             Some(Target::ToggleRoam) => actions.push(Action::SetRoam(!controls.roam.is_on())),
             // The app applies the mode and sets `controls.edges`.
             Some(Target::CycleEdges) => actions.push(Action::SetEdges(controls.edges.next())),
+            // The app applies the next theme from the room as it is; the
+            // control shows it from the next frame's view.
+            Some(Target::CycleTheme) => actions.push(Action::NextTheme),
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
                 // A governed density steps from the value it shows.
@@ -832,7 +844,39 @@ enum Cell<'a> {
     /// Two actions, one in each half of the cell (board #5393: Recenter
     /// and Rescan), picked by the half the pointer is on, as a stepper's
     /// -/+ are.
-    Halves([(Target, &'a str); 2]),
+    Halves([Half<'a>; 2]),
+}
+
+/// One half of a [`Cell::Halves`]: its action and its words, on one line
+/// at the button's size, or as a name over a value (`value`), as a
+/// stepper's label sits over its value: the Theme control (board #5415),
+/// whose "Theme: Aurora*" in one line at the button's size is wider than a
+/// half.
+#[derive(Clone, Copy)]
+struct Half<'a> {
+    target: Target,
+    text: &'a str,
+    value: Option<&'a str>,
+}
+
+impl<'a> Half<'a> {
+    /// `text` on one line.
+    fn one(target: Target, text: &'a str) -> Self {
+        Self {
+            target,
+            text,
+            value: None,
+        }
+    }
+
+    /// `name` over `value`.
+    fn named(target: Target, name: &'a str, value: &'a str) -> Self {
+        Self {
+            target,
+            text: name,
+            value: Some(value),
+        }
+    }
 }
 
 impl Control<'_> {
@@ -851,7 +895,7 @@ impl Control<'_> {
                     Some(true) => Target::NextTrack,
                     None => Target::ToggleMusic,
                 }),
-                Cell::Halves(halves) => Some(halves[usize::from(hit.right)].0),
+                Cell::Halves(halves) => Some(halves[usize::from(hit.right)].target),
             },
         }
     }
@@ -955,11 +999,26 @@ impl Rows<'_> {
                                     right.max[0],
                                     right.max[1],
                                 );
-                                for (half, (t, text), is_right) in
+                                for (area, half, is_right) in
                                     [(left, halves[0], false), (right, halves[1], true)]
                                 {
                                     let under = on.is_some_and(|h| h.right == is_right);
-                                    self.button(painter, half, t, text, under);
+                                    match half.value {
+                                        None => self.button(
+                                            painter,
+                                            area,
+                                            half.target,
+                                            half.text,
+                                            under,
+                                        ),
+                                        Some(value) => self.named_button(
+                                            painter,
+                                            area,
+                                            half.target,
+                                            (half.text, value),
+                                            under,
+                                        ),
+                                    }
                                 }
                             }
                             None => {}
@@ -1104,6 +1163,49 @@ impl Rows<'_> {
             egui::Align2::CENTER_CENTER,
             label,
             egui::FontId::proportional(FONT_BUTTON),
+            text,
+        );
+        if on {
+            painter.rect_stroke(
+                r,
+                6.0,
+                Stroke::new(3.0_f32, PALETTE.accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+
+    /// One action filling `area` whose words are a name over a value
+    /// (board #5415, the Theme control: "Theme" over "Drift*"), laid out
+    /// as the Music cell's press words over its title: the name in the
+    /// label font, the value in the value font, cut to fit.
+    fn named_button(
+        &self,
+        painter: &egui::Painter,
+        area: grid::Rect,
+        target: Target,
+        (name, value): (&str, &str),
+        on: bool,
+    ) {
+        let (fill, text, sub) = if self.locked == Some(target) {
+            (PALETTE.sel_bg, PALETTE.sel_fg, PALETTE.sel_fg)
+        } else {
+            (PALETTE.rule, PALETTE.text, PALETTE.sub)
+        };
+        let r = rect(area);
+        painter.rect_filled(r, 6.0, fill);
+        painter.text(
+            Pos2::new(r.center().x, r.top() + 2.0),
+            egui::Align2::CENTER_TOP,
+            name,
+            egui::FontId::proportional(FONT_LABEL),
+            sub,
+        );
+        painter.text(
+            Pos2::new(r.center().x, r.bottom() - 1.0),
+            egui::Align2::CENTER_BOTTOM,
+            fitted(painter, value, FONT_VALUE, r.width() - 6.0),
+            egui::FontId::proportional(FONT_VALUE),
             text,
         );
         if on {
@@ -1313,7 +1415,12 @@ fn panel_ui(
         controls.edit_room,
         controls.edges,
     ));
-    block.push(music_row(controls.music, view.track, controls.voice));
+    block.push(music_row(
+        controls.music,
+        view.track,
+        controls.voice,
+        view.theme,
+    ));
     let bottom = grid::PANEL_H;
     rows.block(ui, bottom, &block);
     header_end > grid::block_top(bottom, block.len())
@@ -1334,7 +1441,12 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Ro
         block.extend(surface_rows(view.surface_params));
     }
     block.push(cloud_row(controls.cloud, editing, controls.edges));
-    block.push(music_row(controls.music, view.track, controls.voice));
+    block.push(music_row(
+        controls.music,
+        view.track,
+        controls.voice,
+        view.theme,
+    ));
     debug_assert_eq!(block.len(), grid::menu_rows(editing));
     rows.block(ui, grid::menu_h(block.len()), &block);
 }
@@ -1394,13 +1506,30 @@ fn effect_row(effect: Option<(&str, usize, usize)>) -> Control<'static> {
 /// [`Cell::Music`]), and the voice path's toggle in the right cell (board
 /// #3751, V4), so no row count changes. The state is in the words, not a
 /// color.
-fn music_row(playing: bool, title: &str, voice: bool) -> Control<'_> {
+///
+/// Board #5415: the Theme control shares the right cell with Voice, a half
+/// each, as Recenter and Rescan share theirs: "Theme" over the theme
+/// (`theme`: "Drift", "Drift*" once edited by hand, "custom"), each press
+/// the next theme on the whole room. The debug panel's header leaves no
+/// room for another row, and every full cell holds a control the wearer
+/// reaches for. Voice gives up half its cell: "Voice: off" fits a half at
+/// the button's size (68 of 90 points), and the toggle is a setting, saved
+/// and rarely pressed. "Theme: Aurora*" on one line does not fit a half at
+/// the button's size (113 points), and at the label's 12 points it would
+/// fill it to 3 points a side, so the name sits over the value as a
+/// stepper's label over its value, the value at the 16 points of every
+/// other control. The theme takes the right half, the side the newer
+/// control took beside Recenter and All: none.
+fn music_row<'a>(playing: bool, title: &'a str, voice: bool, theme: &'a str) -> Control<'a> {
     Control::Pair([
         Some(Cell::Music { playing, title }),
-        Some(Cell::Button(
-            Target::ToggleVoice,
-            if voice { "Voice: on" } else { "Voice: off" },
-        )),
+        Some(Cell::Halves([
+            Half::one(
+                Target::ToggleVoice,
+                if voice { "Voice: on" } else { "Voice: off" },
+            ),
+            Half::named(Target::CycleTheme, "Theme", theme),
+        ])),
     ])
 }
 
@@ -1422,7 +1551,10 @@ fn music_row(playing: bool, title: &str, voice: bool) -> Control<'_> {
 /// decide where the show sits, so they share one.
 fn recenter_row(room: bool, roam: crate::roam::Roam) -> Control<'static> {
     let left = if room {
-        Cell::Halves([(Target::Recenter, "Recenter"), (Target::Rescan, "Rescan")])
+        Cell::Halves([
+            Half::one(Target::Recenter, "Recenter"),
+            Half::one(Target::Rescan, "Rescan"),
+        ])
     } else {
         Cell::Button(Target::Recenter, "Recenter the cloud")
     };
@@ -1478,8 +1610,8 @@ fn cloud_row(on: bool, editing: bool, edges: crate::edge_bars::Mode) -> Control<
         // Every surface to none in one press, for telling what a single
         // assignment does afterwards (board #3326).
         Some(Cell::Halves([
-            (Target::AllNone, "All: none"),
-            (Target::CycleEdges, edges.label()),
+            Half::one(Target::AllNone, "All: none"),
+            Half::one(Target::CycleEdges, edges.label()),
         ])),
     ])
 }
