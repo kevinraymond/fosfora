@@ -750,6 +750,203 @@ views).
 **Not yet.** The device: the cost rows in `MEASURED.md`, the captures of
 the sky on and off, and the worn look seated and lying back.
 
+### The layers (board #5438)
+
+**Why.** The sky was painted on the surfaces. It sat exactly at the wall,
+so when the wearer moved their head nothing in it moved against anything
+else, and it read as a lit wall. The owner wants to lie back and be inside
+it. The tunnel in the edge bars showed that parallax alone carries depth
+for him, with one eye. So the curtains now hang in layers at different
+depths behind the surfaces, with true parallax.
+
+**The layers.** The sky is drawn in up to three. The near layer is the sky
+as above, on the surfaces and mapped by the fragment's own position, so the
+look stays anchored to the room. Each farther layer is the sky as it would
+appear on a larger shell: the view ray from the eye through the fragment
+is followed on past the surface to the shell, and the point it meets is
+mapped by its direction from the sky's point, exactly as the near layer
+maps a surface point. A far layer is then fixed on its shell in the room.
+As the head moves it shifts against the surfaces by the right amount for
+its depth, for each eye (the vertex stage hands each eye's position on, as
+for the reflection).
+
+**The shells** are the room's box pushed out: its rectangle in plan grown
+by the depth on every side, and its ceiling raised by it. They have no
+floor: a ray going down leaves through a wall under the floor, where the
+sky has no bands. A box rather than a sphere around the point, for three
+reasons. It is convex, so a shell runs on across the room's corners and
+onto the ceiling without a break. It is the same depth behind every wall
+and the ceiling, where a sphere is farther behind a wall's middle than
+behind a corner, and one sized for a long room's near walls passes inside
+its far corners. And its exit is the slab test the reflection already
+runs (`sky::box_exit`). The two shells are 1.5 m and 4 m behind the walls'
+center lines and the ceiling, times `debug.fosfora.skydepth`. Seated at
+the point, a 10 cm head move shifts a far layer along the wall by the move
+times the share of its distance that lies past the wall (the tests'
+numbers; the drawn quad is 4 cm in front of the wall's center line):
+
+| Wall ahead | 1.5 m shell | 4 m shell | skydepth 2: 3 m | 8 m |
+|---|---|---|---|---|
+| 2 m (quad 1.96 m) | 4.4 cm | 6.7 cm | 6.1 cm | 8.0 cm |
+| 3 m (quad 2.96 m) | 3.4 cm | 5.8 cm | 5.1 cm | 7.3 cm |
+
+**How they differ.** Stacked copies offset by parallax read as a blur at
+rest, so the far layers are other curtains that belong with the near one:
+
+- *Around the turn.* A far layer takes its curtains from further around
+  the frame: 2.1 rad for the middle layer, 3.2 rad for the farthest. At
+  those offsets none of the seven bands' two waves (2 + 0.5 i and 2.3
+  times that per frame height across) comes within 0.4 rad of phase of
+  another layer's, and the ripple's noise is another stretch. The turn
+  moves no seam: the seam is where the azimuth wraps, behind the wearer,
+  in every layer.
+- *In height.* Their bands sit lower, by half and a quarter of the bands'
+  11.3° spacing, so the middle layer's bands run between the near layer's
+  and the farthest's between those.
+- *In light.* 1, 0.6 and 0.35 of the light, and cooler: the far two's
+  colors times (0.8, 0.9, 1) and (0.6, 0.78, 1), after the coverage, as
+  the lane's tint.
+- *Not in time.* Aurora reads its clock, its curtains' travel, its band
+  spread and its glow from its uniform: one value per draw. A
+  per-layer time offset or parameter would need a draw per layer (the
+  vertex, raster, blend and the rest of the fragment three times) or the
+  effect's text rewritten past its entry. The frame coordinate is what
+  the wrapper can vary per call, and it does. Splitting the seven bands
+  between the layers cannot be done from the wrapper either: the effect
+  sums them inside its loop.
+
+Each far layer is composited under what is drawn so far (`sky::under`),
+the same as drawing it first with the pass's premultiplied blending. The
+alpha stays within 1 at full immersion, and a bright near curtain hides
+what is behind it.
+
+**What a far layer keeps and drops.** The rim, the strength, the peak alpha
+with the immersion's lift and the lane's tint apply to every layer. Each
+fades at the zenith by its own elevation. Seated at the point the three
+dark centers coincide; off the point a far layer's lies a little to the
+side. A far layer fades out across the seam's 23° instead of
+cross-fading: a second evaluation per layer there would cost more for
+light the wearer seldom faces. Under its lowest band's reach (-0.34 rad on
+its own frame: the band's center, the waves' and the ripple's reach and
+three widths of its widest glow) a layer adds only the shimmer, so it
+fades out over the 0.1 rad below and is not evaluated under that: the foot
+of the walls. Wherever none of a far layer's light is left (the dark
+center, the seam's line, under its bands) the effect is not called for
+it.
+
+**The reflection** stays one layer, the near one. Reflecting the far
+layers would cost an evaluation each on the floor.
+
+**One layer is the sky before the layers**, bit for bit. The near layer's
+code path is the one it was, and with one layer nothing else runs. The
+port block keeps its 12 rows: the sky's faces carry the count and the
+depth multiplier in `mode.z` and `mode.w`. A desktop GPU test draws the
+shader and a copy of it from before the layers over the probe and over the
+real Aurora and compares every pixel's bits: identical in all six views on
+an RTX 4090. The Quest's shader compiler is not checked.
+
+**The cost, by layer count**, from the shader's IR as above, counted this
+way: naga's emitted expressions, calls inlined, Aurora's band loop counted
+seven times (a proxy for ALU work, not a device number; it gives about
+2,035 for an evaluation where the count above gave 1,900). A sky fragment
+off the seam with light in every layer:
+
+| Layers | Evaluations | Expressions | Against one layer |
+|---|---|---|---|
+| 1 | 1 | about 2,170 | 1 (the sky before the layers: 2,160) |
+| 2 | 2 | about 4,360 | 2.0 |
+| 3 | 3 | about 6,540 | 3.0 |
+
+Around its evaluation each far layer does about 150 of its own (7 % of an
+evaluation): the shell's exit 56, the angles 18, the light 18, the frame
+12, its three fades, the tint and the compositing. In the seam's 23° the
+near layer adds its second evaluation as before. The far layers skip
+theirs only at the dark center, on the seam's line and at the walls'
+foot, so seated nearly every wall and ceiling fragment pays the full
+count. The floor's reflection is unchanged. The one-layer sky cost what
+Aurora per face cost on the device (`MEASURED.md`), so expect each far
+layer to add about another Aurora on the walls and the ceiling. The cost
+run decides the default with the owner.
+
+**The knobs.** `debug.fosfora.skylayers 1|2|3`, default 2, and
+`debug.fosfora.skydepth`, a multiplier on the shells' depths (0 to 4,
+default 1; 0 puts them on the surfaces), read at launch and polled once a
+second with the sky's knob. The log gives `sky layers: 2
+(debug.fosfora.skylayers), the sky on the surfaces and a layer 1.50 m
+behind them at 0.6 of the light (debug.fosfora.skydepth 1.00)` at launch,
+and the same with `(was: ...)` after it on each change.
+
+To capture 1, 2 and 3 layers at the same spot unworn (after the headless
+setup; back up `rooms/` first, the theme writes the room): set `music 1`,
+`gov 0`, `immersefix 1`, `theme aurora` and `sky 1`, launch seated in the
+scanned room, then `skylayers 1`, `skylayers 2` and `skylayers 3` in turn
+with a screen capture 2 s after each, and `skylayers ""` last. A headset
+on the desk does not move, so the captures show how the layers look
+together, not their depth: the parallax needs the worn look. For the cost,
+one launch per condition, reading the eye surface's (or the faces
+surface's) render: `scripts/xr/gpu-stages.sh --with
+"music=1;gov=0;immersefix=1;theme=aurora;sky=1" --cond "one=skylayers=1"
+--cond "two=skylayers=2" --cond "three=skylayers=3" --cond
+"one2=skylayers=1" --only "one,two,three,one2"` (the second `one` brackets
+the drift between launches).
+
+**Tested on the desktop** (`sky.rs`):
+`the_view_ray_meets_each_shell_behind_the_surface_it_passes` (square on,
+at a slant, near a corner, on the ceiling straight up and at a slant near
+its edge, for both shells, against a marched ray);
+`a_far_layer_moves_against_the_wall_by_its_depth_as_the_head_moves` (the
+table above, the same curtain found again after the move, the near layer
+unmoved); `a_far_layer_runs_on_across_a_corner_and_onto_the_ceiling`
+(points 0.5 mm either side of every corner and wall-to-ceiling edge, an
+eye off the point, two depths: under a pixel apart on the frame and the
+same light); `one_layer_is_the_sky_as_it_was`;
+`the_farther_a_layer_the_less_light_and_the_cooler`;
+`a_far_layer_is_not_evaluated_where_it_adds_no_light` (the zenith, the
+seam, under the bands, the band floor against `aurora.wgsl`'s lowest band,
+the drops and the turns' phases); `the_layers_knobs_and_their_log_lines`;
+and the layers' constants in `SKY_WGSL` against the Rust. The composed
+Aurora validates with naga in `surface_port.rs`'s port test. On the GPU
+(`tests/sky_gpu.rs`): `the_sky_shader_matches_its_rust_copy` now at one,
+two and three layers and three at 2.5 times the depth (worst 1.6e-4 of
+light on the sky's faces); `one_layer_draws_what_the_sky_drew_before_the_layers_bit_for_bit`;
+and `aurora_renders_as_one_sky_with_a_dark_zenith_and_a_fainter_floor` per
+face and at one, two and three layers (dumps `sky1_*`, `sky2_*`, `sky3_*`).
+
+**Where it will look wrong.**
+- *Through a doorway or past a wall's end*: the layers are drawn on the
+  sky's faces alone, so where there is no face (an open door, a wall's
+  end, a hidden or missed wall) every layer stops at the face's edge. The
+  far curtains slide behind that edge as the head moves, as behind a
+  window frame, but the opening itself shows the real room, not the sky
+  going on.
+- *Against furniture*: what stands in front cuts every layer at its
+  outline, which is right. The far curtains slide along the outline as the
+  head moves, so a coarse occluder (a box larger than the chair, the depth
+  map's ragged edges) shows more against them than against the still near
+  layer.
+- *The seam*: the far layers fade out across its 23°, so behind the wearer
+  only the near layer's braid is left, thinner and flat.
+- *The zenith*: each layer is dark where its own direction from the point
+  is straight up. Seated at the point the three centers coincide. Off the
+  point, or lying back off it, the far layers' centers lie to one side on
+  the ceiling: the dark disc smears and traces of the far rings reach into
+  the near one's.
+- *A small room*: the shells are pushed out by fixed depths, so in a 3 m
+  room the 4 m shell is larger than the room. That is only distance, and
+  the parallax is what that distance gives: the most of any room, 7.3 cm
+  for a 10 cm move on a wall 1.5 m away. The far curtains are as large in
+  angle as the near ones (each layer is mapped by direction from the
+  point), so their depth comes from parallax and light alone, not from
+  size, and close walls may make them read as swimming. `skydepth` under 1
+  trims it.
+- *A room that is not a box*: the shells are the bounding rectangle's, so
+  behind a wall inside the rectangle (an L's inner walls, an alcove) a
+  layer is deeper than its depth and shifts more there.
+
+**Not yet.** The device: the cost of 1, 2 and 3 layers in `MEASURED.md`,
+the captures, and the worn compare of 1, 2 and 3 seated and lying back,
+which with the cost decides the default.
+
 ## D2c: the surfaces in their own layer (Oct 9, board #3793)
 
 **Why.** The worn A/B (`MEASURED.md`, "Worn A/B of the frame cost", and
