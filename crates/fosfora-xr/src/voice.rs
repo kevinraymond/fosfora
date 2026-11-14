@@ -476,6 +476,9 @@ pub struct Follow {
     dir: glam::Vec3,
     /// Easing back toward its place.
     easing: bool,
+    /// Its place, in the head's own frame (unit): [`DROP_DEG`] under the
+    /// line of sight, or on it ([`Follow::centered`]).
+    place: glam::Vec3,
 }
 
 impl Default for Follow {
@@ -490,18 +493,31 @@ impl Follow {
         Self {
             dir: head_rot * ahead_local(),
             easing: false,
+            place: ahead_local(),
+        }
+    }
+
+    /// Placed on the line of sight of a head turned by `head_rot`, at the
+    /// center of the view, and following the head the same way (board
+    /// #5452: the begin card, `first_run.rs`).
+    pub fn centered(head_rot: glam::Quat) -> Self {
+        Self {
+            dir: head_rot * glam::Vec3::NEG_Z,
+            easing: false,
+            place: glam::Vec3::NEG_Z,
         }
     }
 
     /// Place it ahead of the view now.
     pub fn place(&mut self, head_rot: glam::Quat) {
-        *self = Self::placed(head_rot);
+        self.dir = head_rot * self.place;
+        self.easing = false;
     }
 
     /// Follow the head, turned by `head_rot`, for `dt` seconds, the label
     /// showing `lines` lines (`label::lines`).
     pub fn step(&mut self, head_rot: glam::Quat, dt: f32, lines: usize) {
-        let target = ahead_local();
+        let target = self.place;
         let mut local = (head_rot.inverse() * self.dir).normalize_or(target);
         if local.angle_between(target).to_degrees() > FOLLOW_DEG {
             self.easing = true;
@@ -545,6 +561,7 @@ fn fits(local: glam::Vec3, lines: usize) -> bool {
     let b = Follow {
         dir: local,
         easing: false,
+        place: local,
     }
     .billboard(glam::Vec3::ZERO, glam::Quat::IDENTITY)
     .with_lines(lines);
@@ -1785,6 +1802,41 @@ mod tests {
                 .distance(label_anchor(head, turned(-60.0, 10.0, 0.0)).0)
                 < 1e-6
         );
+    }
+
+    #[test]
+    fn a_centered_label_sits_on_the_line_of_sight_and_follows_the_same_way() {
+        use glam::Vec3;
+        let head = Vec3::new(0.0, 1.2, 0.0);
+        // Board #5452: the begin card. Whichever way the head is turned,
+        // lying back included, it is placed on the line of sight.
+        for (yaw, pitch) in [(0.0, 0.0), (35.0, -20.0), (-120.0, 70.0)] {
+            let rot = turned(yaw, pitch, 0.0);
+            let at = Follow::centered(rot).anchor(head).0;
+            assert!(at.distance(head + rot * Vec3::NEG_Z * AHEAD_M) < 1e-5);
+        }
+        // Small turns leave it where it is in the room.
+        let mut f = Follow::centered(glam::Quat::IDENTITY);
+        let start = f.anchor(head).0;
+        for _ in 0..144 {
+            f.step(turned(10.0, -8.0, 0.0), DT, 3);
+        }
+        assert!(f.anchor(head).0.distance(start) < 1e-5);
+        // A turn well away: it eases back to the center of the view, not
+        // to the voice label's place under it, with its three lines (the
+        // card over the controllers line) inside the view all the way.
+        let rot = turned(70.0, 30.0, 0.0);
+        for _ in 0..216 {
+            f.step(rot, DT, 3);
+            let b = f.billboard(head, rot).with_lines(3);
+            assert!(inside(&b, head, rot, VIEW_DEG));
+        }
+        let off = (f.anchor(head).0 - head).angle_between(rot * Vec3::NEG_Z);
+        assert!(off.to_degrees() <= SETTLE_DEG, "{off}");
+        // Placed again, it keeps its own place.
+        f.place(turned(-40.0, 0.0, 0.0));
+        let center = head + turned(-40.0, 0.0, 0.0) * Vec3::NEG_Z * AHEAD_M;
+        assert!(f.anchor(head).0.distance(center) < 1e-5);
     }
 
     #[test]

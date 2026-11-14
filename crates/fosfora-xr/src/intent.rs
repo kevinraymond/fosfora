@@ -237,6 +237,9 @@ pub enum Intent {
     /// The hand menu's Voice toggle (board #5453): "voice off" turns it
     /// off as the press does, and only the menu turns it back on.
     Voice(bool),
+    /// The pinch that begins the show (board #5452, `first_run.rs`):
+    /// "begin" or "start" while the show waits for the wearer.
+    Begin,
 }
 
 /// The hand menu's Agent control by voice (board #5453): its stops on the
@@ -448,6 +451,17 @@ const MENU_CLOSE: [&str; 6] = [
     "dismiss menu",
     "close hand menu",
     "hide hand menu",
+];
+/// Board #5452: the show begun by voice, as [`normalize`] leaves the
+/// sentences ("let's begin" is "lets begin", "start the show" is "start
+/// show").
+const BEGIN: [&str; 6] = [
+    "begin",
+    "start",
+    "begin show",
+    "start show",
+    "lets begin",
+    "lets start",
 ];
 /// "What can I say" (V4).
 const HELP: [&str; 6] = [
@@ -882,6 +896,9 @@ fn fill(slot: Slot, target_words: &[&str], vocab: &Vocabulary<'_>) -> Result<Int
 fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
     if any(ts, &HELP) {
         return Some(Intent::Help);
+    }
+    if any(ts, &BEGIN) {
+        return Some(Intent::Begin);
     }
     if any(ts, &MENU_OPEN) {
         return Some(Intent::Menu(true));
@@ -1919,7 +1936,23 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         Intent::Agent(AgentAsk::Local) => "agent: local".to_owned(),
         Intent::Voice(true) => "voice on".to_owned(),
         Intent::Voice(false) => VOICE_OFF_REPLY.to_owned(),
+        // Once the show is on the app answers `BEGUN_REPLY` instead.
+        Intent::Begin => BEGIN_REPLY.to_owned(),
     }
+}
+
+/// Board #5452: the label for a spoken "begin" while the show waits, and
+/// for one after it has begun, which changes nothing.
+pub const BEGIN_REPLY: &str = "starting";
+pub const BEGUN_REPLY: &str = "already started";
+
+/// Whether `sentence` asks to begin the show (board #5452), whatever the
+/// room holds: the `debug.fosfora.say` knob feeds such a sentence without
+/// waiting for the room's anchors.
+pub fn asks_to_begin(sentence: &str) -> bool {
+    let words = normalize(sentence);
+    let ts: Vec<&str> = words.iter().map(String::as_str).collect();
+    any(&ts, &BEGIN)
 }
 
 /// Board #5459: the label for a spoken open or close while the menu lives
@@ -2287,7 +2320,9 @@ fn wrap_list(head: &str, items: &[String], width: usize, max_lines: usize) -> St
 /// differs from the last one fed; an app cannot clear a `debug.` property,
 /// so to say the same sentence again, set it to "" first (or to another
 /// sentence). While the room is on but has no anchors yet (`waiting`) the
-/// value waits for them, as the `surface` knob's does.
+/// value waits for them, as the `surface` knob's does. Board #5452: the
+/// app does not hold back a sentence that begins a waiting show
+/// ([`asks_to_begin`]), which names nothing in the room.
 #[derive(Debug, Clone, Default)]
 pub struct SayKnob {
     fed: Option<String>,
@@ -2491,6 +2526,58 @@ mod tests {
             value: "on".to_owned(),
         };
         assert!(Intent::from_json(&action, &v).is_err());
+    }
+
+    /// Board #5452: the show begun by voice, beside the phrases that start
+    /// with the same words; not the agent's.
+    #[test]
+    fn begin_the_show() {
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        check(
+            &v,
+            &[
+                ("Begin.", Intent::Begin),
+                ("Start", Intent::Begin),
+                ("Begin the show.", Intent::Begin),
+                ("Start the show, please.", Intent::Begin),
+                ("Let's begin.", Intent::Begin),
+                ("Let's start", Intent::Begin),
+                // The phrases the grammar had keep their meaning.
+                ("Start editing.", Intent::EditRoom(true)),
+                ("Start roaming", Intent::Roam(true)),
+                ("Play music.", Intent::Music(true)),
+                ("Next.", Intent::NextEffect),
+            ],
+        );
+        for said in ["begin", " Start. ", "Let's begin!", "start the show"] {
+            assert!(asks_to_begin(said), "{said}");
+        }
+        for said in ["", "start editing", "begin the beguine", "next effect"] {
+            assert!(!asks_to_begin(said), "{said}");
+        }
+        assert_eq!(reply(&Intent::Begin, &v), BEGIN_REPLY);
+        assert_eq!(BEGIN_REPLY, "starting");
+        assert_eq!(BEGUN_REPLY, "already started");
+        // With another command in the sentence, both apply.
+        let clauses = parse_clauses("Begin and theme aurora.", &v);
+        let outcomes: Vec<_> = clauses.into_iter().map(|c| c.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [
+                Ok(Intent::Begin),
+                Ok(Intent::Theme(ThemeStep::To(crate::themes::Theme::Aurora)))
+            ]
+        );
+        // Not the agent's: its actions have no begin.
+        let action = AgentAction {
+            kind: "begin".to_owned(),
+            target: String::new(),
+            value: String::new(),
+        };
+        assert!(Intent::from_json(&action, &v).is_err());
+        // "What can I say" does not list it: by then the show is on.
+        assert!(!shown_pool(&v).iter().any(|p| asks_to_begin(p)));
     }
 
     /// Board #5459: the hand menu opened ahead and closed by voice, beside
@@ -3861,6 +3948,7 @@ mod tests {
             Intent::Roam(_) => unreachable!("the agent's actions have no roam"),
             Intent::Theme(_) => unreachable!("the agent's actions have no theme"),
             Intent::Menu(_) => unreachable!("the agent's actions have no menu"),
+            Intent::Begin => unreachable!("the agent's actions have no begin"),
             Intent::Edges(_) | Intent::Agent(_) | Intent::Voice(_) => {
                 unreachable!("the agent's actions have no edges, agent or voice")
             }

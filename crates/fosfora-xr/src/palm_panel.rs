@@ -746,8 +746,9 @@ impl PalmPanel {
 /// on) and the agent's provider (board #3776: none saved until the Agent
 /// control is first pressed), and the immersion depth (board #5384: full
 /// unless saved otherwise). Board #5393: the wearer's Roam choice, and
-/// whether the app has asked for Space Setup, both off unless saved on. A
-/// missing or broken file is the defaults.
+/// whether the app has asked for Space Setup, both off unless saved on.
+/// Board #5452: the first run's hints the wearer has been taught, none
+/// unless saved. A missing or broken file is the defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuFile {
     pub debug: bool,
@@ -763,6 +764,9 @@ pub struct MenuFile {
     /// ended, once (board #5393): from then on only the hand menu's Rescan
     /// and the spoken rescan open Space Setup.
     pub space_setup_asked: bool,
+    /// The first run's hints the wearer has been taught (board #5452,
+    /// `first_run::Hints`): those never show again.
+    pub taught: crate::first_run::Taught,
 }
 
 impl Default for MenuFile {
@@ -774,6 +778,7 @@ impl Default for MenuFile {
             immerse: crate::immerse::Depth::default(),
             roam: false,
             space_setup_asked: false,
+            taught: crate::first_run::Taught::default(),
         }
     }
 }
@@ -782,7 +787,7 @@ impl MenuFile {
     /// The file's text read leniently: a field that is missing or not a
     /// boolean keeps its default; an `agent` that is missing or names no
     /// pick is no saved choice; an `immerse` that is missing or names no
-    /// depth is full.
+    /// depth is full; a `taught` that is missing has taught no hint.
     pub fn parse(json: &str) -> Self {
         let value = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default();
         let field = |name: &str, default: bool| {
@@ -806,12 +811,15 @@ impl MenuFile {
                 .unwrap_or(d.immerse),
             roam: field("roam", d.roam),
             space_setup_asked: field("space_setup_asked", d.space_setup_asked),
+            taught: crate::first_run::Taught::from_json(value.get("taught")),
         }
     }
 
     /// The file's text: `{"debug":false,"immerse":"full","voice":true}`,
     /// with `"agent":"local"` (`anthropic`, `openai`, `off`) once picked,
-    /// and `"roam":true` and `"space_setup_asked":true` only while true.
+    /// `"roam":true` and `"space_setup_asked":true` only while true, and
+    /// `"taught":["swipe","tap","palm"]` with the hints taught, once one
+    /// is.
     pub fn to_json(self) -> String {
         let mut json = serde_json::json!({
             "debug": self.debug,
@@ -826,6 +834,10 @@ impl MenuFile {
         }
         if self.space_setup_asked {
             json["space_setup_asked"] = true.into();
+        }
+        let taught = self.taught.names();
+        if !taught.is_empty() {
+            json["taught"] = taught.into();
         }
         json.to_string()
     }
@@ -985,6 +997,57 @@ mod tests {
             assert!(!file.roam && !file.space_setup_asked, "{json}");
             assert!(file.debug, "{json}");
         }
+    }
+
+    /// Board #5452: the hints taught round-trip, are written once one is
+    /// taught, and a file from before them has taught none.
+    #[test]
+    fn the_menu_file_saves_the_hints_taught_and_reads_none_when_absent() {
+        use crate::first_run::{Hint, Taught};
+        let mut some = Taught::default();
+        some.set(Hint::Swipe);
+        some.set(Hint::Palm);
+        for taught in [some, Taught::ALL] {
+            let file = MenuFile {
+                taught,
+                voice: false,
+                ..MenuFile::default()
+            };
+            let json = file.to_json();
+            assert_eq!(MenuFile::parse(&json), file, "{json}");
+        }
+        let json = MenuFile {
+            taught: some,
+            ..MenuFile::default()
+        }
+        .to_json();
+        assert!(json.contains(r#""taught":["swipe","palm"]"#), "{json}");
+        assert!(!MenuFile::default().to_json().contains("taught"));
+        // Files written before the hints, as the app saved them: every
+        // field they have still loads, and no hint is taught.
+        for (json, voice, roam) in [
+            (r#"{"debug":false,"voice":true}"#, true, false),
+            (
+                r#"{"agent":"local","debug":false,"immerse":"black","roam":true,"space_setup_asked":true,"voice":false}"#,
+                false,
+                true,
+            ),
+        ] {
+            let file = MenuFile::parse(json);
+            assert_eq!(file.taught, Taught::default(), "{json}");
+            assert_eq!((file.voice, file.roam), (voice, roam), "{json}");
+        }
+        let old = MenuFile::parse(
+            r#"{"agent":"local","debug":false,"immerse":"black","roam":true,"space_setup_asked":true,"voice":false}"#,
+        );
+        assert_eq!(old.immerse, crate::immerse::Depth::Black);
+        assert_eq!(old.agent, Some(crate::agent::Pick::Local));
+        assert!(old.space_setup_asked);
+        // A mistyped field teaches nothing.
+        assert_eq!(
+            MenuFile::parse(r#"{"taught": "all"}"#).taught,
+            Taught::default()
+        );
     }
 
     const HEAD: Vec3 = Vec3::new(0.0, 1.6, 0.0);
