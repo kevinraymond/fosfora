@@ -710,11 +710,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Edit room), and where it floats. Board #5453: ahead of the view,
     // placed when a window opens or a label shows with none before it,
     // then following the head loosely (`voice::Follow`); `voice_at` is its
-    // center this frame, facing the head.
+    // center this frame, facing the head. The "what can I say" card's text
+    // while it may show: it gives way to the editor's label and goes with
+    // Voice turned off.
     let mut voice_label = crate::label::Label::default();
     let mut voice_follow = crate::voice::Follow::default();
     let mut voice_at = (glam::Vec3::ZERO, glam::Vec3::Z);
     let mut voice_shown = false;
+    let mut voice_card: Option<String> = None;
     // Board #5453: the `voicetap` knob's last value fed (the same
     // once-per-value rule as `say`).
     let mut tap_knob = crate::intent::SayKnob::default();
@@ -2593,15 +2596,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         info!("voice: {} (menu)", if on { "on" } else { "off" });
                         if !on {
                             // Off: an open window is dropped unheard, and
-                            // its label goes. Board #5453: a spoken
-                            // "voice off" keeps its reply, which says how
-                            // to turn it back on.
+                            // its label and the card go. Board #5453: a
+                            // spoken "voice off" keeps its reply, which
+                            // says how to turn it back on.
                             let windowed = push_to_talk.window() != VoiceWindow::Closed;
+                            let card = voice_label
+                                .now()
+                                .is_some_and(|l| voice_card.as_deref() == Some(l.text));
                             push_to_talk.cancel();
                             if let Some(v) = voice.as_mut() {
                                 v.cancel();
                             }
-                            if windowed {
+                            if windowed || card {
                                 voice_label.clear();
                             }
                         }
@@ -3799,6 +3805,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 {
                     surface_labels.miss();
                 }
+                // Board #5453: the card, which stays until the next window
+                // or `intent::CARD_S`, giving way to the editor's label.
+                voice_card = clauses
+                    .iter()
+                    .any(|c| c.outcome == Ok(crate::intent::Intent::Help))
+                    .then(|| response.label.clone());
                 voice_label.show_for(response.label, voice_at.0, voice_at.1, response.seconds);
             }
             // V5: the on-device provider loads once the speech model has
@@ -3999,8 +4011,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 voice_shown = voice_now.is_some();
                 // The voice path's label first: it answers the wearer's
-                // own fist.
+                // own fist. The card gives way to the editor's label while
+                // that shows, and comes back after.
+                let card_yields = label.now().is_some()
+                    && voice_now.is_some_and(|l| voice_card.as_deref() == Some(l.text));
                 let shown = voice_now
+                    .filter(|_| !card_yields)
                     .map(|l| (l.text, l.alpha, l.level, voice_follow.billboard(head, head_rot)))
                     .or_else(|| {
                         label.now().map(|l| {

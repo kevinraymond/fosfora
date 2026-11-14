@@ -1295,8 +1295,13 @@ pub fn parse(sentence: &str, vocab: &Vocabulary<'_>) -> Result<Intent, Miss> {
 /// The most clauses one sentence asks for (V4): "amber on the desk and
 /// the walls on the bass" is two; more than this is [`Reason::TooMany`].
 pub const MAX_CLAUSES: usize = 3;
-/// How long the label shows "what can I say"'s examples (s).
+/// How long the label shows a reply of several lines, a kind's list (s).
 pub const HELP_S: f32 = 4.0;
+/// How long "what can I say"'s card stays at most (s, board #5453): the
+/// next fist or thumb tap opens a window, whose "Listening…" takes its
+/// place, so a wearer reads it at their own pace and puts it away by
+/// talking.
+pub const CARD_S: f32 = 30.0;
 /// How many examples one ask shows, and the longest one (characters).
 pub const HELP_LINES: usize = 5;
 const MAX_EXAMPLE_CHARS: usize = 29;
@@ -1665,7 +1670,9 @@ pub fn respond(
         .join("\n");
     let seconds = if agent_text.is_some() {
         crate::agent::THINKING_S
-    } else if helped || listed {
+    } else if helped {
+        CARD_S
+    } else if listed {
         HELP_S
     } else if missed {
         MISS_S
@@ -2699,6 +2706,73 @@ mod tests {
         for said in ["edges off", "agent off", "voice off"] {
             assert!(seen.iter().any(|s| s == said), "{said}");
         }
+    }
+
+    /// Board #5453: the card stays until the next window or 30 s; a list
+    /// and the two-line "voice off" stay as long as before, a one-line
+    /// reply 1.5 s.
+    #[test]
+    fn the_card_stays_until_the_next_window_or_30_s() {
+        let dir = std::env::temp_dir().join(format!("fosfora-intent-card-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (e, boxes) = (effects(), room());
+        let id = room_id(boxes.iter().map(|b| b.uuid));
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        let v = vocab(&e, &boxes, Some(0));
+        let mut page = 0;
+        let mut say = |sentence: &str| {
+            let (r, _) = respond_on(sentence, &v, &mut lanes, &boxes, false, &mut page);
+            r
+        };
+        let card = say("What can I say?");
+        assert_eq!(card.label.lines().count(), HELP_LINES);
+        assert_close!(card.seconds, CARD_S);
+        // With another clause, still the card.
+        let r = say("Next effect and what can I say?");
+        assert!(r.label.starts_with("next effect\n"), "{}", r.label);
+        assert_close!(r.seconds, CARD_S);
+        let r = say("what are the walls");
+        assert_close!(r.seconds, HELP_S);
+        let r = say("voice off");
+        assert_eq!(r.label, VOICE_OFF_REPLY);
+        assert_close!(r.seconds, HELP_S);
+        let r = say("edges off");
+        assert_eq!(r.label, "edges: off");
+        assert_close!(r.seconds, REPLY_S);
+        // On the label: up for 30 s, its last part fading; the next
+        // window's "Listening…" takes its place at once.
+        let dt = 1.0 / 72.0;
+        let mut l = crate::label::Label::default();
+        l.show_for(
+            card.label.clone(),
+            glam::Vec3::ZERO,
+            glam::Vec3::Z,
+            card.seconds,
+        );
+        for _ in 0..(29.5 / dt) as usize {
+            l.step(dt);
+        }
+        assert_eq!(l.now().map(|f| f.text), Some(card.label.as_str()));
+        for _ in 0..(0.6 / dt) as usize {
+            l.step(dt);
+        }
+        assert_eq!(l.now(), None);
+        l.show_for(
+            card.label.clone(),
+            glam::Vec3::ZERO,
+            glam::Vec3::Z,
+            card.seconds,
+        );
+        l.step(dt);
+        l.show_for(
+            crate::voice::LISTENING_LABEL.to_owned(),
+            glam::Vec3::ZERO,
+            glam::Vec3::Z,
+            crate::voice::FIST_MAX_S + 1.0,
+        );
+        assert_eq!(l.now().map(|f| f.text), Some(crate::voice::LISTENING_LABEL));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Board #5415: a theme by name, the next one, and an unknown name,
@@ -4229,7 +4303,7 @@ mod tests {
         let before = page;
         let (r, _) = say("What can I say?", false, &mut page);
         assert_eq!(r.label.lines().count(), HELP_LINES);
-        assert_close!(r.seconds, HELP_S);
+        assert_close!(r.seconds, CARD_S);
         assert_eq!(page, before + 1);
         assert_eq!(lanes.params_of(0, &boxes).0, 4);
         assert_eq!(lanes.params_of(3, &boxes).1, 1);
@@ -4288,12 +4362,12 @@ mod tests {
             (
                 "voice: heard \"What can I say?\" \u{2192} Help \u{b7} label \"next effect | streamlines on table 0 | switch to Flux Cloud | every table curls | open the menu\"",
                 "next effect\nstreamlines on table 0\nswitch to Flux Cloud\nevery table curls\nopen the menu",
-                HELP_S,
+                CARD_S,
             ),
             (
                 "voice: heard \"Help.\" \u{2192} Help \u{b7} label \"storage 1 in blue | switch to Embers | every wall rings | music play and next effect | wall 2 on the bass\"",
                 "storage 1 in blue\nswitch to Embers\nevery wall rings\nmusic play and next effect\nwall 2 on the bass",
-                HELP_S,
+                CARD_S,
             ),
             (
                 "voice: heard \"Flibber jabber.\" \u{2192} miss NoMatch \u{b7} label \"Didn't catch that: \"Flibber jabber.\" | Try \"what can I say\"\"",
