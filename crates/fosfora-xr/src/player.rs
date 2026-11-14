@@ -353,7 +353,19 @@ impl Music {
             titles: self.playlist.titles(),
             current: self.playlist.current().filter(|_| !self.on_fallback),
             playing: self.want,
+            blocked: self.shared_blocked(),
         }
+    }
+
+    /// Whether the folders hold a track to step to (board #5461).
+    pub fn has_tracks(&self) -> bool {
+        !self.playlist.is_empty()
+    }
+
+    /// Whether the shared `Music/` folder is there but unread, the storage
+    /// permission missing (board #5461: what a step with no songs names).
+    pub fn shared_blocked(&self) -> bool {
+        self.folders.shared.is_some() && !self.folders.shared_readable
     }
 
     /// Take over a playback the launch source started (`file`, `loop`)

@@ -86,6 +86,10 @@
 //! seen it never shows again in that run, so a wearer resting their hands
 //! out of view is not told to put down controllers they don't hold.
 //!
+//! **Menu replies** ([`menu_reply_at`], board #5461). A hand-menu press
+//! that does nothing says why on a label over the menu, not behind it:
+//! Music `<` `>` with no songs (`music::no_songs`).
+//!
 //! **The voice path's label** (board #3751, V4) is the same label with two
 //! more things the render reads: a meter, a thin bar under "Listening…"
 //! whose length is the microphone's level ([`Label::meter`],
@@ -413,6 +417,22 @@ impl HandsHint {
     pub fn seen(&self) -> bool {
         self.seen
     }
+}
+
+/// A menu reply's distance from the head (m), and how far above the view
+/// it sits (degrees): over the menu the wearer is looking at, which hides
+/// what is behind it (board #5461).
+pub const MENU_REPLY_M: f32 = 1.0;
+pub const MENU_REPLY_RAISE_DEG: f32 = 20.0;
+
+/// Where the reply to a hand-menu press shows, for [`billboard`]:
+/// [`MENU_REPLY_M`] from `head` along its view raised by
+/// [`MENU_REPLY_RAISE_DEG`], and the normal back toward the head. Placed
+/// once, at the press: it stays in the room, not on the head.
+pub fn menu_reply_at(head: Vec3, head_rot: Quat) -> (Vec3, Vec3) {
+    let raise = Quat::from_axis_angle(head_rot * Vec3::X, MENU_REPLY_RAISE_DEG.to_radians());
+    let dir = (raise * head_rot * Vec3::NEG_Z).normalize_or(Vec3::NEG_Z);
+    (head + dir * MENU_REPLY_M, -dir)
 }
 
 /// The label for a step of the hand menu's surface rows (board #3472,
@@ -1676,6 +1696,31 @@ mod tests {
         h.step(true, false, dt);
         run(&mut h, false, true, 30.0);
         assert_eq!(h.now(), None);
+    }
+
+    #[test]
+    fn a_menu_reply_floats_over_the_view_facing_the_head() {
+        let head = Vec3::new(0.2, 1.1, 0.3);
+        // Looking down at the palm, 40 degrees, and turned.
+        let rot = Quat::from_rotation_y(0.5) * Quat::from_rotation_x(-0.7);
+        let (point, normal) = menu_reply_at(head, rot);
+        assert!((point.distance(head) - MENU_REPLY_M).abs() < 1e-5);
+        let view = rot * Vec3::NEG_Z;
+        let to = (point - head).normalize();
+        // MENU_REPLY_RAISE_DEG off the view, and above it.
+        assert!((to.angle_between(view).to_degrees() - MENU_REPLY_RAISE_DEG).abs() < 1e-3);
+        assert!(to.y > view.y);
+        // In the plane of the view and the head's up: not to a side.
+        assert!(to.dot(rot * Vec3::X).abs() < 1e-5);
+        assert!(normal.abs_diff_eq(-to, 1e-5));
+        // The label it makes faces the head.
+        assert_orthonormal_and_facing(&billboard(point, normal, head, rot), head);
+        // The no-songs replies: two lines each, over 73 px.
+        for text in [crate::music::no_songs(false), crate::music::no_songs(true)] {
+            let l = laid(text);
+            assert_eq!(l.lines.len(), 2, "{l:?}");
+            assert!(l.px > 73.0, "{l:?}");
+        }
     }
 
     #[test]

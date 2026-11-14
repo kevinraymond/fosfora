@@ -1738,6 +1738,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Its label at the surface after each action (`label.rs`).
     let mut label = crate::label::Label::default();
     let mut label_texture = crate::label::LabelTexture::new(&mut gfx);
+    // Board #5461: a hand-menu press that does nothing says why, on the
+    // same label over the menu (`label::menu_reply_at`).
+    let mut menu_reply = crate::label::Label::default();
     // Board #3488: the room scan's state on the same label while the
     // editor's shows nothing.
     let mut scan_label = crate::label::ScanLabel::default();
@@ -2542,6 +2545,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     };
                     for action in h.render(&gfx, &view, &mut controls) {
                         info!("debug panel: {action:?}");
+                        // Board #5461: Music `<` `>` with nothing to step
+                        // to says why, over the menu (the voice's "next
+                        // song" replies the same words on its own label).
+                        if matches!(action, Action::PrevTrack | Action::NextTrack)
+                            && !music.has_tracks()
+                        {
+                            let text = crate::music::no_songs(music.shared_blocked());
+                            info!("music: no songs to step to, the label reads \"{text}\"");
+                            let (point, normal) = crate::label::menu_reply_at(
+                                glam::Vec3::from(input.head),
+                                glam::Quat::from_array(input.head_rot),
+                            );
+                            menu_reply.show(text.to_owned(), point, normal);
+                        }
                         actions.push(action);
                     }
                 }
@@ -4032,6 +4049,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                 );
             }
+            // Board #5461: the menu's reply ages with the frames.
+            menu_reply.step(dt);
             {
                 // Board #5453: the voice label ahead of the view, placed
                 // when it starts to show (a window's opening placed it
@@ -4045,14 +4064,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 voice_shown = voice_now.is_some();
                 // The voice path's label first: it answers the wearer's
                 // own fist. The card gives way to the editor's label while
-                // that shows, and comes back after.
+                // that shows, and comes back after. The menu's reply after
+                // the editor's.
                 let card_yields = label.now().is_some()
                     && voice_now.is_some_and(|l| voice_card.as_deref() == Some(l.text));
                 let shown = voice_now
                     .filter(|_| !card_yields)
                     .map(|l| (l.text, l.alpha, l.level, voice_follow.billboard(head, head_rot)))
                     .or_else(|| {
-                        label.now().map(|l| {
+                        label.now().or_else(|| menu_reply.now()).map(|l| {
                             let pose = crate::label::billboard(l.point, l.normal, head, head_rot);
                             (l.text, l.alpha, l.level, pose)
                         })

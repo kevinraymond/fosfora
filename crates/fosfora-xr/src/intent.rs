@@ -91,14 +91,17 @@ pub struct Vocabulary<'a> {
 
 /// The music folders' tracks as the grammar names them (board #5385,
 /// `playlist.rs`): their titles in the playlist's order, the one the
-/// Music row shows (`None` on the bundled clip) and whether the music
-/// plays. The default is no tracks, for the agent's vocabularies, whose
-/// actions name none.
+/// Music row shows (`None` on the bundled clip), whether the music plays,
+/// and whether the shared `Music/` folder goes unread for want of the
+/// storage permission (board #5461: a step with no songs names it). The
+/// default is no tracks, for the agent's vocabularies, whose actions name
+/// none.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Tracks<'a> {
     pub titles: &'a [String],
     pub current: Option<usize>,
     pub playing: bool,
+    pub blocked: bool,
 }
 
 impl Vocabulary<'_> {
@@ -136,7 +139,7 @@ pub enum Strength {
 /// off, low, full, or a depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImmersionStep {
-    /// "darker": one step deeper, full at most.
+    /// "darker": one step deeper, black at most.
     Darker,
     /// "lighter": one step back, off at least.
     Lighter,
@@ -1987,12 +1990,13 @@ pub fn theme_reply(theme: crate::themes::Theme) -> String {
 
 /// The reply to a track step `by` (1 next, -1 previous): the track the
 /// Music row steps to, "next: One More Time", as `playlist::stepped`
-/// finds it; with no tracks, where to put some.
+/// finds it; with no tracks, the Music row's own words for it
+/// (`music::no_songs`, board #5461).
 fn track_step(vocab: &Vocabulary<'_>, by: isize, word: &str) -> String {
     let t = vocab.tracks;
     match crate::playlist::stepped(t.titles.len(), t.current, by) {
         Some(i) => format!("{word}: {}", t.titles[i]),
-        None => "no songs: put files in Music/".to_owned(),
+        None => crate::music::no_songs(t.blocked).to_owned(),
     }
 }
 
@@ -3016,6 +3020,7 @@ mod tests {
             titles: &titles,
             current: Some(0),
             playing: true,
+            ..Tracks::default()
         };
         check(
             &v,
@@ -3081,6 +3086,7 @@ mod tests {
             titles: &titles,
             current: Some(0),
             playing: true,
+            ..Tracks::default()
         };
         assert_eq!(
             reply(&Intent::NextTrack, &v),
@@ -3097,11 +3103,21 @@ mod tests {
         assert_eq!(reply(&Intent::NextTrack, &v), "next: One More Time");
         v.tracks.playing = true;
         assert_eq!(reply(&Intent::NowPlaying, &v), "playing the bundled clip");
+        // No songs (board #5461): where to put them, or the permission
+        // when the shared folder goes unread for want of it; the words of
+        // the Music row's `<` `>`.
         v.tracks = Tracks::default();
         assert_eq!(
             reply(&Intent::NextTrack, &v),
-            "no songs: put files in Music/"
+            "No songs on the headset. Put them in its Music folder."
         );
+        assert_eq!(reply(&Intent::PrevTrack, &v), crate::music::no_songs(false));
+        v.tracks.blocked = true;
+        assert_eq!(
+            reply(&Intent::NextTrack, &v),
+            "Can't read the Music folder. Allow music files in Settings."
+        );
+        assert_eq!(reply(&Intent::PrevTrack, &v), crate::music::no_songs(true));
         assert_eq!(
             miss_text(&Miss {
                 reason: Reason::AmbiguousTrack(vec!["A".to_owned(), "B".to_owned()]),
@@ -3129,6 +3145,7 @@ mod tests {
             titles: &titles,
             current: Some(0),
             playing: true,
+            ..Tracks::default()
         };
         let clauses = parse_clauses("play Rock and Roll and next effect", &v);
         let outcomes: Vec<_> = clauses.into_iter().map(|c| c.outcome).collect();

@@ -93,6 +93,25 @@ pub fn label(playing: bool) -> &'static str {
     }
 }
 
+/// What Music `<` `>` and a spoken "next song" say with no song to step
+/// to (board #5461): where songs go, or, with the shared `Music/` folder
+/// unread for want of the storage permission (`blocked`), that permission.
+/// The press did nothing visible before, and the voice's reply read like a
+/// path ("no songs: put files in Music/").
+pub fn no_songs(blocked: bool) -> &'static str {
+    if blocked {
+        NO_MUSIC_ACCESS_LABEL
+    } else {
+        NO_SONGS_LABEL
+    }
+}
+
+/// [`no_songs`]' words: no songs anywhere it can read, and the shared
+/// folder unread.
+pub const NO_SONGS_LABEL: &str = "No songs on the headset. Put them in its Music folder.";
+pub const NO_MUSIC_ACCESS_LABEL: &str =
+    "Can't read the Music folder. Allow music files in Settings.";
+
 /// The log line for the music turning `playing` or not, `clip` its file
 /// name.
 pub fn log_line(playing: bool, audio_source: &str, clip: &str) -> String {
