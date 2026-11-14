@@ -1,6 +1,10 @@
 //! The hand menu and the debug panel: an egui UI rendered into a texture
 //! that `Gfx` draws on a quad above the left palm (`palm_panel.rs` places
-//! it and turns the right hand's ray or fingertip into a pointer).
+//! it and turns the right hand's ray or fingertip into a pointer). Board
+//! #5459: the palm summons the menu and it then stays in the air until it
+//! closes by itself, or the spoken "menu" parks it ahead
+//! (`palm_panel.rs`, "Summon and stay"; `debug.fosfora.menustay 0` keeps it
+//! on the palm).
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
 //! turned more to the ceiling is a hold instead, `palm_panel.rs`): five
@@ -44,7 +48,7 @@ use fosfora_app::ui::theme::palette::Palette;
 use glam::{Quat, Vec3};
 
 use crate::gfx::{Beam, Gfx, PanelPose};
-use crate::palm_panel::{PalmPanel, Touch};
+use crate::palm_panel::{At, PalmPanel, Touch};
 use crate::panel_grid::{
     self as grid, FONT_BUTTON, FONT_END, FONT_GRAPH, FONT_LABEL, FONT_TITLE, FONT_VALUE,
     PIXELS_PER_POINT, TEX_H, TEX_W,
@@ -203,6 +207,9 @@ pub enum Action {
     /// The Theme control: the next theme, applied to the whole room and
     /// saved with it (board #5415).
     NextTheme,
+    /// The spoken "menu" (true: open, parked ahead of the wearer) or "close
+    /// the menu" (board #5459). No row asks for it.
+    Menu(bool),
 }
 
 impl Controls {
@@ -344,6 +351,9 @@ pub struct Hud {
     gpu_history: VecDeque<f32>,
     /// Whether the panel was showing, to log changes only.
     shown_logged: bool,
+    /// Where the menu was (board #5459), to log its moves between the
+    /// palm and the air.
+    at_logged: At,
     /// The header was seen running into the controls (logged once).
     crowded_logged: bool,
 }
@@ -399,6 +409,7 @@ impl Hud {
             started: std::time::Instant::now(),
             gpu_history: VecDeque::with_capacity(HISTORY),
             shown_logged: false,
+            at_logged: At::Hidden,
             crowded_logged: false,
         }
     }
@@ -407,25 +418,36 @@ impl Hud {
     /// right hand against it: its ray (shoulder through index knuckle) with
     /// its pinch, and its index fingertip for a poke. Returns what the
     /// panel does with the pointer this frame (default when hidden).
+    ///
+    /// Board #5459: with `stay` (`debug.fosfora.menustay`) the menu stays
+    /// in the air once the palm lets it go, and closes by itself: `dt`
+    /// seconds count toward the idle close, and the left hand's pinch is
+    /// read for the pinch away.
     pub fn place(
         &mut self,
         gfx: &Gfx,
         hands: &crate::input::HandsFrame,
-        head: [f32; 3],
-        head_rot: [f32; 4],
+        (head, head_rot): ([f32; 3], [f32; 4]),
+        stay: bool,
+        dt: f32,
     ) -> Touch {
         let head = Vec3::from(head);
+        let head_rot = Quat::from_array(head_rot);
         let palm = hands.palm[0].map(|(p, q)| (Vec3::from(p), Quat::from_array(q)));
+        self.placement.set_stay(stay);
         self.placement.set_height(self.height_m());
-        let placement = self.placement.place(palm, head, Quat::from_array(head_rot));
-        let ray = hands.index_knuckle[1].map(|k| {
-            crate::palm_panel::hand_ray(Vec3::from(k), head, Quat::from_array(head_rot), 1.0)
-        });
+        self.placement.place(palm, head, head_rot);
+        let ray = hands.index_knuckle[1]
+            .map(|k| crate::palm_panel::hand_ray(Vec3::from(k), head, head_rot, 1.0));
         self.touch = self.placement.input(
             hands.index_tip[1].map(|t| (Vec3::new(t[0], t[1], t[2]), t[3])),
             ray,
             hands.pinching[1],
         );
+        self.placement.left_pinch(hands.pinching[0]);
+        self.placement.tick(dt);
+        // After the closes, so a menu that closed this frame draws nothing.
+        let placement = self.placement.placement();
         let v_max = self.visible_pts() * PIXELS_PER_POINT / TEX_H as f32;
         gfx.set_panel_pose(placement.map(|p| {
             let (right, up) = p.half_vectors();
@@ -447,9 +469,21 @@ impl Hud {
                 alpha: if self.touch.pressed { 0.9 } else { 0.55 },
             }),
         );
+        let closed = self.placement.take_closed();
         if shown != self.shown_logged {
             self.shown_logged = shown;
-            log::info!("hand menu {}", if shown { "shown" } else { "hidden" });
+            match closed.filter(|_| !shown) {
+                Some(why) => log::info!("hand menu hidden ({})", why.label()),
+                None => log::info!("hand menu {}", if shown { "shown" } else { "hidden" }),
+            }
+        }
+        // Board #5459: between the palm and the air (the knob at 1 only).
+        let at = self.placement.at();
+        if at != self.at_logged {
+            if shown && self.at_logged != At::Hidden {
+                log::info!("hand menu {}", at.label());
+            }
+            self.at_logged = at;
         }
         if self.touch.pressed != self.logged_pressed {
             self.logged_pressed = self.touch.pressed;
@@ -473,6 +507,32 @@ impl Hud {
     /// Whether the panel is showing this frame.
     pub fn shown(&self) -> bool {
         self.shown_logged
+    }
+
+    /// Board #5459, per hand (0 left, 1 right): a pinch that closed the
+    /// menu from away from it, which no gesture may read until released.
+    pub fn swallowed(&self) -> [bool; 2] {
+        self.placement.swallowed()
+    }
+
+    /// Board #5459: a pointer (the ray or a fingertip) is on or near the
+    /// shown menu.
+    pub fn pointed(&self) -> bool {
+        self.placement.pointed()
+    }
+
+    /// Board #5459: the spoken "menu" (`open`, parked ahead of the head)
+    /// or "close the menu". Nothing while the menu lives on the palm
+    /// (`debug.fosfora.menustay 0`).
+    pub fn spoken(&mut self, open: bool, head: [f32; 3], head_rot: [f32; 4]) {
+        if !open {
+            self.placement.close_spoken();
+        } else if self
+            .placement
+            .open_parked(Vec3::from(head), Quat::from_array(head_rot))
+        {
+            log::info!("hand menu parked ahead (spoken)");
+        }
     }
 
     /// Whether the debug panel is on.

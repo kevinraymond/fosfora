@@ -343,6 +343,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the APK's debuggable flag decides. Release: no Debug panel, Pitcher or "All: none" in the hand menu, the saved debug
     //       panel ignored, transcripts out of the log, no debug/anchors.json; read at launch)
     //   adb shell setprop debug.fosfora.hudtest 1                (diagnostic: the debug panel parked ahead of the view, untracked, for a screencap)
+    //   adb shell setprop debug.fosfora.menustay 0|1             (board #5459: 1 = the left palm summons the hand menu and it stays in the air, closing
+    //       after 8 s with no pointer on it, on a pinch away from it, or on "close the menu"; "menu" parks it ahead; 0 = it lives on
+    //       the palm, as before; default 1, polled once a second)
     //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: hands' sim spheres extend Go-Go style past a comfortable reach; default on in mr/world)
     //   adb shell setprop debug.fosfora.reachat 0.30             (reach: shoulder-to-palm distance, m, within which the hand is 1:1)
     //   adb shell setprop debug.fosfora.reachgain 40             (reach: quadratic gain, 1/m; 40 puts a 0.52 m palm at 2.5 m, capped at 3 m)
@@ -1446,6 +1449,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     );
     let mut hud = (hud_test || mr.hands && session.has_hands())
         .then(|| Hud::new(&mut gfx, debug_on, surface));
+    // Board #5459: the menu stays in the air once the palm summons it.
+    let mut menu_stay = switch_now("debug.fosfora.menustay").unwrap_or(true);
+    info!("{}", crate::palm_panel::knob_line(menu_stay));
     // Board #3789: the thermal governor (`governor.rs`) steps the cloud
     // density, so it acts in world mode only; the knob's default follows
     // the brief (on in world and mr), and mr has nothing to step.
@@ -2305,6 +2311,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     tip_min[h] = tip_min[h].min(*d);
                 }
             }
+            if frame_index.is_multiple_of(72) {
+                let now = switch_now("debug.fosfora.menustay").unwrap_or(true);
+                if now != menu_stay {
+                    menu_stay = now;
+                    info!("{}", crate::palm_panel::knob_line(now));
+                }
+            }
             // The panel first. While it is up its pinches are its own: no
             // cloud gestures from either hand (a pinch that just missed a
             // row moved the cloud), except one already in progress.
@@ -2314,12 +2327,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     h.place_parked(&gfx, input.head, input.head_rot);
                     false
                 } else {
-                    h.place(&gfx, &input.hands, input.head, input.head_rot);
+                    h.place(&gfx, &input.hands, (input.head, input.head_rot), menu_stay, dt);
                     h.shown()
                 }
             });
+            // Board #5459: a pinch that closed the menu from away from it
+            // does nothing else until released. Thumb swipes stop only
+            // while a pointer is on the menu; on the palm (the knob at 0)
+            // whenever it is up, as before.
+            let (swallowed, menu_pointed) =
+                hud.as_ref().map_or(([false; 2], false), |h| (h.swallowed(), h.pointed()));
+            let swipes_blocked = panel_up && (!menu_stay || menu_pointed);
             let pinches = [0, 1].map(|h| PinchInput {
-                pinching: input.hands.pinching[h] && !(panel_up && gestures.owner() != Some(h)),
+                pinching: input.hands.pinching[h]
+                    && !(panel_up && gestures.owner() != Some(h))
+                    && !swallowed[h],
                 point: input.hands.pinch_point[h],
             });
             let mut moved = false;
@@ -2423,7 +2445,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let effects = if world { world_effects.len() } else { 0 };
                 let outcomes = [0, 1].map(|h| {
                     micro.swipe[h].map(|s| {
-                        (s, crate::microgestures::outcome(s, h, panel_up, edit_on, effects))
+                        (s, crate::microgestures::outcome(s, h, swipes_blocked, edit_on, effects))
                     })
                 });
                 let right_steps = outcomes[1].is_some_and(|(_, o)| o.step().is_some());
@@ -2442,7 +2464,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         info!("microgesture: tap thumb {}", hand_name(h));
                     }
                 }
-                if let Some(step) = crate::microgestures::consume(micro, panel_up, edit_on, effects) {
+                if let Some(step) = crate::microgestures::consume(micro, swipes_blocked, edit_on, effects) {
                     switch_to = cycle_index(&parked, world_index, if step > 0 { 1 } else { -1 });
                     // Board #5460: a swipe that stepped the effect ticks.
                     if switch_to.is_some() {
@@ -2541,6 +2563,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         sky_facing = Some((crate::sky::facing(rot), "the last recenter"));
                     }
                     Action::RescanRoom => rescan = true,
+                    // Board #5459: the spoken "menu" and "close the menu".
+                    Action::Menu(open) => {
+                        if let Some(h) = hud.as_mut() {
+                            h.spoken(open, input.head, input.head_rot);
+                        }
+                    }
                     Action::SetDebug(on) => {
                         menu_saved.debug = on;
                         save_hand_menu(&menu_file, menu_saved);
@@ -3672,6 +3700,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 &mut controls,
                                 &mut voice_actions,
                                 &mut switch_to,
+                                menu_stay,
                             )
                         })
                     },
@@ -3877,6 +3906,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                                 &mut controls,
                                                 &mut voice_actions,
                                                 &mut switch_to,
+                                                menu_stay,
                                             )
                                         }),
                                     ),
@@ -5766,6 +5796,7 @@ fn apply_intent(
     controls: &mut Controls,
     actions: &mut Vec<Action>,
     switch_to: &mut Option<usize>,
+    menu_stay: bool,
 ) -> String {
     use crate::intent::Intent;
     match *intent {
@@ -5801,6 +5832,10 @@ fn apply_intent(
         Intent::Rescan => actions.push(Action::RescanRoom),
         Intent::Recenter => actions.push(Action::Recenter),
         Intent::AllNone => actions.push(Action::AllNone),
+        // Board #5459: the menu by voice while it stays in the air; on the
+        // palm (the knob at 0) the voice leaves it alone.
+        Intent::Menu(_) if !menu_stay => return crate::intent::MENU_ON_PALM.to_owned(),
+        Intent::Menu(open) => actions.push(Action::Menu(open)),
         // Board #5393: the Roam control's press, by voice.
         Intent::Roam(on) => actions.push(Action::SetRoam(on)),
         // Board #5384: a step from the depth the control shows; the label
