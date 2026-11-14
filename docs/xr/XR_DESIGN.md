@@ -480,7 +480,8 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   first in left, right, forward, backward order when two swipes fire at
   once. In world mode with more than one effect a swipe right steps to the
   next world effect and a swipe left to the previous, either hand, by the
-  path the menu's `<` `>` take; nothing while the hand menu is up, nothing
+  path the menu's `<` `>` take; nothing while a pointer is on the hand menu
+  (board #5459; with `debug.fosfora.menustay 0`, while it is up), nothing
   from the right hand in Edit room. Forward and backward are logged and
   reserved; the thumb tap opens the voice window (board #3751, V4, the
   Voice bullet below). The decision (`consume`) is plain data with desktop
@@ -1181,8 +1182,9 @@ beyond raw tip distance, and a proposal. Steps 1, 3 and 5 are built (see
   **cycles the world effect**. With Edit room on, the right hand's tap
   **cycles the pointed surface's behavior**, its hold **applies it to the
   kind**, its drag is swallowed (a short one counts as a tap), and the left
-  hand keeps the world vocabulary. While the hand menu shows (left palm
-  facing the head), the right hand's pinches are the menu's: a ray pinch
+  hand keeps the world vocabulary. While the hand menu shows (the left palm
+  summons it; since board #5459 it stays in the air, "The hand menu: summon
+  and stay" below), the right hand's pinches are the menu's: a ray pinch
   clicks or drags on the panel, a fingertip pokes it.
 - **The poses** (`pose.rs`, with 0.1 s dwell and hysteresis): fist (finger
   curl under 55 mm), palm up (normal within 37° of up), open; hands together
@@ -1291,6 +1293,69 @@ sprite size toggle runs only in `mode particles` (the S5 test sim the sweeps
 use); in mr and world a tap throws and nothing else. Steps 2 (`SYSTEM_GESTURE`
 from the aim extension) and 4 (microgestures, the cycle's second home) are
 pending, each its own PR with a worn gate.
+
+### The hand menu: summon and stay (board #5459)
+
+The app is used lying back in a chair. The menu used to live on the left
+palm and hide when the palm turned away, so every press needed both arms
+raised for as long as it took, and nothing in the menu worked with one
+hand. Now the palm summons the menu and the menu stays in the world
+(`palm_panel.rs`, "Summon and stay"; `hud.rs`). Knob
+`debug.fosfora.menustay 0|1`, default 1, polled once a second and logged
+on each change. 0 is the menu on the palm as it was, so the two can be
+compared worn in one sitting.
+
+- **Summon.** The left palm turning to the face (cosine to the head over
+  0.6, and facing the head at least as much as the ceiling) shows the menu
+  at the palm, and it follows the palm as before. Showing the palm again
+  later brings it back to the palm from wherever it is, at once; a pointer
+  on it holds it still until the pointer leaves.
+- **Stay.** The palm turning away (cosine under 0.3, or facing the ceiling
+  0.1 more than the head) or the hand dropping out of tracking leaves the
+  menu where it is. It turns to face the wearer once, then holds still,
+  and the right hand's beam or fingertip works it as before.
+- **The spoken open.** "Menu" or "open the menu" (also "show the menu",
+  "bring up the menu", "hand menu") parks it 45 cm ahead of the head along
+  the view and 5 cm below, facing it, with no palm, so one hand works it.
+  "What can I say" lists "open the menu" on its first page.
+- **The closes.** There is no new row. In the air, no pointer on it for
+  8 s closes it; on the palm the count never runs. A pinch that starts
+  away from it closes it: the right hand's ray landing outside the panel
+  grown by half its size (1.5 times its half extents) or missing it, or a
+  left pinch while the menu is in the air. That pinch is masked from the
+  gesture machine until it is released, so it does nothing else. A pinch
+  that just misses a row, inside that margin, does nothing and the menu
+  stays. "Close the menu" (also "hide the menu", "menu off") closes it. A
+  close while the palm is still up holds until the palm turns away and
+  back.
+- **What it owns while up.** The same as the palm's menu: both hands'
+  pinches for the cloud gestures (one already in progress goes on), the
+  throw, the room editor's tap, hold and beam (held on its surface),
+  Murmur's left-hand pose and two-hand hold, and the left hand's lift. The
+  closes bound it: at most 8 s after the last pointer left it (frame time;
+  a frame counts at most 1/30 s), and at once on a pinch away. Thumb
+  swipes keep working while it is up with no pointer on it; with the knob
+  at 0 they stop whenever it is up, as before.
+- **The frame lying back.** `Placement::facing` builds the panel's right
+  from world up crossed with the line of sight, which turns anywhere with
+  the hand straight above the face. `Placement::facing_view` keeps world
+  up's frame beyond 30° from the vertical and within it blends to the
+  head's right projected onto the panel, whole within 15°, as the room
+  labels do. The world-up right is turned to agree with the head's, so
+  the panel never flips over as the line of sight passes the vertical. On
+  the palm the panel also grows along its own up near the vertical
+  (`Placement::above_view`), where world up would put it behind the hand.
+- **The log.** "hand menu shown", "hand menu in the air", "hand menu on
+  the palm", "hand menu parked ahead (spoken)", and "hand menu hidden" with
+  why: "(no pointer for 8 s)", "(a right pinch away from it)", "(a left
+  pinch away from it)", "(spoken)". With the knob at 0 the spoken open and
+  close reply "The menu is on your left palm" and do nothing.
+- **Tests (desktop).** In `palm_panel.rs`, the palm turning away leaves it
+  in the air, the idle close, the pinch away closing and swallowed, the
+  near miss doing nothing, the palm bringing it back, the spoken open and
+  close, the knob at 0, and the frame overhead with the head looking up.
+  In `intent.rs`, `open_and_close_the_menu`. The worn comparison is
+  pending.
 
 ## Android manifest essentials
 
