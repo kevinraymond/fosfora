@@ -1096,13 +1096,16 @@ its cap, and `debug.fosfora.burstcount` a throw's burst, under its own.
 
 Not measured. With nothing alive the app runs 7.05 ms a frame seated on
 Aurora and 6.73 ms in roam (`MEASURED.md`, the reboot table), and Flux
-Cloud's 300,000 sprites added about 2.5 ms. By count, a full pool of
-20,000 is about 0.2 ms of that. The sprites are twice the cloud's radius,
-so the draw's share is nearer four times its count's: the fireflies alone
-should stay under 0.1 ms, the fireflies and a burst in flight about 0.3 to
-0.4 ms, and a pool hammered full about 0.6 ms. A firefly's step samples no
-texture and tests no box. A hand particle's tests the boxes in its cell
-and the depth map every other frame, as the cloud's did.
+Cloud's 300,000 sprites added 1.9 to 2.5 ms to that, sim and draw. Scaled
+by count alone, a full pool of 20,000 is under 0.2 ms. The sprites are
+twice the cloud's radius, so if the whole of the cloud's cost were fill the
+pool would count four times over: 0.07 ms for 2,000 fireflies, about 0.4 ms
+for the fireflies and a throw in flight (some 9,000 hand particles), and
+about 0.7 ms for a pool hammered full, or 0.9 ms on a hot headset. The
+truth should sit between the two scalings, under 1 ms in every case. A
+firefly's step samples no texture and tests no box. A hand particle's
+tests the boxes in its cell and the depth map every other frame, as the
+cloud's did.
 
 ### Checking it unworn
 
