@@ -1218,10 +1218,12 @@ glides from where the room is to the song's level in about 2 s
 (`RESUME_S`: the time constant is a third of it). On the synthetic groove
 nothing shows and the room stays plain until the music first plays.
 
-The message is the label's last choice. It shows where the scan label
+The message comes after the other labels. It shows where the scan label
 does, 1.2 m ahead at eye height, only while no other label is up: the
-voice's, then the editor's, then the scan's and the permission's ("Allow
-spatial data to see the room"). It waits while any of them shows, and its
+voice's, then the editor's, a hand menu reply, then the scan's and the
+permission's (board #5461: the permission's now holds 6 s, not the whole
+wait; only the controllers label comes after the message, and never holds
+it, `XR_DESIGN.md`). It waits while any of them shows, and its
 4 s hold counts only while it is the one shown, so a scan that ends with
 "Room: 17 surfaces" plays out first and a fist mid-message covers it
 without eating it. `debug.fosfora.immerseopen 0`, a pinned level
@@ -1475,7 +1477,8 @@ buffer write and at most two draws per eye, the strips and the tunnels.
 
 **The Edges control over the theme.** The hand menu's Edges control (the
 right half of the cloud row's right cell) now steps theme, off, face,
-stand, in, and back to theme. "Edges theme", the default, follows the
+stand, in, and back to theme. "Edges: theme" (board #5461; "Edges" over
+the state in half a cell), the default, follows the
 theme; each of the others forces that mode on every kind. The knob
 `debug.fosfora.edgebars` does the same: unset follows the theme, 0 to 3
 force (0 off, 1 face, 2 stand, 3 in). The control's choice holds until

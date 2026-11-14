@@ -1358,6 +1358,105 @@ compared worn in one sitting.
   In `intent.rs`, `open_and_close_the_menu`. The worn comparison is
   pending.
 
+## The labels a new wearer meets (board #5461)
+
+*Built.* Everything the app tells a wearer is on one in-world label
+(`label.rs`), white text on a dark ground. One label shows at a time, in
+this order: the voice window's, the room editor's at the surface, a hand
+menu reply, the room scan's, the opening's message, and last the
+controllers label. Those up to the scan's hold the opening; the
+controllers label never does.
+
+What a wearer can meet, in the order of a first launch:
+
+| When | Words | Where | How long |
+|---|---|---|---|
+| The room's scene query runs | Scanning the room… | 1.2 m ahead, level | until it returns |
+| It finds the room | Loading your room | same | 3 s |
+| It finds none, roam goes on | No room here: roaming. Rescan from the hand menu | same | 6 s |
+| The wearer said no to spatial data | Fosfora can't see the room. Allow spatial data in Settings, then restart Fosfora. | same | 6 s |
+| The music first plays, no label up | Sit back and relax | same | 4 s, then the show |
+| No hand tracked since the launch, 4 s after the scan's label | Put the controllers down. Fosfora uses your hands. | same | until a hand is tracked |
+| Music `<` or `>` with no songs | No songs on the headset. Put them in its Music folder. | 1 m out, 20 degrees above the view | 4.8 s |
+| The same, music permission missing | Can't read the Music folder. Allow music files in Settings. | same | 4.5 s |
+| Room editor: a tap, a hold, a menu step | desk: sparks, all tables: none | at the surface | its reading time |
+| Room editor: a first hold | desk: hold again for all tables -> curls | at the surface | the arm's 2.5 s |
+| A voice reply or miss | theme: Aurora, Didn't catch that… | the voice window's place | its own time or its reading time |
+| The session ends on an error | Fosfora stopped: the session was lost | 1.2 m ahead, level | 4 s, then the app exits |
+
+**Reading time.** A label shows for 1.5 s and 0.3 s a word, at most 6 s
+(`label::read_s`). Most labels held 1.5 s before, about a second at full
+strength once the fade is taken off. A caller's own time is a floor
+(`Label::show_for`): "Listening…" stays the whole voice window, a voice
+reply its 1.5 s or its reading time, whichever is longer. The one label
+held to its caller's time exactly (`Label::show_held`) is the editor's
+"hold again": it goes when the arm's 2.5 s window closes, since it names
+a second hold that would no longer work. Its seven words need 3.6 s, and
+the second hold itself takes 0.7 s of the window, so a slow reader can't
+finish it in time. The window's length is unchanged; widening it is a
+separate decision.
+
+**Lines.** A label of one line takes up to 88 px of its 1024 px texture.
+One that would shrink below 64 px to fit wraps instead (`label::layout`):
+a sentence a line, a sentence that still runs over onto as few lines as
+it takes, as even as they come, a line ending at a colon when that costs
+no extra line. Two lines take up to 76 px, more lines 64. The widths are
+the font's own advances (`text_width.rs`, Ubuntu-Light, which egui lays
+out without kerning), so the wrap is tested on the desktop. Before, "No
+room found. Rescan from the hand menu" drew at 46 px on one line, "desk:
+hold again for all tables -> streamlines" at 48, and the theme miss
+(`No theme called "blue sky": Classic, Drift, Tide, Aurora or Mirror`)
+ran past both ends at the 40 px floor. They now draw at 73, 76 and 64.
+
+**Spatial data denied.** The OpenXR session stays idle under the
+system's dialog (`MEASURED.md`), so when frames run the wearer has
+answered it. The label held for the whole 120 s watch before, and the
+opening waited behind it. It now holds 6 s and fades, and the show
+starts without a room, in roam, as after a scan that finds none. A grant
+made in Settings during the watch is picked up as it comes; a later one
+needs a restart, which the words say. The watch's end, spatial data still
+missing, shows no second label two minutes into the show.
+
+**Controllers.** The app binds no controller profile and reads only the
+hand-tracking extension, so a wearer holding the controllers has no
+menu, no voice and no gesture. When no hand has been tracked since the
+launch and the scan's label has been gone 4 s, the controllers label
+shows after the opening's message and stays until a hand is tracked.
+Once a hand has been tracked it never shows again in that run, so a
+wearer whose hands rest out of view isn't told to put down controllers
+they don't hold. A wearer who picks the controllers up later sees
+nothing. `debug.fosfora.handshint 0` keeps it off; `scripts/xr/sweep.sh`
+and `soak.sh` set it for their unworn runs, where no hand is ever
+tracked. The log says `controllers label: shown, no hand tracked since
+the launch` and `controllers label: gone, a hand is tracked`.
+
+**Music with no songs.** Music `<` `>` with no track in either folder
+did nothing visible (the log said so). It now shows the reply on the
+label, placed once at the press 1 m from the head along the view raised
+20 degrees (`label::menu_reply_at`), so it sits over the menu the wearer
+is looking at rather than behind it. The words name the permission when
+the shared Music folder is there but unread for want of it
+(`music::no_songs`); a spoken "next song" replies the same words.
+
+**The menu's words.** The Edges control reads "Edges: theme" in a cell
+of its own and "Edges" over the state in half a cell (the developer
+surface, beside "All: none"), where "Edges: theme" is 97 points in 90.5.
+The editor's status cell is empty with Edit room off (it read "edit room
+off" beside the "Edit room: off" button) and reads "Point at a surface"
+with nothing under the beam. "Particles: off (shown: editing)", 208
+points in a 187-point cell, is "Particles: off (editing)". A status too
+long for its cell at 16 points takes two lines at 12 and is cut past two.
+`panel_grid`'s `every_menu_word_fits_its_cell` measures every fixed word
+against its cell.
+
+**What only a worn check can tell.** Whether 76 and 64 px lines read at
+1.2 m and at a wall; whether the menu reply sits clear of the menu for a
+real palm and reach; whether the runtime reports no hands while the
+controllers are held (the label's whole premise); how the session
+behaves when the wearer leaves for Settings and comes back; and whether
+the 4 s wait after the scan's label is long enough for a wearer who put
+the controllers down at launch.
+
 ## Android manifest essentials
 
 *Verified (S1)* against Meta's public "Android Manifest Settings" page:
@@ -1441,8 +1540,10 @@ it, not Space Setup, with a fresh set of empty-result retries), logged
 grant opens the microphones the way the launch would have, logged
 `permission RECORD_AUDIO granted after N s: opening the microphones`. While
 `USE_SCENE` is awaited and the room has no anchors, the scan label reads
-"Allow spatial data to see the room" (`room scan: NotAllowed` in the log)
-instead of "Scanning the room…". `debug.fosfora.ask 0` skips the request for
+"Fosfora can't see the room. Allow spatial data in Settings, then restart
+Fosfora." (`room scan: NotAllowed` in the log) instead of "Scanning the
+room…", for 6 s (board #5461, "The labels a new wearer meets"; it held for
+the whole wait before). `debug.fosfora.ask 0` skips the request for
 unworn runs, where the dialog would sit over the view; the checks, the log and
 the pickup stay. `scripts/xr/sweep.sh` and `soak.sh` set it for their runs
 and clear it afterwards. Should the JNI layer fail, the app takes everything
