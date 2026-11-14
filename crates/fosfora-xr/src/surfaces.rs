@@ -144,6 +144,29 @@ impl SurfaceBehavior {
         Self::Tessera,
     ];
 
+    /// The behaviors a wearer can give a surface (board #5470): every one
+    /// but embers and sparks, which spawned particles of the surface-born
+    /// cloud effect. That effect is gone, so a surface on either shows
+    /// nothing. The room editor's cycle steps past them
+    /// ([`Self::next_for`]), and the voice path's vocabulary and its help
+    /// are built from this list. A room file that names one still loads.
+    pub const OFFERED: [Self; 14] = [
+        Self::None,
+        Self::Spectrum,
+        Self::Rings,
+        Self::Streamlines,
+        Self::Curls,
+        Self::Pulse,
+        Self::Aurora,
+        Self::Prism,
+        Self::Shards,
+        Self::Astrolabe,
+        Self::Bezel,
+        Self::Fenestra,
+        Self::Reticle,
+        Self::Tessera,
+    ];
+
     /// The catalogue id (`XR_BEHAVIOR_*` in `flux_xr_sim.wgsl`, `BEHAVIOR_*`
     /// in `surface_fx::SURFACE_FX_WGSL`).
     pub fn id(self) -> u32 {
@@ -301,19 +324,33 @@ impl SurfaceBehavior {
         }
     }
 
-    /// The step after this one in `kind`'s [`Self::catalogue`], wrapping.
-    /// Off the catalogue (the knob put the spectrum on a table), the first
-    /// entry after `none`, or `none` when the catalogue is only `none`.
+    /// The step after this one in `kind`'s [`Self::catalogue`], wrapping,
+    /// past the entries no longer offered ([`Self::OFFERED`]): the list
+    /// keeps embers and sparks, which the on-device voice model's spec
+    /// names, and the cycle skips them. Off the catalogue (the knob put
+    /// the spectrum on a table), the first entry after `none`, or `none`
+    /// when the catalogue is only `none`.
     #[must_use]
     pub fn next_for(self, kind: u32) -> Self {
         let order = Self::catalogue(kind);
-        match order.iter().position(|&b| b == self) {
-            Some(i) => order[(i + 1) % order.len()],
-            None => order.get(1).copied().unwrap_or(Self::None),
-        }
+        let from = match order.iter().position(|&b| b == self) {
+            Some(i) => i + 1,
+            None => 1,
+        };
+        (0..order.len())
+            .map(|k| order[(from + k) % order.len()])
+            .find(|b| b.offered())
+            .unwrap_or(Self::None)
     }
 
-    /// Whether the sim spawns particles on a surface running it.
+    /// Whether a wearer can still give a surface this behavior
+    /// ([`Self::OFFERED`]).
+    pub fn offered(self) -> bool {
+        !self.emits()
+    }
+
+    /// Whether the surface-born sim spawned particles on a surface running
+    /// it. No sim does since board #5470.
     pub fn emits(self) -> bool {
         matches!(self, Self::Embers | Self::Sparks)
     }
@@ -1548,7 +1585,9 @@ mod tests {
     #[test]
     fn each_kind_cycles_through_what_renders_on_it_and_wraps() {
         use SurfaceBehavior as B;
-        // Every step of each kind's order, from none round to none.
+        // Every step of each kind's order, from none round to none, past
+        // embers and sparks: they stay on the lists and the cycle skips
+        // them (board #5470).
         let other: &[B] = &[
             B::None,
             B::Curls,
@@ -1628,15 +1667,16 @@ mod tests {
         ];
         for (kind, order) in orders {
             assert_eq!(B::catalogue(kind), order, "kind {kind}");
+            let mut expected: Vec<B> = order[1..].iter().copied().filter(|b| b.offered()).collect();
+            expected.push(B::None);
             let mut b = B::None;
             let mut seen = Vec::new();
-            for _ in 0..order.len() {
+            for _ in 0..expected.len() {
                 b = b.next_for(kind);
                 seen.push(b);
             }
-            let mut expected = order[1..].to_vec();
-            expected.push(B::None);
             assert_eq!(seen, expected, "kind {kind}");
+            assert!(seen.iter().all(|b| !b.emits()), "kind {kind}: {seen:?}");
             // Each behavior once.
             for (i, x) in order.iter().enumerate() {
                 assert!(!order[i + 1..].contains(x), "kind {kind}: {x:?} twice");
@@ -1648,7 +1688,7 @@ mod tests {
         assert_eq!(B::Pulse.next_for(KIND_FRAME), B::Rings);
         assert_eq!(B::Curls.next_for(KIND_OTHER), B::Streamlines);
         let mut floor = vec![B::default_for(KIND_FLOOR)];
-        for _ in 0..9 {
+        for _ in 0..8 {
             floor.push(floor.last().unwrap().next_for(KIND_FLOOR));
         }
         assert_eq!(
@@ -1657,7 +1697,6 @@ mod tests {
                 B::Rings,
                 B::Streamlines,
                 B::Curls,
-                B::Sparks,
                 B::Tessera,
                 B::Prism,
                 B::Astrolabe,
@@ -1753,6 +1792,22 @@ mod tests {
         assert_eq!(B::Embers.next_for(KIND_WALL), B::Spectrum);
         assert_eq!(B::Embers.next_for(KIND_FLOOR), B::Rings);
         assert_eq!(B::Sparks.next_for(KIND_CEILING), B::Rings);
+        // A surface a saved room left on embers or sparks steps to the
+        // next look of its kind that still shows something.
+        assert_eq!(B::Embers.next_for(KIND_TABLE), B::Shards);
+        assert_eq!(B::Sparks.next_for(KIND_TABLE), B::Shards);
+        assert_eq!(B::Pulse.next_for(KIND_TABLE), B::Shards);
+        assert_eq!(B::Sparks.next_for(KIND_FLOOR), B::Tessera);
+        assert_eq!(B::Embers.next_for(KIND_OTHER), B::Shards);
+        // What is offered is everything but those two.
+        assert_eq!(
+            B::ALL
+                .into_iter()
+                .filter(|b| b.offered())
+                .collect::<Vec<_>>(),
+            B::OFFERED
+        );
+        assert!(!B::OFFERED.contains(&B::Embers) && !B::OFFERED.contains(&B::Sparks));
         // A ceiling on none goes to the rings, a frame to the pulse.
         assert_eq!(B::None.next_for(KIND_CEILING), B::Rings);
         assert_eq!(B::None.next_for(KIND_FRAME), B::Pulse);

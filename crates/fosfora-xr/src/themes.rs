@@ -190,6 +190,15 @@ impl Theme {
         Self::ALL[(i + 1) % Self::ALL.len()]
     }
 
+    /// The theme before this one in the cycle, wrapping: Classic, Mirror,
+    /// Aurora, Tide, Drift, Classic.
+    #[must_use]
+    pub fn prev(self) -> Self {
+        let n = Self::ALL.len();
+        let i = Self::ALL.iter().position(|&t| t == self).unwrap_or(0);
+        Self::ALL[(i + n - 1) % n]
+    }
+
     /// What every surface of `kind` runs under this theme; for a kind
     /// without a name (an unlabeled anchor) nothing: a theme leaves those
     /// as they are, as All: none does.
@@ -341,6 +350,18 @@ impl Shown {
     /// start of the cycle.
     pub fn next(self) -> Theme {
         self.theme().map_or(Theme::Classic, Theme::next)
+    }
+
+    /// The theme a thumb swipe left applies: the one before the one it
+    /// names (edited or not), Mirror from custom, the end of the cycle.
+    pub fn prev(self) -> Theme {
+        self.theme().map_or(Theme::Mirror, Theme::prev)
+    }
+
+    /// The theme one step along the cycle from the one it names: forward
+    /// ([`Self::next`]) for a `step` over 0, back ([`Self::prev`]) otherwise.
+    pub fn step(self, step: i32) -> Theme {
+        if step > 0 { self.next() } else { self.prev() }
     }
 
     /// The control's value: "Drift", "Drift*" when edited, "custom".
@@ -596,6 +617,36 @@ mod tests {
                 Theme::Classic
             ]
         );
+        // And back the other way, wrapping at Classic.
+        let mut seen = Vec::new();
+        for _ in 0..Theme::ALL.len() {
+            t = t.prev();
+            seen.push(t);
+        }
+        assert_eq!(
+            seen,
+            [
+                Theme::Mirror,
+                Theme::Aurora,
+                Theme::Tide,
+                Theme::Drift,
+                Theme::Classic
+            ]
+        );
+        for t in Theme::ALL {
+            assert_eq!(t.next().prev(), t);
+            assert_eq!(t.prev().next(), t);
+        }
+        // A thumb swipe: right is the control's press, left the theme
+        // before, each from the one shown, edited or not. Custom steps to
+        // the cycle's start or its end.
+        assert_eq!(Shown::Theme(Theme::Drift).step(1), Theme::Tide);
+        assert_eq!(Shown::Theme(Theme::Drift).step(-1), Theme::Classic);
+        assert_eq!(Shown::Edited(Theme::Aurora).step(-1), Theme::Tide);
+        assert_eq!(Shown::Theme(Theme::Classic).prev(), Theme::Mirror);
+        assert_eq!(Shown::Theme(Theme::Mirror).step(1), Theme::Classic);
+        assert_eq!(Shown::Custom.step(1), Theme::Classic);
+        assert_eq!(Shown::Custom.step(-1), Theme::Mirror);
         // The control's press: the next after the one shown, edited or
         // not; custom starts the cycle. Mirror comes after Aurora.
         assert_eq!(Shown::Theme(Theme::Drift).next(), Theme::Tide);

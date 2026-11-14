@@ -744,7 +744,15 @@ impl RoomLanes {
     /// theme after the one the control shows ([`Shown::next`]), applied as
     /// [`Self::apply_theme`] does. Returns it.
     pub fn next_theme(&mut self, boxes: &[LaneBox<'_>], source: &str) -> Theme {
-        let theme = self.theme().next();
+        self.step_theme(boxes, source, 1)
+    }
+
+    /// A thumb swipe (board #5470): the theme one step along the cycle
+    /// from the one the control shows ([`Shown::step`]), forward for a
+    /// `step` over 0 and back otherwise, applied as [`Self::apply_theme`]
+    /// does. Returns it.
+    pub fn step_theme(&mut self, boxes: &[LaneBox<'_>], source: &str, step: i32) -> Theme {
+        let theme = self.theme().step(step);
         self.apply_theme(theme, boxes, source);
         theme
     }
@@ -1628,10 +1636,11 @@ mod tests {
         let id = room_of(&boxes);
         let mut lanes = RoomLanes::new(dir.clone());
         lanes.update(id, &boxes);
-        // The couch (other, default the curls): eight pinches go round
-        // its kind's catalogue once, the ported effects after its own.
+        // The couch (other, default the curls): seven pinches go round
+        // its kind's catalogue once, the ported effects after its own,
+        // past embers, which is no longer offered (board #5470).
         let mut seen = Vec::new();
-        for _ in 0..8 {
+        for _ in 0..7 {
             seen.push(lanes.cycle(4, &boxes).unwrap());
         }
         assert_eq!(
@@ -1639,7 +1648,6 @@ mod tests {
             [
                 B::Streamlines,
                 B::Pulse,
-                B::Embers,
                 B::Shards,
                 B::Reticle,
                 B::Tessera,
@@ -1841,15 +1849,15 @@ mod tests {
         assert!(lanes.poll_knob(Some("#5=embers"), false, &boxes));
         assert_eq!(lanes.cycle(5, &boxes), Ok(B::Rings));
         // The floor: the rings by default (step 2d), then the
-        // streamlines, the curls, sparks, its four ported effects (aurora
-        // the sky's reflection, board #5436), none, the rings.
-        let floor: Vec<_> = (0..9).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
+        // streamlines, the curls, its four ported effects (aurora the
+        // sky's reflection, board #5436), none, the rings. Sparks is on
+        // its list and the cycle steps past it (board #5470).
+        let floor: Vec<_> = (0..8).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
         assert_eq!(
             floor,
             [
                 B::Streamlines,
                 B::Curls,
-                B::Sparks,
                 B::Tessera,
                 B::Prism,
                 B::Astrolabe,
@@ -2209,6 +2217,15 @@ mod tests {
             ]
         );
         on_theme(&lanes, &boxes, Theme::Drift);
+        // A thumb swipe left steps back the same way, wrapping at Classic,
+        // and a swipe right is the control's press.
+        let back: Vec<Theme> = (0..3)
+            .map(|_| lanes.step_theme(&boxes, "test", -1))
+            .collect();
+        assert_eq!(back, [Theme::Classic, Theme::Mirror, Theme::Aurora]);
+        on_theme(&lanes, &boxes, Theme::Aurora);
+        assert_eq!(lanes.step_theme(&boxes, "test", 1), Theme::Mirror);
+        on_theme(&lanes, &boxes, Theme::Mirror);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
