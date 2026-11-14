@@ -1590,7 +1590,9 @@ itself while it waits.
 - `debug.fosfora.say 'begin'` begins a waiting show, and is fed without
   waiting for the room's anchors.
 - `debug.fosfora.hints 1`: the hints again this launch. The saved state
-  is left out and the hints show with no hand tracked.
+  is left out and the hints show with no hand tracked. A hint made or
+  given up in such a launch is saved, and the file then holds only what
+  that launch taught.
 - `debug.fosfora.swipe right|left`: a thumb swipe from the right hand, for
   the caption and the swipe hint's "Got it".
 - `debug.fosfora.voicetap 1` (board #5453) is the thumb tap.

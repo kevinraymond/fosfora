@@ -398,7 +398,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       while the show waits, so setting it also begins a launch that is waiting; logged `first run: the show begins (...)`)
     //   adb shell setprop debug.fosfora.hints 1                  (board #5452: the first run's three hints again this launch: what
     //       hand_menu.json saved as taught is left out, and the hints show without a hand having been tracked, so they can be captured
-    //       unworn; each still saves as taught when it is made or gives up; read at launch)
+    //       unworn; a hint made or given up in such a launch is saved, and the file then holds only what that launch taught; read at
+    //       launch)
     //   adb shell setprop debug.fosfora.swipe right|left         (board #5452: a thumb swipe from the right hand as if made, for the unworn
     //       check of the swipe's caption and of the swipe hint's "Got it"; polled once a second, fed once per value as
     //       debug.fosfora.say is (set "" or the other direction to swipe again))
