@@ -73,21 +73,28 @@ governor keeps those counters on whether the debug panel is up or not.
 Without them it falls back to the frame loop's one-second window: over below
 95 % of the display rate or at 3 long frames, under at 98 % or above with no
 long frame. **The budget** is the display period times a margin: over above
-0.92 of it (12.8 ms at 72 Hz) for 3 s steps the cloud density down by 0.1,
+0.92 of it (12.8 ms at 72 Hz) for 3 s steps the density down by 0.1,
 to 0.3 at the lowest; under 0.75 of it (10.4 ms) for 20 s steps it back up
 by 0.1, to the wearer's own setting at most. Between the two it holds, and
 each step restarts the clock, as does a gap of over 0.5 s with no frame (the
 session paused). Over for another 3 s at the floor raises a `Starved` level,
 the seam for the next stage (the faces' update rate, board #3788, not
 built); it is the first thing given back. **The stepper**: the debug panel's
-"cloud density" shows the governed value marked, "cloud density 0.60 (gov)",
-and a wearer's step starts from it and becomes the new ceiling, the
+"firefly density" shows the governed value marked, "firefly density 0.60
+(gov)", and a wearer's step starts from it and becomes the new ceiling, the
 governor's debt cleared. Each step logs a line (`governor: gpu 15.2 ms over
 12.8 for 3 s · density 1.00 → 0.90`), and the thresholds once the display
 rate is known. **Knobs** (read at launch): `debug.fosfora.gov 0|1` (default
-on in world and mr; mr has no cloud density, so it idles there),
+on in world and mr; mr has no density, so it idles there),
 `debug.fosfora.govdown 0.92`, `debug.fosfora.govup 0.75` (held at or below
 `govdown`).
+
+**What the density is now** (board #5470). It was the cloud's emission
+against its preset's. The cloud effects are gone, and the density is the
+share of the fireflies' count that is asked for ("Fireflies and the hand
+particles", below). The governor still steps it, and it now gives back
+little: the fireflies are a few thousand sprites. The stage after it, the
+faces' update rate, is the one that would give back a hot headset's frame.
 
 ## OpenXR bring-up (Android)
 
@@ -371,7 +378,7 @@ launch from plucked notes in E major. There are no audio files.
 
 | Cue | When | Notes | Length | Peak, default gain |
 |---|---|---|---|---|
-| Press | a hand menu press that does something; a thumb swipe that stepped the effect; a surface row step or an Edit room pinch that changed a surface | B6 tick with a woodblock partial | 30 ms | -14 dBFS |
+| Press | a hand menu press that does something; a thumb swipe that stepped the theme; a surface row step or an Edit room pinch that changed a surface | B6 tick with a woodblock partial | 30 ms | -14 dBFS |
 | Listening | the voice window opened | E6, then B6 | 120 ms | -16.5 dBFS |
 | Closed | the voice window closed | B6, then E6 | 120 ms | -16.5 dBFS |
 | Understood | every clause of a sentence matched; an agent reply's actions all resolved; the room editor's second hold applied | G#6 | 160 ms | -16.5 dBFS |
@@ -478,9 +485,10 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   `FOCUSED`, one `xrSyncActions`; each action's rising edge per hand
   (changed since the last sync and now on) is the frame's microgesture, the
   first in left, right, forward, backward order when two swipes fire at
-  once. In world mode with more than one effect a swipe right steps to the
-  next world effect and a swipe left to the previous, either hand, by the
-  path the menu's `<` `>` take; nothing while a pointer is on the hand menu
+  once. In world mode a swipe right steps to the next theme and a swipe
+  left to the one before, either hand, by the path the menu's Theme control
+  takes (board #5470; until then it stepped the world effect); nothing
+  while a pointer is on the hand menu
   (board #5459; with `debug.fosfora.menustay 0`, while it is up), nothing
   from the right hand in Edit room. Forward and backward are logged and
   reserved; the thumb tap opens the voice window (board #3751, V4, the
@@ -932,12 +940,265 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   `XR_META_spatial_entity_room_mesh` (no public binding). Both stay options
   for the product.
 
+## Fireflies and the hand particles (board #5470)
+
+*Built and tested on the desktop, on a desktop GPU too, and the device code
+passes the Android lint. Nothing here has run on the headset yet: every
+size, speed and time below is the code's constant, not a measurement, and
+the defaults are a first guess for a worn tuning pass.*
+
+**What was cut, and why.** The owner wore the app and decided the show is
+the room: the lit surfaces, the sky and the depth points. The three cloud
+effects were not wanted. Seated, the default one (Embers) had almost
+nothing alive, Flux Cloud was 300,000 sprites of smoke between the wearer
+and the room, and Flock used 92% of the GPU. So Flux Cloud, Embers and
+Flock are gone for the wearer: not in the menu, not by voice, not by swipe,
+and roam no longer swaps to one. With them went the hand menu's effect row,
+roam's fill rule, and embers and sparks as things a surface can be given.
+What is left is one sparse layer, the fireflies, and the particles a hand
+makes.
+
+### What the wearer sees
+
+Seated, soft points of light hang all around, from the floor to the
+ceiling and in every direction, about one every 0.36 m. Each drifts on a
+slow loop of its own and glows and fades on its own rhythm of 4 to 9 s. With
+music they are a little brighter and a little larger in the loud parts. In
+roam they are the same, around the head: the layer's center glides after
+the wearer as the cloud's did (`roam::Follow`). A pinch tap still throws a
+streak that bursts where it lands. The burst now arcs, falls and lies
+where it lands, and what reaches an edge runs along it. The Particles
+toggle hides both.
+
+### One pool, two caps
+
+The world effect is one preset, `assets/xr/effects/fireflies_xr_world.pfx`,
+and one sim, `assets/xr/shaders/fireflies_xr_sim.wgsl`. Nothing in the core
+changed: the core runs the preset as it ran the others. `fireflies.rs`
+holds the caps and the knobs.
+
+- `fireflies::FIREFLY_CAP` is 3,000: the most fireflies alive at once.
+- `fireflies::POOL_CAP` is 20,000: the most particles alive at once,
+  fireflies and hand particles together.
+
+The sim keeps both by where a particle may be born. The pool's slots are
+all there is. A firefly is born only in a slot whose index is under the
+fireflies' count, which the sim takes as 3,000 at most, and a hand
+particle only in a slot at or past it. So no room, song, theme or gesture
+can put more of either alive. `XrScene::new_world` holds the pool to the
+cap whatever the preset or `debug.fosfora.count` says, and a throw's burst
+is held to the 17,000 slots the fireflies never take. When the hands'
+slots are all alive a new burst takes the oldest hand particles, never a
+firefly.
+
+### The fireflies
+
+- **Where.** Uniform in the volume: 0.9 of the space size across (the
+  preset's 3 m half extent, so 5.4 m square) and from 1.05 m under the
+  anchor to 1.65 m over it, which around an anchor 1 m up is the floor to
+  2.65 m. They fade toward the bounds and near the head (from 0.45 m to
+  0.3 m with the default near fade). One inside a scanned box or behind
+  the depth map is hidden by the occluders. They collide with nothing.
+- **Motion.** A firefly's velocity is a sum of slow sines of time, on
+  rates and phases taken from its slot index: a circle of 15 to 30 s, a
+  slower one a third its size on top, and a slow rise and fall. It reads
+  no flow field and no noise. Its speed stays between 0.6 and 1.3 of its
+  own drift speed, which is 0.6 to 1.4 of the knob's, and its direction
+  turns half a degree a frame at most. At the default drift its loop is
+  about a meter across.
+- **Light.** Each glows from 12% of its peak to its peak and back on its
+  own period. The tint is a warm yellow to a yellow green, fixed: the
+  cloud did not take the theme's colors either, and a warm point reads
+  against Aurora's greens and against a black room alike.
+- **Music.** The loudness lifts the light by up to 60% and the radius by
+  up to 35%, each times the music knob (default 0.5). The light reads the
+  loudness as the flash limit lets it through (`flash.rs`), and the sim
+  adds no envelope of its own and reads no beat phase, so the fireflies'
+  light only ever moves the way the limit moves the level. The radius
+  reads the loudness as the limit glides it, so it swells and does not
+  step.
+
+### The hand particles
+
+A throw's streak and burst and the pitcher's pour are born as they were
+(`instruments.rs`). What changed is how they move.
+
+- **No jitter.** Nothing pushes a hand particle but gravity, the air's
+  drag, the hands and the surfaces. There is no flow field, no turbulence
+  and no kick on the beat.
+- **Gravity** is an acceleration now, 2.5 m/s² by default, where the cloud
+  had a 0.5 m/s settle drift. A burst arcs and falls in about a second.
+- **No bounce.** Where a particle meets a box or the depth map the speed
+  into the surface is taken away. On a face that holds it up it slides,
+  slows and ages three times as fast, so it fades where it lies.
+- **Edge flow.** An edge is where a face that holds a particle up meets a
+  second surface: the floor and a wall, the floor and a box standing on
+  it, a table's top and its rim, a table's top and the wall behind it. The
+  collide already tests the boxes near a particle. It now also notes each
+  box face within 5 cm, and the rims within 5 cm of a face that holds the
+  particle up. With a face under it and a second surface across it, the
+  particle is steered along the edge at 0.18 to 0.42 m/s and in toward
+  it, a rim brakes it and stops it short of sliding off, and it ages at
+  the clock's rate, so it runs until it fades. Which way it runs is settled
+  once, from the way it was moving, and kept, so at a corner it turns onto
+  the next edge and goes on round. Two upright surfaces of two boxes (two
+  walls, a wall and a cabinet) make an edge it slides down.
+- **Where it cannot work.** A box's own upright edges are not edges here.
+  The depth map gives a surface but no edge: a particle on something only
+  the depth map knows lies there and fades. In roam with no room there is
+  the stage floor alone, and the particles arc, fall and fade. Live planes
+  are boxes like any other, so in roam an edge is there as soon as a plane
+  is found.
+- **The hands** still push the particles they touch, but not in a
+  particle's first half second: a burst is born at the pinch point, inside
+  the hand's pad, and used to jump out of it.
+
+### The swipe, the menu and the toggle
+
+- **The thumb swipe steps the theme**: right is the next, left the one
+  before, wrapping, from the theme the menu's control shows
+  (`themes::Shown::step`, `lanes::RoomLanes::step_theme`). It is the path
+  the Theme control and the spoken "next theme" take, and it saves with
+  the room. The caption names the new theme ("Aurora"). The first run's
+  swipe hint keeps its words and is taught by a swipe that changed the
+  theme.
+- **The hand menu** has no effect row. It is six rows, five on the release
+  surface.
+- **The Particles toggle** hides the fireflies and the hand particles,
+  with Edit room on too. The sim steps on, so on shows them as they would
+  have been.
+- **The voice** answers a sentence that asks for an effect with "The
+  effects are gone" (`VOICE_DESIGN.md`, "The effects are gone").
+
+### The knobs
+
+Each is polled once a second and logged on a change
+(`fireflies::Knobs`), for a worn tuning pass.
+
+| Knob | Default | Range | What |
+|---|---|---|---|
+| `debug.fosfora.fireflies` | 2000 | 0 to 3000 | How many fireflies. Lowered, the ones past it fade out over 1.5 s. |
+| `debug.fosfora.fireflysize` | 0.01 | 0.002 to 0.04 | Sprite radius, m. Each is 0.7 to 1.3 of it. |
+| `debug.fosfora.fireflygain` | 0.8 | 0 to 2 | Opacity at the top of a firefly's rhythm with no music. |
+| `debug.fosfora.fireflydrift` | 0.06 | 0 to 0.5 | Drift speed, m/s. |
+| `debug.fosfora.fireflymusic` | 0.5 | 0 to 1 | How strongly they answer the music. 0 is not at all. |
+| `debug.fosfora.handgravity` | 2.5 | 0 to 9.81 | The hand particles' gravity, m/s². |
+| `debug.fosfora.edgeflow` | 1 | 0 to 2 | Edge flow. 0 is off. It scales the 5 cm band and how fast a particle turns onto the edge. |
+
+The size is the sprite a thrown burst always had, and the drift is in the
+family of the cloud's 0.05 m/s start speed. The count, the brightness, the
+music's share, the gravity and the edge flow's band, speed and steer are
+guesses. `debug.fosfora.density` (the debug panel's "firefly density") and
+the governor scale the count. `debug.fosfora.count` sets the pool, under
+its cap, and `debug.fosfora.burstcount` a throw's burst, under its own.
+
+### What it should cost
+
+Not measured. With nothing alive the app runs 7.05 ms a frame seated on
+Aurora and 6.73 ms in roam (`MEASURED.md`, the reboot table), and Flux
+Cloud's 300,000 sprites added about 2.5 ms. By count, a full pool of
+20,000 is about 0.2 ms of that. The sprites are twice the cloud's radius,
+so the draw's share is nearer four times its count's: the fireflies alone
+should stay under 0.1 ms, the fireflies and a burst in flight about 0.3 to
+0.4 ms, and a pool hammered full about 0.6 ms. A firefly's step samples no
+texture and tests no box. A hand particle's tests the boxes in its cell
+and the depth map every other frame, as the cloud's did.
+
+### Checking it unworn
+
+With `debug.fosfora.begin 1`, on the debug APK:
+
+- The fireflies are there from the launch. The log has
+  `fireflies: 2000 fireflies (cap 3000) · …` at launch and once a second
+  `particles alive 2000 of a pool of 20000 · fireflies asked 2000 (cap
+  3000)`.
+- Each knob logs `fireflies: … (was: …)` within a second of a `setprop`.
+  `debug.fosfora.fireflies 500` thins them, and the alive count follows.
+- `debug.fosfora.throwtest 3` throws every 3 s from ahead of the view.
+  The alive count rises by the streak and the 6,000 of the burst and
+  falls back within 6 s. `debug.fosfora.handgravity` and
+  `debug.fosfora.edgeflow` change the next throw.
+- `debug.fosfora.swipe right` logs `microgesture: swipe right (right
+  hand) -> next theme`, the lanes' `theme … (a thumb swipe)` line and
+  `the caption reads "…"`. `left` steps back.
+- `debug.fosfora.say 'next effect'` logs the reply "The effects are
+  gone".
+- `debug.fosfora.cloud 0` logs `particles off: the fireflies and the hand
+  particles are hidden`.
+
+### Tests
+
+`fireflies.rs`: `the_caps_hold`,
+`each_knob_keeps_its_range_and_a_bad_value_the_default`,
+`the_rows_carry_the_knobs_in_the_sims_lanes`,
+`the_sim_reads_the_rows_the_app_writes`,
+`the_sim_has_no_jitter_no_bounce_and_no_beat_phase`,
+`the_preset_is_the_hidden_world_effect` and
+`a_burst_steals_from_the_hands_share_alone`.
+
+On a desktop GPU, `#[ignore]`d (`cargo test -p fosfora-xr --test
+fireflies_gpu -- --ignored`):
+`neither_cap_gives_under_a_pool_hammered_with_bursts`,
+`the_count_knob_fills_and_thins_the_fireflies`,
+`a_firefly_drifts_slowly_and_never_turns_on_a_frame`,
+`the_music_lifts_the_light_and_the_size_a_little`,
+`a_hand_particle_arcs_falls_and_does_not_bounce`,
+`a_hand_particle_runs_along_the_foot_of_a_wall`,
+`a_hand_particle_runs_round_a_tables_rim`,
+`a_hand_particle_slides_down_a_corner`,
+`a_burst_takes_the_hands_slots_and_never_a_firefly` and
+`the_preset_runs_through_the_cores_particle_system`, which loads the
+preset through the core's loader and draws it with `render_world`.
+
+Beside them: `microgestures.rs`'s
+`a_swipe_steps_the_theme_both_ways_and_wraps`, `themes.rs`'s
+`names_and_the_cycle`, `lanes.rs`'s
+`the_control_steps_through_the_themes_and_wraps`, `first_run.rs`'s
+`the_swipe_caption_names_the_new_theme` and
+`the_swipe_hint_is_taught_by_a_swipe_that_changed_the_theme`,
+`panel_grid.rs`'s menu tests, `room_edit.rs`'s
+`the_particles_follow_the_toggle_alone`, `surfaces.rs`'s cycle tests,
+`intent.rs`'s `the_effect_phrases_answer_that_the_effects_are_gone` and
+`the_help_lists_nothing_that_is_gone`, `agent.rs`'s
+`the_room_names_no_effect_and_no_particle_behavior`, and the two that an
+old file still loads: `palm_panel.rs`'s
+`a_menu_file_that_names_a_cut_effect_still_loads` and `room_file.rs`'s
+`a_room_that_names_a_cut_effect_still_loads`.
+
+### Left in place
+
+The core's tests read the cut effects' four presets and two sims
+(`flux_xr_world.pfx`, `flux_xr_world_room.pfx`, `flux_xr_coarse.pfx`,
+`murmur_xr_world.pfx`, `flux_xr_sim.wgsl`, `murmur_xr_sim.wgsl`), so the
+files stay in the repo. The APK leaves them out. In the XR crate these are
+still built and nothing reaches them: Flock's hand poses and holds
+(`pose::decide`, the hand lanes), Embers' surface weights and the room fit
+of its space size, the soloed surface (`room_edit::solo`), and the
+behaviors embers and sparks, which a saved room may still name and which
+show nothing. Their knobs are still read.
+
+### What only a worn check can tell
+
+Whether 2,000 reads as sparse or as busy, and whether 10 mm at 0.8 reads
+with one eye against a black room and against a dimmed one. Whether the
+loudness lifting the light reads as a swell: it rises on the frame the
+level does, and the size glides. Whether the fireflies gliding after the
+wearer in roam reads as their own motion or as the layer being dragged.
+Whether 2.5 m/s² feels like falling or like sinking, and whether a 5 cm
+band and 0.3 m/s make the edges read as lit lines or as stragglers. What
+the frame costs.
+
 ## The room first pass (board #3317)
 
 *The first pass of `ROOM_DESIGN.md`: surfaces as emitters and the floor
 ripple.*
 
 ### Surfaces as emitters
+
+*Cut by board #5470 ("Fireflies and the hand particles", below). Embers,
+the effect that spawned on the room's surfaces, is gone, and no sim the app
+runs reads the emitter weights. The lanes are still written and the code is
+still there. What follows is the record of the pass.*
 
 - **Surface lanes.** The two `w` lanes of the box rows that were written 0
   now belong to the aux block contract: `aux[67 + k].w` is the box's
@@ -1077,12 +1338,14 @@ the hand instruments.*
 
 ### The hand instruments
 
-- **What.** Two instruments on the Go-Go far hand and the poses, acting
-  on the Flux world sims (World, Coarse, Room; Murmur ignores them): a
-  pinch tap throws a burst of embers that flies to where the hand points
-  and bursts on the surface it hits, and an open palm held still, facing
-  down, lifts embers off the surface under it toward the palm. The drag
-  that moves the cloud's home is the anchor drag, as before. Host module
+- **What.** Two instruments on the Go-Go far hand and the poses: a pinch
+  tap throws a burst that flies to where the hand points and bursts on the
+  surface it hits, and an open palm held still, facing down, lifts the
+  particles lying under it toward the palm. They were built on the Flux
+  world sims. Since board #5470 their particles are the fireflies sim's
+  hand particles, which reads the same rows; how they move after they are
+  born is in "Fireflies and the hand particles", below. The drag that
+  moves the world effect's home is the anchor drag, as before. Host module
   `crates/fosfora-xr/src/instruments.rs` (the ray cast, the flights, the
   lift and the rows, host-tested).
 - **Instrument rows.** Three rows appended after Murmur's hand lanes,
@@ -1153,6 +1416,11 @@ the hand instruments.*
   (6000), `lift` (0/1, default 1), `liftradius` (0.35).
 
 ## Hands: the gesture vocabulary (board #3336)
+
+*Board #5470 changed what two of these gestures reach. There is one world
+effect now, so nothing cycles it: the hand menu has no effect row, and the
+thumb swipe steps the theme. The audit and the proposal below are as they
+were written.*
 
 *An audit after Kevin's worn pass of Sep 29: the pinch-hold that cycles the
 world effect fired when he did not mean it, thumb and index merely close.
@@ -1294,6 +1562,12 @@ use); in mr and world a tap throws and nothing else. Steps 2 (`SYSTEM_GESTURE`
 from the aim extension) and 4 (microgestures, the cycle's second home) are
 pending, each its own PR with a worn gate.
 
+**Since board #5470.** The effect row is gone with the effects it stepped.
+The menu is six rows, nine with Edit room on (284 and 404 points), and the
+release surface's five and eight (244 and 364). Recenter and Rescan are the
+top row. The debug panel is 11 and 14 rows and its header keeps one row of
+headroom. The bottom rows are where they were.
+
 ### The hand menu: summon and stay (board #5459)
 
 The app is used lying back in a chair. The menu used to live on the left
@@ -1385,7 +1659,7 @@ What a wearer can meet, in the order of a first launch:
 | Room editor: a tap, a hold, a menu step | desk: sparks, all tables: none | at the surface | its reading time |
 | Room editor: a first hold | desk: hold again for all tables -> curls | at the surface | the arm's 2.5 s |
 | A voice reply or miss | theme: Aurora, Didn't catch that… | the voice window's place | its own time or its reading time |
-| A thumb swipe stepped the effect | Flux Cloud | the voice window's place | its reading time |
+| A thumb swipe stepped the theme | Aurora | the voice window's place | its reading time |
 | A first run hint, the label free for 5 s | Swipe your thumb along your finger | the voice window's place | until the gesture is made, 20 s at most |
 | The hint's gesture was made | Got it | same | 2.5 s |
 | The session ends on an error | Fosfora stopped: the session was lost | 1.2 m ahead, level | 4 s, then the app exits |
@@ -1486,8 +1760,8 @@ feeds them once a frame.
    (6 s). From the first frame the room is dimmed a little: the immersion
    level goes to 0.25 over about a second and a half (`immerse::WAIT_LEVEL`,
    time constant `WAIT_S` 0.5 s). No music plays. The looks get silence in
-   place of the audio, so no surface pulses and the default effect, whose
-   embers the sound spawns, stays quiet.
+   place of the audio, so no surface pulses. The fireflies drift and glow
+   on their own rhythm, with no music to lift them.
 2. **The card.** When the scan's label has gone, a card sits at the
    center of the view, 1 m ahead and 0.4 m wide: **"Pinch to begin"**.
    It follows the head the way the voice label does
@@ -1507,8 +1781,8 @@ feeds them once a frame.
 5. **The swipe hint.** Once the label has been free for 5 s with the show
    on (about 9 s after the pinch), ahead of the view and 10 degrees under
    the line of sight: **"Swipe your thumb"** over **"along your finger"**.
-   The wearer swipes, the effect steps with its tick, and the caption
-   names it: **"Flux Cloud"**. Then **"Got it"** for 2.5 s with the
+   The wearer swipes, the theme steps with its tick, and the caption
+   names it: **"Mirror"**. Then **"Got it"** for 2.5 s with the
    understood cue.
 6. **The tap hint**, 5 s of free label later, only with voice on, the
    microphone allowed and the microgestures there: **"Tap your thumb to
@@ -1555,7 +1829,7 @@ saved as taught and never shows again on that install.
   no microgestures) is passed over without being saved, and shows in a
   later run. No hint shows before a hand has been tracked, so a wearer
   still holding the controllers doesn't use them up.
-- **Taught by doing.** A swipe that steps the effect, a thumb tap that
+- **Taught by doing.** A swipe that steps the theme, a thumb tap that
   opens a voice window or the palm bringing the menu, made before its
   hint, saves that hint as taught and it never shows. The thumb tap and
   the palm count during the wait too.
@@ -1563,9 +1837,8 @@ saved as taught and never shows again on that install.
 - **Saved** in `hand_menu.json` as `"taught":["swipe","tap","palm"]`,
   written once one is taught. A file from before has taught none.
 - **The caption** (`first_run::swipe_caption`): every thumb swipe that
-  steps the world effect names the new one for its reading time, where
-  the voice label floats. With Particles off the swipe changes nothing in
-  view, so it reads "Embers · particles off".
+  steps the theme names the new one for its reading time, where the voice
+  label floats: "Aurora", as the menu's Theme control shows it.
 
 ### The wearer who can't
 
@@ -1593,7 +1866,8 @@ it waits, so the card names the pinch only.
   given up in such a launch is saved, and the file then holds only what
   that launch taught.
 - `debug.fosfora.swipe right|left`: a thumb swipe from the right hand, for
-  the caption and the swipe hint's "Got it".
+  the caption and the swipe hint's "Got it". Right is the next theme, left
+  the one before.
 - `debug.fosfora.voicetap 1` (board #5453) is the thumb tap.
 
 A capture of every step, with `ask 0` and `handshint 0` set: launch with
@@ -1617,8 +1891,9 @@ The tests (`first_run.rs`):
 `a_hint_whose_gesture_does_not_work_is_passed_over_untaught`,
 `the_hints_wait_for_a_free_label_and_a_tracked_hand`,
 `the_taught_hints_round_trip_through_their_names`,
-`the_events_log_what_happened` and
-`the_swipe_caption_names_the_new_effect`. Beside them:
+`the_events_log_what_happened`,
+`the_swipe_caption_names_the_new_theme` and
+`the_swipe_hint_is_taught_by_a_swipe_that_changed_the_theme`. Beside them:
 `immerse.rs`'s `the_room_is_dim_and_still_while_the_show_waits_and_the_opening_runs_from_there`,
 `palm_panel.rs`'s `the_menu_file_saves_the_hints_taught_and_reads_none_when_absent`,
 `voice.rs`'s `a_centered_label_sits_on_the_line_of_sight_and_follows_the_same_way`,

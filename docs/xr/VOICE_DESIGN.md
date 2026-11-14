@@ -5,6 +5,10 @@ time, the mic path's cost) are being measured; where a figure is still
 open it says so. Kevin decides the shape; this note gives him the options
 and a recommendation.*
 
+*Board #5470 cut the three cloud effects. The sections below are as they
+were built, effect phrases and all. What those phrases do now, and what
+left the help card, is in "The effects are gone" near the end.*
+
 ## Why a voice path
 
 Everything in the room today is driven by the hands: a pinch throws, a
@@ -1362,6 +1366,63 @@ first run"). The pinch that begins the show has a spoken form.
   sentences still wait for them.
 
 Tests (`intent.rs`): `begin_the_show`.
+
+## The effects are gone (board #5470)
+
+The app had three cloud effects, Flux Cloud, Embers and Flock, and the
+voice path could step them and name them. There is one world effect now,
+the fireflies, and nothing to switch (`XR_DESIGN.md`, "Fireflies and the
+hand particles"). Two ways were open: take the phrases out of the grammar,
+or keep hearing them and say why nothing happens. The second is the
+smaller change and the kinder one. The templates, the clause splitter and
+the on-device model's action list stay as they are, and a wearer who asks
+for an effect gets an answer where a removed phrase would get "Didn't
+catch that".
+
+| Said | Before | Now |
+|---|---|---|
+| "next effect", "next", "next one" | the next effect | The effects are gone |
+| "previous effect", "last effect", "previous", "previous one" | the one before | The effects are gone |
+| "flux cloud", "embers", "flock", alone or after "switch to", "show", "go to", "change to" | that effect | The effects are gone |
+| "embers on the desk", "sparks on the floor", "every table embers" | the surface on embers or sparks | a miss, with the nearest example as its hint |
+| "recenter", "recenter the cloud" | "cloud recentered" | "recentered" |
+| "particles off", "cloud off" | hid the cloud | hides the fireflies and the hand particles |
+| "next theme" | the next theme | the same, and the thumb swipe now takes this step too |
+
+- **In the grammar** the three intents stay (`NextEffect`, `PrevEffect`,
+  `Effect`). The names they match are `intent::CUT_EFFECTS`, which `app.rs`
+  gives the vocabulary in place of a list of effects. `intent::reply`
+  answers each with `intent::EFFECTS_GONE`, and nothing is applied.
+- **The agent.** The network model's instruction and schema no longer have
+  the kinds `next_effect`, `prev_effect` and `effect`
+  (`agent::ACTION_KINDS` is 13), and its instruction no longer describes
+  embers and sparks. The room it is shown names no effect, and each kind's
+  behaviors are listed without those two. `Intent::from_json` still reads
+  the three kinds, because the on-device model's own list has them
+  (`next_effect`, `previous_effect`, `effect`). An action of one of them is
+  answered the same sentence, and the label shows it in place of the
+  model's own.
+- **Embers and sparks** painted a surface with the cloud's particles. No
+  sim spawns them any more, so they are not behaviors to ask for: the
+  vocabulary is `SurfaceBehavior::OFFERED`. The catalogue keeps both, since
+  the on-device model's spec lists each kind's catalogue in order, and a
+  saved room that names one still loads.
+- **The help card** lists nothing that is gone. "next effect", "previous
+  effect", "music play and next effect" and "switch to {effect}" left the
+  pool, "next theme" is its first line, "music play and next theme" took
+  the compound's place, and "recenter the cloud" reads "recenter". An
+  example is still shown only if the grammar matches it, and now none of
+  them asks for an effect.
+
+Tests (`intent.rs`): `the_effect_phrases_answer_that_the_effects_are_gone`,
+`the_help_lists_nothing_that_is_gone`, `reply_names_what_was_done`,
+`help_and_every_example_parses`. `agent.rs`:
+`the_instruction_names_every_kind_and_behavior`,
+`the_room_names_no_effect_and_no_particle_behavior`.
+
+Unworn: `debug.fosfora.say 'next effect'` and `say 'switch to flock'` log
+the reply "The effects are gone". `say 'what can I say'` logs a card with
+no effect on it.
 
 ## Open questions for Kevin
 
