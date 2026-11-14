@@ -288,7 +288,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell "setprop debug.fosfora.say 'the desk in amber'"   (board #3751, V2: a sentence fed to the grammar as if heard, voice on or
     //       off, for the unworn gate: logged `voice: heard "…" → <intent or miss> · label "…"`, the label ahead of the head; read at launch
     //       and polled once a second, fed once per value (waiting for the room's anchors as debug.fosfora.surface does); an app cannot
-    //       clear a debug property, so to say the same sentence again set it to "" first, or to another sentence)
+    //       clear a debug property, so to say the same sentence again set it to "" first, or to another sentence; board #5452: 'begin'
+    //       begins a show that waits for the wearer, and is fed without waiting for the anchors, so it works with no room)
     //   adb shell setprop debug.fosfora.voicetap 1               (board #5453: a thumb tap from the right hand as if made, for the unworn check:
     //       it opens a voice window with voice on ("Listening…" ahead of the view; it closes at 6 s without speech), or with RECORD_AUDIO
     //       missing shows why; polled once a second, fed once per value as debug.fosfora.say is (set "" or another value to tap again))
@@ -391,6 +392,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       unset or 1, the opening; read at launch)
     //   adb shell setprop debug.fosfora.handshint 0              (board #5461: no "Put the controllers down" label this launch, for unworn
     //       runs and captures, where no hand is ever tracked; unset or 1, the label after 4 s with no hand; read at launch)
+    //   adb shell setprop debug.fosfora.begin 1                  (board #5452, first_run.rs: the show begins at once, with no "Pinch to begin"
+    //       card and no wait for the wearer, for unworn runs and measurements; the music and the opening start as they did before the
+    //       card; unset, every launch waits for a pinch, a spoken "begin" or 60 s of the card; read at launch and polled once a second
+    //       while the show waits, so setting it also begins a launch that is waiting; logged `first run: the show begins (...)`)
+    //   adb shell setprop debug.fosfora.hints 1                  (board #5452: the first run's three hints again this launch: what
+    //       hand_menu.json saved as taught is left out, and the hints show without a hand having been tracked, so they can be captured
+    //       unworn; each still saves as taught when it is made or gives up; read at launch)
+    //   adb shell setprop debug.fosfora.swipe right|left         (board #5452: a thumb swipe from the right hand as if made, for the unworn
+    //       check of the swipe's caption and of the swipe hint's "Got it"; polled once a second, fed once per value as
+    //       debug.fosfora.say is (set "" or the other direction to swipe again))
     //   adb shell setprop debug.fosfora.immerselow 0.42          (board #5409: the immersion level at the bottom of the song's range, a breakdown,
     //       0..1; live: polled once a second and logged on a change, the level moving to it over the attack or the release; "" back
     //       to the default, 0.42)
@@ -1257,34 +1268,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             mic_waiting = Some(source);
         }
     }
-    match audio_source.as_str() {
-        "loop" if music_at_launch => {
-            let clip = std::sync::Arc::new(crate::playback::Clip::decode(&bundled_clip)?);
-            let unused_tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-            let p = Playback::start(clip.clone(), unused_tap, playback_options)
-                .context("starting playback")?;
-            music.adopt(p, clip, None, bundled_clip.clone());
+    // Board #5452: the music starts when the wearer begins the show
+    // (`first_run::Wait`, in the frame loop), not at launch. Until then
+    // the `file` and `loop` sources' clip is decoded and kept here, and
+    // the Music row's track decodes on the music thread without playing,
+    // so the begin starts either at once.
+    let mut launch_clip = match audio_source.as_str() {
+        "loop" if music_at_launch => Some((
+            std::sync::Arc::new(crate::playback::Clip::decode(&bundled_clip)?),
+            bundled_clip.clone(),
+        )),
+        "file" if music_at_launch => Some((
+            std::sync::Arc::new(crate::player::load_clip(&fallback)?),
+            fallback.clone(),
+        )),
+        "file" | "loop" => {
+            info!(
+                "music: debug.fosfora.music 0: {audio_source} starts without its clip, the analysis on {} (the Music row plays the music folders, else the bundled clip)",
+                crate::music::analysis(false, &audio_source).name()
+            );
+            None
         }
-        "file" if music_at_launch => {
-            let clip = std::sync::Arc::new(crate::player::load_clip(&fallback)?);
-            let tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-            let p = Playback::start(clip.clone(), tap.clone(), playback_options)
-                .context("starting playback")?;
-            let analysis = LiveAudio::from_ring(tap, p.output_rate(), p.callback_count())
-                .context("analysis over the playback tap")?;
-            music.adopt(p, clip, Some(analysis), fallback.clone());
-        }
-        "file" | "loop" => info!(
-            "music: debug.fosfora.music 0: {audio_source} starts without its clip, the analysis on {} (the Music row plays the music folders, else the bundled clip)",
-            crate::music::analysis(false, &audio_source).name()
-        ),
-        _ => {}
-    }
-    // The Music row's play at launch over the sources that start no clip
-    // of their own, synth by default or any with `debug.fosfora.music 1`
-    // (the track decodes on the music thread; the frame loop starts it).
-    if music_at_launch && !music.wanted() {
-        music.play_at_launch();
+        _ => None,
+    };
+    // The Music row's play at the begin over the sources that start no
+    // clip of their own, synth by default or any with
+    // `debug.fosfora.music 1`.
+    if music_at_launch && launch_clip.is_none() {
+        music.prepare();
     }
     // The world effects the hand menu's effect row cycles through: every
     // `*_xr_world*.pfx` staged into the effects dir, in file-name order,
@@ -1762,6 +1773,57 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     if !hands_hint_on {
         info!("controllers label: off (debug.fosfora.handshint 0)");
     }
+    // Board #5452: the first run (`first_run.rs`). The show waits for the
+    // wearer behind a card at the center of view; three gestures are
+    // taught once per install as the wearer makes them, on a label ahead
+    // of the view; a thumb swipe's caption names the effect it stepped to.
+    // `begin_pinch` is the pinch that began the show, which does nothing
+    // more than its burst until it opens. `hint_made` collects the taught
+    // gestures made this frame, in `first_run::Hint::ALL`'s order.
+    let mut wait = crate::first_run::Wait::default();
+    let mut begin_knob = debug_prop("debug.fosfora.begin").as_deref() == Some("1");
+    let mut spoken_begin = false;
+    let mut begin_pinch = [false; 2];
+    let mut card_ready = false;
+    let mut card_follow = crate::voice::Follow::centered(glam::Quat::IDENTITY);
+    let mut card_shown = false;
+    // The card's words as last logged, and the lines they draw on.
+    let mut card_laid: (String, usize) = (String::new(), 1);
+    // Whether the thumb swipe and the thumb tap can be made at all.
+    let micro_on = session.has_microgestures();
+    let hints_knob = debug_prop("debug.fosfora.hints").as_deref() == Some("1");
+    let mut hints = crate::first_run::Hints::new(if hints_knob {
+        crate::first_run::Taught::default()
+    } else {
+        menu_saved.taught
+    });
+    info!(
+        "first run: {} · hints taught: {}{}",
+        if begin_knob {
+            "no wait (debug.fosfora.begin 1)".to_owned()
+        } else {
+            format!(
+                "the show waits for a {}, a spoken begin or {:.0} s of the card",
+                crate::first_run::START_WORD.to_lowercase(),
+                crate::first_run::WAIT_MAX_S
+            )
+        },
+        match hints.taught().names() {
+            names if names.is_empty() => "none".to_owned(),
+            names => names.join(", "),
+        },
+        if hints_knob {
+            " (debug.fosfora.hints 1: the saved ones left out, shown without a tracked hand)"
+        } else {
+            ""
+        }
+    );
+    let mut hint_made = [false; 3];
+    let mut hint_follow = crate::voice::Follow::default();
+    let mut hint_shown = false;
+    let mut caption = crate::label::Label::default();
+    let mut swipe_knob = crate::intent::SayKnob::default();
+    let mut palm_was = false;
     // Board #5378: every surface's voice name on the surface, while the
     // editor is on, while a voice window is open and a while after, after
     // a miss on a name, and always with `debug.fosfora.labels 1`
@@ -2395,10 +2457,76 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let (swallowed, menu_pointed) =
                 hud.as_ref().map_or(([false; 2], false), |h| (h.swallowed(), h.pointed()));
             let swipes_blocked = panel_up && (!menu_stay || menu_pointed);
+            // Board #5452: the left palm brought the menu, the gesture the
+            // palm hint teaches.
+            let on_palm = !hud_test && hud.as_ref().is_some_and(Hud::on_palm);
+            if on_palm && !palm_was {
+                hint_made[crate::first_run::Hint::Palm.index()] = true;
+            }
+            palm_was = on_palm;
+            // Board #5452: the show waits for the wearer (`first_run::Wait`).
+            // The start gesture begins it with the card up, unless the
+            // pinch is the menu's. A spoken begin, the wearer's own play
+            // and the knob begin it whatever shows. The music starts here,
+            // as the launch started it before there was a card.
+            for h in 0..2 {
+                if !input.hands.pinching[h] {
+                    begin_pinch[h] = false;
+                }
+            }
+            if wait.waiting() {
+                if frame_index.is_multiple_of(72) {
+                    begin_knob |= switch_now("debug.fosfora.begin") == Some(true);
+                }
+                let edges = crate::first_run::HandEdges {
+                    pinch_began: [0, 1]
+                        .map(|h| input.hands.pinch_began[h] && !panel_up && !swallowed[h]),
+                    thumb_tap: input.micro.tap,
+                };
+                let begun = wait.step(
+                    dt,
+                    crate::first_run::WaitInput {
+                        ready: card_ready,
+                        gesture: crate::first_run::start_gesture(&edges),
+                        spoken: spoken_begin,
+                        music: music.wanted(),
+                        knob: begin_knob,
+                    },
+                );
+                if let Some(why) = begun {
+                    info!("{}", why.line());
+                    let clip = launch_clip.take();
+                    if music.wanted() {
+                        // The wearer's own play is the music.
+                    } else if let Some((clip, path)) = clip {
+                        if let Err(e) =
+                            start_launch_clip(&mut music, &audio_source, clip, path, playback_options)
+                        {
+                            error!("music: the launch source's clip did not start: {e:#}");
+                        }
+                    } else if music_at_launch {
+                        music.play_at_launch();
+                    }
+                    // The pinch that began the show ticks and throws its
+                    // burst, as a pinch and release does, and nothing
+                    // else: no gesture reads it until it opens.
+                    if let crate::first_run::Begun::Gesture { hand } = why {
+                        begin_pinch[hand] = true;
+                        crate::ui_sound::play(crate::ui_sound::Cue::Press);
+                        if !(controls.edit_room && hand == 1) {
+                            tapped = Some(hand);
+                        }
+                    }
+                }
+            }
+            spoken_begin = false;
+            // While the show waits no pinch is a gesture: nothing is
+            // thrown and the cloud stays where it is.
+            let held_back = [0, 1].map(|h| swallowed[h] || wait.waiting() || begin_pinch[h]);
             let pinches = [0, 1].map(|h| PinchInput {
                 pinching: input.hands.pinching[h]
                     && !(panel_up && gestures.owner() != Some(h))
-                    && !swallowed[h],
+                    && !held_back[h],
                 point: input.hands.pinch_point[h],
             });
             let mut moved = false;
@@ -2498,7 +2626,40 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // the gesture block's rules hold (nothing while the hand menu
             // is up, nothing from the right hand in Edit room).
             {
-                let micro = &input.micro;
+                let mut micro = input.micro;
+                // Board #5452, `debug.fosfora.swipe`: a thumb swipe from
+                // the right hand for the unworn check, fed once per value
+                // as the `say` knob is.
+                if frame_index.is_multiple_of(72)
+                    && let Some(way) =
+                        swipe_knob.poll(system_prop("debug.fosfora.swipe").as_deref(), false)
+                {
+                    let swipe = match way.as_str() {
+                        "right" => Some(crate::microgestures::Swipe::Right),
+                        "left" => Some(crate::microgestures::Swipe::Left),
+                        _ => None,
+                    };
+                    match swipe {
+                        Some(_) => info!("microgesture: debug.fosfora.swipe \"{way}\""),
+                        None => info!(
+                            "microgesture: debug.fosfora.swipe \"{way}\" is neither right nor left"
+                        ),
+                    }
+                    micro.swipe[1] = swipe.or(micro.swipe[1]);
+                }
+                // Board #5452: while the show waits a swipe steps nothing.
+                if wait.waiting() {
+                    for h in 0..2 {
+                        if let Some(s) = micro.swipe[h].take() {
+                            info!(
+                                "microgesture: swipe {} ({} hand) -> nothing (the show waits for the wearer)",
+                                s.label(),
+                                hand_name(h)
+                            );
+                        }
+                    }
+                }
+                let micro = &micro;
                 let effects = if world { world_effects.len() } else { 0 };
                 let outcomes = [0, 1].map(|h| {
                     micro.swipe[h].map(|s| {
@@ -2524,8 +2685,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 if let Some(step) = crate::microgestures::consume(micro, swipes_blocked, edit_on, effects) {
                     switch_to = cycle_index(&parked, world_index, if step > 0 { 1 } else { -1 });
                     // Board #5460: a swipe that stepped the effect ticks.
-                    if switch_to.is_some() {
+                    // Board #5452: and its caption names the effect it
+                    // stepped to, ahead of the view where the voice label
+                    // floats. It is the gesture the swipe hint teaches.
+                    if let Some(next) = switch_to {
                         crate::ui_sound::play(crate::ui_sound::Cue::Press);
+                        let text =
+                            crate::first_run::swipe_caption(&world_effects[next], controls.cloud);
+                        info!("microgesture: the caption reads \"{text}\"");
+                        caption.show(text, glam::Vec3::ZERO, glam::Vec3::Z);
+                        hint_made[crate::first_run::Hint::Swipe.index()] = true;
                     }
                 }
             }
@@ -3400,7 +3569,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // The hands as instruments: the throw aimed through the far
                 // pinch point, the lift at the far palm.
                 let tap = tapped.take();
+                // Board #5452: not while the show waits for the wearer.
+                // The pinch that begins it is past the wait by here, so
+                // its burst is thrown.
                 let instruments = world
+                    && !wait.waiting()
                     && !POSE_EFFECTS.contains(&world_effects[world_index].as_str());
                 let (instrument_rows, pour_row) = if instruments {
                     let head = glam::Vec3::from(input.head);
@@ -3645,6 +3818,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             // 20 s (board #5380). Board #5460: and the
                             // rising notes.
                             Ok(()) => {
+                                // Board #5452: the gesture the tap hint
+                                // teaches.
+                                if opener == VoiceOpener::Tap {
+                                    hint_made[crate::first_run::Hint::Tap.index()] = true;
+                                }
                                 crate::ui_sound::play(crate::ui_sound::Cue::Listening);
                                 voice_label.show_for(
                                     crate::voice::LISTENING_LABEL.to_owned(),
@@ -3744,16 +3922,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // `debug.fosfora.say`: a sentence as if heard, for the unworn
             // gate (fed once per value; it waits for the room's anchors as
             // the `surface` knob does), its label ahead of the view.
-            if frame_index.is_multiple_of(72)
-                && let Some(said) = say_knob.poll(
-                    system_prop("debug.fosfora.say").as_deref(),
-                    has_room && input.room_id.is_none(),
-                )
-            {
-                info!("voice: debug.fosfora.say \"{said}\"");
-                voice_follow.place(head_rot);
-                voice_at = voice_follow.anchor(head);
-                sentence = Some(said);
+            // Board #5452: a sentence that begins the show does not wait
+            // for the anchors, so it works with no room.
+            if frame_index.is_multiple_of(72) {
+                let say = system_prop("debug.fosfora.say");
+                let begins =
+                    wait.waiting() && say.as_deref().is_some_and(crate::intent::asks_to_begin);
+                if let Some(said) =
+                    say_knob.poll(say.as_deref(), has_room && input.room_id.is_none() && !begins)
+                {
+                    info!("voice: debug.fosfora.say \"{said}\"");
+                    voice_follow.place(head_rot);
+                    voice_at = voice_follow.anchor(head);
+                    sentence = Some(said);
+                }
             }
             // Board #3751, V2: the sentence through the grammar, generated
             // from what the frame holds (the world effects, the behaviors,
@@ -3787,6 +3969,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     agent.is_some(),
                     &mut help_page,
                     |intent| {
+                        // Board #5452: a spoken begin, taken by the wait
+                        // on the next frame. Once the show is on it
+                        // changes nothing.
+                        if *intent == crate::intent::Intent::Begin {
+                            return if wait.waiting() {
+                                spoken_begin = true;
+                                crate::intent::BEGIN_REPLY.to_owned()
+                            } else {
+                                crate::intent::BEGUN_REPLY.to_owned()
+                            };
+                        }
                         hidden_reply(surface, intent).unwrap_or_else(|| {
                             apply_intent(
                                 intent,
@@ -4067,7 +4260,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 scan_label.now().is_none(),
                 dt,
             );
-            let hands_label = hands_hint.now().filter(|_| hands_hint_on);
+            // Board #5452: while the show waits the words go under the
+            // begin card instead (below).
+            let hands_label = hands_hint
+                .now()
+                .filter(|_| hands_hint_on && !wait.waiting());
             if hands_label.is_some() != hands_hint_logged {
                 hands_hint_logged = hands_label.is_some();
                 info!(
@@ -4083,12 +4280,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             // Board #5461: the menu's reply ages with the frames.
             menu_reply.step(dt);
+            // Board #5452: and the swipe's caption.
+            caption.step(dt);
             {
                 // Board #5453: the voice label ahead of the view, placed
                 // when it starts to show (a window's opening placed it
-                // above), then following the head loosely.
+                // above), then following the head loosely. Board #5452:
+                // the swipe's caption floats at the same place.
                 let voice_now = voice_label.now();
-                match voice_now {
+                let caption_now = caption.now();
+                match voice_now.or(caption_now) {
                     Some(_) if !voice_shown => voice_follow.place(head_rot),
                     Some(l) => {
                         if voice_lines.0 != l.text {
@@ -4099,15 +4300,46 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                     None => {}
                 }
-                voice_shown = voice_now.is_some();
+                voice_shown = voice_now.is_some() || caption_now.is_some();
+                // Board #5452: the begin card's words while the show waits
+                // and the scan's label is gone: the spoken way when the
+                // voice can hear it, and the controllers line under it
+                // while no hand has been tracked. It floats at the center
+                // of the view and follows the head as the voice label
+                // does.
+                card_ready = scan_label.now().is_none();
+                let card = wait.card_up(card_ready).then(|| {
+                    crate::first_run::card_text(
+                        controls.voice && voice.is_some() && voice_mic,
+                        hands_hint_on && hands_hint.under_card(),
+                    )
+                });
+                match (&card, card_shown) {
+                    (Some(text), shown) => {
+                        if card_laid.0 != *text {
+                            info!("first run: the card reads \"{}\"", text.replace('\n', " | "));
+                            card_laid = (text.clone(), crate::label::layout(text).lines.len());
+                        }
+                        if shown {
+                            card_follow.step(head_rot, dt, card_laid.1);
+                        } else {
+                            card_follow.place(head_rot);
+                        }
+                    }
+                    (None, true) => card_laid.0.clear(),
+                    (None, false) => {}
+                }
+                card_shown = card.is_some();
                 // The voice path's label first: it answers the wearer's
                 // own fist. The card gives way to the editor's label while
                 // that shows, and comes back after. The menu's reply after
-                // the editor's.
+                // the editor's. The swipe's caption after the voice's
+                // label: it answers the wearer's own thumb.
                 let card_yields = label.now().is_some()
                     && voice_now.is_some_and(|l| voice_card.as_deref() == Some(l.text));
                 let shown = voice_now
                     .filter(|_| !card_yields)
+                    .or(caption_now)
                     .map(|l| (l.text, l.alpha, l.level, voice_follow.billboard(head, head_rot)))
                     .or_else(|| {
                         label.now().or_else(|| menu_reply.now()).map(|l| {
@@ -4125,9 +4357,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // label, and the voice's and the editor's cover it (its
                 // hold counts only while it shows).
                 immerse_label_busy = shown.is_some();
-                // Board #5461: the controllers label after it, so it never
-                // holds the show.
+                // Board #5452: the begin card where the opening's message
+                // will be, while the show waits. Board #5461: the
+                // controllers label after the message, so it never holds
+                // the show.
                 let shown = shown
+                    .or_else(|| {
+                        card.as_deref()
+                            .map(|text| (text, 1.0, None, card_follow.billboard(head, head_rot)))
+                    })
                     .or_else(|| {
                         immersion.message().map(|(text, alpha)| {
                             (text, alpha, None, crate::label::scan_billboard(head, head_rot))
@@ -4138,6 +4376,51 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             (text, 1.0, None, crate::label::scan_billboard(head, head_rot))
                         })
                     });
+                // Board #5452: the hints last, only while no other label
+                // shows (`first_run::Hints`). One that is made or gives up
+                // is saved as taught. The understood cue plays as "Got it"
+                // goes up, and never into an open voice window, which
+                // would hear it: the thumb tap's answer is the window's
+                // own sound and "Listening…".
+                let label_free = shown.is_none();
+                let events = hints.step(
+                    dt,
+                    crate::first_run::HintInput {
+                        show_on: !wait.waiting(),
+                        label_free,
+                        hands_seen: hands_hint.seen() || hints_knob,
+                        can: [
+                            micro_on && world && world_effects.len() > 1,
+                            micro_on && controls.voice && voice.is_some() && voice_mic,
+                            hud.is_some() && !hud_test,
+                        ],
+                        made: std::mem::take(&mut hint_made),
+                    },
+                );
+                for event in events {
+                    info!("{}", event.line());
+                    if event.confirms()
+                        && !matches!(push_to_talk.window(), VoiceWindow::Open { .. })
+                    {
+                        crate::ui_sound::play(crate::ui_sound::Cue::Understood);
+                    }
+                    if event.teaches() {
+                        menu_saved.taught = hints.taught();
+                        save_hand_menu(&menu_file, menu_saved);
+                    }
+                }
+                let hint_now = hints.now().filter(|_| label_free);
+                match hint_now {
+                    Some(_) if !hint_shown => hint_follow.place(head_rot),
+                    // A hint is two lines, "Got it" one.
+                    Some(_) => hint_follow.step(head_rot, dt, 2),
+                    None => {}
+                }
+                hint_shown = hint_now.is_some();
+                let shown = shown.or_else(|| {
+                    hint_now
+                        .map(|(text, alpha)| (text, alpha, None, hint_follow.billboard(head, head_rot)))
+                });
                 label_texture.show(&gfx, shown);
                 // Board #5378: the surface labels. Only while they show
                 // are the names, the behaviors and the poses worked out;
@@ -4224,6 +4507,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 Some(a) => a.frame(dt, f64::from(t)),
                 None => synth_hop_for(frame_index, t),
             };
+            // Board #5452: while the show waits for the wearer the looks
+            // get silence, so nothing pulses to a beat nobody hears.
+            if wait.waiting() {
+                silence(&mut hop);
+            }
             // Board #5451: the flash limit, before anything reads the
             // audio: the triggers it lets through, the features and the
             // mel bands it limits. Everything below reads this hop.
@@ -4378,6 +4666,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     playing: music.analysis.is_some() || live_audio.is_some(),
                     label_busy: immerse_label_busy,
                     position_s: music.playback.as_ref().map_or(0.0, |p| p.position_secs()),
+                    waiting: wait.waiting(),
                 },
                 None,
             );
@@ -5688,6 +5977,41 @@ fn static_quad_texture(
 /// scene.
 fn synth_hop_for(frame_index: u64, t: f32) -> fosfora_app::audio::hop::HopOutput {
     crate::scene::synth_hop(frame_index as u32, NOMINAL_FPS, f64::from(t))
+}
+
+/// Board #5452: `hop` as silence, for the frames before the wearer begins
+/// the show: every feature and band at 0 and no beat, downbeat or drop.
+fn silence(hop: &mut fosfora_app::audio::hop::HopOutput) {
+    hop.frame.features.as_slice_mut().fill(0.0);
+    hop.frame.spectrum.fill(0.0);
+    hop.frame.mel.fill(0.0);
+    hop.frame.dmfcc.fill(0.0);
+    (hop.beat_fired, hop.downbeat_fired, hop.drop_fired) = (false, false, false);
+}
+
+/// Board #5452: start the `file` or `loop` source's own clip, decoded at
+/// launch, when the wearer begins the show. The Music row takes it over
+/// and starts on "Music: stop". `loop` keeps its analysis on the
+/// microphones, `file` gets one on the playback's tap.
+fn start_launch_clip(
+    music: &mut Music,
+    audio_source: &str,
+    clip: std::sync::Arc<crate::playback::Clip>,
+    path: std::path::PathBuf,
+    options: PlaybackOptions,
+) -> Result<()> {
+    let tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
+    let p = Playback::start(clip.clone(), tap.clone(), options).context("starting playback")?;
+    let analysis = if audio_source == "loop" {
+        None
+    } else {
+        Some(
+            LiveAudio::from_ring(tap, p.output_rate(), p.callback_count())
+                .context("analysis over the playback tap")?,
+        )
+    };
+    music.adopt(p, clip, analysis, path);
+    Ok(())
 }
 
 /// A slow, dim hue sweep behind the quad: shows the frame loop is alive

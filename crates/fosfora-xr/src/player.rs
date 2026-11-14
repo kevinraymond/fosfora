@@ -425,9 +425,23 @@ impl Music {
     }
 
     /// The launch's play, from `music::plays_at_launch`: not saved (the
-    /// `debug.fosfora.music` knob is not the wearer's press).
+    /// `debug.fosfora.music` knob is not the wearer's press). Board #5452:
+    /// it comes when the wearer begins the show, after [`Self::prepare`].
     pub fn play_at_launch(&mut self) {
         self.play(true);
+    }
+
+    /// Decode the row's track without playing it (board #5452): the show
+    /// waits for the wearer, and the play that begins it then starts at
+    /// once from the kept clip.
+    pub fn prepare(&mut self) {
+        let path = self.selected();
+        if self.playback.is_none()
+            && self.held.as_ref().is_none_or(|h| h.path != path)
+            && self.decoding.as_ref().is_none_or(|d| d.path != path)
+        {
+            self.decode(path, true);
+        }
     }
 
     /// The Music row's press, or the voice's: play (from the kept clip at

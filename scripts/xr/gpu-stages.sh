@@ -15,7 +15,9 @@
 #
 # Runs unworn or worn alike (unworn needs the headless setup first:
 # prox_close + guardian_pause + anchors replay, as worn-ab.sh does not do it
-# either). Default conditions below; --cond adds more.
+# either). Every launch begins the show at once (begin=1, board #5452), so
+# no condition waits behind the "Pinch to begin" card. Default conditions
+# below; --cond adds more.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 PACKAGE=dev.fosfora.xr
@@ -33,7 +35,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 out="${out:-/tmp/gpu-stages-$(date +%H%M)}"; mkdir -p "$out"
-all_knobs=""
+all_knobs="begin"
 for c in "${conditions[@]}"; do k="${c#*|}"; [ "$k" = "-" ] && continue; for kv in ${k//;/ }; do all_knobs="$all_knobs ${kv%%=*}"; done; done
 for kv in ${with//;/ }; do all_knobs="$all_knobs ${kv%%=*}"; done
 clear_knobs() { for k in $all_knobs; do adb shell setprop "debug.fosfora.$k" '""'; done; }
@@ -64,6 +66,7 @@ for entry in "${conditions[@]}"; do
     name="${entry%%|*}"; knobs="${entry#*|}"
     if [ -n "$only" ] && ! [[ ",$only," == *",$name,"* ]]; then continue; fi
     adb shell am force-stop $PACKAGE; clear_knobs
+    adb shell setprop debug.fosfora.begin 1
     for kv in ${with//;/ }; do adb shell "setprop debug.fosfora.${kv%%=*} '${kv#*=}'"; done
     if [ "$knobs" != "-" ]; then for kv in ${knobs//;/ }; do adb shell "setprop debug.fosfora.${kv%%=*} '${kv#*=}'"; done; fi
     adb logcat -c

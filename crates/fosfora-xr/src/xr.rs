@@ -851,6 +851,12 @@ impl XrSession {
         self.hands.is_some()
     }
 
+    /// Whether the thumb microgestures are read (the extensions are there
+    /// and `debug.fosfora.micro` is not 0).
+    pub fn has_microgestures(&self) -> bool {
+        self.micro.is_some()
+    }
+
     /// Keep the runtime's performance counters only while something reads
     /// them (the debug panel, the thermal governor): turn them on, or off
     /// and stop polling. The hand menu's toggle can flip this during the

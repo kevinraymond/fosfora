@@ -16,6 +16,15 @@
 //! A pinned level, `debug.fosfora.immerseopen 0` ([`Immersion::skip_opening`])
 //! and the depth off skip it.
 //!
+//! **The wait** (board #5452, `first_run.rs`). Until the wearer begins the
+//! show ([`Input::waiting`]) the level sits at [`WAIT_LEVEL`], reached
+//! over [`WAIT_S`], and the opening does not start: the room is dim and
+//! still behind the begin card. The opening's message then holds that
+//! level and the glide runs from it to [`OPEN_LEVEL`]. A launch that never
+//! waits (`debug.fosfora.begin 1`) has the message over the plain room, as
+//! before. Should no music follow the begin within [`WAIT_RELEASE_S`], the
+//! room comes back.
+//!
 //! **What it follows: the song against itself** ([`History`], [`position`],
 //! [`follow`]). Mastered music is loud all the way through, so an absolute
 //! map of `loudness_s` sits at full. The level follows where `loudness_s` is
@@ -175,6 +184,15 @@ pub const OPEN_HOLD_S: f32 = 4.0;
 pub const OPEN_GLIDE_S: f32 = 3.0;
 /// Where the show starts.
 pub const OPEN_LEVEL: f32 = 0.35;
+/// The level while the show waits for the wearer (board #5452): the room
+/// dimmed a little behind the begin card, under [`OPEN_LEVEL`] so the
+/// opening's glide still closes it in. 0 leaves the room plain.
+pub const WAIT_LEVEL: f32 = 0.25;
+/// The time constant of the dim to [`WAIT_LEVEL`] (s).
+pub const WAIT_S: f32 = 0.5;
+/// How long the level holds after the wait for the music to be heard (s),
+/// before the room comes back.
+pub const WAIT_RELEASE_S: f32 = 1.5;
 /// After the music comes back, the level reaches the song's within about
 /// this (s): the time constant is a third of it, 95 % of the way.
 pub const RESUME_S: f32 = 2.0;
@@ -273,6 +291,10 @@ pub struct Input {
     /// The playing track's position (s), the time a [`SongPlan`]'s cues are
     /// against; 0 when nothing plays.
     pub position_s: f32,
+    /// The show waits for the wearer to begin it (board #5452,
+    /// `first_run::Wait`): the level sits at [`WAIT_LEVEL`] and the opening
+    /// does not start.
+    pub waiting: bool,
 }
 
 /// What a pass over the whole track before it plays could hand the level:
@@ -308,10 +330,11 @@ pub enum CueKind {
 pub enum Opening {
     /// Not played yet: it waits for the music and a free label.
     Waiting,
-    /// [`OPEN_TEXT`] is up, the room plain; `shown_s` counts only while no
-    /// other label covers it.
+    /// [`OPEN_TEXT`] is up, the room plain or at the wait's level;
+    /// `shown_s` counts only while no other label covers it.
     Message { shown_s: f32 },
-    /// The level glides to [`OPEN_LEVEL`]; `s` since the glide started.
+    /// The level glides from there to [`OPEN_LEVEL`]; `s` since the glide
+    /// started.
     Glide { s: f32 },
     /// The show: the level follows the song (or the opening was skipped).
     Done,
@@ -511,6 +534,11 @@ pub struct Immersion {
     /// [`RESUME_S`], the level glides.
     back_s: f32,
     opening: Opening,
+    /// The level the opening's glide started from: 0, or the wait's.
+    glide_from: f32,
+    /// Since the wait ended with the opening not yet started (s): past
+    /// [`WAIT_RELEASE_S`] the room comes back.
+    unheard_s: f32,
     /// Why the opening was skipped before it played, for the launch line.
     open_skip: Option<&'static str>,
     history: History,
@@ -544,6 +572,8 @@ impl Immersion {
             heard_s: 0.0,
             back_s: 0.0,
             opening: Opening::Waiting,
+            glide_from: 0.0,
+            unheard_s: 0.0,
             open_skip: None,
             history: History::default(),
             range: None,
@@ -706,6 +736,13 @@ impl Immersion {
         });
         let target = OPEN_LEVEL + (followed - OPEN_LEVEL) * fill;
         self.music = match self.opening {
+            // Board #5452: the show waits for the wearer. The room is dim
+            // and still, whatever the audio, and the opening has not
+            // started.
+            _ if input.waiting => {
+                self.unheard_s = 0.0;
+                approach(self.music, WAIT_LEVEL, dt, WAIT_S)
+            }
             Opening::Waiting => {
                 if !quiet && !input.label_busy {
                     if self.depth > 0.0 {
@@ -716,7 +753,15 @@ impl Immersion {
                         self.events.push(Event::OpeningSkipped);
                     }
                 }
-                0.0
+                // The wait's level holds while the music starts. With no
+                // music to hear the room comes back. A launch that never
+                // waited is at 0 and stays there.
+                self.unheard_s += dt;
+                if self.unheard_s > WAIT_RELEASE_S {
+                    approach(self.music, 0.0, dt, QUIET_RELEASE_S)
+                } else {
+                    self.music
+                }
             }
             Opening::Message { shown_s } => {
                 let shown_s = if input.label_busy {
@@ -727,11 +772,12 @@ impl Immersion {
                 self.opening = if !input.playing {
                     Opening::Waiting
                 } else if shown_s >= OPEN_HOLD_S {
+                    self.glide_from = self.music;
                     Opening::Glide { s: 0.0 }
                 } else {
                     Opening::Message { shown_s }
                 };
-                0.0
+                self.music
             }
             Opening::Glide { s } => {
                 let s = s + dt;
@@ -742,7 +788,7 @@ impl Immersion {
                 } else {
                     self.opening = Opening::Glide { s };
                 }
-                OPEN_LEVEL * x * x * (3.0 - 2.0 * x)
+                self.glide_from + (OPEN_LEVEL - self.glide_from) * x * x * (3.0 - 2.0 * x)
             }
             Opening::Done => self.follow_step(dt, &input, quiet, target),
         };
@@ -1088,6 +1134,68 @@ mod tests {
         let levels = run(&mut im, RESUME_S, &flat);
         assert_eq!(im.message(), None);
         assert!(im.take_events().is_empty());
+        let end = levels[levels.len() - 1];
+        assert!((end - OPEN_LEVEL).abs() < 0.03, "{end}");
+    }
+
+    #[test]
+    fn the_room_is_dim_and_still_while_the_show_waits_and_the_opening_runs_from_there() {
+        let mut im = Immersion::new(1.0, IMMERSE_FLOOR);
+        // Waiting: the room dims to WAIT_LEVEL and stays there, whatever
+        // the audio (a microphone source hears the room), and the opening
+        // does not start.
+        let waiting = |t: f32| Input {
+            waiting: true,
+            ..flat(t)
+        };
+        let levels = run(&mut im, 20.0, &waiting);
+        assert!(levels.windows(2).all(|w| w[1] >= w[0]), "it only dims");
+        assert!((levels[(2.0 * FPS) as usize] - WAIT_LEVEL).abs() < 0.01);
+        assert!((levels[levels.len() - 1] - WAIT_LEVEL).abs() < 1e-4);
+        assert_eq!((im.message(), im.opening()), (None, Opening::Waiting));
+        assert!(im.take_events().is_empty());
+        // Begun, the music starts: the message for its 4 s at that level,
+        // then the glide from it to where the show starts.
+        let mut shown = Vec::new();
+        for i in 0..(OPEN_HOLD_S * FPS) as u32 {
+            let level = im.step(1.0 / FPS, flat(i as f32 / FPS), None);
+            assert!((level - WAIT_LEVEL).abs() < 1e-4, "{level}");
+            shown.push(im.message());
+        }
+        assert!(shown.iter().all(|m| m.is_some_and(|(t, _)| t == OPEN_TEXT)));
+        assert_eq!(im.take_events(), [Event::Opening]);
+        let levels = run(&mut im, OPEN_GLIDE_S + 0.1, &flat);
+        assert!(levels.windows(2).all(|w| w[1] >= w[0] - 1e-6));
+        let mid = levels[(OPEN_GLIDE_S * 0.5 * FPS) as usize];
+        assert!(
+            (mid - 0.5 * (WAIT_LEVEL + OPEN_LEVEL)).abs() < 0.01,
+            "{mid}"
+        );
+        assert!((levels[(OPEN_GLIDE_S * FPS) as usize - 1] - OPEN_LEVEL).abs() < 0.01);
+        assert_eq!(im.take_events(), [Event::Show]);
+        // Begun with no music to hear (the wearer's last press was stop):
+        // the level holds a moment, then the room comes back.
+        let mut im = Immersion::new(1.0, IMMERSE_FLOOR);
+        run(&mut im, 5.0, &waiting);
+        let levels = run(&mut im, 5.0, &synth);
+        assert!((levels[(1.0 * FPS) as usize] - WAIT_LEVEL).abs() < 1e-3);
+        assert!(levels[levels.len() - 1] < 0.01);
+        assert_eq!(im.opening(), Opening::Waiting);
+        // The depth off: the room stays plain through the wait.
+        let mut im = Immersion::new(Depth::Off.value(), IMMERSE_FLOOR);
+        assert!(run(&mut im, 5.0, &waiting).iter().all(|&l| l == 0.0));
+        // No opening (the knob): the wait dims the room the same, and the
+        // music's start glides from there to the show.
+        let mut im = follower();
+        let silent = |_: f32| Input {
+            waiting: true,
+            ..Input::default()
+        };
+        let levels = run(&mut im, 5.0, &silent);
+        assert!((levels[levels.len() - 1] - WAIT_LEVEL).abs() < 1e-3);
+        let levels = run(&mut im, RESUME_S, &flat);
+        assert_eq!(im.message(), None);
+        assert!(levels.windows(2).all(|w| w[1] >= w[0] - 1e-6));
         let end = levels[levels.len() - 1];
         assert!((end - OPEN_LEVEL).abs() < 0.03, "{end}");
     }

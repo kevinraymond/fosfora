@@ -61,6 +61,8 @@ headless_on() {
     adb shell setprop debug.fosfora.ask 0
     # Nor the controllers label (board #5461): no hand is tracked unworn.
     adb shell setprop debug.fosfora.handshint 0
+    # Nor the "Pinch to begin" card (board #5452): the show starts at once.
+    adb shell setprop debug.fosfora.begin 1
     # The first launch right after the proximity fake can start paused and
     # log nothing (seen as an empty first row); give the runtime a moment.
     sleep 3
@@ -76,6 +78,7 @@ headless_off() {
     done
     adb shell setprop debug.fosfora.ask '""'
     adb shell setprop debug.fosfora.handshint '""'
+    adb shell setprop debug.fosfora.begin '""'
     adb shell setprop debug.oculus.guardian_pause 0
     adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable >/dev/null
 }

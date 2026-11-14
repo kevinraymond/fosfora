@@ -515,6 +515,13 @@ impl Hud {
         self.shown_logged
     }
 
+    /// Whether the menu is on the left palm, which brought it (board
+    /// #5452: the palm hint's gesture). Not when the spoken "menu" put it
+    /// in the air.
+    pub fn on_palm(&self) -> bool {
+        self.placement.at() == At::Palm
+    }
+
     /// Board #5459, per hand (0 left, 1 right): a pinch that closed the
     /// menu from away from it, which no gesture may read until released.
     pub fn swallowed(&self) -> [bool; 2] {

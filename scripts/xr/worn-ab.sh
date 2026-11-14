@@ -18,7 +18,8 @@
 # quiet room emits nothing and the cloud is empty, board #3783; a quiet
 # pass needs music=0; gov=0 holds the thermal governor, board #3789, which
 # otherwise thins the cloud during a run that is over budget and makes
-# every condition read the same).
+# every condition read the same). Every launch begins the show at once
+# (begin=1, board #5452), so the wearer does not pinch for each condition.
 #
 # Every knob is cleared afterwards. The surface knob writes the room file
 # (rooms/<id>.json under the config dir), so the room files are backed up
@@ -66,7 +67,7 @@ conditions=(
     "full2|-|everything on again (drift check)"
 )
 
-all_knobs="cloud surface canvas ripple envdepth handmesh hands faceslayer facescale"
+all_knobs="begin cloud surface canvas ripple envdepth handmesh hands faceslayer facescale"
 for kv in ${with//;/ }; do all_knobs="$all_knobs ${kv%%=*}"; done
 clear_knobs() {
     for k in $all_knobs; do adb shell setprop "debug.fosfora.$k" '""'; done
@@ -121,6 +122,7 @@ for entry in "${conditions[@]}"; do
     if [ -n "$only" ] && ! [[ ",$only," == *",$name,"* ]]; then continue; fi
     adb shell am force-stop $PACKAGE
     clear_knobs
+    adb shell setprop debug.fosfora.begin 1
     for kv in ${with//;/ }; do
         adb shell "setprop debug.fosfora.${kv%%=*} '${kv#*=}'"
     done
