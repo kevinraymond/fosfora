@@ -20,9 +20,15 @@
 //! the tap carry on across the swap. The callback never frees a clip: the
 //! one it swaps out waits in a slot for the caller to take
 //! ([`Playback::take_retired`]) and free off the audio thread.
+//!
+//! The interface sounds (board #5460, `ui_sound.rs`) are added to the
+//! speaker's frames after the frames went into the delay line toward the
+//! tap, so the analysis never hears them. While the music is stopped they
+//! play on a stream of their own ([`CueOut`]), which has no tap.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use anyhow::{Context, Result, anyhow};
@@ -32,6 +38,8 @@ use ndk::audio::{
     AudioCallbackResult, AudioContentType, AudioDirection, AudioFormat, AudioPerformanceMode,
     AudioStream, AudioStreamBuilder, AudioUsage, Clockid,
 };
+
+use crate::ui_sound::{self, Live, Mixer, SOUNDS};
 
 /// From a sample entering the analysis ring to the photon: the beat pulse
 /// reaches the render loop 20–44 ms after the frame is handed to AAudio
@@ -225,6 +233,9 @@ struct Shared {
 }
 
 pub struct Playback {
+    /// Declared first, so a cue asked once the stream is closing goes to
+    /// [`CueOut`] or nowhere, not to a callback that will not run.
+    _cues: Live<'static>,
     _stream: AudioStream,
     shared: Arc<Shared>,
 }
@@ -269,8 +280,10 @@ impl Playback {
             estimates: Mutex::new((0.0, 0)),
         });
         let cb = shared.clone();
-        // The callback's own: it swaps a queued clip in here.
+        // The callback's own: it swaps a queued clip in here, and plays the
+        // interface sounds from the mixer.
         let mut current = clip;
+        let mut mixer = Mixer::new(1.0);
         let stream = AudioStreamBuilder::new()
             .context("AAudio builder")?
             .direction(AudioDirection::Output)
@@ -299,7 +312,7 @@ impl Playback {
                 // `channel_count` channels (checked after open), writable
                 // for the duration of the call.
                 let out = unsafe { std::slice::from_raw_parts_mut(data.cast::<f32>(), n) };
-                fill(&cb, &mut current, stream, out, channels);
+                fill(&cb, &mut current, &mut mixer, stream, out, channels);
                 AudioCallbackResult::Continue
             }))
             .error_callback(Box::new(|_stream, e| {
@@ -356,8 +369,10 @@ impl Playback {
             shared.delay_frames.store(frames, Ordering::Relaxed);
             info!("playback: tap delay fixed at {ms:.0} ms ({frames} frames)");
         }
+        let cues = SOUNDS.live();
         stream.request_start().context("AAudio request_start")?;
         Ok(Self {
+            _cues: cues,
             _stream: stream,
             shared,
         })
@@ -462,6 +477,112 @@ impl Playback {
     }
 }
 
+/// The interface sounds' own output stream (board #5460), for while the
+/// music's is not running: the cues mixed into silence at
+/// [`ui_sound::ALONE`] of the gain, with no tap. The stream opens and
+/// closes on its own thread, so the frame loop never waits on AAudio; the
+/// frame loop only says whether it is wanted.
+pub struct CueOut {
+    tell: Option<Sender<bool>>,
+    wanted: bool,
+}
+
+impl CueOut {
+    /// The thread, with no stream yet.
+    pub fn spawn() -> Self {
+        let (tell, hear) = channel::<bool>();
+        let spawned = std::thread::Builder::new()
+            .name("fosfora-cues".to_owned())
+            .spawn(move || {
+                let mut running: Option<(Live<'static>, AudioStream)> = None;
+                while let Ok(mut on) = hear.recv() {
+                    // Only the latest ask counts.
+                    while let Ok(next) = hear.try_recv() {
+                        on = next;
+                    }
+                    if on && running.is_none() {
+                        match open_cue_stream() {
+                            Ok(s) => running = Some(s),
+                            Err(e) => error!("ui sound: no stream of its own: {e:#}"),
+                        }
+                    } else if !on && running.take().is_some() {
+                        info!("ui sound: its own stream closed (the music's runs)");
+                    }
+                }
+            });
+        if let Err(e) = &spawned {
+            error!("ui sound: no thread for its own stream: {e}");
+        }
+        Self {
+            tell: spawned.ok().map(|_| tell),
+            wanted: false,
+        }
+    }
+
+    /// Open the stream (`true`) or close it; only a change is passed on.
+    pub fn want(&mut self, on: bool) {
+        if on == self.wanted {
+            return;
+        }
+        self.wanted = on;
+        if let Some(tell) = &self.tell {
+            let _ = tell.send(on);
+        }
+    }
+}
+
+/// A started low-latency output stream that plays only the cues, and its
+/// place among the streams that mix them. Media usage, so it follows the
+/// music's volume.
+fn open_cue_stream() -> Result<(Live<'static>, AudioStream)> {
+    let mut mixer = Mixer::new(ui_sound::ALONE);
+    let stream = AudioStreamBuilder::new()
+        .context("AAudio builder")?
+        .direction(AudioDirection::Output)
+        .format(AudioFormat::PCM_Float)
+        .channel_count(2)
+        .sample_rate(i32::try_from(ui_sound::RATE).unwrap_or(48_000))
+        .usage(AudioUsage::Media)
+        .content_type(AudioContentType::Sonification)
+        .performance_mode(AudioPerformanceMode::LowLatency)
+        .data_callback(Box::new(move |stream, data, frames| {
+            let channels = usize::try_from(stream.channel_count()).unwrap_or(2).max(1);
+            let n = usize::try_from(frames).unwrap_or(0) * channels;
+            // SAFETY: AAudio hands the callback a buffer of `frames`
+            // frames in the stream's format, PCM_Float with
+            // `channel_count` channels (checked after open), writable for
+            // the duration of the call.
+            let out = unsafe { std::slice::from_raw_parts_mut(data.cast::<f32>(), n) };
+            out.fill(0.0);
+            let rate = u32::try_from(stream.sample_rate()).unwrap_or(0).max(1);
+            mixer.mix(&SOUNDS, out, channels, rate, ui_sound::now_ms());
+            AudioCallbackResult::Continue
+        }))
+        .error_callback(Box::new(|_stream, e| {
+            error!("ui sound stream error: {e:?}");
+        }))
+        .open_stream()
+        .context("AAudio open_stream (ui sound)")?;
+    let format = stream.format();
+    if format != AudioFormat::PCM_Float || stream.channel_count() < 1 {
+        return Err(anyhow!(
+            "AAudio opened {} ch {format:?}, need PCM_Float",
+            stream.channel_count()
+        ));
+    }
+    let live = SOUNDS.live();
+    stream
+        .request_start()
+        .context("AAudio request_start (ui sound)")?;
+    info!(
+        "ui sound: its own stream while the music is stopped · {} Hz · perf {:?} · buffer {} frames",
+        stream.sample_rate(),
+        stream.performance_mode(),
+        stream.buffer_size_in_frames()
+    );
+    Ok((live, stream))
+}
+
 /// CLOCK_MONOTONIC now, in nanoseconds: the clock AAudio's timestamps use
 /// when asked with `Clockid::Monotonic`. `std::time::Instant` is the same
 /// clock on Android but does not expose its value.
@@ -547,14 +668,16 @@ fn swap_in(shared: &Shared, current: &mut Arc<Clip>, at_end: bool) -> bool {
 
 /// Output callback: linear-interpolated read of `current` into `out`
 /// (looped, or played once and then silence until a queued clip takes
-/// over, `swap_in`), the same frames into the delay line, and the frames
-/// whose time has come from the delay line into the tap. No allocation
-/// and no free: the tap is fed in fixed chunks, the delay line was sized
-/// up front, and a swapped-out clip goes to the caller. Only this callback
-/// advances `pos`.
+/// over, `swap_in`), the same frames into the delay line, the interface
+/// sounds added to `out` alone after that (`ui_sound::output_block`), and
+/// the frames whose time has come from the delay line into the tap. No
+/// allocation and no free: the tap is fed in fixed chunks, the delay line
+/// was sized up front, and a swapped-out clip goes to the caller. Only
+/// this callback advances `pos`.
 fn fill(
     shared: &Shared,
     current: &mut Arc<Clip>,
+    mixer: &mut Mixer,
     stream: &AudioStream,
     out: &mut [f32],
     channels: usize,
@@ -580,39 +703,21 @@ fn fill(
     };
     let mut step = step_for(current.as_ref());
     let mut line = lock(&shared.delay_line);
-    for frame in out.chunks_exact_mut(channels) {
+    // The clip's next frame, the playhead advanced past it; silence once
+    // the clip ended.
+    let next = || {
         let clip: &Clip = current.as_ref();
         let frames = clip.samples.len() / 2;
-        let sounding = !ended && frames >= 2;
-        let (l, r) = if sounding {
-            let i = ((pos >> 32) as usize).min(frames - 1);
-            let frac = (pos & 0xffff_ffff) as f32 / 4_294_967_296.0;
-            let j = if i + 1 < frames { i + 1 } else { 0 };
-            (
-                clip.samples[2 * i] + (clip.samples[2 * j] - clip.samples[2 * i]) * frac,
-                clip.samples[2 * i + 1]
-                    + (clip.samples[2 * j + 1] - clip.samples[2 * i + 1]) * frac,
-            )
-        } else {
-            (0.0, 0.0)
-        };
-        match channels {
-            1 => frame[0] = (l + r) * 0.5,
-            _ => {
-                frame[0] = l;
-                frame[1] = r;
-                for extra in &mut frame[2..] {
-                    *extra = 0.0;
-                }
-            }
+        if ended || frames < 2 {
+            return (0.0, 0.0);
         }
-        if line.len() < DELAY_CAP_FRAMES * 2 {
-            line.push_back(l);
-            line.push_back(r);
-        }
-        if !sounding {
-            continue;
-        }
+        let i = ((pos >> 32) as usize).min(frames - 1);
+        let frac = (pos & 0xffff_ffff) as f32 / 4_294_967_296.0;
+        let j = if i + 1 < frames { i + 1 } else { 0 };
+        let played = (
+            clip.samples[2 * i] + (clip.samples[2 * j] - clip.samples[2 * i]) * frac,
+            clip.samples[2 * i + 1] + (clip.samples[2 * j + 1] - clip.samples[2 * i + 1]) * frac,
+        );
         pos += step;
         let wrap = (frames as u64) << 32;
         if pos >= wrap {
@@ -627,7 +732,21 @@ fn fill(
                 pos = wrap - (1 << 32);
             }
         }
-    }
+        played
+    };
+    // Each frame to the speaker and into the delay line toward the tap,
+    // then the interface sounds into the speaker's frames only.
+    ui_sound::output_block(
+        out,
+        channels,
+        &mut line,
+        DELAY_CAP_FRAMES * 2,
+        next,
+        mixer,
+        &SOUNDS,
+        output_rate,
+        ui_sound::now_ms(),
+    );
     shared.pos.store(pos, Ordering::Relaxed);
     shared.ended.store(ended, Ordering::Relaxed);
     let out_frames = out.len() / channels;

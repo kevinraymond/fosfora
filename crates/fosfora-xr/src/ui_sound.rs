@@ -323,20 +323,21 @@ impl Sounds {
         self.bank.get()
     }
 
-    /// Ask for `cue` now.
-    pub fn play(&self, cue: Cue) {
-        self.play_at(cue, now_ms());
+    /// Ask for `cue` now; false when it was dropped ([`Sounds::play_at`]).
+    pub fn play(&self, cue: Cue) -> bool {
+        self.play_at(cue, now_ms())
     }
 
     /// Ask for `cue` at `now_ms`: the next buffer of a running stream
-    /// plays it. With no stream running it is dropped, so it can't sound
-    /// late when one starts.
-    pub fn play_at(&self, cue: Cue, now_ms: u64) {
+    /// plays it. With no stream running it is dropped (false), so it can't
+    /// sound late when one starts.
+    pub fn play_at(&self, cue: Cue, now_ms: u64) -> bool {
         if self.streams.load(Ordering::Acquire) == 0 {
-            return;
+            return false;
         }
         self.asked_at.store(now_ms, Ordering::Relaxed);
         self.asked.fetch_or(cue.bit(), Ordering::Release);
+        true
     }
 
     /// The cues asked for since the last take, none if they are older
@@ -385,9 +386,14 @@ impl Drop for Live<'_> {
 /// The app's cues.
 pub static SOUNDS: Sounds = Sounds::new();
 
-/// Ask for `cue` on the app's speakers.
+/// Ask for `cue` on the app's speakers (from the frame loop; logged at the
+/// debug level, so an unworn run shows which cues fired).
 pub fn play(cue: Cue) {
-    SOUNDS.play(cue);
+    if SOUNDS.play(cue) {
+        log::debug!("ui sound: {}", cue.name());
+    } else {
+        log::debug!("ui sound: {} dropped, no stream runs", cue.name());
+    }
 }
 
 /// A cue playing: which, and where, in bank frames (32.32 fixed point).
@@ -884,7 +890,7 @@ mod tests {
         s.install(Bank::new(RATE));
         // No stream running: the ask goes nowhere, and a stream that
         // starts later does not play it.
-        s.play_at(Cue::Missed, 0);
+        assert!(!s.play_at(Cue::Missed, 0));
         let live = s.live();
         let mut mixer = Mixer::new(1.0);
         let mut out = vec![0.0f32; 256];
@@ -899,7 +905,7 @@ mod tests {
         mixer.mix(s, &mut out, 2, RATE, 2_000 + MAX_AGE_MS);
         assert!(mixer.sounding());
         drop(live);
-        s.play_at(Cue::Press, 3_000);
+        assert!(!s.play_at(Cue::Press, 3_000));
         assert_eq!(s.take(3_000), 0);
     }
 

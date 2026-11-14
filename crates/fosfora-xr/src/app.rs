@@ -1118,6 +1118,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         session.request_refresh_rate(hz);
     }
 
+    // Board #5460: the interface sounds, made before any stream starts,
+    // and the stream of their own that plays them while the music is
+    // stopped (the frame loop opens and closes it).
+    crate::ui_sound::SOUNDS.install(crate::ui_sound::Bank::new(crate::ui_sound::RATE));
+    let mut cue_out = crate::playback::CueOut::spawn();
+    let mut cue_knob = system_prop("debug.fosfora.uisound");
+    let mut cue_seen: Option<(Option<String>, bool)> = None;
+
     // The launch source's analysis (the microphones; none = the synthetic
     // groove), kept open across the Music row's plays so a stop is instant.
     let mut live_audio = None;
@@ -3944,6 +3952,25 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // failed decode or start turns the row back to "Music: play".
             music.poll();
             controls.music = music.wanted();
+            // Board #5460: the interface sounds' gain, the knob read live
+            // and 0 while the analysis is on the microphones (they would
+            // hear the cues); their own stream while the music's is not
+            // running, so a press still sounds with the music stopped.
+            if frame_index.is_multiple_of(72) {
+                cue_knob = system_prop("debug.fosfora.uisound");
+            }
+            let on_mic = crate::music::analysis(music.playing(), &audio_source)
+                == crate::music::Analysis::Mic;
+            let cue_gain = crate::ui_sound::gain(cue_knob.as_deref(), on_mic);
+            crate::ui_sound::SOUNDS.set_gain(cue_gain);
+            if cue_seen
+                .as_ref()
+                .is_none_or(|(knob, mic)| *knob != cue_knob || *mic != on_mic)
+            {
+                info!("{}", crate::ui_sound::gain_line(cue_knob.as_deref(), on_mic));
+                cue_seen = Some((cue_knob.clone(), on_mic));
+            }
+            cue_out.want(!music.playing() && cue_gain > 0.0);
             // This frame's audio: the music's tap, the headset microphones
             // or the synthetic 120 BPM groove.
             let hop = match music.analysis.as_mut().or(live_audio.as_mut()) {
