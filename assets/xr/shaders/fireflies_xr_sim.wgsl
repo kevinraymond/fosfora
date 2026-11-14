@@ -28,8 +28,8 @@
 // hand particle in a slot the fireflies now own lives out its life first.
 //
 // Fireflies. One spawns in a dead slot of its own within about a second
-// (XR_FLY_SPAWN_HZ), at a point uniform in the volume: the cube of half
-// extent u.emitter_radius around the anchor across, and the slab from
+// (XR_FLY_SPAWN_HZ), at a point uniform in the volume: XR_FLY_SPAN of the
+// half extent u.emitter_radius around the anchor across, and the slab from
 // XR_FLY_Y_LOW to XR_FLY_Y_HIGH of that half extent in height, which at the
 // preset's 3 m is the floor to a ceiling of 2.65 m around an anchor 1 m up.
 // It never dies of age. Everything that tells one firefly from another
@@ -40,9 +40,13 @@
 //   of XR_FLY_TURN_S or longer, a second, slower one on top of it and a
 //   slow rise and fall. Its speed moves between 0.6 and 1.3 of its own
 //   drift speed and its direction turns under 40 degrees a second, half a
-//   degree a frame. No flow field, no noise, no collide: a firefly inside a scanned box or behind
-//   the depth map is hidden by the occluders. One that leaves the volume
-//   (the space size shrank) is born again inside it.
+//   degree a frame. At the default drift its loop is about a meter across.
+//   No flow field, no noise, no collide: a firefly inside a scanned box or
+//   behind the depth map is hidden by the occluders. It fades toward the
+//   volume's bounds and is unseen from the half extent on. One that gets
+//   XR_FLY_OUT of the half extent out (the space size shrank, or the drift
+//   knob is set high and its loop is wider than the volume) is born again
+//   inside.
 //   Light: each glows and fades on its own period, XR_FLY_PERIOD_S, from
 //   XR_FLY_GLOW_LOW of its peak to the peak. The music lifts the light with
 //   the loudness (u.rms as the XR app's flash limit lets it through; the
@@ -54,7 +58,8 @@
 // Hand particles. A burst (the instrument rows) or a pour (the pour row)
 // claims dead hand slots, and when few are dead takes living hand particles,
 // the old ones first. A hand particle is loose in the room until it dies of
-// age or flies XR_FREE_REACH_M from the anchor.
+// age or flies XR_FREE_REACH_M from the anchor. It is born looking as the
+// cloud's bursts did, and reddens with age as they did.
 //   Motion: gravity as an acceleration (aux[1239].y, m/s^2) and a light air
 //   drag (u.drag), so it arcs and falls. Nothing else pushes it: no flow, no
 //   turbulence, no kick on the beat. It does not bounce: where it meets a
@@ -163,21 +168,22 @@ const XR_FREE_CCW: f32 = 4.0;
 // How far from the anchor (m) a hand particle dies.
 const XR_FREE_REACH_M: f32 = 13.0;
 
-// Fireflies: the slab they live in, as fractions of the half extent below
-// and above the anchor; how far across the half extent they are born; the
-// share of the half extent over which they fade toward the bounds, and how
-// far across it one is taken as out (it is unseen from 1 on, and its own
-// loop carries it 0.6 m from where it was born at most); how fast a dead slot fills (per second) and a firefly
-// fades in or out (s); the shortest period of the circle its path is drawn
-// on (s) and the size of the second, slower circle added to it, which makes
-// the path a loop that never closes; the shortest and longest glow period (s) and the dimmest it
-// gets against its peak; how much the music lifts the light and the radius
-// at full loudness with the music knob at 1.
+// Fireflies. The slab they live in, as fractions of the half extent below
+// and above the anchor. How far across the half extent they are born, the
+// share of it over which they fade toward the bounds, and how far across it
+// one is taken as out: it is unseen from 1 on, and at the default drift its
+// loop carries it 1.2 m from where it was born at most. How fast a dead
+// slot fills (per second) and how long a firefly takes to fade in or out
+// (s). The shortest period of the circle its path is drawn on (s), and the
+// size of the second, slower circle added to it, which makes the path a
+// loop that never closes. The shortest and longest glow period (s) and the
+// dimmest it gets against its peak. How much the music lifts the light and
+// the radius at full loudness with the music knob at 1.
 const XR_FLY_Y_LOW: f32 = -0.35;
 const XR_FLY_Y_HIGH: f32 = 0.55;
 const XR_FLY_SPAN: f32 = 0.9;
 const XR_FLY_EDGE_FADE: f32 = 0.15;
-const XR_FLY_OUT: f32 = 1.25;
+const XR_FLY_OUT: f32 = 1.4;
 const XR_FLY_SPAWN_HZ: f32 = 1.5;
 const XR_FLY_FADE_S: f32 = 1.5;
 const XR_FLY_TURN_S: f32 = 15.0;
@@ -610,8 +616,9 @@ fn xr_pour_dir(idx: u32, axis: vec3f) -> vec3f {
 // A burst particle for slot idx (the instrument rows): born within the
 // burst's radius, flying out from its center, opaque at once. A pour's (the
 // pour row) flies along the pour instead and lives XR_POUR_LIFE as long.
-// Its color is the one the cloud's bursts had: a hue anchored to the
-// musical key, pulled toward white.
+// Its look is the one the cloud's bursts had: a dim hue anchored to the
+// musical key, pulled halfway to a warm white, at the cloud's burst size
+// and opacity. Only the flash a burst born on a beat had is left out.
 fn xr_burst(idx: u32) -> Particle {
     let b = aux[XR_AUX_INSTRUMENTS + 1u].home;
     let given = aux[XR_AUX_INSTRUMENTS + 2u].home.w;
@@ -640,7 +647,11 @@ fn xr_burst(idx: u32) -> Particle {
         vec3f(0.0),
         vec3f(1.0)
     );
-    let col = mix(key, vec3f(1.0, 0.95, 0.85), XR_BURST_WHITE);
+    let col = mix(
+        key * (0.04 + u.rms * 0.03),
+        vec3f(1.0, 0.95, 0.85),
+        XR_BURST_WHITE * bright
+    );
     // A dimmed streak is smaller and fainter; the impact is full.
     let size = u.initial_size * (0.7 + t.z * 0.6) * mix(XR_BURST_DIM_SIZE, 1.0, bright);
     let alpha = mix(XR_BURST_DIM_ALPHA, XR_BURST_ALPHA, bright);
@@ -770,9 +781,18 @@ fn xr_hand_step(idx: u32, p_in: Particle, cut: u32) {
         size *= near;
     }
 
+    // Color: the cloud's warm shift with age, so a burst cools to embers
+    // (at its per-frame rate at 60 fps, whatever the display rate).
+    let warm = (life_frac * 0.3 + u.mid * 0.1) * dt * 60.0;
+    let col = clamp(
+        vec3f(p.color.r + warm * 0.2, p.color.g, p.color.b - warm * 0.1),
+        vec3f(0.0),
+        vec3f(1.0)
+    );
+
     p.pos_life = vec4f(pos, life);
     p.vel_size = vec4f(vel, size);
-    p.color.a = alpha;
+    p.color = vec4f(col, alpha);
     p.flags.x = aged;
     write_particle(idx, p);
     if (cut & XR_CUT_ATOMICS) != 0u {
