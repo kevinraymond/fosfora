@@ -316,6 +316,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.roam 0|1                 (board #5393: roam forced on or off for this launch, not saved, for unworn tests where
     //       the head never moves; a press on the hand menu's Roam control or a spoken "roam" / "stay here" takes over; unset, the wearer's saved
     //       choice, else on by itself when the scan ends with no room; read at launch)
+    //   adb shell setprop debug.fosfora.boundary 0|1             (board #5454: 1 asks the system to hold the boundary back seated too, 0 never asks; unset,
+    //       it is asked in roam only; needs passthrough; polled every frame, each change of request or reply is logged)
     //   adb shell setprop debug.fosfora.roamwalk 0.6             (board #5393: a fake head speed, m/s, in place of the measured one, through the same
     //       low-pass, so roam's immersion rule can be captured unworn: full immersion under 0.3, none over 0.8; logged once a second while it
     //       matters; live: polled once a second; "" back to the measured speed)
@@ -2005,6 +2007,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // its volume, and the stage floor's center (x, z), under the head in
     // roam and at the stage's origin seated. `debug.fosfora.roamwalk` fakes
     // the head's speed (polled once a second).
+    let mut boundary_ask = crate::boundary::Ask::default();
     let mut follow = crate::roam::Follow::default();
     let mut walk = crate::roam::Walk::default();
     let mut fill = crate::roam::Fill::default();
@@ -2215,6 +2218,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 );
             }
             scan_logged = scan_state;
+        }
+        // Board #5454: in roam the system is asked to hold the boundary
+        // back, so walking out of a stationary boundary does not stop the
+        // show (`boundary.rs`); seated, it is asked for back.
+        if session.has_boundary_request() {
+            let want = crate::boundary::wants(
+                roam.now().is_on(),
+                session.has_passthrough(),
+                switch_now("debug.fosfora.boundary"),
+            );
+            if let Some(want) = boundary_ask.due(dt, want) {
+                if let Some(reply) = session.request_boundary(want) {
+                    if let Some(line) = boundary_ask.heard(want, reply) {
+                        info!("{line}");
+                    }
+                }
+            }
         }
         // Board #5397: live planes run while roam is on (or the knob says),
         // where there is a depth read-back. Each start is a fresh finder;

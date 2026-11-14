@@ -51,6 +51,23 @@ pub struct XrContext {
     /// `XR_FB_composition_layer_settings`: the faces layer's sharpening
     /// (board #3793).
     pub has_layer_settings: bool,
+    /// `XR_META_boundary_visibility` (board #5454): the call that asks the
+    /// system to hold the boundary back, when the runtime offers the
+    /// extension and says the system supports it.
+    pub boundary: Option<BoundaryRequest>,
+}
+
+/// `xrRequestBoundaryVisibilityMETA`, loaded through
+/// `xrGetInstanceProcAddr` (the openxr crate has no binding for it).
+pub type BoundaryRequest = unsafe extern "system" fn(xr::sys::Session, i32) -> xr::sys::Result;
+
+/// `XrSystemBoundaryVisibilityPropertiesMETA`, chained to
+/// `xrGetSystemProperties`.
+#[repr(C)]
+struct SystemBoundaryVisibilityProperties {
+    ty: xr::sys::StructureType,
+    next: *mut std::ffi::c_void,
+    supports_boundary_visibility: xr::sys::Bool32,
 }
 
 /// Which S7 features to bring up with the session.
@@ -184,6 +201,21 @@ impl XrContext {
         // Board #3793: the faces layer's upsample sharpening, asked for
         // per layer only by `debug.fosfora.facesharpen`.
         enabled.fb_composition_layer_settings = available.fb_composition_layer_settings;
+        // Board #5454: the boundary's visibility, a name the crate does not
+        // know, so it is enabled by the runtime's own bytes.
+        let boundary_name = crate::boundary::offered(&available.other).map(<[u8]>::to_vec);
+        if let Some(name) = &boundary_name {
+            enabled.other.push(name.clone());
+        }
+        info!(
+            "boundary: {} {}",
+            crate::boundary::EXTENSION,
+            if boundary_name.is_some() {
+                "offered"
+            } else {
+                "not offered by the runtime"
+            }
+        );
         info!(
             "hand aim (XR_FB_hand_tracking_aim): {}",
             enabled.fb_hand_tracking_aim
@@ -250,6 +282,11 @@ impl XrContext {
             sys_props.tracking_properties.position_tracking,
         );
 
+        let boundary = boundary_name
+            .is_some()
+            .then(|| boundary_request(&instance, system))
+            .flatten();
+
         let blend_modes = instance
             .enumerate_environment_blend_modes(system, VIEW_TYPE)
             .context("xrEnumerateEnvironmentBlendModes")?;
@@ -314,6 +351,7 @@ impl XrContext {
             has_env_depth: enabled.meta_environment_depth,
             has_microgestures,
             has_layer_settings: enabled.fb_composition_layer_settings,
+            boundary,
         })
     }
 }
@@ -417,6 +455,8 @@ pub struct XrSession {
     /// Board #5384: immersion has the passthrough image under full
     /// opacity, so its layer goes alpha-blended.
     passthrough_dimmed: bool,
+    /// Board #5454: the boundary request, where the runtime has it.
+    boundary: Option<BoundaryRequest>,
     hands: Option<Hands>,
     room: Option<Room>,
     perf: Option<PerfMetrics>,
@@ -676,6 +716,7 @@ impl XrSession {
             system: ctx.system,
             passthrough,
             passthrough_dimmed: false,
+            boundary: ctx.boundary,
             hands,
             room,
             perf,
@@ -832,6 +873,27 @@ impl XrSession {
 
     pub fn has_passthrough(&self) -> bool {
         self.passthrough.is_some()
+    }
+
+    /// Board #5454: whether the boundary can be asked for (`boundary.rs`).
+    pub fn has_boundary_request(&self) -> bool {
+        self.boundary.is_some()
+    }
+
+    /// Board #5454: ask the system to hold the boundary back (`suppressed`)
+    /// or to bring it back, while the session has the wearer's focus. None
+    /// without the extension or the focus.
+    pub fn request_boundary(&self, suppressed: bool) -> Option<crate::boundary::Reply> {
+        let request = self.boundary?;
+        if self.state != xr::SessionState::FOCUSED {
+            return None;
+        }
+        // SAFETY: `request` is the runtime's `xrRequestBoundaryVisibilityMETA`
+        // for this session's instance, which enabled the extension; the
+        // session handle is live for as long as `self`, and the second
+        // argument is one of the enum's two values.
+        let code = unsafe { request(self.session.as_raw(), crate::boundary::value(suppressed)) };
+        Some(crate::boundary::reply(code.into_raw()))
     }
 
     /// Board #5384: the passthrough image's opacity, for immersion
@@ -1279,6 +1341,57 @@ impl XrSession {
                 layer_handle: p.layer.as_raw(),
             })
     }
+}
+
+/// Board #5454: `xrRequestBoundaryVisibilityMETA` for an instance that
+/// enabled `XR_META_boundary_visibility`, when the system says it supports
+/// holding the boundary back. Logs what it found either way.
+fn boundary_request(instance: &xr::Instance, system: xr::SystemId) -> Option<BoundaryRequest> {
+    let mut supports = SystemBoundaryVisibilityProperties {
+        ty: xr::sys::StructureType::from_raw(crate::boundary::TYPE_SYSTEM_PROPERTIES),
+        next: std::ptr::null_mut(),
+        supports_boundary_visibility: xr::sys::FALSE,
+    };
+    let mut props = xr::sys::SystemProperties {
+        ty: xr::sys::SystemProperties::TYPE,
+        next: std::ptr::from_mut(&mut supports).cast(),
+        // SAFETY: the rest of the struct is plain integers, floats and a
+        // char array, all valid as zeros; the runtime fills them in.
+        ..unsafe { std::mem::zeroed() }
+    };
+    // SAFETY: `props` is a typed `XrSystemProperties` whose `next` points at
+    // a typed `XrSystemBoundaryVisibilityPropertiesMETA` (same layout as the
+    // header's: type, next, one XrBool32), which the instance understands
+    // because it enabled the extension. Both outlive the call.
+    let got =
+        unsafe { (instance.fp().get_system_properties)(instance.as_raw(), system, &mut props) };
+    if got != xr::sys::Result::SUCCESS {
+        warn!("boundary: xrGetSystemProperties with the boundary struct: {got:?}");
+        return None;
+    }
+    if supports.supports_boundary_visibility == xr::sys::FALSE {
+        info!("boundary: the system does not support holding it back");
+        return None;
+    }
+    let mut function: Option<xr::sys::pfn::VoidFunction> = None;
+    // SAFETY: the name is NUL-terminated and `function` outlives the call.
+    let got = unsafe {
+        (instance.entry().fp().get_instance_proc_addr)(
+            instance.as_raw(),
+            crate::boundary::REQUEST_FN.as_ptr(),
+            &mut function,
+        )
+    };
+    let Some(function) = function.filter(|_| got == xr::sys::Result::SUCCESS) else {
+        warn!("boundary: xrGetInstanceProcAddr(xrRequestBoundaryVisibilityMETA): {got:?}");
+        return None;
+    };
+    info!("boundary: the system supports holding it back");
+    // SAFETY: the runtime returned this pointer for the name
+    // `xrRequestBoundaryVisibilityMETA`, whose signature the header gives
+    // as (XrSession, XrBoundaryVisibilityMETA) -> XrResult; the enum is a
+    // 32-bit integer in the C ABI.
+    Some(unsafe { std::mem::transmute::<xr::sys::pfn::VoidFunction, BoundaryRequest>(function) })
 }
 
 /// The wgpu view of each swapchain's acquired image, in eye order.

@@ -3478,3 +3478,37 @@ Not judged here: how the dark wait feels, whether a resting hand begins the
 show by accident, the card's place lying back, and whether the hints' words
 are enough without a picture. Those are worn checks. Captures:
 `recordings/first-run/`. The owner's app data was restored byte-identical.
+
+## The boundary held back in roam (board #5454)
+
+Quest 3 v209, Nov 14 2026, debug build of xr-next 78a3fc3 with the boundary
+change, unworn on the desk, `debug.fosfora.roam 1`, `scenecapture 0`.
+
+The question: can the app keep the system from stopping a wearer who walks
+out of a stationary boundary?
+
+- **The manifest.** With `com.oculus.permission.BOUNDARY_VISIBILITY` the
+  runtime lists `XR_META_boundary_visibility` (101 extensions; it was absent
+  before). The permission is granted at install, with no runtime ask.
+- **The system.** `xrGetSystemProperties` with the extension's struct says
+  the system supports it (`boundary: the system supports holding it back`).
+- **The request with the guardian paused** (`debug.oculus.guardian_pause 1`,
+  the usual unworn setup): `XR_ERROR_RUNTIME_FAILURE` (-2) every time. The
+  system's own log says why: `setIsBoundaryEnabled request: disable ·
+  Unavailable because the Guardian System is SUSPENDED`. This is the test
+  setup, not the app.
+- **The request with the guardian on** (`guardian_pause 0`, same launch):
+  `XR_SUCCESS` on the next ask. The system logged `Boundary disabled
+  successfully`, `SAFETY_SYSTEM_VR->SAFETY_SYSTEM_MR BOUNDARYLESS` and
+  `UpdateGuardianBoundaryVisibility: invisible`. The app's line: `boundary:
+  asked to hold it back · the system took it`.
+- **A system toast the first time.** `Boundary API App dev.fosfora.xr is
+  turning off the boundary for the first time, sending NUX toast`. The
+  wearer sees it once per install; its wording was not captured.
+- Three seconds later the session went idle (`Tracking not valid`), which is
+  the unworn headset with the guardian on and says nothing about the change.
+
+Not answered here: whether a wearer who walks out of the stationary
+boundary is still stopped by the "moved too far" screen. That needs the
+headset on a head. Captures: `recordings/boundary/`. The owner's app data
+was restored byte-identical.

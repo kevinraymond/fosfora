@@ -18,6 +18,13 @@
     <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
     <uses-permission android:name="com.oculus.permission.USE_SCENE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Roam (crates/fosfora-xr/src/boundary.rs, board #5454): the runtime
+         lists XR_META_boundary_visibility only for an app that asks for
+         this. A normal permission, granted at install, no runtime ask. With
+         it the app can ask the system to hold the boundary back while the
+         passthrough image is on screen, so a wearer who walks is not
+         stopped at the edge of a stationary boundary. -->
+    <uses-permission android:name="com.oculus.permission.BOUNDARY_VISIBILITY" />
     <!-- The wearer's own music (crates/fosfora-xr/src/playlist.rs, board
          #5385): the shared Music/ folder is read by file path, a runtime
          permission asked for at launch like the two above. With targetSdk
