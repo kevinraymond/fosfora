@@ -688,13 +688,7 @@ mod tests {
     #[test]
     fn the_cues_differ_where_they_should() {
         let bank = Bank::new(RATE);
-        // The window's two cues are each other's notes in turn.
-        let open = bank.samples(Cue::Listening);
-        let closed = bank.samples(Cue::Closed);
-        assert_eq!(open.len(), closed.len());
-        assert_ne!(bits(open), bits(closed));
-        // Zero crossings per second: the miss sits lower than the
-        // understood note.
+        // Zero crossings per second, near the pitch of a note.
         let rate_of = |s: &[f32]| {
             let crossings = s
                 .windows(2)
@@ -702,6 +696,22 @@ mod tests {
                 .count();
             crossings as f32 / 2.0 / (s.len() as f32 / RATE as f32)
         };
+        // The window's cues: E6 up to B6 when it opens, down when it
+        // closes (the first 40 ms against 60 to 100 ms).
+        let (head, tail) = (0..40 * 48, 60 * 48..100 * 48);
+        let open = bank.samples(Cue::Listening);
+        let closed = bank.samples(Cue::Closed);
+        let (lo, hi) = (rate_of(&open[head.clone()]), rate_of(&open[tail.clone()]));
+        assert!(
+            (lo - E6).abs() < 40.0 && (hi - B6).abs() < 40.0,
+            "{lo} -> {hi}"
+        );
+        let (hi, lo) = (rate_of(&closed[head]), rate_of(&closed[tail]));
+        assert!(
+            (hi - B6).abs() < 40.0 && (lo - E6).abs() < 40.0,
+            "{hi} -> {lo}"
+        );
+        // The miss sits lower than the understood note.
         let (yes, no) = (
             rate_of(bank.samples(Cue::Understood)),
             rate_of(bank.samples(Cue::Missed)),
@@ -930,6 +940,48 @@ mod tests {
         assert_eq!(
             gain_line(Some("0.8"), true),
             "ui sound: off while the analysis is on the microphones"
+        );
+    }
+
+    /// The cues to listen to without the headset: each at the default gain
+    /// as it plays over the music, then at [`ALONE`] of it as the cues' own
+    /// stream plays it, 0.6 s apart, as a 48 kHz 16-bit WAV.
+    #[test]
+    #[ignore = "writes a file: UI_SOUND_WAV=<file.wav>"]
+    fn write_the_cues_to_ui_sound_wav() {
+        let path = std::env::var("UI_SOUND_WAV")
+            .unwrap_or_else(|_| panic!("set UI_SOUND_WAV to the file to write"));
+        let bank = Bank::new(RATE);
+        let gap = vec![0.0f32; RATE as usize * 6 / 10];
+        let mut mono = gap.clone();
+        for scale in [1.0, ALONE] {
+            for cue in Cue::ALL {
+                mono.extend(bank.samples(cue).iter().map(|s| s * DEFAULT_GAIN * scale));
+                mono.extend_from_slice(&gap);
+            }
+        }
+        let data: Vec<u8> = mono
+            .iter()
+            .flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes())
+            .collect();
+        let mut wav = Vec::with_capacity(44 + data.len());
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&RATE.to_le_bytes());
+        wav.extend_from_slice(&(RATE * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&data);
+        std::fs::write(&path, wav).unwrap_or_else(|e| panic!("{path}: {e}"));
+        println!(
+            "{path}: {}, at gain {DEFAULT_GAIN} then {ALONE} of it",
+            Cue::ALL.map(Cue::name).join(", ")
         );
     }
 }
