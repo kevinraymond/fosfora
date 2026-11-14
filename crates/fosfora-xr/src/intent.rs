@@ -198,6 +198,10 @@ pub enum Intent {
     Recenter,
     /// The hand menu's "All: none".
     AllNone,
+    /// The hand menu itself (board #5459): open, parked ahead of the
+    /// wearer with no palm needed (as the palm summons it), or closed (as
+    /// a pinch away from it closes it).
+    Menu(bool),
     /// The hand menu's Immersion control (board #5384): how dark the room
     /// may get with the music.
     Immersion(ImmersionStep),
@@ -404,6 +408,26 @@ const RECENTER: [&str; 6] = [
     "re center cloud",
     "re center particles",
     "re center",
+];
+/// Board #5459: the hand menu opened ahead of the wearer and closed, as
+/// [`normalize`] leaves them ("open the menu" is "open menu").
+const MENU_OPEN: [&str; 8] = [
+    "menu",
+    "open menu",
+    "show menu",
+    "menu on",
+    "bring up menu",
+    "hand menu",
+    "open hand menu",
+    "show hand menu",
+];
+const MENU_CLOSE: [&str; 6] = [
+    "close menu",
+    "hide menu",
+    "menu off",
+    "dismiss menu",
+    "close hand menu",
+    "hide hand menu",
 ];
 /// "What can I say" (V4).
 const HELP: [&str; 6] = [
@@ -826,6 +850,12 @@ fn fill(slot: Slot, target_words: &[&str], vocab: &Vocabulary<'_>) -> Result<Int
 fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
     if any(ts, &HELP) {
         return Some(Intent::Help);
+    }
+    if any(ts, &MENU_OPEN) {
+        return Some(Intent::Menu(true));
+    }
+    if any(ts, &MENU_CLOSE) {
+        return Some(Intent::Menu(false));
     }
     if any(ts, &NEXT) {
         return Some(Intent::NextEffect);
@@ -1314,8 +1344,11 @@ pub fn parse_clauses(sentence: &str, vocab: &Vocabulary<'_>) -> Vec<Clause> {
 /// kinds ("every wall aurora"). Names come from the vocabulary, so each
 /// one is a surface or an effect of this room.
 fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
+    // Board #5459: "open the menu" on the first page, for the wearer who
+    // has one hand free.
     let menu: Vec<String> = [
         "next effect",
+        "open the menu",
         "music play and next effect",
         "edit the room",
         "particles off",
@@ -1327,6 +1360,8 @@ fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
         "what is playing",
         "next theme",
         "theme aurora",
+        "close the menu",
+        "menu",
     ]
     .map(str::to_owned)
     .to_vec();
@@ -1746,6 +1781,10 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         Intent::Rescan => "rescanning the room".to_owned(),
         Intent::Recenter => "cloud recentered".to_owned(),
         Intent::AllNone => "every surface: none".to_owned(),
+        Intent::Menu(true) => "menu open".to_owned(),
+        Intent::Menu(false) => "menu closed".to_owned(),
+        // With the menu on the palm (`debug.fosfora.menustay 0`) the app
+        // answers `MENU_ON_PALM` instead.
         Intent::Immersion(ImmersionStep::To(depth)) => immersion_reply(depth),
         Intent::Immersion(ImmersionStep::Darker) => "darker".to_owned(),
         Intent::Immersion(ImmersionStep::Lighter) => "lighter".to_owned(),
@@ -1770,6 +1809,11 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         Intent::Help => "what can I say".to_owned(),
     }
 }
+
+/// Board #5459: the label for a spoken open or close while the menu lives
+/// on the palm (`debug.fosfora.menustay 0`), where the voice leaves it
+/// alone.
+pub const MENU_ON_PALM: &str = "The menu is on your left palm";
 
 /// The label once an immersion intent is applied, whatever asked for it:
 /// the depth it came to, "immersion low" (a "darker" at full says "immersion
@@ -2283,6 +2327,48 @@ mod tests {
         // Not the agent's: its actions have no roam.
         let action = AgentAction {
             kind: "roam".to_owned(),
+            target: String::new(),
+            value: "on".to_owned(),
+        };
+        assert!(Intent::from_json(&action, &v).is_err());
+    }
+
+    /// Board #5459: the hand menu opened ahead and closed by voice, beside
+    /// the menu's other words; not the agent's.
+    #[test]
+    fn open_and_close_the_menu() {
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        check(
+            &v,
+            &[
+                ("Menu.", Intent::Menu(true)),
+                ("Open the menu.", Intent::Menu(true)),
+                ("Show the menu", Intent::Menu(true)),
+                ("Open the hand menu, please.", Intent::Menu(true)),
+                ("Bring up the menu.", Intent::Menu(true)),
+                ("Close the menu.", Intent::Menu(false)),
+                ("Hide the menu", Intent::Menu(false)),
+                ("Close the hand menu.", Intent::Menu(false)),
+                ("Menu off.", Intent::Menu(false)),
+                ("Next effect.", Intent::NextEffect),
+                ("Show flock", Intent::Effect(2)),
+                ("Recenter the cloud.", Intent::Recenter),
+            ],
+        );
+        let clauses = parse_clauses("Open the menu and next song.", &v);
+        let outcomes: Vec<_> = clauses.into_iter().map(|c| c.outcome).collect();
+        assert_eq!(outcomes, [Ok(Intent::Menu(true)), Ok(Intent::NextTrack)]);
+        assert_eq!(reply(&Intent::Menu(true), &v), "menu open");
+        assert_eq!(reply(&Intent::Menu(false), &v), "menu closed");
+        // "What can I say" lists them, the open on the first page.
+        let pool = shown_pool(&v);
+        for said in ["open the menu", "close the menu", "menu"] {
+            assert!(pool.iter().any(|p| p == said), "{said}: {pool:?}");
+        }
+        assert!(examples(&v, 0).iter().any(|p| p == "open the menu"));
+        let action = AgentAction {
+            kind: "menu".to_owned(),
             target: String::new(),
             value: "on".to_owned(),
         };
@@ -3357,6 +3443,7 @@ mod tests {
             Intent::Immersion(_) => unreachable!("the agent's actions have no immersion"),
             Intent::Roam(_) => unreachable!("the agent's actions have no roam"),
             Intent::Theme(_) => unreachable!("the agent's actions have no theme"),
+            Intent::Menu(_) => unreachable!("the agent's actions have no menu"),
             Intent::NextTrack
             | Intent::PrevTrack
             | Intent::Track(_)
@@ -3704,7 +3791,7 @@ mod tests {
                 "streamlines on table 0",
                 "switch to Flux Cloud",
                 "every table curls",
-                "music play and next effect",
+                "open the menu",
             ]
         );
     }
@@ -3870,13 +3957,13 @@ mod tests {
                 REPLY_S,
             ),
             (
-                "voice: heard \"What can I say?\" \u{2192} Help \u{b7} label \"next effect | streamlines on table 0 | switch to Flux Cloud | every table curls | music play and next effect\"",
-                "next effect\nstreamlines on table 0\nswitch to Flux Cloud\nevery table curls\nmusic play and next effect",
+                "voice: heard \"What can I say?\" \u{2192} Help \u{b7} label \"next effect | streamlines on table 0 | switch to Flux Cloud | every table curls | open the menu\"",
+                "next effect\nstreamlines on table 0\nswitch to Flux Cloud\nevery table curls\nopen the menu",
                 HELP_S,
             ),
             (
-                "voice: heard \"Help.\" \u{2192} Help \u{b7} label \"storage 1 in blue | switch to Embers | every wall rings | edit the room | wall 2 on the bass\"",
-                "storage 1 in blue\nswitch to Embers\nevery wall rings\nedit the room\nwall 2 on the bass",
+                "voice: heard \"Help.\" \u{2192} Help \u{b7} label \"storage 1 in blue | switch to Embers | every wall rings | music play and next effect | wall 2 on the bass\"",
+                "storage 1 in blue\nswitch to Embers\nevery wall rings\nmusic play and next effect\nwall 2 on the bass",
                 HELP_S,
             ),
             (

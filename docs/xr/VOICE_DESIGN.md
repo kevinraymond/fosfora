@@ -325,6 +325,7 @@ already does:
 | `NextEffect`, `PrevEffect`, `Effect(i)` | the hand menu's effect row |
 | `EditRoom`, `Cloud`, `Pitcher`, `Music` | the menu's toggles (the Cloud toggle's row reads "Particles") |
 | `Rescan`, `Recenter`, `AllNone` | the menu's buttons |
+| `Menu(open)` | the left palm summoning the menu, and a pinch away from it closing it (board #5459, "menu", "open the menu", "close the menu") |
 | `Behavior { target, behavior }` | the editor's tap (a surface) or hold (a kind), set instead of stepped |
 | `Color`, `Band`, `Strength` | the menu's surface rows with Edit room on |
 | `Describe(target)` | the status cell and the rows' label |
@@ -784,8 +785,8 @@ or "last" stays a word ("this one", "next one"); "zero" stays a word
 help" show five example phrases for 4 s, a line each (the voice label
 grows for them), and the next five on each ask, wrapping
 (`intent::examples`). They are built from the room: a round robin over
-the menu's phrases ("next effect", "music play and next effect", "edit
-the room", …), a template per surface of this room turning through a
+the menu's phrases ("next effect", "open the menu", "music play and next
+effect", …), a template per surface of this room turning through a
 behavior of its kind, a color, a band, a strength and "what is"
 ("streamlines on table 0", "storage 1 in blue", "wall 2 on the bass"),
 the world effects ("switch to Embers") and the kinds ("every wall
@@ -826,8 +827,8 @@ below.)
 | Amber on table 14 and the walls on the bass. | table 14: amber · all walls: bass |
 | Table fourteen in teal, then wall five on the highs. | table 14: teal · wall 5: high |
 | Wall sixteen pulse. | wall 16: pulse |
-| What can I say? | next effect / streamlines on table 0 / switch to Flux Cloud / every table curls / music play and next effect (4 s) |
-| Help. | storage 1 in blue / switch to Embers / every wall rings / edit the room / wall 2 on the bass (4 s) |
+| What can I say? | next effect / streamlines on table 0 / switch to Flux Cloud / every table curls / open the menu (4 s) |
+| Help. | storage 1 in blue / switch to Embers / every wall rings / music play and next effect / wall 2 on the bass (4 s) |
 | Flibber jabber. | Didn't catch that: "Flibber jabber." / Try "what can I say" |
 | Make table fourteen sort of glowy. | Didn't catch that: "Make table fourteen sort of glowy." / Try "what is table 14" |
 | Next effect, particles off, music play and edit the room. | Three things at most in one sentence |
