@@ -62,6 +62,12 @@ const BEAM_MISS_M: f32 = 0.5;
 /// hand's side and down.
 const SHOULDER_SIDE_M: f32 = 0.18;
 const SHOULDER_DOWN_M: f32 = 0.25;
+/// Board #5459, [`Placement::facing_view`]: the sine of the angle between
+/// the line of sight and the vertical under which the panel's top edge
+/// follows the head's right whole (15°), and over which world up whole
+/// (30°); between, a blend.
+const HEAD_RIGHT_BELOW: f32 = 0.26;
+const WORLD_UP_ABOVE: f32 = 0.5;
 
 /// The panel's frame this frame: center, unit right/up axes and the unit
 /// normal toward the viewer.
@@ -82,6 +88,51 @@ impl Placement {
     pub fn facing(center: Vec3, eye: Vec3, height: f32) -> Self {
         let normal = (eye - center).normalize_or(Vec3::Z);
         let right = Vec3::Y.cross(normal).normalize_or(Vec3::X);
+        let up = normal.cross(right);
+        Self {
+            center,
+            right,
+            up,
+            normal,
+            half_w: PANEL_W_M * 0.5,
+            half_h: height * 0.5,
+        }
+    }
+
+    /// A `height`-tall panel at `center` facing `eye`, the head turned by
+    /// `head_rot` (board #5459). Its up is as close to world up as the
+    /// facing allows, as [`Self::facing`] has it, except near a vertical
+    /// line of sight: with the hand straight above the face (lying back)
+    /// or below it, world up gives the panel no steady roll, so there its
+    /// top edge runs along the head's right instead, as the room labels'
+    /// does (`label::facing`), and between the two a blend. The world-up
+    /// right is turned to agree with the head's, so the panel does not
+    /// flip over as the line of sight passes the vertical.
+    pub fn facing_view(center: Vec3, eye: Vec3, head_rot: Quat, height: f32) -> Self {
+        let normal = (eye - center).normalize_or(Vec3::Z);
+        // The world-up right; its length is the sine of the line of
+        // sight's angle from vertical.
+        let level = Vec3::Y.cross(normal);
+        let sine = level.length();
+        let head_right = head_rot * Vec3::X;
+        let across = head_right - normal * head_right.dot(normal);
+        // Looking along the head's right (the head rolled 90°, lying on a
+        // side) there is no roll of the head's to follow: world up.
+        let right = if across.length() < 0.2 {
+            level.normalize_or(Vec3::X)
+        } else {
+            let across = across.normalize();
+            let level = level.normalize_or(across);
+            let level = if level.dot(across) < 0.0 {
+                -level
+            } else {
+                level
+            };
+            let t =
+                ((sine - HEAD_RIGHT_BELOW) / (WORLD_UP_ABOVE - HEAD_RIGHT_BELOW)).clamp(0.0, 1.0);
+            let w = t * t * (3.0 - 2.0 * t);
+            (level * w + across * (1.0 - w)).normalize_or(across)
+        };
         let up = normal.cross(right);
         Self {
             center,
@@ -814,6 +865,107 @@ mod tests {
         assert!(p.center.y > pos.y + 0.1, "{} vs {}", p.center, pos);
         // Right is the wearer's right: +X for a panel ahead of them.
         assert!(p.right.x > 0.99, "{}", p.right);
+    }
+
+    /// The head turned to look straight up (lying back): its view is world
+    /// up, its right +X, the top of the head +Z.
+    fn looking_up() -> Quat {
+        Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)
+    }
+
+    /// The angle between two directions (degrees).
+    fn degrees(a: Vec3, b: Vec3) -> f32 {
+        a.angle_between(b).to_degrees()
+    }
+
+    /// Board #5459: away from a vertical line of sight the view frame is
+    /// the world-up frame, whatever the head's roll.
+    #[test]
+    fn the_view_frame_is_the_world_up_frame_away_from_vertical() {
+        let rolled = Quat::from_rotation_z(0.3) * Quat::from_rotation_x(-0.4);
+        for center in [
+            palm(1.0).0,
+            Vec3::new(0.0, 1.6, -0.45),
+            Vec3::new(-0.3, 1.4, -0.3),
+            Vec3::new(0.25, 1.9, -0.35),
+        ] {
+            let world = Placement::facing(center, HEAD, 0.3);
+            for rot in [Quat::IDENTITY, rolled] {
+                let view = Placement::facing_view(center, HEAD, rot, 0.3);
+                for (a, b) in [
+                    (view.right, world.right),
+                    (view.up, world.up),
+                    (view.normal, world.normal),
+                ] {
+                    assert!(a.distance(b) < 1e-5, "{center}: {a} vs {b}");
+                }
+            }
+        }
+    }
+
+    /// Board #5459: with the hand straight above the face and the head
+    /// looking up, a centimeter of hand jitter either side of the vertical
+    /// spins the world-up frame round, while the view frame keeps its top
+    /// edge along the head's right, the panel upright for the wearer.
+    #[test]
+    fn the_frame_is_stable_with_the_hand_overhead_and_the_head_looking_up() {
+        let rot = looking_up();
+        let overhead = HEAD + Vec3::Y * 0.45;
+        let jitter = [
+            Vec3::ZERO,
+            Vec3::new(0.01, 0.0, 0.0),
+            Vec3::new(-0.01, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.01),
+            Vec3::new(0.0, 0.0, -0.01),
+            Vec3::new(0.007, 0.0, -0.007),
+        ];
+        let mut world_spread: f32 = 0.0;
+        let first = Placement::facing(overhead + jitter[1], HEAD, 0.3).right;
+        for d in jitter {
+            let p = Placement::facing_view(overhead + d, HEAD, rot, 0.3);
+            assert!(p.normal.dot((HEAD - p.center).normalize()) > 0.999);
+            assert!(p.right.dot(p.up).abs() < 1e-5 && p.right.dot(p.normal).abs() < 1e-5);
+            assert!(degrees(p.right, Vec3::X) < 2.0, "{d}: {}", p.right);
+            // The top edge toward the top of the head (+Z when lying back).
+            assert!(degrees(p.up, Vec3::Z) < 2.0, "{d}: {}", p.up);
+            world_spread = world_spread.max(degrees(
+                Placement::facing(overhead + d, HEAD, 0.3).right,
+                first,
+            ));
+        }
+        assert!(world_spread > 90.0, "{world_spread}");
+        // A head rolled 20° on the pillow: the top edge follows it.
+        let roll = Quat::from_rotation_y(20_f32.to_radians());
+        let p = Placement::facing_view(overhead, HEAD, roll * rot, 0.3);
+        assert!(degrees(p.right, roll * Vec3::X) < 1.0, "{}", p.right);
+    }
+
+    /// Board #5459: the line of sight swept from straight up to level
+    /// ahead (the head rolled, so the head's right and the level right
+    /// differ): the frame turns smoothly from the head's to world up's, and
+    /// past the vertical (the panel behind the top of the head) it stays
+    /// upright for the wearer, where world up turns it upside down.
+    #[test]
+    fn the_view_frame_turns_smoothly_from_the_head_right_to_world_up() {
+        let rot = Quat::from_rotation_y(0.35) * looking_up();
+        let mut last: Option<Vec3> = None;
+        for step in 0..=90 {
+            let a = (step as f32).to_radians();
+            let center = HEAD + Vec3::new(0.0, a.cos(), -a.sin()) * 0.45;
+            let p = Placement::facing_view(center, HEAD, rot, 0.3);
+            if let Some(r) = last {
+                assert!(degrees(p.right, r) < 3.0, "{step}°: {r} -> {}", p.right);
+            }
+            last = Some(p.right);
+            if step >= 31 {
+                let world = Placement::facing(center, HEAD, 0.3);
+                assert!(p.right.distance(world.right) < 1e-5, "{step}°");
+            }
+        }
+        let behind = HEAD + Vec3::new(0.0, 0.45, 0.15);
+        let p = Placement::facing_view(behind, HEAD, looking_up(), 0.3);
+        assert!(p.up.z > 0.9 && p.right.x > 0.9, "{p:?}");
+        assert!(Placement::facing(behind, HEAD, 0.3).up.z < 0.0);
     }
 
     #[test]
