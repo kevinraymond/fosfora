@@ -3449,3 +3449,32 @@ Not judged here: every level and look (the sounds over a song, the flash
 limit's steps, where the menu stays, the label 10 degrees low), the palm
 summon, and whether controllers in hand report no hands. Those are worn
 checks. The owner's app data was restored byte-identical.
+
+## The first run on the headset (board #5452)
+
+Quest 3 v209, Nov 14 2026, debug build of xr-first-run b6f2f3d (with the
+boundary change on top), unworn on the desk, `scenecapture 0`, `hints 1`.
+The scan found the room (22 surfaces), seated, music from the Music folder.
+Times are from the app's log.
+
+- **The wait.** `first run: the show waits for a pinch, a spoken begin or
+  60 s of the card`. No music played and the room stayed dark and still.
+- **The card.** `the card reads "Pinch to begin"` 3.4 s after the scan's
+  "Loading your room" label. With no hand tracked it gained the controllers
+  line 4.0 s later: "Pinch to begin | Put the controllers down. Fosfora uses
+  your hands." Both are captured, one line and three lines, centered.
+- **The begin** (`debug.fosfora.begin 1`, set live): the music started within
+  10 ms of the begin, already decoded (`decoded in 0.4 s`), and the opening
+  ran as before: "Sit back and relax" for 4 s, then the glide.
+- **The swipe hint** showed 12.1 s after the begin: "Swipe your thumb | along
+  your finger". A swipe (`debug.fosfora.swipe right`) stepped the effect,
+  played the press cue and captioned it "Flock". "Got it" and the understood
+  cue followed 1.8 s later, when the caption had gone.
+- **The tap hint** was passed over, since voice is off in the saved settings.
+- **The palm hint** showed 7.6 s after "Got it": "Left palm to your face | for
+  the menu. It stays there." In an earlier launch it gave up after its 20 s.
+
+Not judged here: how the dark wait feels, whether a resting hand begins the
+show by accident, the card's place lying back, and whether the hints' words
+are enough without a picture. Those are worn checks. Captures:
+`recordings/first-run/`. The owner's app data was restored byte-identical.
