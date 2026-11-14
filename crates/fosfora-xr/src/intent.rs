@@ -528,8 +528,8 @@ const PLAY_ANY: [&str; 8] = [
 const MUSIC_STOP: [&str; 2] = ["stop", "pause"];
 const MUSIC_PLAY: [&str; 1] = ["play"];
 /// Board #5453: the Agent control's on-device stop, as [`normalize`]
-/// leaves it ("on-device" is "on device"), after a leading "use",
-/// "switch", "set" or "turn".
+/// leaves it ("on-device" is "on device"), alone or after "use",
+/// "switch", "set" or "turn" ([`agent_local`]).
 const AGENT_LOCAL: [&str; 4] = [
     "agent local",
     "local agent",

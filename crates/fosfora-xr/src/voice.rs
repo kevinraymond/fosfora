@@ -75,8 +75,8 @@ pub const LISTENING_LABEL: &str = "Listening…";
 pub const WAITING_LABEL: &str = "…";
 /// What the label says when a fist or a tap would open a window and the
 /// microphone is not allowed (board #5453), and how long (s). The app
-/// polls the permission while voice is on, so allowing it in the
-/// headset's settings is enough: the next fist opens a window.
+/// polls the permission while voice is on, so once it is allowed in the
+/// headset's settings the next fist opens a window.
 pub const NO_MIC_LABEL: &str = "The microphone isn't allowed\nAllow it in the headset's Settings";
 pub const NO_MIC_S: f32 = 5.0;
 
