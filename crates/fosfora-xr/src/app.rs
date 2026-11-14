@@ -2585,13 +2585,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         save_hand_menu(&menu_file, menu_saved);
                         info!("voice: {} (menu)", if on { "on" } else { "off" });
                         if !on {
-                            // Off: an open window is dropped unheard and
-                            // the label shows nothing.
+                            // Off: an open window is dropped unheard, and
+                            // its label goes. Board #5453: a spoken
+                            // "voice off" keeps its reply, which says how
+                            // to turn it back on.
+                            let windowed = push_to_talk.window() != VoiceWindow::Closed;
                             push_to_talk.cancel();
                             if let Some(v) = voice.as_mut() {
                                 v.cancel();
                             }
-                            voice_label.clear();
+                            if windowed {
+                                voice_label.clear();
+                            }
                         }
                         if on && voice.is_none() {
                             if voice_model.is_file() {
@@ -3698,6 +3703,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 &mut voice_actions,
                                 &mut switch_to,
                                 menu_stay,
+                                &available,
                             )
                         })
                     },
@@ -3902,6 +3908,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                                 &mut voice_actions,
                                                 &mut switch_to,
                                                 menu_stay,
+                                                &available,
                                             )
                                         }),
                                     ),
@@ -5791,7 +5798,8 @@ fn hidden_reply(
 /// hand menu's presses produce, consumed by the next frame's action loop
 /// (a toggle sets its `controls` field first, as the menu does; naming a
 /// world effect sets `switch_to`); the surface intents write through the
-/// lanes' typed writers now (`intent::apply`).
+/// lanes' typed writers now (`intent::apply`). Board #5453: the Agent
+/// control's intent picks among what `available` has.
 fn apply_intent(
     intent: &crate::intent::Intent,
     vocab: &crate::intent::Vocabulary<'_>,
@@ -5801,6 +5809,7 @@ fn apply_intent(
     actions: &mut Vec<Action>,
     switch_to: &mut Option<usize>,
     menu_stay: bool,
+    available: &crate::agent::Available,
 ) -> String {
     use crate::intent::Intent;
     match *intent {
@@ -5848,6 +5857,22 @@ fn apply_intent(
             controls.immerse = step.resolve(controls.immerse);
             actions.push(Action::SetImmersion(controls.immerse));
             return crate::intent::immersion_reply(controls.immerse);
+        }
+        // Board #5453: the Edges, Agent and Voice controls' presses, by
+        // voice. The agent's label names the pick it came to.
+        Intent::Edges(choice) => {
+            controls.edges = choice;
+            actions.push(Action::SetEdges(choice));
+        }
+        Intent::Agent(ask) => {
+            let now = controls.agent.map_or(crate::agent::Pick::Off, |c| c.now);
+            let (pick, text) = crate::intent::agent_step(ask, &available.picks(), now);
+            actions.extend(pick.map(Action::SetAgent));
+            return text;
+        }
+        Intent::Voice(on) => {
+            controls.voice = on;
+            actions.push(Action::SetVoice(on));
         }
         _ => {}
     }

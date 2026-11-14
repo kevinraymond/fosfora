@@ -227,6 +227,23 @@ pub enum Intent {
     /// "What can I say": five example phrases on the label (V4), the way
     /// the hand menu's rows show what the hands can do.
     Help,
+    /// The hand menu's Edges control set to this stop (board #5453).
+    Edges(crate::edge_bars::Choice),
+    /// The hand menu's Agent control (board #5453).
+    Agent(AgentAsk),
+    /// The hand menu's Voice toggle (board #5453): "voice off" turns it
+    /// off as the press does, and only the menu turns it back on.
+    Voice(bool),
+}
+
+/// The hand menu's Agent control by voice (board #5453): its stops on the
+/// release surface, the on-device provider and off, and "on" for the
+/// first provider the control has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentAsk {
+    On,
+    Off,
+    Local,
 }
 
 /// Why a sentence did nothing.
@@ -506,6 +523,18 @@ const PLAY_ANY: [&str; 8] = [
     "songs",
     "some songs",
     "my songs",
+];
+/// Board #5453: the music by one word, nothing else in the sentence.
+const MUSIC_STOP: [&str; 2] = ["stop", "pause"];
+const MUSIC_PLAY: [&str; 1] = ["play"];
+/// Board #5453: the Agent control's on-device stop, as [`normalize`]
+/// leaves it ("on-device" is "on device"), after a leading "use",
+/// "switch", "set" or "turn".
+const AGENT_LOCAL: [&str; 4] = [
+    "agent local",
+    "local agent",
+    "agent on device",
+    "on device agent",
 ];
 /// What a sentence opens with to switch effects: "switch to embers",
 /// "show flock".
@@ -899,10 +928,69 @@ fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
     if any(ts, &SCAN_MUSIC) {
         return Some(Intent::ScanMusic);
     }
+    // Board #5453: the menu's last three controls, and the music by one
+    // word.
+    if let Some(choice) = edges(ts) {
+        return Some(Intent::Edges(choice));
+    }
+    if agent_local(ts) {
+        return Some(Intent::Agent(AgentAsk::Local));
+    }
+    if any(ts, &MUSIC_STOP) {
+        return Some(Intent::Music(false));
+    }
+    if any(ts, &MUSIC_PLAY) {
+        return Some(Intent::Music(true));
+    }
     if let Some(t) = toggle(ts) {
         return Some(t);
     }
     effect(ts, vocab).map(Intent::Effect)
+}
+
+/// Board #5453: the Edges control's stops: "edges theme", "edges off",
+/// "edges face", "edges stand", "edges in", the word before or after
+/// "edges" (or "edge bars"), a leading "turn", "switch", "set" or "make"
+/// dropped. "On" and "show" are the theme's (the control's first stop and
+/// the launch's); "hide" and "no" are off; "standing" is stand; "inside"
+/// and "tunnel" are in.
+fn edges(ts: &[&str]) -> Option<crate::edge_bars::Choice> {
+    use crate::edge_bars::{Choice, Mode};
+    let ts = match ts {
+        ["turn" | "switch" | "set" | "make", rest @ ..] => rest,
+        _ => ts,
+    };
+    let word = match ts {
+        ["edges" | "edge", w]
+        | [w, "edges" | "edge"]
+        | ["edge", "bars", w]
+        | [w, "edge", "bars"] => *w,
+        _ => return None,
+    };
+    Some(match word {
+        "theme" | "on" | "show" => Choice::Theme,
+        "off" | "hide" | "no" | "none" => Choice::Force(Mode::Off),
+        "face" | "faces" => Choice::Force(Mode::Face),
+        "stand" | "standing" => Choice::Force(Mode::Standing),
+        "in" | "inside" | "tunnel" | "tunnels" => Choice::Force(Mode::In),
+        _ => return None,
+    })
+}
+
+/// Board #5453: the Agent control's on-device stop ([`AGENT_LOCAL`]).
+/// "Local" alone is enough after a verb ("use local"), not without one.
+fn agent_local(ts: &[&str]) -> bool {
+    match ts {
+        ["use" | "switch" | "set" | "turn", rest @ ..] => {
+            any(rest, &AGENT_LOCAL) || is(rest, "local")
+        }
+        _ => any(ts, &AGENT_LOCAL),
+    }
+}
+
+/// The Agent control's on and off as a toggle's ([`device`]).
+fn agent_toggle(on: bool) -> Intent {
+    Intent::Agent(if on { AgentAsk::On } else { AgentAsk::Off })
 }
 
 /// The toggles: "cloud on", "particles off", "pitcher on", "music play",
@@ -929,12 +1017,15 @@ fn toggle(ts: &[&str]) -> Option<Intent> {
 }
 
 /// A toggle's word: the cloud ("cloud", or "particles" as the menu's row
-/// reads), the pitcher, the music.
+/// reads), the pitcher, the music; board #5453: the voice ("voice off")
+/// and the agent ("agent on", "turn the agent off").
 fn device(w: &str) -> Option<fn(bool) -> Intent> {
     match w {
         "cloud" | "particles" => Some(Intent::Cloud),
         "pitcher" => Some(Intent::Pitcher),
         "music" => Some(Intent::Music),
+        "voice" => Some(Intent::Voice),
+        "agent" => Some(agent_toggle),
         _ => None,
     }
 }
@@ -1352,6 +1443,10 @@ fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
         "music play and next effect",
         "edit the room",
         "particles off",
+        // Board #5453: every control the menu has.
+        "edges off",
+        "agent off",
+        "voice off",
         "previous effect",
         "music stop",
         "recenter the cloud",
@@ -1807,6 +1902,13 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         ),
         Intent::Describe(target) => target_name(target, vocab),
         Intent::Help => "what can I say".to_owned(),
+        Intent::Edges(choice) => edges_reply(choice),
+        // What the control comes to is the app's ([`agent_step`]).
+        Intent::Agent(AgentAsk::On) => "agent on".to_owned(),
+        Intent::Agent(AgentAsk::Off) => "agent: off".to_owned(),
+        Intent::Agent(AgentAsk::Local) => "agent: local".to_owned(),
+        Intent::Voice(true) => "voice on".to_owned(),
+        Intent::Voice(false) => VOICE_OFF_REPLY.to_owned(),
     }
 }
 
@@ -1814,6 +1916,53 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
 /// on the palm (`debug.fosfora.menustay 0`), where the voice leaves it
 /// alone.
 pub const MENU_ON_PALM: &str = "The menu is on your left palm";
+
+/// The label once the Edges control is set by voice (board #5453): the
+/// stop it came to, "edges: theme", "edges: off", "edges: stand".
+pub fn edges_reply(choice: crate::edge_bars::Choice) -> String {
+    match choice {
+        crate::edge_bars::Choice::Theme => "edges: theme".to_owned(),
+        crate::edge_bars::Choice::Force(mode) => format!("edges: {}", mode.name()),
+    }
+}
+
+/// The label for "voice off" (board #5453): it is off, and only the hand
+/// menu turns it back on, since no sentence is heard until then. Two
+/// lines, so it stays as long as a list ([`HELP_S`]).
+pub const VOICE_OFF_REPLY: &str = "voice off\nTurn it back on in the hand menu";
+/// The labels for an Agent control the headset has nothing for ("Agent:
+/// none"), and for the on-device stop when only a network provider is
+/// configured.
+pub const NO_AGENT_REPLY: &str = "No agent on this headset";
+pub const NO_LOCAL_REPLY: &str = "No local agent on this headset";
+
+/// The Agent control asked by voice (board #5453), as its presses would
+/// set it: the pick `ask` comes to among `picks` (the control's cycle,
+/// `agent::Available::picks`, empty when it reads "Agent: none") with
+/// `now` showing, `None` when nothing changes, and the label in the
+/// control's words, "agent: local". "On" keeps a provider that is on, and
+/// from off takes the first in the cycle, as one press from off does.
+pub fn agent_step(
+    ask: AgentAsk,
+    picks: &[crate::agent::Pick],
+    now: crate::agent::Pick,
+) -> (Option<crate::agent::Pick>, String) {
+    use crate::agent::Pick;
+    let first = picks.iter().copied().find(|&p| p != Pick::Off);
+    let want = match (ask, first) {
+        (_, None) => return (None, NO_AGENT_REPLY.to_owned()),
+        (AgentAsk::Off, _) => Pick::Off,
+        (AgentAsk::On, _) if now != Pick::Off => now,
+        (AgentAsk::On, Some(first)) => first,
+        (AgentAsk::Local, _) if picks.contains(&Pick::Local) => Pick::Local,
+        (AgentAsk::Local, _) => return (None, NO_LOCAL_REPLY.to_owned()),
+    };
+    let word = want
+        .label()
+        .strip_prefix("Agent: ")
+        .unwrap_or_else(|| want.name());
+    ((want != now).then_some(want), format!("agent: {word}"))
+}
 
 /// The label once an immersion intent is applied, whatever asked for it:
 /// the depth it came to, "immersion low" (a "darker" at full says "immersion
@@ -2373,6 +2522,183 @@ mod tests {
             value: "on".to_owned(),
         };
         assert!(Intent::from_json(&action, &v).is_err());
+    }
+
+    /// Board #5453: the Edges control's every stop, the Agent control's
+    /// stops on the release surface, the Voice toggle, and the music by
+    /// one word, with the menu's other words unchanged around them.
+    #[test]
+    fn every_menu_control_can_be_said() {
+        use crate::edge_bars::{Choice, Mode};
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        let edges = |m| Intent::Edges(Choice::Force(m));
+        check(
+            &v,
+            &[
+                ("Edges theme.", Intent::Edges(Choice::Theme)),
+                ("edges on", Intent::Edges(Choice::Theme)),
+                ("Show the edges.", Intent::Edges(Choice::Theme)),
+                ("Edges off.", edges(Mode::Off)),
+                ("Turn the edges off.", edges(Mode::Off)),
+                ("turn off the edge bars", edges(Mode::Off)),
+                ("Hide the edges", edges(Mode::Off)),
+                ("No edges.", edges(Mode::Off)),
+                ("Edges face.", edges(Mode::Face)),
+                ("edges faces", edges(Mode::Face)),
+                ("Edges stand.", edges(Mode::Standing)),
+                ("Standing edges", edges(Mode::Standing)),
+                ("Edges in.", edges(Mode::In)),
+                ("edges inside", edges(Mode::In)),
+                ("Set the edges to tunnel.", edges(Mode::In)),
+                ("Agent on.", Intent::Agent(AgentAsk::On)),
+                ("Turn on the agent.", Intent::Agent(AgentAsk::On)),
+                ("Agent off.", Intent::Agent(AgentAsk::Off)),
+                ("Turn the agent off.", Intent::Agent(AgentAsk::Off)),
+                ("Stop the agent.", Intent::Agent(AgentAsk::Off)),
+                ("Agent local.", Intent::Agent(AgentAsk::Local)),
+                ("Local agent", Intent::Agent(AgentAsk::Local)),
+                ("Use the local agent.", Intent::Agent(AgentAsk::Local)),
+                ("use local", Intent::Agent(AgentAsk::Local)),
+                ("Agent on-device.", Intent::Agent(AgentAsk::Local)),
+                ("Voice off.", Intent::Voice(false)),
+                ("Turn off the voice.", Intent::Voice(false)),
+                ("voice on", Intent::Voice(true)),
+                ("Stop.", Intent::Music(false)),
+                ("Pause.", Intent::Music(false)),
+                ("Play.", Intent::Music(true)),
+                // Unchanged.
+                ("music stop", Intent::Music(false)),
+                ("play music", Intent::Music(true)),
+                ("Stop editing.", Intent::EditRoom(false)),
+                ("Voice help.", Intent::Help),
+                ("Show flock.", Intent::Effect(2)),
+                ("next effect", Intent::NextEffect),
+                (
+                    "theme aurora",
+                    Intent::Theme(ThemeStep::To(crate::themes::Theme::Aurora)),
+                ),
+                (
+                    "the desk in amber",
+                    Intent::Color {
+                        target: Target::Surface(0),
+                        color: 4,
+                    },
+                ),
+            ],
+        );
+        // A word that is no stop, and "local" without a verb, are not the
+        // controls'.
+        for said in ["edges sideways", "edges", "local"] {
+            assert!(
+                !matches!(
+                    parse(said, &v),
+                    Ok(Intent::Edges(_) | Intent::Agent(_) | Intent::Voice(_))
+                ),
+                "{said}"
+            );
+        }
+        // Two clauses, as any other control.
+        let clauses = parse_clauses("edges off and voice off", &v);
+        assert_eq!(
+            clauses
+                .iter()
+                .map(|c| c.outcome.clone().unwrap())
+                .collect::<Vec<_>>(),
+            [edges(Mode::Off), Intent::Voice(false)]
+        );
+    }
+
+    #[test]
+    fn the_new_controls_reply_what_they_did() {
+        use crate::agent::{Pick, ProviderKind};
+        use crate::edge_bars::{Choice, Mode};
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        for (intent, want) in [
+            (Intent::Edges(Choice::Theme), "edges: theme"),
+            (Intent::Edges(Choice::Force(Mode::Off)), "edges: off"),
+            (Intent::Edges(Choice::Force(Mode::Face)), "edges: face"),
+            (Intent::Edges(Choice::Force(Mode::Standing)), "edges: stand"),
+            (Intent::Edges(Choice::Force(Mode::In)), "edges: in"),
+            (Intent::Voice(true), "voice on"),
+            (
+                Intent::Voice(false),
+                "voice off\nTurn it back on in the hand menu",
+            ),
+            (Intent::Music(false), "music off"),
+            (Intent::Music(true), "music on"),
+        ] {
+            assert_eq!(reply(&intent, &v), want, "{intent:?}");
+        }
+        let ok = |pick: Option<Pick>, label: &str| (pick, label.to_owned());
+        // The release surface's stops: local and off.
+        let release = [Pick::Local, Pick::Off];
+        assert_eq!(
+            agent_step(AgentAsk::Off, &release, Pick::Local),
+            ok(Some(Pick::Off), "agent: off")
+        );
+        assert_eq!(
+            agent_step(AgentAsk::On, &release, Pick::Off),
+            ok(Some(Pick::Local), "agent: local")
+        );
+        assert_eq!(
+            agent_step(AgentAsk::Local, &release, Pick::Off),
+            ok(Some(Pick::Local), "agent: local")
+        );
+        // Already there: nothing changes, and the label says where it is.
+        assert_eq!(
+            agent_step(AgentAsk::On, &release, Pick::Local),
+            ok(None, "agent: local")
+        );
+        assert_eq!(
+            agent_step(AgentAsk::Off, &release, Pick::Off),
+            ok(None, "agent: off")
+        );
+        // A network provider configured too: "on" keeps it, "local" moves.
+        let net = Pick::Network(ProviderKind::Anthropic);
+        let both = [Pick::Local, net, Pick::Off];
+        assert_eq!(
+            agent_step(AgentAsk::On, &both, net),
+            ok(None, "agent: Anthropic")
+        );
+        assert_eq!(
+            agent_step(AgentAsk::Local, &both, net),
+            ok(Some(Pick::Local), "agent: local")
+        );
+        // Only the network provider: "on" takes it, "local" cannot.
+        let only = [net, Pick::Off];
+        assert_eq!(
+            agent_step(AgentAsk::On, &only, Pick::Off),
+            ok(Some(net), "agent: Anthropic")
+        );
+        assert_eq!(
+            agent_step(AgentAsk::Local, &only, Pick::Off),
+            ok(None, NO_LOCAL_REPLY)
+        );
+        // "Agent: none": nothing to pick, whatever is asked.
+        for ask in [AgentAsk::On, AgentAsk::Off, AgentAsk::Local] {
+            assert_eq!(agent_step(ask, &[], Pick::Off), ok(None, NO_AGENT_REPLY));
+        }
+        // The cycle as the control builds it.
+        let available = crate::agent::Available::new(Ok(None), Ok(()));
+        assert_eq!(available.picks(), release);
+    }
+
+    /// Board #5453: "what can I say" lists the menu's last three controls
+    /// among its examples, and paging through it shows each.
+    #[test]
+    fn the_help_lists_every_menu_control() {
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        let shown = shown_pool(&v);
+        for said in ["edges off", "agent off", "voice off"] {
+            assert!(shown.iter().any(|s| s == said), "{said}: {shown:?}");
+        }
+        let seen: Vec<String> = (0..shown.len()).flat_map(|p| examples(&v, p)).collect();
+        for said in ["edges off", "agent off", "voice off"] {
+            assert!(seen.iter().any(|s| s == said), "{said}");
+        }
     }
 
     /// Board #5415: a theme by name, the next one, and an unknown name,
@@ -3444,6 +3770,9 @@ mod tests {
             Intent::Roam(_) => unreachable!("the agent's actions have no roam"),
             Intent::Theme(_) => unreachable!("the agent's actions have no theme"),
             Intent::Menu(_) => unreachable!("the agent's actions have no menu"),
+            Intent::Edges(_) | Intent::Agent(_) | Intent::Voice(_) => {
+                unreachable!("the agent's actions have no edges, agent or voice")
+            }
             Intent::NextTrack
             | Intent::PrevTrack
             | Intent::Track(_)
