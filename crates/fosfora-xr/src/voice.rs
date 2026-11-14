@@ -8,9 +8,10 @@
 //! ([`PushToTalk`]), the stream's 48 kHz stereo to whisper's 16 kHz mono
 //! ([`mono_16k`]), the encoder window cut to the clip ([`audio_ctx`]), the
 //! log and label text ([`heard_line`], [`label_text`]), the window's peak
-//! and RMS for the log ([`peak_rms`]), and a tiny RIFF reader and writer
+//! and RMS for the log ([`peak_rms`]), a tiny RIFF reader and writer
 //! for the unworn test path and the window dumps ([`parse_wav`],
-//! [`wav_16k_mono`]).
+//! [`wav_16k_mono`]), and where the label floats: ahead of the view,
+//! following the head loosely ([`Follow`], board #5453).
 //!
 //! **The window.** The left fist toggles it (board #5380). A fist counts
 //! once it has lasted [`DWELL_S`] (a shorter one is a tracking glitch or a
@@ -401,22 +402,180 @@ pub fn close_text(why: Close) -> String {
     }
 }
 
-/// How far ahead of the head the label floats when there is no palm to
-/// put it at (m): the `voicefile` clip's and the `say` knob's place, and a
-/// window's when the left palm is out of view.
+/// How far ahead of the head the voice label floats (m).
 pub const AHEAD_M: f32 = 1.0;
+/// How far below the line of sight its center sits (degrees): in the
+/// comfortable reading band under the gaze, and clear of the scan label
+/// level with the eyes (`label::scan_billboard`) for a head level or
+/// lowered, even at the label's most lines.
+pub const DROP_DEG: f32 = 10.0;
+/// Its width (m) at [`AHEAD_M`]: about 23 degrees across, so a one-line
+/// reply's letters are about 2 degrees tall. The editor's labels keep
+/// `label::label_w_m`.
+pub const LABEL_W_M: f32 = 0.4;
+/// The view the label stays inside, across and up and down (degrees): the
+/// smaller of the two glasses' views, inside the Quest 3's.
+pub const VIEW_DEG: [f32; 2] = [58.0, 54.0];
+/// The label eases back toward its place ahead of the view once its center
+/// is this far from it (degrees), or once the view's edge pushed it...
+pub const FOLLOW_DEG: f32 = 15.0;
+/// ...until it is this close.
+pub const SETTLE_DEG: f32 = 2.0;
+/// How fast it eases: the rate (1/s) at which the angle left decays.
+pub const FOLLOW_RATE: f32 = 4.0;
+/// What the label keeps clear of the view's edge (degrees).
+const VIEW_MARGIN_DEG: f32 = 1.5;
 
-/// Where the voice label floats and the way it faces (V4): at the left
-/// palm when it is located (`palm`), else [`AHEAD_M`] ahead of the head
-/// along its view (the hand out of view, a tap from the right hand), and
-/// facing the head either way.
-pub fn label_anchor(
-    palm: Option<glam::Vec3>,
-    head: glam::Vec3,
-    head_rot: glam::Quat,
-) -> (glam::Vec3, glam::Vec3) {
-    let at = palm.unwrap_or_else(|| head + head_rot * glam::Vec3::NEG_Z * AHEAD_M);
-    (at, (head - at).normalize_or(glam::Vec3::Z))
+/// The voice label's place, in the head's own frame: [`DROP_DEG`] under
+/// the line of sight.
+fn ahead_local() -> glam::Vec3 {
+    let drop = DROP_DEG.to_radians();
+    glam::Vec3::new(0.0, -drop.sin(), -drop.cos())
+}
+
+/// Where the voice label floats when it is placed, and the way it faces
+/// (board #5453): [`AHEAD_M`] ahead of the head along its view, lowered by
+/// [`DROP_DEG`], facing the head. It reads only the head: never the palm
+/// that made the fist, which hid it and sat at the bottom edge of the view
+/// or under it.
+pub fn label_anchor(head: glam::Vec3, head_rot: glam::Quat) -> (glam::Vec3, glam::Vec3) {
+    Follow::placed(head_rot).anchor(head)
+}
+
+/// How the voice label follows the head (board #5453): placed ahead of
+/// the view when a window opens (or a label shows with none before it),
+/// then fixed in the room while the head moves a little, so it does not
+/// swim with every small turn. Once the head has turned [`FOLLOW_DEG`]
+/// away from it, it eases back toward its place ahead of the view
+/// ([`FOLLOW_RATE`]) until it is within [`SETTLE_DEG`]. Whatever the head
+/// does, the label with the lines it shows stays inside a [`VIEW_DEG`]
+/// view: a fast turn pushes it along the view's edge, and it eases in
+/// from there. It always floats [`AHEAD_M`] from the head, so leaning
+/// carries it along.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Follow {
+    /// The label's direction from the head, in the room (unit).
+    dir: glam::Vec3,
+    /// Easing back toward its place.
+    easing: bool,
+}
+
+impl Default for Follow {
+    fn default() -> Self {
+        Self::placed(glam::Quat::IDENTITY)
+    }
+}
+
+impl Follow {
+    /// Placed ahead of a head turned by `head_rot`.
+    pub fn placed(head_rot: glam::Quat) -> Self {
+        Self {
+            dir: head_rot * ahead_local(),
+            easing: false,
+        }
+    }
+
+    /// Place it ahead of the view now.
+    pub fn place(&mut self, head_rot: glam::Quat) {
+        *self = Self::placed(head_rot);
+    }
+
+    /// Follow the head, turned by `head_rot`, for `dt` seconds, the label
+    /// showing `lines` lines (`label::lines`).
+    pub fn step(&mut self, head_rot: glam::Quat, dt: f32, lines: usize) {
+        let target = ahead_local();
+        let mut local = (head_rot.inverse() * self.dir).normalize_or(target);
+        if local.angle_between(target).to_degrees() > FOLLOW_DEG {
+            self.easing = true;
+        }
+        if self.easing {
+            let k = 1.0 - (-FOLLOW_RATE * dt.max(0.0)).exp();
+            local =
+                glam::Quat::IDENTITY.slerp(glam::Quat::from_rotation_arc(local, target), k) * local;
+            if local.angle_between(target).to_degrees() <= SETTLE_DEG {
+                self.easing = false;
+            }
+        }
+        let (inside, pushed) = inside_view(local, lines);
+        self.easing |= pushed;
+        self.dir = (head_rot * inside).normalize_or(head_rot * target);
+    }
+
+    /// The label's center, [`AHEAD_M`] from `head`, and the way it faces.
+    pub fn anchor(&self, head: glam::Vec3) -> (glam::Vec3, glam::Vec3) {
+        (head + self.dir * AHEAD_M, -self.dir)
+    }
+
+    /// The label's quad for a head at `head` turned by `head_rot`: at
+    /// [`Follow::anchor`], facing the head as the editor's label does,
+    /// [`LABEL_W_M`] wide.
+    pub fn billboard(&self, head: glam::Vec3, head_rot: glam::Quat) -> crate::label::Billboard {
+        let b = crate::label::facing(self.anchor(head).0, head, head_rot);
+        let half_w = LABEL_W_M * 0.5;
+        crate::label::Billboard {
+            half_w,
+            half_h: half_w * crate::label::LABEL_TEX[1] as f32 / crate::label::LABEL_TEX[0] as f32,
+            ..b
+        }
+    }
+}
+
+/// Whether the label of `lines` lines centered along `local` (a direction
+/// in the head's frame) sits inside the [`VIEW_DEG`] view with
+/// [`VIEW_MARGIN_DEG`] to spare: each corner of its quad, as it is drawn.
+fn fits(local: glam::Vec3, lines: usize) -> bool {
+    let b = Follow {
+        dir: local,
+        easing: false,
+    }
+    .billboard(glam::Vec3::ZERO, glam::Quat::IDENTITY)
+    .with_lines(lines);
+    let tan = VIEW_DEG.map(|d| (d * 0.5 - VIEW_MARGIN_DEG).to_radians().tan());
+    [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)]
+        .iter()
+        .all(|&(r, u)| {
+            let p = b.center + b.right * b.half_w * r + b.up * b.half_h * u;
+            p.z < 0.0 && (p.x / -p.z).abs() <= tan[0] && (p.y / -p.z).abs() <= tan[1]
+        })
+}
+
+/// `local` (a direction in the head's frame) moved toward the view's
+/// center, if it has to be, until the label of `lines` lines centered
+/// there [`fits`]: up or down first, then across, so a label pushed
+/// sideways keeps its height; and whether it had to be.
+fn inside_view(local: glam::Vec3, lines: usize) -> (glam::Vec3, bool) {
+    if fits(local, lines) {
+        return (local, false);
+    }
+    let along = |yaw: f32, pitch: f32| {
+        glam::Vec3::new(
+            yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            -yaw.cos() * pitch.cos(),
+        )
+    };
+    // The largest share of `full` that still fits, by halving.
+    let most = |dir: &dyn Fn(f32) -> glam::Vec3| {
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..20 {
+            let mid = 0.5 * (lo + hi);
+            if fits(dir(mid), lines) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    };
+    let yaw = local.x.atan2(-local.z);
+    let pitch = local.y.clamp(-1.0, 1.0).asin();
+    let pitch = if fits(along(0.0, pitch), lines) {
+        pitch
+    } else {
+        pitch * most(&|s| along(0.0, pitch * s))
+    };
+    let yaw = yaw * most(&|s| along(yaw * s, pitch));
+    (along(yaw, pitch), true)
 }
 
 /// The poses Murmur (the Flock effect) reads (V4): with voice on the left
@@ -1473,23 +1632,257 @@ mod tests {
         assert!((meter_width(0.316) - 0.75).abs() < 0.01);
     }
 
+    /// A head at `yaw`, `pitch` and `roll` (degrees).
+    fn turned(yaw: f32, pitch: f32, roll: f32) -> glam::Quat {
+        glam::Quat::from_rotation_y(yaw.to_radians())
+            * glam::Quat::from_rotation_x(pitch.to_radians())
+            * glam::Quat::from_rotation_z(roll.to_radians())
+    }
+
+    /// The corners of `b` in the head's frame, as the view's tangents
+    /// (right, up), and whether each is in front of the eye.
+    fn seen(
+        b: &crate::label::Billboard,
+        head: glam::Vec3,
+        head_rot: glam::Quat,
+    ) -> Vec<(f32, f32, bool)> {
+        [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)]
+            .iter()
+            .map(|&(r, u)| {
+                let corner = b.center + b.right * b.half_w * r + b.up * b.half_h * u;
+                let p = head_rot.inverse() * (corner - head);
+                (p.x / -p.z, p.y / -p.z, p.z < 0.0)
+            })
+            .collect()
+    }
+
+    /// Whether `b` lies inside a symmetric view of `deg` (across, up and
+    /// down).
+    fn inside(
+        b: &crate::label::Billboard,
+        head: glam::Vec3,
+        head_rot: glam::Quat,
+        deg: [f32; 2],
+    ) -> bool {
+        let tan = deg.map(|d| (d * 0.5).to_radians().tan());
+        seen(b, head, head_rot)
+            .iter()
+            .all(|&(x, y, front)| front && x.abs() <= tan[0] && y.abs() <= tan[1])
+    }
+
     #[test]
-    fn the_label_sits_at_the_palm_or_ahead_of_the_head() {
+    fn the_label_is_ahead_of_the_view_with_or_without_a_palm() {
+        use glam::Vec3;
+        // Seated: the head at 1.2 m, a left fist in the lap or raised in
+        // front of the chest. The anchor reads only the head, so it is the
+        // same whether the fist opened the window with the palm in view or
+        // a tap did with the left hand down.
+        let head = Vec3::new(0.0, 1.2, 0.0);
+        let palms = [Vec3::new(-0.15, 0.75, -0.35), Vec3::new(-0.2, 1.0, -0.35)];
+        for (yaw, pitch, roll) in [
+            (0.0, 0.0, 0.0),
+            (35.0, 0.0, 0.0),
+            // Looking down at the fist in the lap, and lying back.
+            (0.0, -40.0, 0.0),
+            (-20.0, 45.0, 10.0),
+        ] {
+            let rot = turned(yaw, pitch, roll);
+            let (at, normal) = label_anchor(head, rot);
+            assert!((at.distance(head) - AHEAD_M).abs() < 1e-5, "{yaw} {pitch}");
+            let view = rot * Vec3::NEG_Z;
+            let off = (at - head).angle_between(view).to_degrees();
+            assert!((off - DROP_DEG).abs() < 1e-3, "{off}");
+            // Under the line of sight, straight below it in the head's
+            // frame, and facing the head.
+            let local = rot.inverse() * (at - head);
+            assert!(local.x.abs() < 1e-5 && local.y < 0.0, "{local}");
+            assert!(normal.dot((head - at).normalize()) > 1.0 - 1e-5);
+            // With the head level the fist is well under the label, in the
+            // lap or raised; looking down at it, the label is where the
+            // wearer looks, a meter out.
+            if (yaw, pitch) == (0.0, 0.0) {
+                for palm in palms {
+                    let apart = (at - head).angle_between(palm - head).to_degrees();
+                    assert!(apart > 15.0, "{apart}");
+                }
+            }
+            // The label's quad is the voice's own width, facing the head.
+            let b = Follow::placed(rot).billboard(head, rot);
+            assert_close!(b.half_w, LABEL_W_M * 0.5);
+            assert!(b.right.cross(b.up).dot((head - b.center).normalize()) > 1.0 - 1e-5);
+        }
+    }
+
+    #[test]
+    fn the_label_follows_the_head_loosely() {
         use glam::{Quat, Vec3};
-        let head = Vec3::new(0.0, 1.6, 0.0);
-        let palm = Vec3::new(-0.2, 1.2, -0.4);
-        let (at, normal) = label_anchor(Some(palm), head, Quat::IDENTITY);
-        assert_eq!(at, palm);
-        assert_close!(normal.to_array(), (head - palm).normalize().to_array());
-        // The palm out of view: 1 m along the view, facing back.
-        let (at, normal) = label_anchor(None, head, Quat::IDENTITY);
-        assert_close!(at.to_array(), [0.0, 1.6, -AHEAD_M]);
-        assert_close!(normal.to_array(), [0.0, 0.0, 1.0]);
-        // Turned left a quarter: ahead is -X.
-        let turned = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
-        let (at, normal) = label_anchor(None, head, turned);
-        assert_close!(at.to_array(), [-AHEAD_M, 1.6, 0.0]);
-        assert_close!(normal.to_array(), [1.0, 0.0, 0.0]);
+        let head = Vec3::new(0.0, 1.2, 0.0);
+        let mut f = Follow::placed(Quat::IDENTITY);
+        let start = f.anchor(head).0;
+        // Small turns leave it where it is in the room ("Listening…",
+        // one line).
+        for (yaw, pitch) in [(8.0, 0.0), (-10.0, 5.0), (0.0, -9.0), (12.0, 6.0)] {
+            for _ in 0..144 {
+                f.step(turned(yaw, pitch, 0.0), DT, 1);
+            }
+            assert!(f.anchor(head).0.distance(start) < 1e-5, "{yaw} {pitch}");
+        }
+        // Leaning carries it along, the same way from the head.
+        let leaned = head + Vec3::new(0.2, -0.1, 0.05);
+        assert!((f.anchor(leaned).0 - leaned).distance(start - head) < 1e-5);
+        // Turned well away and held: it eases back ahead of the view
+        // within a second or two, never jumping.
+        let rot = turned(40.0, 0.0, 0.0);
+        let target = label_anchor(head, rot).0;
+        let mut last = f.anchor(head).0;
+        let mut frames = 0;
+        loop {
+            f.step(rot, DT, 1);
+            let now = f.anchor(head).0;
+            // The view's edge may push it on the first frame; after that
+            // each frame's move is a small share of the way.
+            if frames > 0 {
+                assert!(now.distance(last) < 0.1, "{frames}");
+            }
+            last = now;
+            frames += 1;
+            if !f.easing {
+                break;
+            }
+            assert!(frames < 144, "still easing after 2 s");
+        }
+        assert!(frames > 10, "{frames}");
+        assert!(f.anchor(head).0.distance(target) <= SETTLE_DEG.to_radians() * AHEAD_M);
+        // Settled: it stays, and small turns from there leave it again.
+        let settled = f.anchor(head).0;
+        for _ in 0..72 {
+            f.step(turned(45.0, 0.0, 0.0), DT, 1);
+        }
+        assert!(f.anchor(head).0.distance(settled) < 1e-5);
+        // A new window places it ahead of the view at once.
+        f.place(turned(-60.0, 10.0, 0.0));
+        assert!(
+            f.anchor(head)
+                .0
+                .distance(label_anchor(head, turned(-60.0, 10.0, 0.0)).0)
+                < 1e-6
+        );
+    }
+
+    #[test]
+    fn the_label_stays_inside_a_58_by_54_degree_view() {
+        use glam::Vec3;
+        let head = Vec3::new(0.0, 1.2, 0.0);
+        let lines = crate::label::MAX_LINES;
+        // Placed: inside, with room to spare.
+        let b = Follow::default().billboard(head, glam::Quat::IDENTITY);
+        assert!(inside(
+            &b.with_lines(lines),
+            head,
+            glam::Quat::IDENTITY,
+            VIEW_DEG
+        ));
+        // Head motions a wearer makes, fast and slow, from a placed label:
+        // quick looks left and right, a turn to the side held, a look up
+        // at the ceiling lying back, a look down at the hands, a roll, and
+        // a pseudo-random wander.
+        let mut seed = 0x2545_f491_u32;
+        let mut wander = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % 2001) as f32 / 1000.0 - 1.0
+        };
+        let paths: Vec<Vec<(f32, f32, f32)>> = vec![
+            (0..216)
+                .map(|i| (90.0 * (i as f32 * DT * 6.0).sin(), 0.0, 0.0))
+                .collect(),
+            (0..216)
+                .map(|i| ((i as f32 * 360.0 * DT).min(120.0), 0.0, 0.0))
+                .collect(),
+            (0..216)
+                .map(|i| (0.0, (i as f32 * 90.0 * DT).min(60.0), 0.0))
+                .collect(),
+            (0..216)
+                .map(|i| (10.0, -(i as f32 * 120.0 * DT).min(70.0), 0.0))
+                .collect(),
+            (0..216)
+                .map(|i| (20.0, 15.0, (i as f32 * 60.0 * DT).min(30.0)))
+                .collect(),
+            {
+                let (mut y, mut p, mut r) = (0.0f32, 0.0f32, 0.0f32);
+                (0..2000)
+                    .map(|_| {
+                        y += wander() * 6.0;
+                        p = (p + wander() * 4.0).clamp(-80.0, 80.0);
+                        r = (r + wander() * 2.0).clamp(-30.0, 30.0);
+                        (y, p, r)
+                    })
+                    .collect()
+            },
+        ];
+        // A one-line reply, two lines ("voice off"), and the card.
+        for n in [1, 2, lines] {
+            for (k, path) in paths.iter().enumerate() {
+                let mut f = Follow::default();
+                for (i, &(yaw, pitch, roll)) in path.iter().enumerate() {
+                    let rot = turned(yaw, pitch, roll);
+                    f.step(rot, DT, n);
+                    let b = f.billboard(head, rot).with_lines(n);
+                    assert!(
+                        inside(&b, head, rot, VIEW_DEG),
+                        "{n} lines, path {k} frame {i}: {:?}",
+                        seen(&b, head, rot)
+                    );
+                }
+            }
+        }
+        // A label that grows (a reply, then the card) is inside the frame
+        // it grows: the step takes the lines it shows.
+        let mut f = Follow::default();
+        let rot = turned(0.0, 12.0, 0.0);
+        for _ in 0..3 {
+            f.step(rot, DT, 1);
+        }
+        f.step(rot, DT, lines);
+        assert!(inside(
+            &f.billboard(head, rot).with_lines(lines),
+            head,
+            rot,
+            VIEW_DEG
+        ));
+    }
+
+    #[test]
+    fn the_label_clears_the_scan_label_for_a_level_or_lowered_head() {
+        use glam::Vec3;
+        // The scan, permission, opening and fatal labels float level with
+        // the eyes (`label::scan_billboard`). The two share one texture, so
+        // they never draw at once (the voice's covers the other while it
+        // shows), and a voice label placed with the head level or lowered
+        // sits wholly under it anyway, at its most lines.
+        let head = Vec3::new(0.0, 1.2, 0.0);
+        for yaw in [0.0, 50.0, -120.0] {
+            for pitch in [0.0, -15.0, -30.0, -50.0] {
+                let rot = turned(yaw, pitch, 0.0);
+                let scan = crate::label::scan_billboard(head, rot);
+                let scan_low = seen(&scan, head, rot)
+                    .iter()
+                    .map(|c| c.1)
+                    .fold(f32::INFINITY, f32::min);
+                let voice = Follow::placed(rot).billboard(head, rot);
+                for n in [1, 2, crate::label::MAX_LINES] {
+                    let voice_high = seen(&voice.with_lines(n), head, rot)
+                        .iter()
+                        .map(|c| c.1)
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    assert!(
+                        voice_high < scan_low,
+                        "{yaw} {pitch} {n}: {voice_high} {scan_low}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

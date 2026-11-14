@@ -704,10 +704,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // the log's one line per change.
     let mut flock_rule_logged = false;
     // The voice path's own label (the editor's is stepped and cleared by
-    // Edit room), and where it floats: the left palm at the window's
-    // opening, facing the head.
+    // Edit room), and where it floats. Board #5453: ahead of the view,
+    // placed when a window opens or a label shows with none before it,
+    // then following the head loosely (`voice::Follow`); `voice_at` is its
+    // center this frame, facing the head.
     let mut voice_label = crate::label::Label::default();
+    let mut voice_follow = crate::voice::Follow::default();
     let mut voice_at = (glam::Vec3::ZERO, glam::Vec3::Z);
+    let mut voice_shown = false;
     // V2, the grammar (`intent.rs`): the menu's actions a sentence asked
     // for, applied by the next frame's action consumer with the hand
     // menu's, and the `say` knob's last sentence fed.
@@ -3497,8 +3501,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             voice_label.step(dt);
             // The sentence heard this frame, for the grammar below.
             let mut sentence: Option<String> = None;
+            let head = glam::Vec3::from(input.head);
+            let head_rot = glam::Quat::from_array(input.head_rot);
+            voice_at = voice_follow.anchor(head);
             if let Some(v) = voice.as_mut() {
-                let head = glam::Vec3::from(input.head);
                 // V4: a thumb tap on either hand is the second opener;
                 // with the hand menu's Voice toggle off neither the fist
                 // nor the tap does anything for voice.
@@ -3524,14 +3530,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 };
                 match push_to_talk.step_with(press, dt) {
                     Some(VoiceEvent::Opened(opener)) => {
-                        // V4: at the left palm, or 1 m ahead of the head
-                        // with the palm out of view (a tap from the right
-                        // hand, the left one down).
-                        voice_at = crate::voice::label_anchor(
-                            input.hands.palm[0].map(|(p, _)| glam::Vec3::from(p)),
-                            head,
-                            glam::Quat::from_array(input.head_rot),
-                        );
+                        // Board #5453: ahead of the view, where the wearer
+                        // looks, whichever hand opened it; never at the
+                        // fist, which hid it.
+                        voice_follow.place(head_rot);
+                        voice_at = voice_follow.anchor(head);
                         let how = match opener {
                             VoiceOpener::Fist => "left fist".to_owned(),
                             VoiceOpener::Tap => {
@@ -3592,13 +3595,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 match note {
                     Some(VoiceNote::FileQueued { .. }) => {
-                        // The unworn path: the label ahead of the head.
+                        // The unworn path: the label ahead of the view.
                         push_to_talk.begin_closing();
-                        voice_at = crate::voice::label_anchor(
-                            None,
-                            head,
-                            glam::Quat::from_array(input.head_rot),
-                        );
+                        voice_follow.place(head_rot);
+                        voice_at = voice_follow.anchor(head);
                         voice_label.show_for(
                             crate::voice::WAITING_LABEL.to_owned(),
                             voice_at.0,
@@ -3644,7 +3644,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             // `debug.fosfora.say`: a sentence as if heard, for the unworn
             // gate (fed once per value; it waits for the room's anchors as
-            // the `surface` knob does), its label ahead of the head.
+            // the `surface` knob does), its label ahead of the view.
             if frame_index.is_multiple_of(72)
                 && let Some(said) = say_knob.poll(
                     system_prop("debug.fosfora.say").as_deref(),
@@ -3652,11 +3652,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 )
             {
                 info!("voice: debug.fosfora.say \"{said}\"");
-                voice_at = crate::voice::label_anchor(
-                    None,
-                    glam::Vec3::from(input.head),
-                    glam::Quat::from_array(input.head_rot),
-                );
+                voice_follow.place(head_rot);
+                voice_at = voice_follow.anchor(head);
                 sentence = Some(said);
             }
             // Board #3751, V2: the sentence through the grammar, generated
@@ -3741,7 +3738,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         sentence: asked.clone(),
                         room,
                         pointed: vocab.pointed,
-                        at: voice_at,
                     };
                     // V5: the on-device provider waits while a window is
                     // open or transcribing; a newer sentence replaces a
@@ -3845,7 +3841,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     )),
                 };
                 if let Some(answer) = answer {
-                    let at = call.at;
                     let sentence = call.sentence.clone();
                     let pointed = call.pointed.filter(|&p| p < lane_boxes.len());
                     agent_call = None;
@@ -3948,7 +3943,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         } else {
                             crate::ui_sound::Cue::Missed
                         });
-                        voice_label.show_for(text, at.0, at.1, seconds);
+                        // Board #5453: where the label floats now, or ahead
+                        // of the view when none showed.
+                        voice_label.show_for(text, voice_at.0, voice_at.1, seconds);
                     }
                 }
             }
@@ -3957,16 +3954,25 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let roam_now = roam.now();
             scan_label.step_with(scan_state, dt, |s| crate::roam::scan_text(s, roam_now));
             {
-                let head = glam::Vec3::from(input.head);
-                let head_rot = glam::Quat::from_array(input.head_rot);
+                // Board #5453: the voice label ahead of the view, placed
+                // when it starts to show (a window's opening placed it
+                // above), then following the head loosely.
+                let voice_now = voice_label.now();
+                match voice_now {
+                    Some(_) if !voice_shown => voice_follow.place(head_rot),
+                    Some(l) => voice_follow.step(head_rot, dt, crate::label::lines(l.text).len()),
+                    None => {}
+                }
+                voice_shown = voice_now.is_some();
                 // The voice path's label first: it answers the wearer's
                 // own fist.
-                let shown = voice_label
-                    .now()
-                    .or_else(|| label.now())
-                    .map(|l| {
-                        let pose = crate::label::billboard(l.point, l.normal, head, head_rot);
-                        (l.text, l.alpha, l.level, pose)
+                let shown = voice_now
+                    .map(|l| (l.text, l.alpha, l.level, voice_follow.billboard(head, head_rot)))
+                    .or_else(|| {
+                        label.now().map(|l| {
+                            let pose = crate::label::billboard(l.point, l.normal, head, head_rot);
+                            (l.text, l.alpha, l.level, pose)
+                        })
                     })
                     .or_else(|| {
                         scan_label.now().map(|(text, alpha)| {
@@ -5647,22 +5653,21 @@ fn spawn_live_worker() -> Option<crate::live_wire::Worker> {
 
 /// Board #3751, V3: the agent's call in flight: its answer's channel, the
 /// sentence, the lane box pointed at when it was said (a "this" means
-/// that one), where the label floats, and when it was asked.
+/// that one), and when it was asked. Its label shows where the voice
+/// label floats when the answer lands (board #5453).
 struct AgentCall {
     reply: std::sync::mpsc::Receiver<Result<crate::agent::Reply, crate::agent::AgentError>>,
     sentence: String,
     pointed: Option<usize>,
-    at: (glam::Vec3, glam::Vec3),
     started: Instant,
 }
 
 /// Board #3751, V5: a call not yet asked: the sentence, the room as the
-/// agent sees it, the lane box pointed at, and where the label floats.
+/// agent sees it, and the lane box pointed at.
 struct PendingCall {
     sentence: String,
     room: crate::agent::RoomState,
     pointed: Option<usize>,
-    at: (glam::Vec3, glam::Vec3),
 }
 
 impl PendingCall {
@@ -5672,7 +5677,6 @@ impl PendingCall {
             reply: provider.answer(&self.sentence, &self.room),
             sentence: self.sentence,
             pointed: self.pointed,
-            at: self.at,
             started: Instant::now(),
         }
     }
