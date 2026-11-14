@@ -33,6 +33,8 @@ pub mod edge_bars;
 pub mod env_depth;
 pub mod faces_layer;
 pub mod flash;
+#[cfg(all(test, not(target_os = "android")))]
+mod flash_room;
 pub mod footprints;
 pub mod geom_first;
 pub mod gesture;
