@@ -1020,8 +1020,12 @@ firefly.
 
 ### The hand particles
 
-A throw's streak and burst and the pitcher's pour are born as they were
-(`instruments.rs`). What changed is how they move.
+A throw's burst and the pitcher's pour are born as they were
+(`instruments.rs`). The streak's 300 particles a frame are born along the
+stretch the throw flew since the frame before (`Burst::back`, carried in
+the pour row at speed 0), not in a 3 cm ball at the frame's point: a frame
+of flight is 8 cm, and with nothing stirring the particles the balls stayed
+a row of clumps all the way down. What else changed is how they move.
 
 - **No jitter.** Nothing pushes a hand particle but gravity, the air's
   drag, the hands and the surfaces. There is no flow field, no turbulence

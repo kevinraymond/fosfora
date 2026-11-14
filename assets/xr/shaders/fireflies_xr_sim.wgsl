@@ -117,7 +117,9 @@
 //                   brightness, the lift, the steal fraction
 //   aux[173..180]   the live depth rows (flux_xr_sim.wgsl, "Live depth
 //                   rows")
-//   aux[180]        the pour row: xyz direction, w speed (0 = no pour)
+//   aux[180]        the pour row: xyz direction, w speed (0 = no pour). At
+//                   speed 0 a nonzero xyz is a throw's streak: the stretch
+//                   from the burst's center back to the last frame's
 //   aux[181..213]   unused here
 //   aux[213..1238]  the box cell list (flux_xr_sim.wgsl, "Box cell list");
 //                   the XR app dilates the masks by the edge band so a
@@ -645,7 +647,7 @@ fn xr_burst(idx: u32) -> Particle {
     let dir = vec3f(ring * cos(angle), z, ring * sin(angle));
     let radius = max(b.w, 0.0);
     // Uniform in the ball: the radius goes as the cube root.
-    let at = dir * radius * pow(r.z, 1.0 / 3.0);
+    var at = dir * radius * pow(r.z, 1.0 / 3.0);
     var vel = dir * (mix(0.3, 1.2, s.x) * radius / XR_BURST_REF_RADIUS);
     var life = u.lifetime;
     let pour = aux[XR_AUX_POUR].home;
@@ -653,6 +655,11 @@ fn xr_burst(idx: u32) -> Particle {
     if pour.w > 0.0 && axis_len > 1e-4 {
         vel = xr_pour_dir(idx, pour.xyz / axis_len) * pour.w;
         life = u.lifetime * XR_POUR_LIFE;
+    } else if axis_len > 1e-4 {
+        // A throw's streak: born along the stretch flown since the last
+        // frame's, so the frames run together in one line. Nothing here
+        // stirs the particles, so a clump a frame would stay a clump.
+        at += pour.xyz * s.y;
     }
     let hue = fract(t.x * 0.3 + u.dominant_chroma + u.centroid * 0.15);
     let key = clamp(

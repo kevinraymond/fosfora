@@ -204,6 +204,8 @@ pub struct Flight {
     age_s: f32,
     /// Impact frames delivered so far.
     impact_frames: u32,
+    /// Where its streak was last born (`from` before the first).
+    streak_at: Vec3,
 }
 
 impl Flight {
@@ -227,6 +229,7 @@ impl Flight {
             hit,
             age_s: 0.0,
             impact_frames: 0,
+            streak_at: pinch,
         })
     }
 }
@@ -244,6 +247,12 @@ pub struct Burst {
     /// Size and opacity against a fresh burst's, 0..1: the streak fades
     /// from 1 to [`STREAK_END_BRIGHTNESS`] over the flight; the impact is 1.
     pub brightness: f32,
+    /// From `center` back to where this flight's streak was born the frame
+    /// before: the sim spreads the streak's particles along it, so the
+    /// frames' births run together in one line and not a row of clumps a
+    /// frame's flight apart (8 cm at 72 fps; nothing in the sim stirs them
+    /// since board #5470). Zero for an impact and a pour.
+    pub back: Vec3,
 }
 
 /// Each hand's flight, packed into the rows one a frame.
@@ -300,13 +309,17 @@ impl Thrower {
         let f = slot.as_mut()?;
         let burst = if f.age_s < f.duration_s {
             let k = (f.age_s / f.duration_s).clamp(0.0, 1.0);
+            let center = f.from.lerp(f.to, k);
+            let back = f.streak_at - center;
+            f.streak_at = center;
             Burst {
-                center: f.from.lerp(f.to, k),
+                center,
                 radius: STREAK_RADIUS_M,
                 count: STREAK_PER_FRAME,
                 hand,
                 impact: false,
                 brightness: 1.0 - k * (1.0 - STREAK_END_BRIGHTNESS),
+                back,
             }
         } else {
             // The remainder on the first frame, so the frames sum to the
@@ -322,6 +335,7 @@ impl Thrower {
                 hand,
                 impact: true,
                 brightness: 1.0,
+                back: Vec3::ZERO,
             };
             if f.impact_frames >= frames {
                 *slot = None;
@@ -486,6 +500,7 @@ impl Pour {
             hand: 1,
             impact: false,
             brightness: 1.0,
+            back: Vec3::ZERO,
         }
     }
 }
@@ -577,6 +592,18 @@ impl Pitcher {
 pub fn pour_row(pour: Option<Pour>) -> [f32; 4] {
     pour.filter(|p| p.count > 0)
         .map_or([0.0; 4], |p| [p.dir.x, p.dir.y, p.dir.z, p.speed.max(0.0)])
+}
+
+/// The pour row for this frame: a throw's burst wins the rows, so with one
+/// the row carries its [`Burst::back`] at speed 0, which the sim reads as
+/// the stretch to spread a streak along (and never as a pour, so a throw's
+/// particles do not fly along a pour that skipped the frame); with none it
+/// is the pour's ([`pour_row`]).
+pub fn aim_row(throw: Option<Burst>, pour: Option<Pour>) -> [f32; 4] {
+    match throw.filter(|b| b.count > 0) {
+        Some(b) => [b.back.x, b.back.y, b.back.z, 0.0],
+        None => pour_row(pour),
+    }
 }
 
 /// The instrument rows (layout in `flux_xr_sim.wgsl`, "Instrument rows"),
@@ -754,6 +781,15 @@ mod tests {
             );
             // The streak runs from the pinch toward the hit.
             assert!(streak[0].center.abs_diff_eq(f.from, 0.1));
+            // Each frame's births reach back to the last frame's, so the
+            // streak is one line from the pinch on; the impact has no
+            // stretch to spread along.
+            assert!((streak[0].center + streak[0].back).abs_diff_eq(f.from, 1e-5));
+            for w in streak.windows(2) {
+                assert!((w[1].center + w[1].back).abs_diff_eq(w[0].center, 1e-5));
+                assert!(w[1].back.length() <= THROW_SPEED_M_S * dt + 1e-4);
+            }
+            assert!(impact.iter().all(|b| b.back == Vec3::ZERO));
             let last = streak.last().unwrap().center;
             assert!(
                 last.distance(hit.point) < THROW_SPEED_M_S * dt * 1.5,
@@ -936,6 +972,7 @@ mod tests {
             hand: 0,
             impact: true,
             brightness: 1.0,
+            back: Vec3::ZERO,
         };
         let lift = Lift {
             at: Vec3::ONE,
@@ -959,6 +996,7 @@ mod tests {
             hand: 1,
             impact: true,
             brightness: 0.5,
+            back: Vec3::ZERO,
         };
         let lift = Lift {
             at: Vec3::new(0.2, 1.1, -1.4),
@@ -1078,6 +1116,16 @@ mod tests {
         // throw's.
         assert_close!(pour_row(None), [0.0; 4]);
         assert_close!(pour_row(Some(Pour { count: 0, ..pour })), [0.0; 4]);
+        // A throw's burst wins the row: its stretch at speed 0, never the
+        // pour's direction; with no throw the row is the pour's.
+        let streak = Burst {
+            back: Vec3::new(0.0, 0.01, 0.08),
+            impact: false,
+            ..pour.as_burst()
+        };
+        assert_close!(aim_row(Some(streak), Some(pour)), [0.0, 0.01, 0.08, 0.0]);
+        assert_close!(aim_row(None, Some(pour)), pour_row(Some(pour)));
+        assert_close!(aim_row(Some(Burst { count: 0, ..streak }), None), [0.0; 4]);
     }
 
     #[test]

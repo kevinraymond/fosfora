@@ -3683,7 +3683,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             lift,
                             glam::Vec3::from(anchor),
                         ),
-                        crate::instruments::pour_row(pour),
+                        crate::instruments::aim_row(burst, pour),
                     )
                 } else {
                     ([[0.0; 4]; crate::instruments::INSTRUMENT_ROWS], [0.0; 4])

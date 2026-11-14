@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use fosfora_xr::fireflies::{EDGE_BAND_M, FIREFLY_CAP, Knobs, POOL_CAP, hand_steal};
-use fosfora_xr::instruments::{Burst, MAX_STEAL, rows as instrument_rows};
+use fosfora_xr::instruments::{Burst, MAX_STEAL, aim_row, rows as instrument_rows};
 use glam::Vec3;
 
 static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
@@ -100,6 +100,7 @@ const SIM: &str = include_str!("../../../assets/xr/shaders/fireflies_xr_sim.wgsl
 const WORLD_AUX_ROWS: usize = 1240;
 /// The instrument rows, the box rows and the fireflies' rows.
 const AUX_INSTRUMENTS: usize = 170;
+const AUX_POUR: usize = 180;
 const AUX_BOX_CENTER: usize = 67;
 const AUX_BOX_ROT: usize = 99;
 const AUX_BOX_HALF: usize = 131;
@@ -608,6 +609,7 @@ fn neither_cap_gives_under_a_pool_hammered_with_bursts() {
         hand: 1,
         impact: true,
         brightness: 1.0,
+        back: Vec3::ZERO,
     };
     let mut rows = instrument_rows(Some(burst), None, Vec3::ZERO);
     rows[0][3] = MAX_STEAL;
@@ -1076,6 +1078,7 @@ fn a_burst_takes_the_hands_slots_and_never_a_firefly() {
             hand: 1,
             impact: true,
             brightness: 1.0,
+            back: Vec3::ZERO,
         };
         let mut rows = instrument_rows(Some(b), None, Vec3::ZERO);
         rows[0][3] = hand_steal(count, alive, 2_048, 400);
@@ -1117,6 +1120,66 @@ fn a_burst_takes_the_hands_slots_and_never_a_firefly() {
     // The steal took living hand particles: some are younger than the fill.
     let young = after.iter().filter(|s| s.hand() && s.age < 0.9).count();
     assert!(young > 300, "{young} hand particles born from the living");
+    sim.finish();
+}
+
+/// A throw's streak is born along the stretch it flew since the last
+/// frame, not in a clump at the frame's point: 300 a frame, 8 cm of flight
+/// a frame, a 3 cm radius. Over a few frames the births leave no gap along
+/// the flight, and none lies off it by more than the radius.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn a_throws_streak_is_born_along_the_stretch_it_flew() {
+    let knobs = hands_only();
+    let mut sim = Sim::new(4_096, &[], &aux_for(&[floor()], &knobs));
+    let from = Vec3::new(0.0, 1.4, -0.5);
+    let step = Vec3::new(0.0, 0.0, -0.083);
+    let radius = 0.03;
+    let frames = 8;
+    for i in 1..=frames {
+        let center = from + step * i as f32;
+        let b = Burst {
+            center,
+            radius,
+            count: 300,
+            hand: 1,
+            impact: false,
+            brightness: 1.0,
+            back: -step,
+        };
+        sim.write_aux(AUX_INSTRUMENTS, &instrument_rows(Some(b), None, Vec3::ZERO));
+        sim.write_aux(AUX_POUR, &[aim_row(Some(b), None)]);
+        sim.step();
+    }
+    sim.write_aux(AUX_INSTRUMENTS, &instrument_rows(None, None, Vec3::ZERO));
+    sim.write_aux(AUX_POUR, &[aim_row(None, None)]);
+    let born: Vec<Sample> = sim.read().into_iter().filter(Sample::hand).collect();
+    assert_eq!(born.len(), 300 * frames);
+    // Along the flight (z): every 2 cm of it holds births, where clumps a
+    // frame apart would leave 2 cm empty between each pair. The particles
+    // have flown a few frames at up to 0.3 m/s, hence the margins.
+    let reach = step.length() * frames as f32;
+    let mut bins = vec![0u32; (reach / 0.02) as usize];
+    for s in &born {
+        let along = from.z - s.pos.z;
+        assert!(
+            (-radius - 0.05..=reach + radius + 0.05).contains(&along),
+            "{along} m along a flight of {reach} m"
+        );
+        let off = Vec3::new(s.pos.x - from.x, 0.0, 0.0).length();
+        assert!(off <= radius + 0.05, "{off} m off the flight");
+        if along >= 0.0 && along < reach {
+            let bin = ((along / 0.02) as usize).min(bins.len() - 1);
+            bins[bin] += 1;
+        }
+    }
+    let mean = born.len() as f32 / bins.len() as f32;
+    for (i, &n) in bins.iter().enumerate() {
+        assert!(
+            n as f32 > mean * 0.4,
+            "bin {i} holds {n} of a mean {mean}: {bins:?}"
+        );
+    }
     sim.finish();
 }
 
@@ -1386,6 +1449,7 @@ fn the_preset_runs_through_the_cores_particle_system() {
         hand: 1,
         impact: true,
         brightness: 1.0,
+        back: Vec3::ZERO,
     };
     let mut bursting = rows.clone();
     bursting[AUX_INSTRUMENTS..AUX_INSTRUMENTS + 3].copy_from_slice(&instrument_rows(
