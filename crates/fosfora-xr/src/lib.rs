@@ -32,6 +32,7 @@ pub mod depth_light;
 pub mod edge_bars;
 pub mod env_depth;
 pub mod faces_layer;
+pub mod flash;
 pub mod footprints;
 pub mod geom_first;
 pub mod gesture;
