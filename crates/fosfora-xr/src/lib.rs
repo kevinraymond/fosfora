@@ -86,6 +86,7 @@ pub mod surface_fx;
 pub mod surface_labels;
 pub mod surface_port;
 pub mod surfaces;
+pub mod text_width;
 pub mod themes;
 pub mod ui_sound;
 pub mod voice;
