@@ -112,8 +112,6 @@ const PICK_BEAM_WIDTH_M: f32 = 0.004;
 const PICK_BEAM_ALPHA: f32 = 0.35;
 /// `debug.fosfora.picktest`: the ray's tilt below the view.
 const PICK_TEST_TILT_DEG: f32 = 20.0;
-/// The room editor's status while it is off.
-const EDIT_OFF: &str = "edit room off";
 /// Board #3751: the voice path's speech model under the installed assets,
 /// and its default whisper threads (`debug.fosfora.voicethreads`): the
 /// spike's 0.29 s per 3 s clip on 3 threads leaves the render loop the rest.
@@ -1757,7 +1755,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     }
     let mut scan_logged: Option<crate::label::ScanState> = None;
     let mut edit_was_on = false;
-    let mut edit_status = String::from(EDIT_OFF);
+    let mut edit_status = String::from(crate::label::STATUS_OFF);
     // Step 2c: what the cloud ran last frame (`room_edit::Cloud`), to log
     // its changes; on at launch unless the knob turned it off.
     let mut cloud_ran = crate::room_edit::Cloud::On;
@@ -3268,7 +3266,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         label.clear();
                     }
                     edit_status = if !edit_on {
-                        EDIT_OFF.to_owned()
+                        crate::label::STATUS_OFF.to_owned()
                     } else if let Some(h) = frame.hit {
                         // Board #3336: " · armed" while the class cycle is
                         // armed on it.
@@ -3278,7 +3276,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             frame.armed.is_some(),
                         )
                     } else {
-                        "no surface".to_owned()
+                        crate::label::STATUS_NO_SURFACE.to_owned()
                     };
                     gfx.set_beam(
                         crate::gfx::BEAM_PICK,

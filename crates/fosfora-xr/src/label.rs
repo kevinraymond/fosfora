@@ -144,6 +144,14 @@ pub fn status_text(name: &str, effective: Option<(SurfaceBehavior, f32)>, armed:
     format!("{name}: {}{armed}", behavior_word(effective))
 }
 
+/// The status cell with the editor on and nothing under the beam: what to
+/// do, not "no surface" (board #5461).
+pub const STATUS_NO_SURFACE: &str = "Point at a surface";
+/// The status cell with the editor off: empty. It read "edit room off"
+/// beside the "Edit room: off" button, so it looked like a second button
+/// saying the same thing (board #5461).
+pub const STATUS_OFF: &str = "";
+
 /// The label for a step of the hand menu's surface rows (board #3472,
 /// D3): the surface's name, its behavior and the three values it runs
 /// with now, color, band and strength (`lanes::RoomLanes::params_of`),

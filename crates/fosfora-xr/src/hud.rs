@@ -7,22 +7,25 @@
 //! on the palm).
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
-//! turned more to the ceiling is a hold instead, `palm_panel.rs`): five
-//! rows, the world effect's `<` `>` on top (board #3336: the effect cycle
-//! left the bare pinch-hold; "one effect in this mode" outside world mode),
-//! the particle pitcher's on/off toggle and the debug panel's under it,
-//! then the room editor's toggle beside its status ("desk: embers",
-//! board #3326), under that the cloud's toggle (`room_edit::Cloud`), and
-//! at the bottom the music's play/stop (`music.rs`, board #3472), with the
+//! turned more to the ceiling is a hold instead, `palm_panel.rs`): seven
+//! rows on the developer surface (`panel_grid::menu`), the world effect's
+//! `<` `>` on top (board #3336: the effect cycle left the bare pinch-hold;
+//! "one effect in this mode" outside world mode), Recenter and Rescan
+//! beside Roam under it (board #4192, #5393), the Agent control beside
+//! Immersion (board #3776, #5384), the particle pitcher's on/off toggle
+//! and the debug panel's, then the room editor's toggle beside its status
+//! ("desk: embers", board #3326), under that the Particles toggle
+//! (`room_edit::Cloud`) beside "All: none" and the Edges control, and at
+//! the bottom the music's play/stop (`music.rs`, board #3472), with the
 //! track's title and `<` `>` for the previous and the next track around
 //! it (board #5385, `playlist.rs`), and the Voice toggle and the Theme
 //! control sharing the cell beside it (board #5415). With
 //! Edit room on, three more rows under the editor's (board #3472, D3):
 //! the color, the band and the strength of the surface under the beam,
 //! each stepped with `<` and `>`, the menu growing upward to hold them.
-//! The release surface (board #4204, `release.rs`) shows the menu without
-//! the pitcher's and the debug panel's row and without "All: none", the
-//! rows closed up (`panel_grid::menu`), and never the debug panel.
+//! The release surface (board #4204, `release.rs`) shows six rows, the
+//! menu without the pitcher's and the debug panel's row and without "All:
+//! none", the rows closed up, and never the debug panel.
 //! With debug on the same quad grows upward into the debug
 //! panel (frame timing, the effect, hands, reach, anchor and audio, and
 //! controls for what can change without a restart), the menu rows still
@@ -39,7 +42,7 @@
 //! locked until release, so drift during the press changes nothing;
 //! holding a -/+ repeats. egui only lays out and paints; it gets no pointer
 //! input. Nothing is told apart by hue alone: the control under the
-//! pointer has a thick outline, a pressed one turns white.
+//! pointer has a thick outline, a pressed one turns orange with dark text.
 
 use std::collections::VecDeque;
 
@@ -307,7 +310,8 @@ pub struct View<'a> {
     /// the hand is not pinching.
     pub pose: &'a [String; 2],
     /// The room editor's status: the pointed surface and its behavior
-    /// ("desk: embers"), "no surface" or "edit room off".
+    /// ("desk: embers"), "Point at a surface", or nothing with the editor
+    /// off (`label::STATUS_NO_SURFACE`, `STATUS_OFF`).
     pub edit_status: &'a str,
     /// The pointed surface's color index, band and strength
     /// (`lanes::RoomLanes::params_of`) for the surface rows; `None` with no
@@ -1293,30 +1297,44 @@ impl Rows<'_> {
 
 /// A status cell: `text` on a dark ground with no outline (nothing to
 /// press), in the value font, or the label font when that does not fit.
+/// Board #5461: in the label font it wraps onto a second line rather than
+/// run past the cell ("invisible wall face 12: streamlines · armed"), and
+/// past two lines it is cut with an ellipsis.
 fn label(painter: &egui::Painter, area: grid::Rect, text: &str) {
     let r = rect(area);
     painter.rect_filled(r, 6.0, PALETTE.well);
-    let fits = |size: f32| {
-        painter
-            .layout_no_wrap(
-                text.to_owned(),
-                egui::FontId::proportional(size),
-                PALETTE.text,
-            )
-            .size()
-            .x
-            <= r.width() - 8.0
-    };
-    let size = if fits(FONT_VALUE) {
-        FONT_VALUE
-    } else {
-        FONT_LABEL
-    };
-    painter.text(
-        r.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(size),
+    let room = r.width() - 2.0 * grid::STATUS_PAD;
+    let fits = painter
+        .layout_no_wrap(
+            text.to_owned(),
+            egui::FontId::proportional(FONT_VALUE),
+            PALETTE.text,
+        )
+        .size()
+        .x
+        <= room;
+    if fits {
+        painter.text(
+            r.center(),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::FontId::proportional(FONT_VALUE),
+            PALETTE.text,
+        );
+        return;
+    }
+    let mut job = egui::text::LayoutJob::simple(
+        text.to_owned(),
+        egui::FontId::proportional(FONT_LABEL),
+        PALETTE.text,
+        room,
+    );
+    job.wrap.max_rows = 2;
+    job.halign = egui::Align::Center;
+    let galley = painter.layout_job(job);
+    painter.galley(
+        Pos2::new(r.center().x, r.center().y - galley.size().y * 0.5),
+        galley,
         PALETTE.text,
     );
 }
@@ -1689,12 +1707,13 @@ fn agent_row(
     ])
 }
 
-/// The cloud's row, over the music's in both layouts: its toggle, and
-/// every surface to none (step 2c) sharing a cell with the edge bars'
-/// choice (board #5420, #5431: "Edges theme" or the mode forced on every
-/// kind), a half each, as Recenter and Rescan share theirs. Without
-/// `all_none` (the release surface, board #4204) the edge bars' choice
-/// has the cell to itself. The state is in the words, not a color.
+/// The cloud's row, over the music's in both layouts: its toggle
+/// (`room_edit::particles_label`), and every surface to none (step 2c)
+/// sharing a cell with the edge bars' choice (board #5420, #5431: the
+/// theme's or the mode forced on every kind), a half each, as Recenter and
+/// Rescan share theirs. Without `all_none` (the release surface, board
+/// #4204) the edge bars' choice has the cell to itself. The state is in
+/// the words, not a color.
 fn cloud_row(
     on: bool,
     editing: bool,
@@ -1704,23 +1723,16 @@ fn cloud_row(
     Control::Pair([
         Some(Cell::Button(
             Target::ToggleCloud,
-            // "Particles", not "cloud": the toggle hides every particle
-            // of the effect, the embers painted on a surface included, and
-            // the word cloud read as the ambient mass alone (Kevin, Sep 30).
-            match (on, editing) {
-                (true, _) => "Particles: on",
-                // Off, but Edit room shows the effect: the painted embers
-                // are its particles (`room_edit::Cloud::of`).
-                (false, true) => "Particles: off (shown: editing)",
-                (false, false) => "Particles: off",
-            },
+            crate::room_edit::particles_label(on, editing),
         )),
         // Every surface to none in one press, for telling what a single
-        // assignment does afterwards (board #3326).
+        // assignment does afterwards (board #3326). Board #5461: the edge
+        // bars' choice reads "Edges: theme" in a cell of its own, and
+        // "Edges" over "theme" in a half, which "Edges: theme" overruns.
         Some(if all_none {
             Cell::Halves([
                 Half::one(Target::AllNone, "All: none"),
-                Half::one(Target::CycleEdges, edges.label()),
+                Half::named(Target::CycleEdges, "Edges", edges.value()),
             ])
         } else {
             Cell::Button(Target::CycleEdges, edges.label())

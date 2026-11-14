@@ -321,14 +321,27 @@ impl Choice {
         }
     }
 
-    /// The Edges control's words, short enough for half a cell.
+    /// The Edges control's words in a cell of its own, "Name: state" as on
+    /// every other control (board #5461: it read "Edges theme").
     pub fn label(self) -> &'static str {
         match self {
-            Self::Theme => "Edges theme",
-            Self::Force(Mode::Off) => "Edges off",
-            Self::Force(Mode::Face) => "Edges face",
-            Self::Force(Mode::Standing) => "Edges stand",
-            Self::Force(Mode::In) => "Edges in",
+            Self::Theme => "Edges: theme",
+            Self::Force(Mode::Off) => "Edges: off",
+            Self::Force(Mode::Face) => "Edges: face",
+            Self::Force(Mode::Standing) => "Edges: stand",
+            Self::Force(Mode::In) => "Edges: in",
+        }
+    }
+
+    /// The state alone, for half a cell, where "Edges" sits over it as
+    /// "Theme" does over the theme ("Edges: theme" is wider than a half).
+    pub fn value(self) -> &'static str {
+        match self {
+            Self::Theme => "theme",
+            Self::Force(Mode::Off) => "off",
+            Self::Force(Mode::Face) => "face",
+            Self::Force(Mode::Standing) => "stand",
+            Self::Force(Mode::In) => "in",
         }
     }
 
@@ -1676,15 +1689,20 @@ mod tests {
         assert_eq!(
             seen,
             [
-                "Edges theme",
-                "Edges off",
-                "Edges face",
-                "Edges stand",
-                "Edges in"
+                "Edges: theme",
+                "Edges: off",
+                "Edges: face",
+                "Edges: stand",
+                "Edges: in"
             ]
         );
-        // Half a cell holds about a dozen characters.
-        assert!(seen.iter().all(|l| l.len() <= 12));
+        // Board #5461: "Name: state" in a cell of its own, the state alone
+        // under "Edges" in a half (`panel_grid`'s fit test measures both).
+        let mut c = Choice::Theme;
+        for _ in 0..5 {
+            assert_eq!(c.label(), format!("Edges: {}", c.value()));
+            c = c.next();
+        }
         // The theme's mode per kind, or the one forced on every kind.
         for theme in Mode::ALL {
             assert_eq!(Choice::Theme.mode(theme), theme);

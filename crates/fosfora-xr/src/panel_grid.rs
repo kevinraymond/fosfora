@@ -36,6 +36,8 @@ pub const ROW_GAP: f32 = 6.0;
 pub const COL_GAP: f32 = 6.0;
 /// The -/+ and Prev/Next boxes at a cell's or a row's ends.
 pub const END_BOX_W: f32 = 40.0;
+/// The room a status cell's text keeps from each end (points; `hud.rs`).
+pub const STATUS_PAD: f32 = 4.0;
 /// The hand menu's rows with Edit room off on the developer surface: the
 /// world effect's `<` `>` row on top (board #3336: the effect cycle left
 /// the bare pinch-hold), then, in both layouts at the bottom of the block,
@@ -264,6 +266,18 @@ pub fn cell(row: Rect, col: usize) -> Rect {
     } else {
         Rect::new(mid + COL_GAP * 0.5, row.min[1], row.max[0], row.max[1])
     }
+}
+
+/// The width a pair row's cell gives its words (points): a button's, which
+/// `hud.rs` centers on the whole cell.
+pub fn cell_w() -> f32 {
+    cell(row(PANEL_H, 0), 0).width()
+}
+
+/// The width half a cell gives its words (points): `hud.rs` splits a cell
+/// at its center and leaves half a column's gap on each side of the split.
+pub fn half_w() -> f32 {
+    cell(row(PANEL_H, 0), 0).halves().0.width() - COL_GAP * 0.5
 }
 
 /// The top of `rows` rows over `bottom`: where the block the pointer can
@@ -496,6 +510,104 @@ mod tests {
         }
         // The texture is unchanged: 640 x 1472 at 1.6 px per point.
         assert_eq!((PANEL_W, PANEL_H), (400.0, 920.0));
+    }
+
+    #[test]
+    fn every_menu_word_fits_its_cell() {
+        use crate::text_width::width;
+        // Board #5461: "Particles: off (shown: editing)" was 208 points in
+        // a 187-point cell, and "Edges: theme" is 97 in a 90.5-point half.
+        assert_close!(cell_w(), 187.0);
+        assert_close!(half_w(), 90.5);
+        let fits = |text: &str, size: f32, room: f32| {
+            let w = width(text, size);
+            assert!(w <= room, "{text:?} is {w:.1} points in {room:.1}");
+        };
+        // A button with a cell of its own, at the button's size: the
+        // words `hud.rs` paints itself, then the controls' own.
+        let mut whole: Vec<&str> = vec!["Edit room: on", "Edit room: off", "Recenter the cloud"];
+        whole.extend(
+            [
+                crate::roam::Roam::Off,
+                crate::roam::Roam::On(crate::roam::Why::Chosen),
+                crate::roam::Roam::On(crate::roam::Why::NoRoom),
+            ]
+            .map(crate::roam::Roam::label),
+        );
+        whole.extend(crate::immerse::Depth::ALL.map(crate::immerse::Depth::label));
+        {
+            use crate::agent::{NONE_LABEL, Pick, ProviderKind};
+            whole.extend(
+                [
+                    Pick::Local,
+                    Pick::Network(ProviderKind::Anthropic),
+                    Pick::Network(ProviderKind::OpenAi),
+                    Pick::Off,
+                ]
+                .map(Pick::label),
+            );
+            whole.push(NONE_LABEL);
+        }
+        let mut edges = crate::edge_bars::Choice::Theme;
+        for _ in 0..5 {
+            whole.push(edges.label());
+            edges = edges.next();
+        }
+        for (on, editing) in [(true, false), (true, true), (false, true), (false, false)] {
+            whole.push(crate::room_edit::particles_label(on, editing));
+        }
+        for text in whole {
+            fits(text, FONT_BUTTON, cell_w());
+        }
+        // Half a cell, on one line at the button's size.
+        for text in ["Recenter", "Rescan", "All: none", "Voice: on", "Voice: off"] {
+            fits(text, FONT_BUTTON, half_w());
+        }
+        // Half a cell, a name over a value: Edges over its state, Theme
+        // over the theme (cut to fit 6 points short of the half, though
+        // none needs it).
+        fits("Edges", FONT_LABEL, half_w());
+        for _ in 0..5 {
+            fits(edges.value(), FONT_VALUE, half_w());
+            edges = edges.next();
+        }
+        fits("Theme", FONT_LABEL, half_w());
+        for theme in crate::themes::Theme::ALL {
+            fits(&format!("{}*", theme.title()), FONT_VALUE, half_w() - 6.0);
+        }
+        // The Music cell's press words over the title, between `<` `>`.
+        let music = cell(row(PANEL_H, 0), 0).middle().width() - 4.0;
+        for playing in [true, false] {
+            fits(crate::music::label(playing), FONT_LABEL, music);
+        }
+        // The status cell: one line at the value's size, or at most two at
+        // the label's, word by word (`hud.rs` cuts a third).
+        let status = cell_w() - 2.0 * STATUS_PAD;
+        fits(crate::label::STATUS_NO_SURFACE, FONT_VALUE, status);
+        fits("desk: streamlines", FONT_VALUE, status);
+        let widest = crate::surfaces::SurfaceBehavior::ALL
+            .into_iter()
+            .max_by(|a, b| width(a.name(), 1.0).total_cmp(&width(b.name(), 1.0)))
+            .unwrap();
+        let longest =
+            crate::label::status_text("invisible wall face 12", Some((widest, 1.0)), true);
+        assert!(
+            width(&longest, FONT_LABEL) > status,
+            "{longest:?} needs no wrap"
+        );
+        let mut lines: Vec<String> = Vec::new();
+        for word in longest.split(' ') {
+            match lines.last_mut() {
+                Some(line) if width(&format!("{line} {word}"), FONT_LABEL) <= status => {
+                    line.push(' ');
+                    line.push_str(word);
+                }
+                _ => lines.push(word.to_owned()),
+            }
+        }
+        // Two lines of the label's size fit a row's height as a stepper's
+        // label over its value does (the const assert at the top).
+        assert_eq!(lines.len(), 2, "{lines:?}");
     }
 
     #[test]

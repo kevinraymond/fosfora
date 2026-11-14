@@ -344,6 +344,21 @@ impl RoomEditor {
     }
 }
 
+/// The hand menu's Particles toggle's words (`hud.rs`) for the toggle `on`
+/// and Edit room `editing`. "Particles", not "cloud": the toggle hides
+/// every particle of the effect, the embers painted on a surface included,
+/// and the word cloud read as the ambient mass alone (Kevin, Sep 30). Off
+/// with Edit room on, the effect still shows ([`Cloud::of`]): the painted
+/// embers are its particles, which the words say. Board #5461: they said
+/// it as "Particles: off (shown: editing)", 208 points in a 187-point cell.
+pub fn particles_label(on: bool, editing: bool) -> &'static str {
+    match (on, editing) {
+        (true, _) => "Particles: on",
+        (false, true) => "Particles: off (editing)",
+        (false, false) => "Particles: off",
+    }
+}
+
 /// What the world effect's cloud runs this frame, from the hand menu's
 /// Cloud toggle and Edit room.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
