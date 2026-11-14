@@ -73,6 +73,24 @@ pub const NOTHING_LABEL: &str = "Didn't catch that";
 /// transcription runs.
 pub const LISTENING_LABEL: &str = "Listening…";
 pub const WAITING_LABEL: &str = "…";
+/// What the label says when a fist or a tap would open a window and the
+/// microphone is not allowed (board #5453), and how long (s). The app
+/// polls the permission while voice is on, so allowing it in the
+/// headset's settings is enough: the next fist opens a window.
+pub const NO_MIC_LABEL: &str = "The microphone isn't allowed\nAllow it in the headset's Settings";
+pub const NO_MIC_S: f32 = 5.0;
+
+/// The hand menu's Voice toggle's words (board #5453): "Voice: on",
+/// "Voice: off", or with voice on and the microphone not allowed (`mic`
+/// false) "Voice: no mic", so the row never says voice is on while
+/// nothing can listen.
+pub fn toggle_words(on: bool, mic: bool) -> &'static str {
+    match (on, mic) {
+        (false, _) => "Voice: off",
+        (true, true) => "Voice: on",
+        (true, false) => "Voice: no mic",
+    }
+}
 
 /// What opened a window: the left fist (the next fist closes it), or a
 /// thumb tap (closes on silence).
@@ -1883,6 +1901,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_toggle_reads_no_mic_without_the_microphone() {
+        assert_eq!(toggle_words(true, true), "Voice: on");
+        assert_eq!(toggle_words(true, false), "Voice: no mic");
+        assert_eq!(toggle_words(false, false), "Voice: off");
+        assert_eq!(toggle_words(false, true), "Voice: off");
+        // The label says why, and how to allow it, on two short lines.
+        let lines = crate::label::lines(NO_MIC_LABEL);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("microphone") && lines[1].contains("Settings"));
+        assert!(lines.iter().all(|l| l.chars().count() <= 36), "{lines:?}");
+    }
+
+    /// Board #5453: with the microphone not allowed the app cancels each
+    /// window as it opens and shows why. A held fist answers once, the next
+    /// fist (after the hand opens) and each tap once more.
+    #[test]
+    fn a_denied_microphone_answers_each_press_once() {
+        let mut ptt = PushToTalk::default();
+        let mut opened = 0;
+        let mut run = |ptt: &mut PushToTalk, press: Press, seconds: f32| {
+            for _ in 0..(seconds / DT).round() as usize {
+                if let Some(Event::Opened(_)) = ptt.step_with(press, DT) {
+                    opened += 1;
+                    ptt.cancel();
+                }
+                assert_eq!(ptt.window(), Window::Closed);
+            }
+        };
+        let fist = Press {
+            fist: true,
+            ..Press::default()
+        };
+        let tap = Press {
+            tap: true,
+            ..Press::default()
+        };
+        run(&mut ptt, fist, 1.0);
+        run(&mut ptt, Press::default(), 0.2);
+        run(&mut ptt, fist, 1.0);
+        run(&mut ptt, tap, DT);
+        run(&mut ptt, Press::default(), 0.2);
+        run(&mut ptt, tap, DT);
+        assert_eq!(opened, 4);
     }
 
     #[test]

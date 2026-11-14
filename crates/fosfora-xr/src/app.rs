@@ -286,6 +286,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       off, for the unworn gate: logged `voice: heard "…" → <intent or miss> · label "…"`, the label ahead of the head; read at launch
     //       and polled once a second, fed once per value (waiting for the room's anchors as debug.fosfora.surface does); an app cannot
     //       clear a debug property, so to say the same sentence again set it to "" first, or to another sentence)
+    //   adb shell setprop debug.fosfora.voicetap 1               (board #5453: a thumb tap from the right hand as if made, for the unworn check:
+    //       it opens a voice window with voice on ("Listening…" ahead of the view; it closes at 6 s without speech), or with RECORD_AUDIO
+    //       missing shows why; polled once a second, fed once per value as debug.fosfora.say is (set "" or another value to tap again))
     //   adb shell setprop debug.fosfora.agent 0|1                (board #3751, V3: a sentence the grammar cannot match goes to the language model
     //       voice.json under the config dir names (the label reads "Thinking…", then the model's sentence; the actions go through V2's
     //       path); V5: with no voice.json, or one naming no provider, the on-device model (`local.rs`) when its files are installed;
@@ -712,6 +715,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut voice_follow = crate::voice::Follow::default();
     let mut voice_at = (glam::Vec3::ZERO, glam::Vec3::Z);
     let mut voice_shown = false;
+    // Board #5453: the `voicetap` knob's last value fed (the same
+    // once-per-value rule as `say`).
+    let mut tap_knob = crate::intent::SayKnob::default();
     // V2, the grammar (`intent.rs`): the menu's actions a sentence asked
     // for, applied by the next frame's action consumer with the hand
     // menu's, and the `say` knob's last sentence fed.
@@ -1566,6 +1572,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         cloud: crate::room_edit::cloud_knob(debug_prop("debug.fosfora.cloud").as_deref()),
         music: music.wanted(),
         voice: menu_saved.voice,
+        mic: voice_mic,
         agent: available.control(agent_pick),
         immerse: immerse_knob.map_or(menu_saved.immerse, crate::immerse::Depth::nearest),
         roam: roam.now(),
@@ -3509,31 +3516,51 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let head = glam::Vec3::from(input.head);
             let head_rot = glam::Quat::from_array(input.head_rot);
             voice_at = voice_follow.anchor(head);
+            // Board #5453, `debug.fosfora.voicetap`: a thumb tap from the
+            // right hand for the unworn check, fed once per value as the
+            // `say` knob is.
+            let knob_tap = frame_index.is_multiple_of(72)
+                && tap_knob
+                    .poll(system_prop("debug.fosfora.voicetap").as_deref(), false)
+                    .is_some();
             if let Some(v) = voice.as_mut() {
                 // V4: a thumb tap on either hand is the second opener;
                 // with the hand menu's Voice toggle off neither the fist
                 // nor the tap does anything for voice.
-                let tap_hand = (0..2).find(|&h| input.micro.tap[h]);
-                if (left_fist || tap_hand.is_some())
-                    && controls.voice
-                    && !voice_mic
-                    && !voice_mic_logged
-                {
-                    voice_mic_logged = true;
-                    info!("voice: RECORD_AUDIO missing, the window stays closed");
-                }
+                let tap_hand = (0..2)
+                    .find(|&h| input.micro.tap[h])
+                    .or(knob_tap.then_some(1));
                 // V5: while the on-device provider decides, no window
                 // opens (and so no transcription starts), so whisper's
                 // threads and the cascade's never run at once.
                 let local_busy =
                     agent_pick == crate::agent::Pick::Local && agent_call.is_some();
-                let listens = voice_mic && controls.voice && !local_busy;
+                // Board #5453: without the microphone a fist or a tap
+                // still counts as it would (the fist's dwell, once per
+                // fist), so the window it opens can be dropped at once
+                // with a label that says why.
+                let listens = controls.voice && !local_busy;
                 let press = VoicePress {
                     fist: left_fist && listens,
                     tap: tap_hand.is_some() && listens,
                     level: v.level(),
                 };
                 match push_to_talk.step_with(press, dt) {
+                    Some(VoiceEvent::Opened(_)) if !voice_mic => {
+                        push_to_talk.cancel();
+                        if !voice_mic_logged {
+                            voice_mic_logged = true;
+                            info!("voice: RECORD_AUDIO missing, the window stays closed");
+                        }
+                        voice_follow.place(head_rot);
+                        voice_at = voice_follow.anchor(head);
+                        voice_label.show_for(
+                            crate::voice::NO_MIC_LABEL.to_owned(),
+                            voice_at.0,
+                            voice_at.1,
+                            crate::voice::NO_MIC_S,
+                        );
+                    }
                     Some(VoiceEvent::Opened(opener)) => {
                         // Board #5453: ahead of the view, where the wearer
                         // looks, whichever hand opened it; never at the
@@ -4951,6 +4978,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // that did not ask for the microphone: its grant, once a second.
             if controls.voice && voice.is_some() && !voice_mic && granted_now(RECORD_AUDIO) {
                 voice_mic = true;
+                controls.mic = true;
                 info!("permission RECORD_AUDIO granted: the voice window can open");
             }
             for change in permission_watch.poll(asked_at.elapsed().as_secs_f32(), granted_now) {
@@ -4982,6 +5010,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         // Board #3751: the voice window's stream needs only
                         // the grant.
                         voice_mic |= name == RECORD_AUDIO;
+                        controls.mic = voice_mic;
                         match mic_waiting.take() {
                             Some(source) => {
                                 info!(

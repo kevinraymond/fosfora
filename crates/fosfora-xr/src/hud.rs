@@ -138,6 +138,9 @@ pub struct Controls {
     /// `hand_menu.json`; board #3751, V4): off, neither the left fist nor
     /// the thumb tap opens a window.
     pub voice: bool,
+    /// `RECORD_AUDIO` is granted (board #5453; the app sets it): without
+    /// it the Voice toggle reads "Voice: no mic" while on.
+    pub mic: bool,
     /// The agent's provider (the hand menu's Agent control, saved in
     /// `hand_menu.json`; board #3776): the pick showing and the one a
     /// press asks for, `None` with no provider to pick ("Agent: none").
@@ -1488,7 +1491,7 @@ fn panel_ui(
     block.push(music_row(
         controls.music,
         view.track,
-        controls.voice,
+        (controls.voice, controls.mic),
         view.theme,
     ));
     let bottom = grid::PANEL_H;
@@ -1524,9 +1527,12 @@ fn menu_ui(
                 grid::MenuRow::Cloud { all_none } => {
                     cloud_row(controls.cloud, editing, controls.edges, all_none)
                 }
-                grid::MenuRow::Music => {
-                    music_row(controls.music, view.track, controls.voice, view.theme)
-                }
+                grid::MenuRow::Music => music_row(
+                    controls.music,
+                    view.track,
+                    (controls.voice, controls.mic),
+                    view.theme,
+                ),
             })
         })
         .collect();
@@ -1603,14 +1609,26 @@ fn effect_row(effect: Option<(&str, usize, usize)>) -> Control<'static> {
 /// stepper's label over its value, the value at the 16 points of every
 /// other control. The theme takes the right half, the side the newer
 /// control took beside Recenter and All: none.
-fn music_row<'a>(playing: bool, title: &'a str, voice: bool, theme: &'a str) -> Control<'a> {
+///
+/// Board #5453: `voice` is the toggle and whether the microphone is
+/// allowed (`voice::toggle_words`). "Voice: no mic" is wider than a half
+/// at the button's size (94 of 90 points), so it sits as the Theme half
+/// beside it does, "Voice" over "no mic".
+fn music_row<'a>(
+    playing: bool,
+    title: &'a str,
+    voice: (bool, bool),
+    theme: &'a str,
+) -> Control<'a> {
+    let words = crate::voice::toggle_words(voice.0, voice.1);
+    let voice = match words.split_once(": ") {
+        Some((name, value)) if voice.0 && !voice.1 => Half::named(Target::ToggleVoice, name, value),
+        _ => Half::one(Target::ToggleVoice, words),
+    };
     Control::Pair([
         Some(Cell::Music { playing, title }),
         Some(Cell::Halves([
-            Half::one(
-                Target::ToggleVoice,
-                if voice { "Voice: on" } else { "Voice: off" },
-            ),
+            voice,
             Half::named(Target::CycleTheme, "Theme", theme),
         ])),
     ])
