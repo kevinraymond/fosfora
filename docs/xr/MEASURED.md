@@ -3529,3 +3529,56 @@ The frame rate in this sitting was under the display's 72 a second for most
 of it, seated and in roam alike, with the GPU clock held at 456 MHz from
 44 C on. That is not the boundary's doing (the request is one call every
 2 s) and is measured on its own.
+
+## Frame rate in a worn sitting after 29 h of uptime, and after a reboot (board #5434)
+
+Quest 3 v209, Nov 14 2026, debug build of efed02f (the boundary change on
+the first run). Frame rates are the app's 1 s windows; clock, temperature
+and App time are the runtime's `VrApi` lines.
+
+**Worn, 14:23 to 14:43.** The headset had been up 29 h and on the charger
+through a day of test launches. The wearer sat, then walked in roam four
+times, and changed themes, effects and rooms from the menu.
+
+| Segment | Mean fps | 10th percentile | Windows under 70 fps |
+|---|---|---|---|
+| Seated, first 3 min (Aurora, 23 surfaces) | 62.5 | 47.4 | 79% |
+| Roam walk 1 (Mirror) | 63.4 | 43.3 | 64% |
+| Seated 2 | 63.6 | 57.1 | 69% |
+| Roam 2 (Aurora, 31 surfaces) | 43.1 | 34.8 | 100% |
+| Seated 3 (41 surfaces) | 48.0 | 39.1 | 100% |
+| Roam 3 and 4 | 43 to 45 | 30 to 35 | 100% |
+
+- The temperature went from 36 C to 52 C. The GPU clock was 640 MHz until
+  14:26:50 (44 C) and was held at 456 MHz from then on.
+- The governor cut the cloud's density to its floor of 0.30 within 40 s of
+  the begin and logged `starved` (gpu 17 to 20 ms), at 640 MHz.
+- By the minute, with no particles alive the app ran 67 to 70 fps at
+  456 MHz (Mirror), and 38 to 45 fps with 250,000 to 300,000 alive (roam's
+  Flux Cloud). One minute does not fit: Aurora in the 41-surface room,
+  black, at 52 C, ran 44 to 46 fps with under 1,300 alive.
+
+**After a reboot, unworn, 14:57 to 15:04**, the same build, governor off,
+music playing, 40 s per effect, 39 to 42 C.
+
+| Setup | Effect | Alive | fps | App ms (max) | GPU clock |
+|---|---|---|---|---|---|
+| Roam, no room, Classic | Flux Cloud | 299,789 | 72.5 | 9.20 (9.88) | 545 to 599 MHz |
+| Roam, no room, Classic | Embers | 0 | 72.6 | 6.73 (6.97) | 456 MHz |
+| Roam, no room, Classic | Flock | 39,953 | 72.6 | 10.28 (11.68) | 640 MHz |
+| Seated, 41 surfaces, Aurora | Embers | 0 | 72.6 | 7.05 (7.32) | 456 MHz |
+| Seated, 41 surfaces, Aurora | Flock | 39,950 | 71.4 | 10.88 (12.35) | 640 MHz |
+| Seated, 41 surfaces, Aurora | Flux Cloud | 299,987 | 72.7 | 8.98 (9.60) | 545 MHz |
+
+- Every case holds the display rate after a reboot, so the day's merges did
+  not cost the frame rate. 456 MHz in the Embers rows is the runtime's low
+  step for an easy frame, not heat.
+- Flock is at the edge: 92% of the GPU at the full clock. Held at 456 MHz by
+  heat it would not fit.
+- Aurora with no particles is half the budget at the low clock, unworn.
+
+Not separated here: how much of the worn sitting's loss was the 29 h of
+uptime, how much the heat, and how much is what only a wearer adds (hands,
+the menu up, the live room). A worn sitting on a freshly rebooted headset
+answers that. Logs: `recordings/worn-2026-11-14/`,
+`recordings/perf-2026-11-14/`.
