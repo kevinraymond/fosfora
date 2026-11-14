@@ -1762,7 +1762,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     });
     // Board #3326: each box's behavior (the room file and the `surface`
     // knob).
-    let mut surface_lanes = crate::lanes::RoomLanes::new(dirs.config.clone());
+    let mut surface_lanes = crate::lanes::RoomLanes::new(dirs.config.clone())
+        .with_fresh_theme(crate::themes::Theme::Aurora);
     // Board #3472: the surfaces pass's clock and its lit faces by shader
     // (rings, streamlines, curls, pulse, spectrum) and the faces past its slots, for
     // the log (`None` before the first frame, so the first count is logged

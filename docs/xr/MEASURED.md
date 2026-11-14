@@ -3390,3 +3390,21 @@ adb, then launched unworn on the desk for 50 s, seated, with no debug knobs set.
 
 The debug build and the owner's config were restored afterward; the restored
 config is byte-identical to the backup.
+
+## A room with no file starts on Aurora (board #5448)
+
+Nov 13, Quest 3 v209, debug build of xr-next plus this change, unworn on the
+desk, seated, with the owner's room files moved aside so the scanned room had
+no file, the way a fresh install starts.
+
+- The anchorless first frames run the built-in defaults (Classic), as before.
+- The scene query returned 21 anchors. The room logged `no rooms/….json,
+  starts on aurora`, then `theme aurora (a fresh room)` over all 22 surfaces
+  52 ms later, saved to the room's file with an entry for each. Depth light
+  and the edge bars followed the theme. Immersion starts full, unchanged.
+- The first try applied the theme a frame early, to the stage floor alone: the
+  room's id arrived a frame before its surfaces. It now waits for the
+  surfaces the id was made from.
+- A room with a file, with or without a theme in it, is left as it is. The
+  owner's three rooms were restored byte-identical.
+- 71 to 72 frames/s in the first 45 s after launch.

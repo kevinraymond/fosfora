@@ -387,6 +387,12 @@ pub struct RoomLanes {
     applied: Option<String>,
     /// The `debug.fosfora.theme` knob (board #5415).
     theme_knob: crate::themes::Knob,
+    /// The theme a room with no file starts on ([`Self::with_fresh_theme`]);
+    /// `None` keeps the built-in defaults (Classic).
+    fresh_theme: Option<Theme>,
+    /// The room's file was missing at load and the fresh theme is still to
+    /// apply, on the first update whose boxes are the room's.
+    fresh_pending: bool,
 }
 
 impl RoomLanes {
@@ -402,7 +408,20 @@ impl RoomLanes {
             behaviors: Vec::new(),
             applied: None,
             theme_knob: crate::themes::Knob::default(),
+            fresh_theme: None,
+            fresh_pending: false,
         }
+    }
+
+    /// Start a room with no saved file on `theme` (board #5448): the first
+    /// update with the room's own boxes applies it as the menu would and saves it, so the
+    /// room has a file from then on. A room with a file, even one without
+    /// a theme, is left as it is. Someone who installs the app first sees
+    /// the look it was made for, not Classic.
+    #[must_use]
+    pub fn with_fresh_theme(mut self, theme: Theme) -> Self {
+        self.fresh_theme = Some(theme);
+        self
     }
 
     /// This frame's boxes of `room`: load the room's file when the room
@@ -413,6 +432,17 @@ impl RoomLanes {
             self.started = true;
             self.room = room;
             self.load();
+        }
+        // The room's id can arrive a frame before its surfaces (the device
+        // did, Nov 13): wait for the boxes the id was made from, so every
+        // surface gets its entry as from the menu.
+        if self.fresh_pending
+            && crate::room_file::room_id(boxes.iter().map(|b| b.uuid)) == self.room
+        {
+            self.fresh_pending = false;
+            if let Some(theme) = self.fresh_theme {
+                self.apply_theme(theme, boxes, "a fresh room");
+            }
         }
         let key = self.key_of(boxes);
         if self.key == Some(key) {
@@ -887,13 +917,20 @@ impl RoomLanes {
     fn read(&mut self) {
         self.revision += 1;
         self.file = RoomFile::default();
+        self.fresh_pending = false;
         let Some(room) = self.room else {
             info!("room -: no anchors, the built-in defaults");
             return;
         };
         let id = room_id_hex(room);
         match RoomFile::load(&room_path(&self.config, room)) {
-            Loaded::Missing => info!("room {id}: no rooms/{id}.json, the built-in defaults"),
+            Loaded::Missing => {
+                self.fresh_pending = self.fresh_theme.is_some();
+                match self.fresh_theme {
+                    Some(t) => info!("room {id}: no rooms/{id}.json, starts on {}", t.name()),
+                    None => info!("room {id}: no rooms/{id}.json, the built-in defaults"),
+                }
+            }
             Loaded::File(file, skipped) => {
                 for s in &skipped {
                     warn!("room {id}: rooms/{id}.json: {s}");
@@ -2172,6 +2209,55 @@ mod tests {
             ]
         );
         on_theme(&lanes, &boxes, Theme::Drift);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_room_with_no_file_starts_on_the_fresh_theme_and_a_saved_room_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!("fosfora-lanes-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let boxes = room();
+        let id = room_of(&boxes);
+        let path = room_path(&dir, id.unwrap());
+        // No anchors yet: nothing applied, nothing written.
+        let mut lanes = RoomLanes::new(dir.clone()).with_fresh_theme(Theme::Aurora);
+        lanes.update(None, &[]);
+        assert_eq!(lanes.saved_theme(), None);
+        assert!(!path.exists());
+        // The room's id a frame before its surfaces: wait.
+        lanes.update(id, &boxes[..1]);
+        assert_eq!(lanes.saved_theme(), None);
+        assert!(!path.exists());
+        // The room arrives with no file: Aurora on every surface, saved.
+        lanes.update(id, &boxes);
+        let saved = RoomFile::load(&path);
+        assert!(matches!(&saved, Loaded::File(f, _) if f.anchors.len() == boxes.len()));
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Aurora));
+        on_theme(&lanes, &boxes, Theme::Aurora);
+        assert!(path.exists());
+        // A relaunch reads it back and applies nothing.
+        let mut again = RoomLanes::new(dir.clone()).with_fresh_theme(Theme::Aurora);
+        again.update(id, &boxes);
+        assert_eq!(again.theme(), Shown::Theme(Theme::Aurora));
+        // The wearer goes to Classic: a relaunch keeps Classic.
+        again.apply_theme(Theme::Classic, &boxes, "test");
+        let mut third = RoomLanes::new(dir.clone()).with_fresh_theme(Theme::Aurora);
+        third.update(id, &boxes);
+        assert_eq!(third.theme(), Shown::Theme(Theme::Classic));
+        // A file from before themes, with no theme in it, is left alone.
+        assert!(third.poll_knob(Some("clear"), false, &boxes));
+        assert_eq!(third.saved_theme(), None);
+        let mut fourth = RoomLanes::new(dir.clone()).with_fresh_theme(Theme::Aurora);
+        fourth.update(id, &boxes);
+        assert_eq!(fourth.saved_theme(), None);
+        assert_eq!(fourth.theme(), Shown::Theme(Theme::Classic));
+        // Without a fresh theme a room with no file keeps the built-in
+        // defaults and writes nothing.
+        std::fs::remove_file(&path).unwrap();
+        let mut plain = RoomLanes::new(dir.clone());
+        plain.update(id, &boxes);
+        assert_eq!(plain.saved_theme(), None);
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
