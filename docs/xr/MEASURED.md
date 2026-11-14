@@ -3408,3 +3408,44 @@ no file, the way a fresh install starts.
 - A room with a file, with or without a theme in it, is left as it is. The
   owner's three rooms were restored byte-identical.
 - 71 to 72 frames/s in the first 45 s after launch.
+
+## Sounds, the menu that stays, voice ahead, labels and the flash limit on the headset (boards #5451, #5453, #5459, #5460, #5461)
+
+Nov 14, Quest 3 v209, debug build of xr-next 25a834e, unworn on a desk. The
+scene query found no room from there, so the first launch ran in roam and
+the later ones replayed the 30 anchors saved that morning
+(`debug.fosfora.anchors replay`). Spoken sentences were fed with
+`debug.fosfora.say`, and a thumb tap with `debug.fosfora.voicetap`.
+
+- **Launch.** `flash limit: on`, `ui sound: gain 0.50 (default)`,
+  `hand menu: debug.fosfora.menustay 1`. No crash and no error line in four
+  launches.
+- **The flash limit's cost.** 30 s each in roam, the first track playing:
+  VrApi App 10.46 ms mean (max 11.63) with the limit on and 10.43 (max
+  11.57) with it off, 72 frames/s both ways. No cost that shows.
+- **Interface sounds.** `ui sound: understood` on each spoken command,
+  `listening` and `closed` around a tap-opened window, `missed` after a
+  silent one. With the music stopped by voice the log showed `ui sound: its
+  own stream while the music is stopped · 48000 Hz · perf LowLatency ·
+  buffer 1536 frames`, and it closed when the music played again. The
+  window's own recording read peak 0.0006 to 0.0019 with the notes playing,
+  but an unworn microphone reads near zero anyway, so that settles nothing.
+- **The menu.** "open the menu" parked it ahead (`hand menu parked ahead
+  (spoken)`, `hand menu shown`), upright to the head. It hid after 8.0 s
+  with no pointer (`hand menu hidden (no pointer for 8 s)`). "menu" opened
+  it again and "close the menu" hid it at once.
+- **Voice.** "edges off" and "edges theme" switched the edge bars and
+  replied `edges: off` and `edges: theme`. "stop" and "play" stopped and
+  started the music. "what can I say" showed the five lines, the fifth
+  "open the menu", ahead and a little under the center of view, and it was
+  still up 5 s later.
+- **Labels.** In roam, `room scan: None, the label reads "No room here:
+  roaming. Rescan from the hand menu"`. The controllers label showed 4 s
+  after the scan's label with no hand tracked and went after its 10 s.
+- With the replayed room the last 12 VrApi lines read App 7.24 to 9.41 ms
+  at 70 to 73 frames/s.
+
+Not judged here: every level and look (the sounds over a song, the flash
+limit's steps, where the menu stays, the label 10 degrees low), the palm
+summon, and whether controllers in hand report no hands. Those are worn
+checks. The owner's app data was restored byte-identical.

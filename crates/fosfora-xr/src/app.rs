@@ -4074,8 +4074,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     "{}",
                     if hands_hint_logged {
                         "controllers label: shown, no hand tracked since the launch"
-                    } else {
+                    } else if hands_hint.seen() {
                         "controllers label: gone, a hand is tracked"
+                    } else {
+                        "controllers label: gone, it had its time with no hand tracked"
                     }
                 );
             }
