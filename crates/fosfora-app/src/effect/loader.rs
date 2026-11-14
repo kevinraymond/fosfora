@@ -470,42 +470,24 @@ impl EffectLoader {
     pub fn scan_effects_directory(&mut self) {
         self.effects.clear();
         let dir = assets_dir().join("effects");
-        if !dir.exists() {
+        if dir.exists() {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "pfx"))
+                .collect();
+            entries.sort_by_key(|e| e.file_name());
+            self.effects.extend(
+                entries
+                    .iter()
+                    .filter_map(|e| super::dirs::read_pfx(&e.path())),
+            );
+        } else {
             log::warn!("Effects directory not found: {}", dir.display());
-            return;
         }
-
-        let mut entries: Vec<_> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "pfx"))
-            .collect();
-        entries.sort_by_key(|e| e.file_name());
-
-        for entry in entries {
-            match std::fs::read_to_string(entry.path()) {
-                Ok(json) => match serde_json::from_str::<PfxEffect>(&json) {
-                    Ok(mut effect) => {
-                        // `interaction_3d` implies `interaction`: set it so every
-                        // reader of the flag builds and reports the hash.
-                        if let Some(pd) = effect.particles.as_mut() {
-                            pd.interaction |= pd.interaction_3d;
-                        }
-                        let path = entry.path().canonicalize().unwrap_or_else(|_| entry.path());
-                        log::info!("Found effect: {} ({})", effect.name, path.display());
-                        effect.source_path = Some(path);
-                        self.effects.push(effect);
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to parse {}: {e}", entry.path().display());
-                    }
-                },
-                Err(e) => {
-                    log::warn!("Failed to read {}: {e}", entry.path().display());
-                }
-            }
-        }
+        // FOSFORA_EFFECT_DIRS, after the built-ins so their indices are stable.
+        self.effects.extend(super::dirs::scan_extra());
 
         log::info!("Found {} effects", self.effects.len());
     }
