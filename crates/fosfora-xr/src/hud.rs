@@ -417,7 +417,7 @@ impl Hud {
         let head = Vec3::from(head);
         let palm = hands.palm[0].map(|(p, q)| (Vec3::from(p), Quat::from_array(q)));
         self.placement.set_height(self.height_m());
-        let placement = self.placement.place(palm, head);
+        let placement = self.placement.place(palm, head, Quat::from_array(head_rot));
         let ray = hands.index_knuckle[1].map(|k| {
             crate::palm_panel::hand_ray(Vec3::from(k), head, Quat::from_array(head_rot), 1.0)
         });
