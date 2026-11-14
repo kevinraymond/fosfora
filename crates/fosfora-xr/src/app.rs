@@ -2442,12 +2442,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 if let Some(step) = crate::microgestures::consume(micro, panel_up, edit_on, effects) {
                     switch_to = cycle_index(&parked, world_index, if step > 0 { 1 } else { -1 });
+                    // Board #5460: a swipe that stepped the effect ticks.
+                    if switch_to.is_some() {
+                        crate::ui_sound::play(crate::ui_sound::Cue::Press);
+                    }
                 }
             }
             // The hand menu's actions this frame, after the voice path's
             // from the last (board #3751): one consumer, so a spoken
             // toggle saves, logs and acts as the menu's press does.
             let mut actions = std::mem::take(&mut voice_actions);
+            // Board #5460: the voice's come first; the rest are presses.
+            let voiced = actions.len();
             if let Some(h) = hud.as_mut() {
                 if hud_test || h.shown() {
                     let theme = surface_lanes.theme().value();
@@ -2492,8 +2498,31 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                 }
             }
-            for action in actions {
+            for (k, action) in actions.into_iter().enumerate() {
                 let n = world_effects.len();
+                // Board #5460: a menu press that does something ticks (a
+                // surface row's where it changes the surface, below); one
+                // that does nothing stays quiet. A spoken action already
+                // sounded as understood.
+                let acts = match action {
+                    Action::NextEffect | Action::PrevEffect => {
+                        world && n > 1 && cycle_index(&parked, world_index, 1).is_some()
+                    }
+                    Action::SetAgent(pick) => available.has(pick),
+                    Action::PrevTrack | Action::NextTrack => !music.tracks().titles.is_empty(),
+                    Action::SetRoam(on) => {
+                        let mut r = roam;
+                        r.set(on).is_some()
+                    }
+                    Action::SetDensity => {
+                        gov.governed().is_some() || (controls.density - gov.ceiling()).abs() > 1e-6
+                    }
+                    Action::SurfaceParam(..) => false,
+                    _ => true,
+                };
+                if k >= voiced && acts {
+                    crate::ui_sound::play(crate::ui_sound::Cue::Press);
+                }
                 match action {
                     Action::NextEffect if world && n > 1 => {
                         switch_to = cycle_index(&parked, world_index, 1);
@@ -2727,6 +2756,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         );
                         info!("edit room: {name} {what} {dir} (the panel)");
                         if surface_lanes.set_params(k, &lane_boxes, edit) {
+                            crate::ui_sound::play(crate::ui_sound::Cue::Press);
                             let behavior = surface_lanes
                                 .effective(k, &lane_boxes)
                                 .map(|(b, _)| b)
@@ -3119,6 +3149,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                             match surface_lanes.cycle(k, &lane_boxes) {
                                 Ok(after) => {
+                                    crate::ui_sound::play(crate::ui_sound::Cue::Press);
                                     let text = crate::label::cycle_text(
                                         &crate::surfaces::friendly_name(k, &lane_boxes),
                                         before.unwrap_or_default(),
@@ -3134,6 +3165,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         // `ARM_S` would do.
                         Some(crate::room_edit::EditAction::Arm(k)) => {
                             if let Some((b, _)) = effective(k) {
+                                crate::ui_sound::play(crate::ui_sound::Cue::Armed);
                                 let kind = lane_boxes[k].kind;
                                 let next = b.next_for(kind);
                                 info!(
@@ -3163,6 +3195,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                             match surface_lanes.cycle_kind_of(k, &lane_boxes) {
                                 Ok(after) => {
+                                    // The second hold confirmed the arm.
+                                    crate::ui_sound::play(crate::ui_sound::Cue::Understood);
                                     let text = crate::label::class_text(
                                         lane_boxes[k].kind,
                                         before.unwrap_or_default(),
@@ -3476,13 +3510,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         };
                         match v.open(&how) {
                             // Up for the whole window: a fist's runs to
-                            // 20 s (board #5380).
-                            Ok(()) => voice_label.show_for(
-                                crate::voice::LISTENING_LABEL.to_owned(),
-                                voice_at.0,
-                                voice_at.1,
-                                crate::voice::max_s(opener) + 1.0,
-                            ),
+                            // 20 s (board #5380). Board #5460: and the
+                            // rising notes.
+                            Ok(()) => {
+                                crate::ui_sound::play(crate::ui_sound::Cue::Listening);
+                                voice_label.show_for(
+                                    crate::voice::LISTENING_LABEL.to_owned(),
+                                    voice_at.0,
+                                    voice_at.1,
+                                    crate::voice::max_s(opener) + 1.0,
+                                );
+                            }
                             Err(e) => {
                                 log::warn!("voice: the window's microphone did not open: {e:#}");
                                 voice_label.clear();
@@ -3490,6 +3528,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         }
                     }
                     Some(VoiceEvent::Closed { seconds, why }) => {
+                        crate::ui_sound::play(crate::ui_sound::Cue::Closed);
                         if v.close(seconds, why) {
                             voice_label.show_for(
                                 crate::voice::WAITING_LABEL.to_owned(),
@@ -3544,6 +3583,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             // V4: turned off while it transcribed.
                             info!("voice: off (menu), the sentence is dropped");
                         } else if text.is_empty() {
+                            crate::ui_sound::play(crate::ui_sound::Cue::Missed);
                             voice_label.show(
                                 crate::voice::NOTHING_LABEL.to_owned(),
                                 voice_at.0,
@@ -3634,6 +3674,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         })
                     },
                 );
+                // Board #5460: understood when every clause matched, a
+                // miss when one did not; what went to the agent sounds
+                // with its reply.
+                if response.agent.is_none() {
+                    crate::ui_sound::play(if clauses.iter().all(|c| c.outcome.is_ok()) {
+                        crate::ui_sound::Cue::Understood
+                    } else {
+                        crate::ui_sound::Cue::Missed
+                    });
+                }
                 if let (Some(asked), Some(provider)) = (&response.agent, &agent) {
                     let head = glam::Vec3::from(input.head);
                     let sizes: Vec<[f32; 2]> = room_boxes
@@ -3768,6 +3818,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     let sentence = call.sentence.clone();
                     let pointed = call.pointed.filter(|&p| p < lane_boxes.len());
                     agent_call = None;
+                    // Board #5460: a reply whose actions all resolved.
+                    let mut understood = false;
                     let (text, seconds) = match answer {
                         Ok(crate::agent::Reply {
                             miss: Some(miss), ..
@@ -3839,6 +3891,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             if missed.iter().any(|m| m.reason.names_surfaces()) {
                                 surface_labels.miss();
                             }
+                            understood = missed.is_empty();
                             crate::agent::label(&reply.say, &applied, &missed)
                         }
                         Err(e) => {
@@ -3853,9 +3906,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // Board #5380: a fist window runs to 20 s, and
                     // "Listening…" stays up all of it. A reply that lands
                     // meanwhile is in the log above, not on the label.
+                    // Board #5460: its cue likewise, which the open
+                    // microphone would hear.
                     if matches!(push_to_talk.window(), VoiceWindow::Open { .. }) {
                         info!("voice agent: the reply's label is skipped, a voice window is open");
                     } else {
+                        crate::ui_sound::play(if understood {
+                            crate::ui_sound::Cue::Understood
+                        } else {
+                            crate::ui_sound::Cue::Missed
+                        });
                         voice_label.show_for(text, at.0, at.1, seconds);
                     }
                 }
