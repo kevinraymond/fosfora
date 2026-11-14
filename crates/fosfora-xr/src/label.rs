@@ -64,10 +64,18 @@
 //!
 //! **The permission** (board #3264). Without `USE_SCENE` the query returns
 //! nothing, so while the app waits for the grant (`permissions::Watch`)
-//! and the room has no anchors the label reads "Allow spatial data to see
-//! the room" instead ([`ScanState::NotAllowed`], [`with_scene_permission`]),
-//! held like the scan; once the grant arrives the requery scans again, and
-//! once the wait gives up the room's own state shows.
+//! and the room has no anchors the label says so instead
+//! ([`ScanState::NotAllowed`], [`with_scene_permission`], [`NOT_ALLOWED_LABEL`]);
+//! once the grant arrives the requery scans again. The OpenXR session stays
+//! idle under the system's dialog, so by the time the label shows the
+//! wearer has answered it. Board #5461: the label held for the whole wait,
+//! up to 120 s, and the opening waited behind it, so a wearer who said no
+//! saw a plain room with a label in the middle of it for two minutes. Now
+//! it says that the room can't be seen and how to allow it, holds
+//! [`SCAN_NONE_S`] and fades, and the show starts without a room, as it
+//! does when the scan finds none. When the wait gives up, the scan's own
+//! state takes over without a label of its own ([`ScanLabel::step_with`]):
+//! the wearer has been told.
 //!
 //! **The voice path's label** (board #3751, V4) is the same label with two
 //! more things the render reads: a meter, a thin bar under "Listening…"
@@ -584,7 +592,8 @@ impl Label {
 }
 
 /// How long the scan label names the room once found, and says none was
-/// found (s), before its fade; how far in front of the head it floats (m).
+/// found or spatial data is off (s), before its fade; how far in front of
+/// the head it floats (m).
 pub const SCAN_FOUND_S: f32 = 3.0;
 pub const SCAN_NONE_S: f32 = 6.0;
 pub const SCAN_DISTANCE_M: f32 = 1.2;
@@ -616,6 +625,12 @@ pub fn with_scene_permission(state: Option<ScanState>, waiting: bool) -> Option<
 
 /// The scan label's words once the scan has found the room (board #4204).
 pub const FOUND_LABEL: &str = "Loading your room";
+/// The scan label's words while spatial data is not allowed (board
+/// #5461): what that means, and how to allow it. A grant in the first two
+/// minutes is picked up as it comes (`permissions::Watch`); a later one
+/// needs a launch.
+pub const NOT_ALLOWED_LABEL: &str =
+    "Fosfora can't see the room. Allow spatial data in Settings, then restart Fosfora.";
 
 /// The scan label's words for `state`.
 pub fn scan_text(state: ScanState) -> String {
@@ -625,18 +640,19 @@ pub fn scan_text(state: ScanState) -> String {
         // "room scan: Found(17)" keeps the count.
         ScanState::Found(_) => FOUND_LABEL.to_owned(),
         ScanState::None => "No room found. Rescan from the hand menu".to_owned(),
-        ScanState::NotAllowed => "Allow spatial data to see the room".to_owned(),
+        ScanState::NotAllowed => NOT_ALLOWED_LABEL.to_owned(),
     }
 }
 
 /// The scan label's alpha `age` seconds into `state`: held while
-/// scanning or waiting for the permission; full for [`SCAN_FOUND_S`] or [`SCAN_NONE_S`], then linearly
-/// to 0 over [`FADE_S`].
+/// scanning; full for [`SCAN_FOUND_S`], or [`SCAN_NONE_S`] for no room and
+/// for spatial data not allowed (board #5461: it held for the whole wait),
+/// then linearly to 0 over [`FADE_S`].
 pub fn scan_fade(state: ScanState, age: f32) -> f32 {
     let hold = match state {
-        ScanState::Scanning | ScanState::NotAllowed => return 1.0,
+        ScanState::Scanning => return 1.0,
         ScanState::Found(_) => SCAN_FOUND_S,
-        ScanState::None => SCAN_NONE_S,
+        ScanState::None | ScanState::NotAllowed => SCAN_NONE_S,
     };
     ((hold + FADE_S - age) / FADE_S).clamp(0.0, 1.0)
 }
@@ -658,7 +674,12 @@ impl ScanLabel {
 
     /// [`Self::step`] with the words of a new state from `text` instead of
     /// [`scan_text`] (board #5393: roam's "No room here: roaming…",
-    /// `roam::scan_text`).
+    /// `roam::scan_text`). Board #5461: the end of the permission's wait,
+    /// spatial data still not allowed and no room, says nothing new: the
+    /// wearer was told why there is no room, and a label two minutes into
+    /// the show would only interrupt it. The words showing keep their time
+    /// (the two states hold alike), so a wait that ends while they show
+    /// does not cut them short.
     pub fn step_with(
         &mut self,
         state: Option<ScanState>,
@@ -667,6 +688,10 @@ impl ScanLabel {
     ) {
         match (state, self.shown.as_mut()) {
             (Some(s), Some((was, _, age))) if *was == s => *age += dt.max(0.0),
+            (Some(ScanState::None), Some((was @ ScanState::NotAllowed, _, age))) => {
+                *was = ScanState::None;
+                *age += dt.max(0.0);
+            }
             (Some(s), _) => self.shown = Some((s, text(s), 0.0)),
             (None, _) => self.shown = None,
         }
@@ -1320,10 +1345,13 @@ mod tests {
     fn the_scan_label_says_when_spatial_data_is_not_allowed() {
         assert_eq!(
             scan_text(ScanState::NotAllowed),
-            "Allow spatial data to see the room"
+            "Fosfora can't see the room. Allow spatial data in Settings, then restart Fosfora."
         );
-        // Held while the app waits, like the scan.
-        assert_close!(scan_fade(ScanState::NotAllowed, 600.0), 1.0);
+        // Board #5461: held for SCAN_NONE_S as no room is, not for the
+        // whole wait.
+        assert_close!(scan_fade(ScanState::NotAllowed, SCAN_NONE_S), 1.0);
+        assert_close!(scan_fade(ScanState::NotAllowed, SCAN_NONE_S + FADE_S), 0.0);
+        assert_close!(scan_fade(ScanState::NotAllowed, 600.0), 0.0);
         // Waiting for USE_SCENE: scanning or given up reads as not allowed;
         // anchors (a replay) and no room are left alone.
         for state in [ScanState::Scanning, ScanState::None] {
@@ -1338,13 +1366,14 @@ mod tests {
             Some(ScanState::Found(3))
         );
         assert_eq!(with_scene_permission(None, true), None);
-        // The grant: the requery scans again, then names the room.
+        // The grant after the label went: the requery scans again, then
+        // names the room.
         let dt = 1.0 / 72.0;
         let mut l = ScanLabel::default();
         for _ in 0..720 {
             l.step(with_scene_permission(Some(ScanState::None), true), dt);
         }
-        assert_eq!(l.now(), Some(("Allow spatial data to see the room", 1.0)));
+        assert_eq!(l.now(), None);
         l.step(with_scene_permission(Some(ScanState::Scanning), false), dt);
         assert_eq!(l.now(), Some(("Scanning the room\u{2026}", 1.0)));
         l.step(with_scene_permission(Some(ScanState::Found(17)), false), dt);
@@ -1498,6 +1527,64 @@ mod tests {
         assert!(flood.lines[MAX_LINES - 1].ends_with('\u{2026}'));
         // Nothing to say is one empty line.
         assert_eq!(layout("").lines, [""]);
+    }
+
+    #[test]
+    fn a_denied_permission_says_so_for_a_readable_while_and_lets_the_show_start() {
+        // Three lines at the size of more lines, 5.4 s to read.
+        assert_eq!(
+            laid(NOT_ALLOWED_LABEL).lines,
+            [
+                "Fosfora can't see the room.",
+                "Allow spatial data in Settings,",
+                "then restart Fosfora."
+            ]
+        );
+        assert_close!(read_s(NOT_ALLOWED_LABEL), 5.4);
+        let dt = 1.0 / 72.0;
+        let run = |l: &mut ScanLabel, state, s: f32| {
+            for _ in 0..(s / dt).round() as usize {
+                l.step(state, dt);
+            }
+        };
+        // The dialog answered no: the scan's retries read as not allowed
+        // while the watch waits, one label throughout.
+        let mut l = ScanLabel::default();
+        let waiting = |s| with_scene_permission(Some(s), true);
+        run(&mut l, waiting(ScanState::Scanning), 3.0);
+        assert_eq!(l.now(), Some((NOT_ALLOWED_LABEL, 1.0)));
+        // Long enough to read, full strength, before its fade.
+        assert!(SCAN_NONE_S >= read_s(NOT_ALLOWED_LABEL));
+        run(&mut l, waiting(ScanState::None), SCAN_NONE_S - 3.0 - dt);
+        assert_eq!(l.now(), Some((NOT_ALLOWED_LABEL, 1.0)));
+        // Then gone, so the opening, which waits for a free label, starts.
+        run(&mut l, waiting(ScanState::None), FADE_S + 2.0 * dt);
+        assert_eq!(l.now(), None);
+        run(&mut l, waiting(ScanState::None), 100.0);
+        assert_eq!(l.now(), None);
+        // The watch gives up at 120 s: no room, roam on, and no new label
+        // two minutes into the show.
+        let given_up = with_scene_permission(Some(ScanState::None), false);
+        assert_eq!(given_up, Some(ScanState::None));
+        run(&mut l, given_up, 10.0);
+        assert_eq!(l.now(), None);
+        // A rescan from the menu after that is the wearer's own: it says
+        // so as it always does.
+        run(&mut l, Some(ScanState::Scanning), 1.0);
+        assert_eq!(l.now(), Some(("Scanning the room\u{2026}", 1.0)));
+        run(&mut l, Some(ScanState::None), 1.0);
+        assert_eq!(
+            l.now().map(|n| n.0),
+            Some("No room found. Rescan from the hand menu")
+        );
+        // A wait that gives up while the label shows (a dialog left up for
+        // two minutes) does not cut it short or change its words.
+        let mut l = ScanLabel::default();
+        run(&mut l, waiting(ScanState::None), 1.0);
+        run(&mut l, given_up, 1.0);
+        assert_eq!(l.now(), Some((NOT_ALLOWED_LABEL, 1.0)));
+        run(&mut l, given_up, SCAN_NONE_S + FADE_S);
+        assert_eq!(l.now(), None);
     }
 
     #[test]
