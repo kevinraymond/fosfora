@@ -131,15 +131,25 @@ val stageXrAssets by tasks.registering(Sync::class) {
     from(rootProject.file("../assets")) {
         include("effects/**", "shaders/**")
     }
-    // XR-only effect variants (spike profiling, later XR-tuned effects) join
-    // the shared effects so the same loader finds them.
+    // XR-only effect variants (spike profiling, the world effect) join the
+    // shared effects so the same loader finds them. The cloud effects the
+    // app no longer runs (Flux Cloud, its coarse variant, Embers and Flock)
+    // stay out of the APK. Their presets and sims stay in the repo, where
+    // the core's tests read them.
     from(rootProject.file("../assets/xr/effects")) {
+        exclude(
+            "flux_xr_world.pfx",
+            "flux_xr_world_room.pfx",
+            "flux_xr_coarse.pfx",
+            "murmur_xr_world.pfx",
+        )
         into("effects")
     }
     // XR-only sims keep their repo path, so a preset's
     // "compute_shader": "../xr/shaders/<name>.wgsl" (resolved under shaders/)
     // finds them in the APK and in a desktop checkout alike.
     from(rootProject.file("../assets/xr/shaders")) {
+        exclude("flux_xr_sim.wgsl", "murmur_xr_sim.wgsl")
         into("xr/shaders")
     }
     // The S6 test track (CC0; assets/xr/audio/LICENSE.md).
