@@ -347,8 +347,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.fireflies 2000           (board #5470, fireflies.rs: how many fireflies, 0..3000, the cap
     //       (`fireflies::FIREFLY_CAP`); the ones past a lower count fade out over 1.5 s and a higher count fills in about a second;
     //       default 2000; this and the six knobs after it are live: polled once a second, each change logged)
-    //   adb shell setprop debug.fosfora.fireflysize 0.01         (the fireflies' sprite radius, m, 0.002..0.04; each is 0.7 to 1.3 of it;
-    //       default 0.01)
+    //   adb shell setprop debug.fosfora.fireflysize 0.02         (the fireflies' sprite radius, m, 0.002..0.04; each is 0.7 to 1.3 of it;
+    //       default 0.02)
     //   adb shell setprop debug.fosfora.fireflygain 0.8          (the fireflies' brightness, 0..2: the opacity at the top of a firefly's
     //       rhythm with the music silent; over 1 the top saturates and the dim part comes up; default 0.8)
     //   adb shell setprop debug.fosfora.fireflydrift 0.06        (the fireflies' drift speed, m/s, 0..0.5; each moves at 0.35 to 1.8 of it

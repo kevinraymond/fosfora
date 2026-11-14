@@ -1082,14 +1082,15 @@ Each is polled once a second and logged on a change
 | Knob | Default | Range | What |
 |---|---|---|---|
 | `debug.fosfora.fireflies` | 2000 | 0 to 3000 | How many fireflies. Lowered, the ones past it fade out over 1.5 s. |
-| `debug.fosfora.fireflysize` | 0.01 | 0.002 to 0.04 | Sprite radius, m. Each is 0.7 to 1.3 of it. |
+| `debug.fosfora.fireflysize` | 0.02 | 0.002 to 0.04 | Sprite radius, m. Each is 0.7 to 1.3 of it. |
 | `debug.fosfora.fireflygain` | 0.8 | 0 to 2 | Opacity at the top of a firefly's rhythm with no music. |
 | `debug.fosfora.fireflydrift` | 0.06 | 0 to 0.5 | Drift speed, m/s. |
 | `debug.fosfora.fireflymusic` | 0.5 | 0 to 1 | How strongly they answer the music. 0 is not at all. |
 | `debug.fosfora.handgravity` | 2.5 | 0 to 9.81 | The hand particles' gravity, m/s². |
 | `debug.fosfora.edgeflow` | 1 | 0 to 2 | Edge flow. 0 is off. It scales the 5 cm band and how fast a particle turns onto the edge. |
 
-The size is the sprite a thrown burst always had, and the drift is in the
+The size is twice the sprite a thrown burst has, picked from the headset's
+captures at 0.01, 0.02 and 0.03 (`MEASURED.md`), and the drift is in the
 family of the cloud's 0.05 m/s start speed. The count, the brightness, the
 music's share, the gravity and the edge flow's band, speed and steer are
 guesses. `debug.fosfora.density` (the debug panel's "firefly density") and
@@ -1186,7 +1187,7 @@ show nothing. Their knobs are still read.
 
 ### What only a worn check can tell
 
-Whether 2,000 reads as sparse or as busy, and whether 10 mm at 0.8 reads
+Whether 2,000 reads as sparse or as busy, and whether 20 mm at 0.8 reads
 with one eye against a black room and against a dimmed one. Whether the
 loudness lifting the light reads as a swell: it rises on the frame the
 level does, and the size glides. Whether the fireflies gliding after the

@@ -3582,3 +3582,94 @@ uptime, how much the heat, and how much is what only a wearer adds (hands,
 the menu up, the live room). A worn sitting on a freshly rebooted headset
 answers that. Logs: `recordings/worn-2026-11-14/`,
 `recordings/perf-2026-11-14/`.
+
+## Fireflies in place of the cloud effects (board #5470)
+
+2026-11-14, 16:31 to 17:08, Quest 3 v209, unworn, 2 h after a reboot, the
+debug build of `xr-fireflies`, governor off, music playing, 72 Hz. Each row
+is 40 s of the runtime's `VrApi` lines, App time as median (max). The
+battery went from 31 C to 45 C over the runs. The headset could not find
+its scanned room (the room was dark), so the seated room is the saved
+anchors replayed (`debug.fosfora.anchors replay`, 40 anchors, 41 surfaces):
+they do not sit where the real room is from where the headset lay, so the
+depth light lit most of the view, its worst case.
+
+**The fireflies sim builds and runs on the Adreno.** `world effect
+'Fireflies' built in 434 to 445 ms`, against 1,936 ms for the three cloud
+effects a launch used to build. 2,000 fireflies are alive 4 s after the
+begin.
+
+**What the fireflies cost, inside one launch each** (`debug.fosfora.fireflies`
+and `fireflysize` set live):
+
+| Setup | Fireflies | App ms (max) | GPU | Clock |
+|---|---|---|---|---|
+| Roam, live planes, Classic, 31 to 34 C | 2,000 at 0.01 m | 4.18 (4.30) | 48% | 456 MHz |
+| | 0 | 4.15 (4.25) | 48% | 456 MHz |
+| | 3,000 at 0.01 m | 4.15 (4.27) | 48% | 456 MHz |
+| Seated, no room, Classic, 37 to 38 C | 2,000 at 0.01 m | 4.90 (5.08) | 54% | 456 MHz |
+| | 0 | 4.88 (5.06) | 53% | 456 MHz |
+| | 3,000 at 0.01 m | 4.92 (5.12) | 54% | 456 MHz |
+| Seated, 41 surfaces replayed, Aurora, 41 to 45 C | 2,000 at 0.02 m (the default) | 9.21 (9.54) | 82% | 599 MHz |
+| | 0 | 9.22 (9.57) | 82% | 599 MHz |
+| | 3,000 at 0.04 m (both at their caps) | 9.32 (9.65) | 84% | 599 MHz |
+| Roam, live planes, Classic, 43 to 44 C | 2,000 at 0.02 m (the default) | 6.37 (6.83) | 65% | 456 MHz |
+| | 0 | 6.33 (6.86) | 65% | 456 MHz |
+| | 2,000 at 0.01 m | 6.36 (6.83) | 65% | 456 MHz |
+| | 2,000 at 0.02 m again | 6.34 (6.79) | 65% | 456 MHz |
+
+- The fireflies cost nothing that shows: under 0.05 ms at the default, and
+  0.1 ms with the count and the size both at their caps.
+- Roam went from 4.2 ms to 6.3 ms between the first run and the last, 35
+  minutes and 12 C apart, at the same clock, with and without fireflies.
+  That is the headset warming up or the view (4 live planes shown, then 5
+  to 8), not this change.
+
+**A pool full of hand particles** (`debug.fosfora.throwtest 3`):
+
+| Setup | Throws | Alive | App ms (max) |
+|---|---|---|---|
+| Roam, live planes, Classic | a 17,000 burst every 3 s, 3,000 fireflies | 20,000 | 4.72 (5.03) |
+| Seated, no room, Classic | the same | 20,000 | 5.45 (5.86) |
+| Seated, 41 surfaces replayed, Aurora | a default throw every 3 s, 2,000 fireflies | 20,000 | 9.08 (9.41) |
+
+- The pool held at 20,000 in every run. Full, it costs 0.55 ms over the
+  same setup with the fireflies alone.
+- One default throw is about 17,000 particles: the 6,000 of the burst and
+  300 a frame of streak over a 3 m flight. A throw every 3 s keeps the pool
+  full.
+
+**Against the build before it** (`xr-next` 100a6ed, the three cloud effects,
+on Embers with nothing alive), the two installed turn about, the same
+replayed room on Aurora:
+
+| Build | App ms (max) | GPU | Clock |
+|---|---|---|---|
+| Before | 10.17 (10.39) | 89% | 640 MHz |
+| Fireflies | 8.88 (9.90) | 80% | 599 MHz |
+| Before | 10.38 (10.67) | 90% | 640 MHz |
+| Fireflies | 9.08 (9.41) | 81% | 599 MHz |
+
+- The frame is 1.3 ms shorter at a lower clock. The cloud's sim stepped its
+  300,000 slots every frame with none of them alive.
+
+**Checked in the log:** a swipe right logs `-> next theme` and `the caption
+reads "Drift"`, a swipe left `-> previous theme` and `"Classic"`.
+`debug.fosfora.say 'next effect'` and `'flock'` log `label "The effects are
+gone"`, and `'next theme'` `label "theme: Mirror"`. `debug.fosfora.cloud 0`
+logs `particles off: the fireflies and the hand particles are hidden`.
+
+**Two things the captures showed, both changed on the branch:**
+
+- A throw's streak fell as a row of clumps a frame's flight apart (300
+  particles in a 3 cm ball every 8 cm), now that nothing stirs the
+  particles. The streak is born along the stretch flown since the frame
+  before, and the capture after shows one line.
+- At a 0.01 m radius a firefly was a pinprick beside the depth light's
+  points. Captures at 0.01, 0.02 and 0.03 m on Aurora: 0.02 reads as a soft
+  glow, 0.03 as blobs near the head. The default is 0.02.
+
+Not measured: anything worn. The seated room as the headset really sees it
+(the 7.05 ms row of the section above) was not available, so the seated
+numbers here are the depth light's worst case and are not to be set beside
+that row.

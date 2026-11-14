@@ -44,8 +44,11 @@ pub const ROWS: usize = 2;
 /// In the preset's 6 m volume, 2,000 is about one every 0.36 m.
 pub const COUNT: u32 = 2_000;
 /// Their sprite radius (m, `debug.fosfora.fireflysize`): each firefly is
-/// 0.7 to 1.3 of it. The sprite a thrown burst has always had.
-pub const SIZE_M: f32 = 0.01;
+/// 0.7 to 1.3 of it. Twice the sprite a thrown burst has: in the headset's
+/// captures (2026-11-14, Aurora and a black room) a firefly at the burst's
+/// 0.01 was a pinprick beside the depth light's points, 0.02 a soft glow
+/// and 0.03 a blob near the head.
+pub const SIZE_M: f32 = 0.02;
 pub const SIZE_RANGE_M: [f32; 2] = [0.002, 0.04];
 /// Their brightness (`debug.fosfora.fireflygain`): the opacity at the top
 /// of a firefly's rhythm with the music silent. Over 1 the top saturates
@@ -392,11 +395,11 @@ mod tests {
                 d.gravity,
                 d.edge_flow
             ),
-            (2_000, 0.01, 0.8, 0.06, 0.5, 2.5, 1.0)
+            (2_000, 0.02, 0.8, 0.06, 0.5, 2.5, 1.0)
         );
         let set = knobs_of(&[
             (KNOB_COUNT, " 1500 "),
-            (KNOB_SIZE, "0.02"),
+            (KNOB_SIZE, "0.03"),
             (KNOB_BRIGHTNESS, "1.2"),
             (KNOB_DRIFT, "0.1"),
             (KNOB_MUSIC, "0.25"),
@@ -407,7 +410,7 @@ mod tests {
             set,
             Knobs {
                 count: 1_500,
-                size: 0.02,
+                size: 0.03,
                 brightness: 1.2,
                 drift: 0.1,
                 music: 0.25,
@@ -500,7 +503,7 @@ mod tests {
         // The log names every knob's value.
         assert_eq!(
             Knobs::default().line(),
-            "fireflies: 2000 fireflies (cap 3000) · radius 0.01 m · brightness 0.8 · drift 0.06 m/s · music 0.5 · hand gravity 2.5 m/s2 · edge flow 1"
+            "fireflies: 2000 fireflies (cap 3000) · radius 0.02 m · brightness 0.8 · drift 0.06 m/s · music 0.5 · hand gravity 2.5 m/s2 · edge flow 1"
         );
         assert!(
             k.change_line(&Knobs::default())
@@ -615,8 +618,11 @@ mod tests {
         );
         // No flow field: the sim samples none.
         assert_eq!(particles["flow_field"], false);
-        // The burst's sprite is the size the fireflies start from.
-        assert_close!(particles["initial_size"].as_f64().unwrap() as f32, SIZE_M);
+        // The burst's sprite, half a firefly's.
+        assert_close!(
+            particles["initial_size"].as_f64().unwrap() as f32,
+            SIZE_M / 2.0
+        );
     }
 
     #[test]
