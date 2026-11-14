@@ -1362,10 +1362,12 @@ compared worn in one sitting.
 
 *Built.* Everything the app tells a wearer is on one in-world label
 (`label.rs`), white text on a dark ground. One label shows at a time, in
-this order: the voice window's, the room editor's at the surface, a hand
-menu reply, the room scan's, the opening's message, and last the
-controllers label. Those up to the scan's hold the opening; the
-controllers label never does.
+this order: the voice window's, a thumb swipe's caption, the room
+editor's at the surface, a hand menu reply, the room scan's, the begin
+card or the opening's message, the controllers label, and last a first
+run hint. Those up to the scan's hold the opening; the controllers label
+and the hints never do. The begin card, the caption and the hints are
+"The first run" below.
 
 What a wearer can meet, in the order of a first launch:
 
@@ -1375,13 +1377,17 @@ What a wearer can meet, in the order of a first launch:
 | It finds the room | Loading your room | same | 3 s |
 | It finds none, roam goes on | No room here: roaming. Rescan from the hand menu | same | 6 s |
 | The wearer said no to spatial data | Fosfora can't see the room. Allow spatial data in Settings, then restart Fosfora. | same | 6 s |
-| The music first plays, no label up | Sit back and relax | same | 4 s, then the show |
-| No hand tracked since the launch, 4 s after the scan's label | Put the controllers down. Fosfora uses your hands. | same | until a hand is tracked, 10 s at most |
+| The scan's label has gone | Pinch to begin | 1 m ahead, at the center of the view | until the wearer begins, 60 s at most |
+| The music first plays, no label up | Sit back and relax | 1.2 m ahead, level | 4 s, then the show |
+| No hand tracked since the launch, 4 s after the scan's label | Put the controllers down. Fosfora uses your hands. | under the begin card while the show waits, else 1.2 m ahead, level | until a hand is tracked; alone, 10 s at most |
 | Music `<` or `>` with no songs | No songs on the headset. Put them in its Music folder. | 1 m out, 20 degrees above the view | 4.8 s |
 | The same, music permission missing | Can't read the Music folder. Allow music files in Settings. | same | 4.5 s |
 | Room editor: a tap, a hold, a menu step | desk: sparks, all tables: none | at the surface | its reading time |
 | Room editor: a first hold | desk: hold again for all tables -> curls | at the surface | the arm's 2.5 s |
 | A voice reply or miss | theme: Aurora, Didn't catch that… | the voice window's place | its own time or its reading time |
+| A thumb swipe stepped the effect | Flux Cloud | the voice window's place | its reading time |
+| A first run hint, the label free for 5 s | Swipe your thumb along your finger | the voice window's place | until the gesture is made, 20 s at most |
+| The hint's gesture was made | Got it | same | 2.5 s |
 | The session ends on an error | Fosfora stopped: the session was lost | 1.2 m ahead, level | 4 s, then the app exits |
 
 **Reading time.** A label shows for 1.5 s and 0.3 s a word, at most 6 s
@@ -1458,6 +1464,178 @@ controllers are held (the label's whole premise); how the session
 behaves when the wearer leaves for Settings and comes back; and whether
 the 4 s wait after the scan's label is long enough for a wearer who put
 the controllers down at launch.
+
+## The first run (board #5452)
+
+*Built and tested on the desktop, and the device code passes the Android
+lint. Nothing here has run on the headset yet: every time and size below
+is the code's constant, not a measurement.*
+
+A wearer who had never seen the app had no say in when the show started
+and was never told what their hands could do. The music played while
+they were still settling, and the swipe, the thumb tap and the palm menu
+were found by accident or not at all. Now the show waits for them, and
+each gesture is taught once, when there is room on the label for it. The
+rules are `first_run.rs`, plain data tested on the desktop; `app.rs`
+feeds them once a frame.
+
+### What the wearer meets
+
+1. **The launch, as before.** The permission dialog, then "Scanning the
+   room…" and "Loading your room" (3 s), or one of the no-room labels
+   (6 s). From the first frame the room is dimmed a little: the immersion
+   level goes to 0.25 over about a second and a half (`immerse::WAIT_LEVEL`,
+   time constant `WAIT_S` 0.5 s). No music plays. The looks get silence in
+   place of the audio, so no surface pulses and the default effect, whose
+   embers the sound spawns, stays quiet.
+2. **The card.** When the scan's label has gone, a card sits at the
+   center of the view, 1 m ahead and 0.4 m wide: **"Pinch to begin"**.
+   With voice on and the microphone allowed it reads **"Pinch to begin,
+   or say begin"**. It follows the head the way the voice label does
+   (`voice::Follow::centered`), so it is in view lying back and never
+   rigid on the head.
+3. **No hands.** If no hand has been tracked for 4 s with the card up,
+   the controllers line goes under it: **"Put the controllers down.
+   Fosfora uses your hands."** It stays while no hand is tracked and goes
+   with the first one. It does not show on its own while the show waits.
+4. **The begin.** A pinch closing on either hand begins the show. It
+   ticks (the press cue) and throws its burst where the hand points, as a
+   pinch and release always does, and nothing else: no drag, no hold and
+   no tap come from that pinch until it opens. The card goes, the music
+   starts (the track was decoded during the wait), and the opening runs:
+   **"Sit back and relax"** for 4 s at the wait's 0.25, then the glide to
+   0.35 over 3 s.
+5. **The swipe hint.** Once the label has been free for 5 s with the show
+   on (about 9 s after the pinch), ahead of the view and 10 degrees under
+   the line of sight: **"Swipe your thumb"** over **"along your finger"**.
+   The wearer swipes, the effect steps with its tick, and the caption
+   names it: **"Flux Cloud"**. Then **"Got it"** for 2.5 s with the
+   understood cue.
+6. **The tap hint**, 5 s of free label later, only with voice on, the
+   microphone allowed and the microgestures there: **"Tap your thumb to
+   talk."** over **"Try: what can I say"**. The tap opens the voice
+   window, and its own sound and "Listening…" are the answer: "Got it"
+   waits 3 s for the label and is dropped behind a window, and its cue
+   never plays into an open microphone.
+7. **The palm hint**, last: **"Left palm to your face"** over **"for the
+   menu. It stays there."** The palm brings the menu, then "Got it" and
+   the cue.
+
+A hint that has been in view for 20 s gives up. Made or given up, it is
+saved as taught and never shows again on that install.
+
+### The rules
+
+- **Every launch waits**, not only the first. Until the begin a pinch, a
+  drag, a thumb swipe and the hand instruments do nothing. The hand menu
+  and the voice window work as always.
+- **Ways to begin** (`first_run::Begun`): the pinch with the card up; a
+  spoken "begin" or "start" (`VOICE_DESIGN.md`); the wearer starting the
+  music from the hand menu or by voice; the card unanswered for 60 s
+  (`WAIT_MAX_S`), so nobody is stuck in front of it; and
+  `debug.fosfora.begin 1`. The log says which: `first run: the show
+  begins (a pinch on the right hand)`, `(a spoken begin)`, `(the wearer
+  started the music)`, `(nobody answered the card in 60 s)`,
+  `(debug.fosfora.begin 1)`.
+- **The pinch presses nothing.** While the hand menu is up its pinches
+  are its own, and a pinch that closes the menu from away from it is
+  swallowed, as before. Neither begins the show.
+- **The start gesture is in one place**: `first_run::start_gesture` and
+  the card's word `START_WORD`.
+- **The music.** A launch used to start the music itself. It now starts
+  at the begin. If the wearer's last press was stop, the show begins
+  without music, as a launch did, and the room comes back after 1.5 s
+  (`immerse::WAIT_RELEASE_S`).
+- **The depth.** The wait's dim is scaled by the Immersion control like
+  the rest: off leaves the room plain, black is black from the launch as
+  it was. `WAIT_LEVEL` 0 would leave the room plain for everyone.
+- **Hints wait their turn** (`first_run::Hints`). One at a time, in the
+  order above, after 5 s of free label (`HINT_GAP_S`), never over another
+  label. A hint's 20 s (`HINT_GIVE_UP_S`) count only while it is the
+  label showing. A hint whose gesture can't work in this run (voice off,
+  no microgestures) is passed over without being saved, and shows in a
+  later run. No hint shows before a hand has been tracked, so a wearer
+  still holding the controllers doesn't use them up.
+- **Taught by doing.** A swipe that steps the effect, a thumb tap that
+  opens a voice window or the palm bringing the menu, made before its
+  hint, saves that hint as taught and it never shows. The thumb tap and
+  the palm count during the wait too.
+- **The fist is not taught.**
+- **Saved** in `hand_menu.json` as `"taught":["swipe","tap","palm"]`,
+  written once one is taught. A file from before has taught none.
+- **The caption** (`first_run::swipe_caption`): every thumb swipe that
+  steps the world effect names the new one for its reading time, where
+  the voice label floats. With Particles off the swipe changes nothing in
+  view, so it reads "Embers · particles off".
+
+### The wearer who can't
+
+| Wearer | What happens |
+|---|---|
+| Voice off | The card reads "Pinch to begin". The tap hint is passed over. The swipe and the palm are taught. |
+| Microphone denied | The same card and hints. A fist or a tap still shows "The microphone isn't allowed" as before. |
+| Controllers in hand | No hand is tracked, so after 4 s the card says to put them down. A pinch then begins. Left alone, the show begins by itself after 60 s, and the hints wait for a hand. |
+| One hand | Either hand pinches, swipes and taps. The palm hint asks for the left hand; a wearer without it lets it give up after 20 s, and "menu" by voice opens the menu with no palm. |
+| Can't pinch | With a thumb tap or a left fist the voice window opens and "begin" starts the show. With no gesture at all, the 60 s. |
+
+The card's "or say begin" needs the voice window open, and the window
+still opens with a thumb tap or the left fist. The app does not listen by
+itself while it waits.
+
+### Checking it unworn
+
+- `debug.fosfora.begin 1`: no card and no wait. `sweep.sh`, `soak.sh`,
+  `gpu-stages.sh` and `worn-ab.sh` set it, so their runs start the show
+  as they did. It is also polled while the show waits.
+- `debug.fosfora.say 'begin'` begins a waiting show, and is fed without
+  waiting for the room's anchors.
+- `debug.fosfora.hints 1`: the hints again this launch. The saved state
+  is left out and the hints show with no hand tracked.
+- `debug.fosfora.swipe right|left`: a thumb swipe from the right hand, for
+  the caption and the swipe hint's "Got it".
+- `debug.fosfora.voicetap 1` (board #5453) is the thumb tap.
+
+A capture of every step, with `ask 0` and `handshint 0` set: launch with
+`hints 1` and no `begin` to see the card (the controllers line joins it
+after 4 s unless `handshint 0`), then `say 'begin'`. The swipe hint shows
+about 9 s later; `swipe right` gives the caption and "Got it". The tap
+hint follows (it needs voice on and the microphone granted), then the
+palm hint, which unworn can only give up.
+
+The tests (`first_run.rs`):
+`the_show_waits_until_the_wearer_pinches_with_the_card_up`,
+`the_start_gesture_is_a_pinch_on_either_hand`,
+`a_spoken_begin_the_music_and_the_knob_begin_without_the_card`,
+`nobody_is_stuck_the_show_begins_by_itself_after_a_minute`,
+`the_card_names_the_pinch_the_voice_and_the_controllers`,
+`every_hint_is_two_lines_at_the_two_line_size`,
+`the_hints_show_in_order_one_at_a_time_a_few_seconds_apart`,
+`a_gesture_made_before_its_hint_teaches_it_without_showing`,
+`a_hint_gives_up_after_its_time_in_view_and_is_taught`,
+`got_it_waits_for_the_caption_and_is_dropped_behind_a_voice_window`,
+`a_hint_whose_gesture_does_not_work_is_passed_over_untaught`,
+`the_hints_wait_for_a_free_label_and_a_tracked_hand`,
+`the_taught_hints_round_trip_through_their_names`,
+`the_events_log_what_happened` and
+`the_swipe_caption_names_the_new_effect`. Beside them:
+`immerse.rs`'s `the_room_is_dim_and_still_while_the_show_waits_and_the_opening_runs_from_there`,
+`palm_panel.rs`'s `the_menu_file_saves_the_hints_taught_and_reads_none_when_absent`,
+`voice.rs`'s `a_centered_label_sits_on_the_line_of_sight_and_follows_the_same_way`,
+`intent.rs`'s `begin_the_show`, and the under-card rule in `label.rs`'s
+controllers test.
+
+### What only a worn check can tell
+
+- Whether a room at 0.25 reads as dim and calm, and whether the step from
+  the wait into the opening is smooth.
+- Whether the card at the center of the view is comfortable seated and
+  lying back, and whether it is in the way of the system's own dialogs.
+- Whether a resting hand ever begins the show unasked.
+- Whether the three hints' words are enough without a picture, above all
+  which way "along your finger" is. A drawn hand would go beside the
+  text in `label.rs`'s `draw`, which paints the label's texture.
+- Whether "Got it" over the palm menu is readable with the menu up.
+- Whether 5 s between hints and 20 s each feel right during a first song.
 
 ## Android manifest essentials
 

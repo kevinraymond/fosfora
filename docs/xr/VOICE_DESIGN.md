@@ -1337,6 +1337,32 @@ What only a worn check can tell:
 - Whether a wearer finds the microphone permission in the headset's
   Settings.
 
+## Begin by voice (board #5452)
+
+Every launch now waits for the wearer behind a card (`XR_DESIGN.md`, "The
+first run"). The pinch that begins the show has a spoken form.
+
+| Said | Does | Reply |
+|---|---|---|
+| "begin", "start", "begin the show", "start the show", "let's begin", "let's start" | begins a show that waits | starting |
+| the same, once the show is on | nothing | already started |
+
+- **In the grammar** as `Intent::Begin`, matched whole like the menu's
+  phrases, so "start editing", "start roaming" and "start the music" keep
+  their meaning. "Play", "play music" and a song by name begin the show
+  too, since the music starting is a begin.
+- **Not hands-free.** The window still opens with a thumb tap or the left
+  fist. The card reads "Pinch to begin, or say begin" only while voice is
+  on and the microphone is allowed.
+- **Not the agent's.** Its actions have no begin, and "what can I say"
+  doesn't list it, since by the time a wearer asks the show is usually
+  on.
+- **Unworn.** `debug.fosfora.say 'begin'` begins a waiting show and is fed
+  without waiting for the room's anchors, so it works with no room. Other
+  sentences still wait for them.
+
+Tests (`intent.rs`): `begin_the_show`.
+
 ## Open questions for Kevin
 
 1. The opener: the left fist held, or the thumb tap, or both from the

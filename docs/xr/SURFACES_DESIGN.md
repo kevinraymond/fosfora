@@ -1231,6 +1231,13 @@ without eating it. `debug.fosfora.immerseopen 0`, a pinned level
 start then glides to 0.35 in about 2 s. At depth off there is no message
 and no dimming; at low the opening settles at 0.175.
 
+Board #5452: the show now waits for the wearer before any of this
+(`XR_DESIGN.md`, "The first run"). While it waits the level sits at 0.25
+(`WAIT_LEVEL`) and the opening does not start. After the begin the
+message holds that level and the glide runs from it to 0.35. A launch
+with `debug.fosfora.begin 1` never waits and opens over the plain room as
+described above.
+
 **The level: the song against itself** (`immerse::History`, `position`,
 `follow`). The history keeps `loudness_s` at `HISTORY_HZ` (4 Hz) over
 `WINDOW_S` (30 s), recorded only while the song is heard and from
