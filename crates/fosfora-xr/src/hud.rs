@@ -522,6 +522,14 @@ impl Hud {
         self.placement.at() == At::Palm
     }
 
+    /// The idle time before the menu in the air closes
+    /// (`debug.fosfora.menuidle`; `None` for the default). Returns the time
+    /// in force (s).
+    pub fn set_menu_idle(&mut self, seconds: Option<f32>) -> f32 {
+        self.placement.set_idle(seconds);
+        self.placement.idle_max_s()
+    }
+
     /// Board #5459, per hand (0 left, 1 right): a pinch that closed the
     /// menu from away from it, which no gesture may read until released.
     pub fn swallowed(&self) -> [bool; 2] {

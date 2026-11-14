@@ -1333,7 +1333,7 @@ compared worn in one sitting.
   pinches for the cloud gestures (one already in progress goes on), the
   throw, the room editor's tap, hold and beam (held on its surface),
   Murmur's left-hand pose and two-hand hold, and the left hand's lift. The
-  closes bound it: at most 8 s after the last pointer left it (frame time;
+  closes bound it: at most 3 s after the last pointer left it (frame time;
   a frame counts at most 1/30 s), and at once on a pinch away. Thumb
   swipes keep working while it is up with no pointer on it; with the knob
   at 0 they stop whenever it is up, as before.
@@ -1348,7 +1348,7 @@ compared worn in one sitting.
   (`Placement::above_view`), where world up would put it behind the hand.
 - **The log.** "hand menu shown", "hand menu in the air", "hand menu on
   the palm", "hand menu parked ahead (spoken)", and "hand menu hidden" with
-  why: "(no pointer for 8 s)", "(a right pinch away from it)", "(a left
+  why: "(no pointer for 3 s)", "(a right pinch away from it)", "(a left
   pinch away from it)", "(spoken)". With the knob at 0 the spoken open and
   close reply "The menu is on your left palm" and do nothing.
 - **Tests (desktop).** In `palm_panel.rs`, the palm turning away leaves it

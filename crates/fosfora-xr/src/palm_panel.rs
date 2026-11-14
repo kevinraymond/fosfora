@@ -89,8 +89,14 @@ const SHOULDER_DOWN_M: f32 = 0.25;
 const HEAD_RIGHT_BELOW: f32 = 0.26;
 const WORLD_UP_ABOVE: f32 = 0.5;
 /// Board #5459: a menu in the air closes after this long with no pointer
-/// on it (seconds).
-pub const IDLE_S: f32 = 8.0;
+/// on it (seconds). Worn at 8 s it read as a menu that does not go away:
+/// it hung over the show long after the last press, and a palm that
+/// summoned it by accident while walking left it up as long. 3 s is time
+/// to lower one hand and point with the other.
+/// `debug.fosfora.menuidle` sets another time ([`PalmPanel::set_idle`]).
+pub const IDLE_S: f32 = 3.0;
+/// The shortest and longest idle time the knob may set (s).
+pub const IDLE_RANGE_S: (f32, f32) = (0.5, 60.0);
 /// Board #5459: a pinch whose ray lands outside the panel grown by half
 /// its size (this factor on the half extents), or misses it, is away from
 /// it and closes the menu; inside, it just missed a row.
@@ -132,10 +138,10 @@ impl At {
 }
 
 /// Why the menu closed by itself (board #5459).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Close {
-    /// No pointer on it for [`IDLE_S`].
-    Idle,
+    /// No pointer on it for this long (s): [`IDLE_S`] or the knob's time.
+    Idle(f32),
     /// A pinch away from it, by this hand (0 left, 1 right).
     PinchAway(usize),
     /// The spoken "close the menu".
@@ -143,10 +149,10 @@ pub enum Close {
 }
 
 impl Close {
-    /// For the log: "no pointer for 8 s", "a right pinch away from it".
+    /// For the log: "no pointer for 3 s", "a right pinch away from it".
     pub fn label(self) -> String {
         match self {
-            Self::Idle => format!("no pointer for {IDLE_S:.0} s"),
+            Self::Idle(s) => format!("no pointer for {s:.0} s"),
             Self::PinchAway(h) => format!(
                 "a {} pinch away from it",
                 if h == 0 { "left" } else { "right" }
@@ -318,6 +324,9 @@ pub struct PalmPanel {
     palm_up: bool,
     /// Board #5459: seconds in the air with no pointer on it.
     idle_s: f32,
+    /// The idle time `debug.fosfora.menuidle` asks for in place of
+    /// [`IDLE_S`] (s).
+    idle_knob_s: Option<f32>,
     /// Board #5459, per hand (0 left, 1 right): a pinch that closed the
     /// menu from away from it, which nothing else reads until released.
     swallowed: [bool; 2],
@@ -354,6 +363,20 @@ impl PalmPanel {
     /// (`debug.fosfora.menustay`, read live), or lives on the palm.
     pub fn set_stay(&mut self, on: bool) {
         self.stay = on;
+    }
+
+    /// The idle time before a menu in the air closes: `seconds`
+    /// (`debug.fosfora.menuidle`, kept inside [`IDLE_RANGE_S`]), or
+    /// [`IDLE_S`] for `None`.
+    pub fn set_idle(&mut self, seconds: Option<f32>) {
+        self.idle_knob_s = seconds
+            .filter(|s| s.is_finite())
+            .map(|s| s.clamp(IDLE_RANGE_S.0, IDLE_RANGE_S.1));
+    }
+
+    /// The idle time in force (s).
+    pub fn idle_max_s(&self) -> f32 {
+        self.idle_knob_s.unwrap_or(IDLE_S)
     }
 
     /// Where the menu is.
@@ -582,8 +605,9 @@ impl PalmPanel {
             return;
         }
         self.idle_s += dt;
-        if self.idle_s >= IDLE_S {
-            self.close(Close::Idle);
+        let max = self.idle_max_s();
+        if self.idle_s >= max {
+            self.close(Close::Idle(max));
         }
     }
 
@@ -1499,24 +1523,45 @@ mod tests {
         }
     }
 
-    /// No pointer on the menu in the air for 8 s closes it; a pointer
-    /// starts the count again; on the palm it never counts.
+    /// No pointer on the menu in the air for its idle time closes it; a
+    /// pointer starts the count again; on the palm it never counts.
     #[test]
-    fn the_menu_in_the_air_closes_after_eight_seconds_without_a_pointer() {
+    fn the_menu_in_the_air_closes_after_its_idle_time_without_a_pointer() {
         let (mut panel, p) = staying();
         // Held up on the palm for 20 s: it stays.
         for _ in 0..(20.0 / DT) as usize {
             assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_some());
         }
-        assert!(idle(&mut panel, 7.0).is_some());
+        assert!(idle(&mut panel, IDLE_S - 1.0).is_some());
         // The ray rests on it for a moment: the count starts again.
         assert!(frame(&mut panel, None, ray_at(&p, 0.0, 0.0), false, false).is_some());
         assert!(idle(&mut panel, IDLE_S - 0.1).is_some());
         assert_eq!(panel.at(), At::Air);
         assert!(idle(&mut panel, 0.2).is_none());
         assert_eq!(panel.at(), At::Hidden);
-        assert_eq!(panel.take_closed(), Some(Close::Idle));
+        assert_eq!(panel.take_closed(), Some(Close::Idle(IDLE_S)));
         assert_eq!(panel.take_closed(), None);
+        assert_eq!(Close::Idle(IDLE_S).label(), "no pointer for 3 s");
+    }
+
+    /// `debug.fosfora.menuidle` sets another idle time, kept in range, and
+    /// clearing it brings the default back.
+    #[test]
+    #[allow(clippy::float_cmp)] // The times are set and read back, not computed.
+    fn the_knob_sets_the_idle_time() {
+        let (mut panel, _) = staying();
+        panel.set_idle(Some(6.0));
+        assert_eq!(panel.idle_max_s(), 6.0);
+        frame(&mut panel, None, None, false, false);
+        assert!(idle(&mut panel, 5.8).is_some());
+        assert!(idle(&mut panel, 0.4).is_none());
+        assert_eq!(panel.take_closed(), Some(Close::Idle(6.0)));
+        panel.set_idle(Some(0.0));
+        assert_eq!(panel.idle_max_s(), IDLE_RANGE_S.0);
+        panel.set_idle(Some(f32::NAN));
+        assert_eq!(panel.idle_max_s(), IDLE_S);
+        panel.set_idle(None);
+        assert_eq!(panel.idle_max_s(), IDLE_S);
     }
 
     /// A pinch with the ray well off the menu closes it, and that pinch is

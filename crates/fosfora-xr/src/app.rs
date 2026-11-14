@@ -353,8 +353,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       panel ignored, transcripts out of the log, no debug/anchors.json; read at launch)
     //   adb shell setprop debug.fosfora.hudtest 1                (diagnostic: the debug panel parked ahead of the view, untracked, for a screencap)
     //   adb shell setprop debug.fosfora.menustay 0|1             (board #5459: 1 = the left palm summons the hand menu and it stays in the air, closing
-    //       after 8 s with no pointer on it, on a pinch away from it, or on "close the menu"; "menu" parks it ahead; 0 = it lives on
+    //       after 3 s with no pointer on it, on a pinch away from it, or on "close the menu"; "menu" parks it ahead; 0 = it lives on
     //       the palm, as before; default 1, polled once a second)
+    //   adb shell setprop debug.fosfora.menuidle 5               (board #5459: seconds the menu stays in the air with no pointer on it, 0.5 to 60,
+    //       in place of the default 3; polled once a second, "" back to the default)
     //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: hands' sim spheres extend Go-Go style past a comfortable reach; default on in mr/world)
     //   adb shell setprop debug.fosfora.reachat 0.30             (reach: shoulder-to-palm distance, m, within which the hand is 1:1)
     //   adb shell setprop debug.fosfora.reachgain 40             (reach: quadratic gain, 1/m; 40 puts a 0.52 m palm at 2.5 m, capped at 3 m)
@@ -1486,6 +1488,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .then(|| Hud::new(&mut gfx, debug_on, surface));
     // Board #5459: the menu stays in the air once the palm summons it.
     let mut menu_stay = switch_now("debug.fosfora.menustay").unwrap_or(true);
+    let mut menu_idle: Option<f32> = None;
     info!("{}", crate::palm_panel::knob_line(menu_stay));
     // Board #3789: the thermal governor (`governor.rs`) steps the cloud
     // density, so it acts in world mode only; the knob's default follows
@@ -2456,6 +2459,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 if now != menu_stay {
                     menu_stay = now;
                     info!("{}", crate::palm_panel::knob_line(now));
+                }
+                let idle = system_prop("debug.fosfora.menuidle").and_then(|v| v.parse::<f32>().ok());
+                if idle != menu_idle {
+                    menu_idle = idle;
+                    if let Some(hud) = hud.as_mut() {
+                        info!(
+                            "hand menu: it closes after {:.1} s in the air with no pointer on it ({})",
+                            hud.set_menu_idle(idle),
+                            if idle.is_some() { "debug.fosfora.menuidle" } else { "the default" }
+                        );
+                    }
                 }
             }
             // The panel first. While it is up its pinches are its own: no
