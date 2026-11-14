@@ -1,4 +1,6 @@
 pub mod decoder;
+#[cfg(feature = "video")]
+pub mod hwaccel;
 #[cfg(feature = "webcam")]
 pub mod stream;
 pub mod types;

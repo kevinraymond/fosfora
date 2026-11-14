@@ -124,8 +124,10 @@ pub fn decode_all_frames(
     );
 
     let mut child = Command::new("ffmpeg")
+        .args(super::hwaccel::input_args())
         .args(["-i"])
         .arg(path)
+        .args(super::hwaccel::output_args())
         .args([
             "-f",
             "rawvideo",
