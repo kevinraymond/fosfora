@@ -87,6 +87,7 @@ pub mod surface_labels;
 pub mod surface_port;
 pub mod surfaces;
 pub mod themes;
+pub mod ui_sound;
 pub mod voice;
 #[cfg(target_os = "android")]
 mod xr;
