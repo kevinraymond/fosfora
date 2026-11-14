@@ -81,10 +81,12 @@
 //! hands only, so a wearer holding the controllers has no menu, no voice
 //! and no gesture. When no hand has been tracked since the launch,
 //! [`HANDS_WAIT_S`] after the scan's and the permission's labels have gone
-//! the label says [`HANDS_LABEL`], held until a hand is tracked. It shows
-//! after the opening's message and never holds it. Once a hand has been
-//! seen it never shows again in that run, so a wearer resting their hands
-//! out of view is not told to put down controllers they don't hold.
+//! the label says [`HANDS_LABEL`], until a hand is tracked or
+//! [`HANDS_SHOW_S`] have passed. It shows after the opening's message and
+//! never holds it. Once a hand has been seen, or the label has had its
+//! time, it never shows again in that run: a wearer lying back with their
+//! hands at rest out of view since the launch holds no controllers, and
+//! must not have the label in front of the show for good.
 //!
 //! **Menu replies** ([`menu_reply_at`], board #5461). A hand-menu press
 //! that does nothing says why on a label over the menu, not behind it:
@@ -385,6 +387,10 @@ pub const HANDS_LABEL: &str = "Put the controllers down. Fosfora uses your hands
 /// How long no hand is tracked, with the show free to start, before the
 /// controllers label shows (s).
 pub const HANDS_WAIT_S: f32 = 4.0;
+/// How long the controllers label shows at most (s): hands at rest out of
+/// view since the launch read the same as controllers in hand, and that
+/// wearer came to watch.
+pub const HANDS_SHOW_S: f32 = 10.0;
 
 /// Whether to show [`HANDS_LABEL`] (board #5461), across frames.
 #[derive(Debug, Clone, Copy, Default)]
@@ -408,9 +414,11 @@ impl HandsHint {
     }
 
     /// The label's words while it shows: from [`HANDS_WAIT_S`] of waiting
-    /// until a hand is tracked, and never once one has been.
+    /// until a hand is tracked or [`HANDS_SHOW_S`] more have passed, and
+    /// never once one has been.
     pub fn now(&self) -> Option<&'static str> {
-        (!self.seen && self.waited_s >= HANDS_WAIT_S).then_some(HANDS_LABEL)
+        (!self.seen && (HANDS_WAIT_S..HANDS_WAIT_S + HANDS_SHOW_S).contains(&self.waited_s))
+            .then_some(HANDS_LABEL)
     }
 
     /// Whether a hand has been tracked this run.
@@ -1657,7 +1665,7 @@ mod tests {
     }
 
     #[test]
-    fn the_controllers_label_waits_for_the_show_then_holds_until_a_hand() {
+    fn the_controllers_label_waits_for_the_show_then_shows_until_a_hand_or_its_time() {
         // Two lines at the size of two.
         let words = laid(HANDS_LABEL);
         assert_eq!(
@@ -1680,12 +1688,19 @@ mod tests {
         assert_eq!(h.now(), None);
         run(&mut h, false, true, 0.2);
         assert_eq!(h.now(), Some(HANDS_LABEL));
-        // Held while no hand comes, gone the frame one does.
-        run(&mut h, false, true, 60.0);
+        // Shown while no hand comes, gone the frame one does.
+        run(&mut h, false, true, HANDS_SHOW_S - 1.0);
         assert_eq!(h.now(), Some(HANDS_LABEL));
         h.step(true, true, dt);
         assert_eq!(h.now(), None);
         assert!(h.seen());
+        // With no hand at all it has its time and goes for the run: hands
+        // at rest out of view since the launch are not controllers either.
+        let mut resting = HandsHint::default();
+        run(&mut resting, false, true, HANDS_WAIT_S + HANDS_SHOW_S + 0.1);
+        assert_eq!(resting.now(), None);
+        run(&mut resting, false, true, 120.0);
+        assert_eq!(resting.now(), None);
         // And never again this run: hands resting out of view are not
         // controllers.
         run(&mut h, false, true, 120.0);

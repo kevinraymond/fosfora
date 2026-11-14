@@ -717,6 +717,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut voice_follow = crate::voice::Follow::default();
     let mut voice_at = (glam::Vec3::ZERO, glam::Vec3::Z);
     let mut voice_shown = false;
+    // The voice label's drawn lines, worked out when its text changes (the
+    // label wraps, board #5461, so its `\n`s undercount).
+    let mut voice_lines: (String, usize) = (String::new(), 1);
     let mut voice_card: Option<String> = None;
     // Board #5453: the `voicetap` knob's last value fed (the same
     // once-per-value rule as `say`).
@@ -4058,7 +4061,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let voice_now = voice_label.now();
                 match voice_now {
                     Some(_) if !voice_shown => voice_follow.place(head_rot),
-                    Some(l) => voice_follow.step(head_rot, dt, crate::label::lines(l.text).len()),
+                    Some(l) => {
+                        if voice_lines.0 != l.text {
+                            voice_lines =
+                                (l.text.to_owned(), crate::label::layout(l.text).lines.len());
+                        }
+                        voice_follow.step(head_rot, dt, voice_lines.1);
+                    }
                     None => {}
                 }
                 voice_shown = voice_now.is_some();

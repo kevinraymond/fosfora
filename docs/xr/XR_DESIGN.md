@@ -1376,7 +1376,7 @@ What a wearer can meet, in the order of a first launch:
 | It finds none, roam goes on | No room here: roaming. Rescan from the hand menu | same | 6 s |
 | The wearer said no to spatial data | Fosfora can't see the room. Allow spatial data in Settings, then restart Fosfora. | same | 6 s |
 | The music first plays, no label up | Sit back and relax | same | 4 s, then the show |
-| No hand tracked since the launch, 4 s after the scan's label | Put the controllers down. Fosfora uses your hands. | same | until a hand is tracked |
+| No hand tracked since the launch, 4 s after the scan's label | Put the controllers down. Fosfora uses your hands. | same | until a hand is tracked, 10 s at most |
 | Music `<` or `>` with no songs | No songs on the headset. Put them in its Music folder. | 1 m out, 20 degrees above the view | 4.8 s |
 | The same, music permission missing | Can't read the Music folder. Allow music files in Settings. | same | 4.5 s |
 | Room editor: a tap, a hold, a menu step | desk: sparks, all tables: none | at the surface | its reading time |
@@ -1421,10 +1421,12 @@ missing, shows no second label two minutes into the show.
 hand-tracking extension, so a wearer holding the controllers has no
 menu, no voice and no gesture. When no hand has been tracked since the
 launch and the scan's label has been gone 4 s, the controllers label
-shows after the opening's message and stays until a hand is tracked.
-Once a hand has been tracked it never shows again in that run, so a
-wearer whose hands rest out of view isn't told to put down controllers
-they don't hold. A wearer who picks the controllers up later sees
+shows after the opening's message and stays until a hand is tracked, 10 s
+at most. Once a hand has been tracked, or the label has had its time, it
+never shows again in that run, so a wearer whose hands rest out of view
+isn't told to put down controllers they don't hold, and one lying back
+with their hands at rest since the launch doesn't keep it in front of the
+show. A wearer who picks the controllers up later sees
 nothing. `debug.fosfora.handshint 0` keeps it off; `scripts/xr/sweep.sh`
 and `soak.sh` set it for their unworn runs, where no hand is ever
 tracked. The log says `controllers label: shown, no hand tracked since
