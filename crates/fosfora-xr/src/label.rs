@@ -16,9 +16,31 @@
 //! for its distance from the head, so it keeps about the same angular size
 //! from the chair to the far wall (step 2c: a fixed 0.28 m label was a few
 //! dozen eye pixels at 3 m, "just a blob of pixels", Kevin, worn, Sep 29);
-//! it holds for [`LABEL_S`] (an arm's "hold again" for the whole arm,
-//! `room_edit::ARM_S`, [`Label::show_for`]) and fades out over the last
-//! [`FADE_S`] (the fade scales the ground and the text alike).
+//! it fades out over the last [`FADE_S`] (the fade scales the ground and
+//! the text alike).
+//!
+//! **How long** (board #5461). A label holds long enough to read: its
+//! [`read_s`], [`READ_BASE_S`] and [`READ_WORD_S`] a word, at most
+//! [`READ_MAX_S`]. Most labels held [`LABEL_S`], 1.5 s, which left a
+//! sentence about a second at full strength. [`Label::show`] holds a text
+//! for its reading time, [`Label::show_for`] for a caller's time or the
+//! reading time, whichever is longer (the voice's replies and misses keep
+//! their own times as a floor), and [`Label::show_held`] for exactly a
+//! caller's time: an arm's "hold again" goes when the arm's window closes
+//! (`room_edit::ARM_S`), whatever its reading time.
+//!
+//! **Lines and sizes** (board #5461, [`layout`]). A text that fits one line
+//! at [`LINES_FONT_PX`] or larger shows on one line, as large as fits up to
+//! [`FONT_PX`]. A longer one wraps instead of shrinking: a sentence a line,
+//! and a sentence that still runs over on as few lines as it takes, as
+//! even as they come, a line ending at a colon when that costs no extra
+//! line. It takes the largest size that fits, up to
+//! [`TWO_LINES_FONT_PX`] for two lines and [`LINES_FONT_PX`] for more. Before,
+//! a long label shrank to fit one line down to [`MIN_FONT_PX`] and was
+//! clipped past it: "No room found. Rescan from the hand menu" drew at
+//! 46 px, an arm's "hold again" at 48, and a theme miss ran off both ends.
+//! The widths are the font's own (`text_width.rs`), so the wrap tests on
+//! the desktop.
 //!
 //! **The pose.** A billboard: centered at the hit moved [`OUT_M`] out
 //! along the face normal and [`UP_M`] up, facing the head, its right the
@@ -65,9 +87,14 @@ use glam::{Quat, Vec3};
 
 use crate::surfaces::SurfaceBehavior;
 
-/// How long a label shows (s), and the fade at its end (s).
+/// The shortest a label shows (s), and the fade at its end (s).
 pub const LABEL_S: f32 = 1.5;
 pub const FADE_S: f32 = 0.4;
+/// A label's reading time ([`read_s`]): this much, and this much a word,
+/// at most [`READ_MAX_S`] (s).
+pub const READ_BASE_S: f32 = LABEL_S;
+pub const READ_WORD_S: f32 = 0.3;
+pub const READ_MAX_S: f32 = 6.0;
 /// The label's texture, width x height (px): large enough that the text
 /// is sharp up close, where the label is its narrowest.
 pub const LABEL_TEX: [u32; 2] = [1024, 192];
@@ -97,6 +124,185 @@ pub const fn tex_h(lines: usize) -> u32 {
 /// The lines of a label's text: split at `\n`, at most [`MAX_LINES`].
 pub fn lines(text: &str) -> Vec<&str> {
     text.split('\n').take(MAX_LINES).collect()
+}
+
+/// The text's largest size on a label of one line, of two, and of more,
+/// and its smallest (px of the texture). Two lines at 76 px keep a gap
+/// between them on the [`LINE_PX`] pitch; more lines (the voice's help
+/// and lists) keep the 64 they had.
+pub const FONT_PX: f32 = 88.0;
+pub const TWO_LINES_FONT_PX: f32 = 76.0;
+pub const LINES_FONT_PX: f32 = 64.0;
+pub const MIN_FONT_PX: f32 = 40.0;
+/// The ground's inset from the texture's edge, and the margin the text
+/// keeps from the ground's ends (px).
+pub const INSET_PX: f32 = 4.0;
+pub const MARGIN_PX: f32 = 48.0;
+/// The width a line of text has on the texture (px).
+pub const TEXT_W_PX: f32 = LABEL_TEX[0] as f32 - 2.0 * (INSET_PX + MARGIN_PX);
+/// The step between the sizes [`layout`] tries (px).
+const SIZE_STEP_PX: f32 = 2.0;
+
+/// The words of `text` a reader reads: the runs between spaces that hold a
+/// letter or a digit ("·" and "->" are not words).
+pub fn words(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .count()
+}
+
+/// How long `text` needs to be read (board #5461): [`READ_BASE_S`] and
+/// [`READ_WORD_S`] a word, at most [`READ_MAX_S`]. "desk: sparks" 2.1 s,
+/// a voice miss with its hint about 3.6, "what can I say" 6.
+pub fn read_s(text: &str) -> f32 {
+    (READ_BASE_S + READ_WORD_S * words(text) as f32).min(READ_MAX_S)
+}
+
+/// A label's text as the texture shows it ([`layout`]): its lines and
+/// their size (px of the texture).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layout {
+    pub lines: Vec<String>,
+    pub px: f32,
+}
+
+/// The largest size the text of a label of `lines` lines takes (px).
+pub fn font_cap(lines: usize) -> f32 {
+    match lines {
+        0 | 1 => FONT_PX,
+        2 => TWO_LINES_FONT_PX,
+        _ => LINES_FONT_PX,
+    }
+}
+
+/// How `text` shows on the label (board #5461). One line when it fits at
+/// [`LINES_FONT_PX`] or larger, as large as fits up to [`FONT_PX`].
+/// Otherwise its `\n`s and its sentences start lines and a line that still
+/// runs over wraps (`wrap`), at the largest size from
+/// [`TWO_LINES_FONT_PX`] down that fits its lines within [`font_cap`] and
+/// [`MAX_LINES`]. A text too long even at [`MIN_FONT_PX`] keeps its first
+/// [`MAX_LINES`] lines at that size, the last cut with an ellipsis.
+pub fn layout(text: &str) -> Layout {
+    let em = crate::text_width::em;
+    if !text.contains('\n') {
+        let width = em(text);
+        let px = if width > 0.0 {
+            (TEXT_W_PX / width).min(FONT_PX)
+        } else {
+            FONT_PX
+        };
+        if px >= LINES_FONT_PX {
+            return Layout {
+                lines: vec![text.to_owned()],
+                px,
+            };
+        }
+    }
+    let widest = |lines: &[String]| lines.iter().map(|l| em(l)).fold(0.0, f32::max);
+    let mut px = TWO_LINES_FONT_PX;
+    while px >= MIN_FONT_PX {
+        let lines = wrap(text, TEXT_W_PX / px);
+        let n = lines.len();
+        if n <= MAX_LINES && px <= font_cap(n) && widest(&lines) * px <= TEXT_W_PX {
+            let px = (TEXT_W_PX / widest(&lines)).min(font_cap(n));
+            return Layout { lines, px };
+        }
+        px -= SIZE_STEP_PX;
+    }
+    let mut lines = wrap(text, TEXT_W_PX / MIN_FONT_PX);
+    if lines.len() > MAX_LINES {
+        lines.truncate(MAX_LINES);
+        if let Some(last) = lines.last_mut() {
+            last.push('\u{2026}');
+        }
+    }
+    Layout {
+        lines,
+        px: MIN_FONT_PX,
+    }
+}
+
+/// `text` on lines of at most `max_em` ems: each `\n` starts a line; a
+/// part that runs over starts a line at each sentence (after ". ", "? ",
+/// "! "), and a sentence that still runs over wraps ([`wrap_words`]). A
+/// word wider than a line has a line of its own.
+fn wrap(text: &str, max_em: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for part in text.split('\n') {
+        if crate::text_width::em(part) <= max_em {
+            lines.push(part.to_owned());
+            continue;
+        }
+        let mut sentence: Vec<&str> = Vec::new();
+        for word in part.split_whitespace() {
+            sentence.push(word);
+            if word.ends_with(['.', '?', '!']) {
+                lines.extend(wrap_words(&sentence, max_em));
+                sentence.clear();
+            }
+        }
+        lines.extend(wrap_words(&sentence, max_em));
+    }
+    lines
+}
+
+/// `words` on as few lines of at most `max_em` ems as they take
+/// ([`even_lines`]), with a line ending at a colon when that costs no more
+/// lines (`No theme called "x":` over the names, "Fosfora stopped:" over
+/// the reason): of the colons that do, the one whose widest line is
+/// narrowest.
+fn wrap_words(words: &[&str], max_em: f32) -> Vec<String> {
+    let lines = even_lines(words, max_em);
+    let widest = |lines: &[String]| {
+        lines
+            .iter()
+            .map(|l| crate::text_width::em(l))
+            .fold(0.0, f32::max)
+    };
+    (1..words.len())
+        .filter(|&i| words[i - 1].ends_with(':'))
+        .map(|i| {
+            let mut at = even_lines(&words[..i], max_em);
+            at.extend(even_lines(&words[i..], max_em));
+            at
+        })
+        .filter(|at| at.len() == lines.len())
+        .min_by(|a, b| widest(a).total_cmp(&widest(b)))
+        .unwrap_or(lines)
+}
+
+/// `words` on as few lines of at most `max_em` ems as they take (filling
+/// each line in turn takes the fewest), and as even as that allows: filled
+/// again to the narrowest width that needs no more. A word wider than
+/// `max_em` has a line of its own.
+fn even_lines(words: &[&str], max_em: f32) -> Vec<String> {
+    let em = |ws: &[&str]| crate::text_width::em(&ws.join(" "));
+    let fill = |width: f32| {
+        let mut lines: Vec<Vec<&str>> = Vec::new();
+        for &word in words {
+            match lines.last_mut() {
+                Some(line) if em(&[line.as_slice(), &[word]].concat()) <= width => {
+                    line.push(word);
+                }
+                _ => lines.push(vec![word]),
+            }
+        }
+        lines
+    };
+    let count = fill(max_em).len();
+    if count <= 1 {
+        return fill(max_em).iter().map(|l| l.join(" ")).collect();
+    }
+    let (mut narrow, mut wide) = (0.0, max_em);
+    for _ in 0..24 {
+        let mid = 0.5 * (narrow + wide);
+        if fill(mid).len() <= count {
+            wide = mid;
+        } else {
+            narrow = mid;
+        }
+    }
+    fill(wide).iter().map(|l| l.join(" ")).collect()
 }
 
 /// The label's width in the room per meter from the head (m/m, about 6.3
@@ -319,15 +525,23 @@ pub struct Label {
 
 impl Label {
     /// Show `text` at the hit `point` on a face with `normal`, from full,
-    /// in place of any label showing.
+    /// in place of any label showing, for its reading time ([`read_s`]).
     pub fn show(&mut self, text: String, point: Vec3, normal: Vec3) {
         self.show_for(text, point, normal, LABEL_S);
     }
 
-    /// [`Label::show`] for `seconds` instead of [`LABEL_S`], fading over
-    /// its last [`FADE_S`] the same way: the arm's "hold again" stays up
-    /// for the whole arm (`room_edit::ARM_S`, board #3336).
+    /// [`Label::show`] for `seconds` or the text's reading time, whichever
+    /// is longer, fading over its last [`FADE_S`] the same way: the voice
+    /// window's "Listening…" for the whole window, a reply for its own time
+    /// at least.
     pub fn show_for(&mut self, text: String, point: Vec3, normal: Vec3, seconds: f32) {
+        let seconds = seconds.max(read_s(&text));
+        self.show_held(text, point, normal, seconds);
+    }
+
+    /// [`Label::show`] for exactly `seconds`: the arm's "hold again" goes
+    /// when the arm's window closes (`room_edit::ARM_S`, board #3336).
+    pub fn show_held(&mut self, text: String, point: Vec3, normal: Vec3, seconds: f32) {
         self.shown = Some((text, point, normal, 0.0, seconds));
         self.level = None;
     }
@@ -476,28 +690,22 @@ mod render {
     use egui::{FontId, Pos2, Rect, Vec2};
     use fosfora_app::ui::theme::palette::Palette;
 
-    use super::{Billboard, GROUND_ALPHA, LABEL_TEX, LABEL_TEX_H_MAX, LINE_PX, lines, tex_h};
+    use super::{
+        Billboard, GROUND_ALPHA, INSET_PX, LABEL_TEX, LABEL_TEX_H_MAX, LINE_PX, Layout, MARGIN_PX,
+        MIN_FONT_PX, layout, tex_h,
+    };
     use crate::gfx::{Gfx, PanelPose};
 
     /// The label's colors: the hand menu's theme (board #3523). The
     /// surface labels' too (board #5378).
     pub(crate) const PALETTE: Palette = Palette::BLUE_ORANGE;
 
-    /// The text's largest size and the margin it keeps from the ground's
-    /// ends (px); a longer text shrinks to fit, down to [`MIN_FONT_PX`].
-    const FONT_PX: f32 = 88.0;
-    const MIN_FONT_PX: f32 = 40.0;
-    /// A label of more than one line: its text's largest size (px).
-    const LINES_FONT_PX: f32 = 64.0;
     /// The meter under "Listening…": its height, its bottom's distance
     /// from the ground's, and how far the text moves up for it (px).
     const METER_H_PX: f32 = 12.0;
     const METER_BOTTOM_PX: f32 = 30.0;
     const METER_LIFT_PX: f32 = 18.0;
-    const MARGIN_PX: f32 = 48.0;
     const CORNER_PX: u8 = 44;
-    /// The ground's inset from the texture's edge (px).
-    const INSET_PX: f32 = 4.0;
 
     /// A texture egui paints into, with a context and a renderer of its
     /// own (`Hud::new`'s pattern): the label's, and the surface labels'
@@ -620,6 +828,9 @@ mod render {
         /// The text, the alpha (in 1/255) and the meter's width (in
         /// 1/256) last drawn.
         drawn: Option<(String, u8, Option<u16>)>,
+        /// The text last laid out and its layout (board #5461), worked out
+        /// again only when the text changes.
+        laid: Option<(String, Layout)>,
     }
 
     impl LabelTexture {
@@ -630,16 +841,24 @@ mod render {
             Self {
                 canvas,
                 drawn: None,
+                laid: None,
             }
         }
 
         /// Show `text` at `alpha` on `pose` this frame, with a meter at
         /// `level` under it (the voice window's microphone), or hide the
-        /// label with `None`. A text of several lines shows taller.
+        /// label with `None`. A text of several lines, its own or wrapped
+        /// ([`layout`]), shows taller.
         pub fn show(&mut self, gfx: &Gfx, label: Option<(&str, f32, Option<f32>, Billboard)>) {
             let Some((text, alpha, level, pose)) = label else {
                 self.drawn = None;
                 gfx.set_label_pose(None);
+                return;
+            };
+            if self.laid.as_ref().is_none_or(|(t, _)| t != text) {
+                self.laid = Some((text.to_owned(), layout(text)));
+            }
+            let Some((_, laid)) = self.laid.as_ref() else {
                 return;
             };
             let step = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -649,15 +868,16 @@ mod render {
                 .as_ref()
                 .is_none_or(|(t, a, m)| t != text || *a != step || *m != meter)
             {
-                self.draw(
+                draw(
+                    &mut self.canvas,
                     gfx,
-                    text,
+                    laid,
                     f32::from(step) / 255.0,
                     meter.map(|m| f32::from(m) / 256.0),
                 );
                 self.drawn = Some((text.to_owned(), step, meter));
             }
-            let n = lines(text).len();
+            let n = laid.lines.len();
             let pose = pose.with_lines(n);
             gfx.set_label_pose(Some(PanelPose {
                 center: pose.center.to_array(),
@@ -666,75 +886,68 @@ mod render {
                 v_max: tex_h(n) as f32 / LABEL_TEX_H_MAX as f32,
             }));
         }
+    }
 
-        /// Render `text` at `alpha` into the texture's top [`tex_h`]: the
-        /// rounded ground filling it, the text centered on it, a line at a
-        /// time, shrunk to fit its width; with `meter` (0..1), a bar that
-        /// long under a one-line text over its dim track.
-        fn draw(&mut self, gfx: &Gfx, text: &str, alpha: f32, meter: Option<f32>) {
-            let tex_w = LABEL_TEX[0] as f32;
-            let lines = lines(text);
-            let shown_h = tex_h(lines.len()) as f32;
-            self.canvas.paint(gfx, |painter| {
-                let ground =
-                    Rect::from_min_size(Pos2::ZERO, Vec2::new(tex_w, shown_h)).shrink(INSET_PX);
-                painter.rect_filled(
-                    ground,
-                    CORNER_PX,
-                    PALETTE.panel.gamma_multiply(GROUND_ALPHA * alpha),
+    /// Render `laid` at `alpha` into the texture's top [`tex_h`]: the
+    /// rounded ground filling it, the text centered on it a line at a
+    /// time at the layout's size (shrunk further should egui measure a
+    /// line wider than the layout did, never under [`MIN_FONT_PX`]); with
+    /// `meter` (0..1), a bar that long under a one-line text over its dim
+    /// track.
+    fn draw(canvas: &mut TextureCanvas, gfx: &Gfx, laid: &Layout, alpha: f32, meter: Option<f32>) {
+        let tex_w = LABEL_TEX[0] as f32;
+        let lines = &laid.lines;
+        let shown_h = tex_h(lines.len()) as f32;
+        canvas.paint(gfx, |painter| {
+            let ground =
+                Rect::from_min_size(Pos2::ZERO, Vec2::new(tex_w, shown_h)).shrink(INSET_PX);
+            painter.rect_filled(
+                ground,
+                CORNER_PX,
+                PALETTE.panel.gamma_multiply(GROUND_ALPHA * alpha),
+            );
+            let ink = PALETTE.text.gamma_multiply(alpha);
+            let room = ground.width() - 2.0 * MARGIN_PX;
+            let galleys_at = |px: f32| -> Vec<std::sync::Arc<egui::Galley>> {
+                lines
+                    .iter()
+                    .map(|l| painter.layout_no_wrap(l.clone(), FontId::proportional(px), ink))
+                    .collect()
+            };
+            let mut galleys = galleys_at(laid.px);
+            let widest = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max);
+            if widest > room {
+                galleys = galleys_at((laid.px * room / widest).max(MIN_FONT_PX));
+            }
+            let lift = if meter.is_some() && galleys.len() == 1 {
+                METER_LIFT_PX
+            } else {
+                0.0
+            };
+            for (i, galley) in galleys.into_iter().enumerate() {
+                let center = if lines.len() > 1 {
+                    Pos2::new(ground.center().x, (LINE_PX * (i as u32 + 1)) as f32)
+                } else {
+                    ground.center() - Vec2::new(0.0, lift)
+                };
+                painter.galley(center - galley.size() * 0.5, galley, ink);
+            }
+            if let Some(width) = meter {
+                let bottom = ground.bottom() - METER_BOTTOM_PX;
+                let track = Rect::from_min_max(
+                    Pos2::new(ground.left() + MARGIN_PX, bottom - METER_H_PX),
+                    Pos2::new(ground.right() - MARGIN_PX, bottom),
                 );
-                let ink = PALETTE.text.gamma_multiply(alpha);
-                let room = ground.width() - 2.0 * MARGIN_PX;
-                // One size for every line: the largest that fits the
-                // widest.
-                let largest = if lines.len() > 1 {
-                    LINES_FONT_PX
-                } else {
-                    FONT_PX
-                };
-                let layout = |px: f32| -> Vec<std::sync::Arc<egui::Galley>> {
-                    lines
-                        .iter()
-                        .map(|l| {
-                            painter.layout_no_wrap((*l).to_owned(), FontId::proportional(px), ink)
-                        })
-                        .collect()
-                };
-                let mut galleys = layout(largest);
-                let widest = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max);
-                if widest > room {
-                    galleys = layout((largest * room / widest).max(MIN_FONT_PX));
+                painter.rect_filled(track, METER_H_PX * 0.5, ink.gamma_multiply(0.25));
+                let fill = Rect::from_min_size(
+                    track.min,
+                    Vec2::new(track.width() * width.clamp(0.0, 1.0), track.height()),
+                );
+                if fill.width() > 0.5 {
+                    painter.rect_filled(fill, METER_H_PX * 0.5, ink);
                 }
-                let lift = if meter.is_some() && galleys.len() == 1 {
-                    METER_LIFT_PX
-                } else {
-                    0.0
-                };
-                for (i, galley) in galleys.into_iter().enumerate() {
-                    let center = if lines.len() > 1 {
-                        Pos2::new(ground.center().x, (LINE_PX * (i as u32 + 1)) as f32)
-                    } else {
-                        ground.center() - Vec2::new(0.0, lift)
-                    };
-                    painter.galley(center - galley.size() * 0.5, galley, ink);
-                }
-                if let Some(width) = meter {
-                    let bottom = ground.bottom() - METER_BOTTOM_PX;
-                    let track = Rect::from_min_max(
-                        Pos2::new(ground.left() + MARGIN_PX, bottom - METER_H_PX),
-                        Pos2::new(ground.right() - MARGIN_PX, bottom),
-                    );
-                    painter.rect_filled(track, METER_H_PX * 0.5, ink.gamma_multiply(0.25));
-                    let fill = Rect::from_min_size(
-                        track.min,
-                        Vec2::new(track.width() * width.clamp(0.0, 1.0), track.height()),
-                    );
-                    if fill.width() > 0.5 {
-                        painter.rect_filled(fill, METER_H_PX * 0.5, ink);
-                    }
-                }
-            });
-        }
+            }
+        });
     }
 }
 
@@ -941,9 +1154,10 @@ mod tests {
             l.step(dt);
             frames += 1;
         }
-        // Gone within a frame of its time (the frames' sum rounds).
+        // Gone within a frame of its reading time, two words' (the frames'
+        // sum rounds).
         assert!(
-            (frames as f32 * dt - LABEL_S).abs() <= dt * 1.01,
+            (frames as f32 * dt - read_s("desk: sparks")).abs() <= dt * 1.01,
             "{frames}"
         );
         // Another action restarts it from full with its own text.
@@ -956,11 +1170,11 @@ mod tests {
         assert_eq!(f.text, "desk: embers");
         assert_close!(f.alpha, 1.0);
         l.clear();
-        // A longer life (the arm's): full until its last FADE_S, the same
+        // A held life (the arm's): full until its last FADE_S, the same
         // fade, gone at its time.
         let life = crate::room_edit::ARM_S;
         assert!(life > LABEL_S);
-        l.show_for("desk: hold again".to_owned(), Vec3::ONE, Vec3::Y, life);
+        l.show_held("desk: hold again".to_owned(), Vec3::ONE, Vec3::Y, life);
         let mut frames = 0;
         while let Some(f) = l.now() {
             let age = frames as f32 * dt;
@@ -1135,6 +1349,155 @@ mod tests {
         assert_eq!(l.now(), Some(("Scanning the room\u{2026}", 1.0)));
         l.step(with_scene_permission(Some(ScanState::Found(17)), false), dt);
         assert_eq!(l.now(), Some((FOUND_LABEL, 1.0)));
+    }
+
+    /// `text`'s layout, checked: every line fits the texture's width at
+    /// its size, the size within its line count's cap and the floor, the
+    /// lines within [`MAX_LINES`].
+    fn laid(text: &str) -> Layout {
+        let l = layout(text);
+        for line in &l.lines {
+            let w = crate::text_width::width(line, l.px);
+            assert!(w <= TEXT_W_PX + 1e-3, "{line:?} is {w} px at {}", l.px);
+        }
+        assert!(
+            l.px <= font_cap(l.lines.len()) && l.px >= MIN_FONT_PX,
+            "{l:?}"
+        );
+        assert!(l.lines.len() <= MAX_LINES, "{l:?}");
+        l
+    }
+
+    #[test]
+    fn a_label_holds_for_its_reading_time() {
+        // Words are what a reader reads: "·", "->" and "…" are not.
+        assert_eq!(words("desk: sparks"), 2);
+        assert_eq!(words("desk: curls · amber · mid · 0.7"), 5);
+        assert_eq!(words("desk: hold again for all tables -> curls"), 7);
+        assert_eq!(words("\u{2026}"), 0);
+        assert_eq!(words(""), 0);
+        // 1.5 s and 0.3 s a word, up to 6.
+        assert_close!(read_s(""), 1.5);
+        assert_close!(read_s("next"), 1.8);
+        assert_close!(read_s("desk: sparks"), 2.1);
+        assert_close!(read_s("No room found. Rescan from the hand menu"), 3.9);
+        assert_close!(read_s(&"word ".repeat(40)), READ_MAX_S);
+        let dt = 1.0 / 72.0;
+        let life = |l: &mut Label| {
+            let mut frames = 0;
+            while l.now().is_some() {
+                l.step(dt);
+                frames += 1;
+            }
+            frames as f32 * dt
+        };
+        let mut l = Label::default();
+        // `show`: the reading time.
+        let sentence = "No room found. Rescan from the hand menu";
+        l.show(sentence.to_owned(), Vec3::ZERO, Vec3::Z);
+        assert!((life(&mut l) - read_s(sentence)).abs() <= dt * 1.01);
+        // `show_for`: the caller's time as a floor (a voice reply's 1.5 s
+        // grows to its reading time; "Listening…" keeps its window).
+        l.show_for(sentence.to_owned(), Vec3::ZERO, Vec3::Z, 1.5);
+        assert!((life(&mut l) - read_s(sentence)).abs() <= dt * 1.01);
+        l.show_for("Listening\u{2026}".to_owned(), Vec3::ZERO, Vec3::Z, 7.0);
+        assert!((life(&mut l) - 7.0).abs() <= dt * 1.01);
+        // `show_held`: exactly the caller's time, read or not.
+        let arm = arm_text("desk", crate::surfaces::KIND_TABLE, B::Curls);
+        l.show_held(arm.clone(), Vec3::ZERO, Vec3::Z, crate::room_edit::ARM_S);
+        assert!((life(&mut l) - crate::room_edit::ARM_S).abs() <= dt * 1.01);
+        // Which leaves the arm's seven words short of their reading time
+        // in its window: 3.6 s against 2.5.
+        assert!(read_s(&arm) > crate::room_edit::ARM_S);
+    }
+
+    #[test]
+    fn every_fixed_label_holds_long_enough_to_read() {
+        let holds = [
+            (FOUND_LABEL.to_owned(), SCAN_FOUND_S),
+            (scan_text(ScanState::None), SCAN_NONE_S),
+            (crate::roam::NO_ROOM_LABEL.to_owned(), SCAN_NONE_S),
+            (
+                crate::immerse::OPEN_TEXT.to_owned(),
+                crate::immerse::OPEN_HOLD_S,
+            ),
+        ];
+        for (text, hold) in holds {
+            assert!(hold >= read_s(&text), "{text:?} holds {hold} s");
+        }
+        for stop in [
+            crate::release::Stop::SessionLost,
+            crate::release::Stop::OutOfMemory,
+            crate::release::Stop::Headset,
+            crate::release::Stop::App,
+        ] {
+            let text = crate::release::fatal_text(stop);
+            assert!(crate::release::FATAL_S >= read_s(&text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_long_label_wraps_instead_of_shrinking() {
+        // Short: one line at the largest size.
+        let short = laid("Sit back and relax");
+        assert_eq!(short.lines, ["Sit back and relax"]);
+        assert_close!(short.px, FONT_PX);
+        // A line that fits at 64 px or more stays one line, a little
+        // smaller, as before.
+        let mid = laid("Allow music files in Settings.");
+        assert_eq!(mid.lines.len(), 1);
+        assert!(mid.px >= LINES_FONT_PX && mid.px < FONT_PX, "{mid:?}");
+        // The ones that shrank to 46 and 48 px, and the one clipped at
+        // both ends at 40.
+        let none = laid("No room found. Rescan from the hand menu");
+        assert_eq!(none.lines, ["No room found.", "Rescan from the hand menu"]);
+        assert!(none.px > 73.0, "{none:?}");
+        let roam = laid(crate::roam::NO_ROOM_LABEL);
+        assert_eq!(
+            roam.lines,
+            ["No room here: roaming.", "Rescan from the hand menu"]
+        );
+        let arm = laid(&arm_text(
+            "desk",
+            crate::surfaces::KIND_TABLE,
+            B::Streamlines,
+        ));
+        assert_eq!(arm.lines.len(), 2);
+        assert_close!(arm.px, TWO_LINES_FONT_PX);
+        let theme = "No theme called \"blue sky\": Classic, Drift, Tide, Aurora or Mirror";
+        let miss = laid(theme);
+        assert_eq!(miss.lines.len(), 3, "{miss:?}");
+        assert_eq!(miss.lines[0], "No theme called \"blue sky\":");
+        assert_eq!(miss.lines.join(" "), theme);
+        assert_close!(miss.px, LINES_FONT_PX);
+        // A colon ends a line when that costs no extra one.
+        let colon = laid("Fosfora stopped: the session was lost");
+        assert_eq!(colon.lines, ["Fosfora stopped:", "the session was lost"]);
+        // The voice's own lines stay lines, and only a line that runs over
+        // wraps: a miss and its hint.
+        let hint = laid("Didn't catch that: \"x\"\nTry \"next effect\"");
+        assert_eq!(
+            hint.lines,
+            ["Didn't catch that: \"x\"", "Try \"next effect\""]
+        );
+        let long = laid(
+            "Didn't catch that: \"make the left wall a deep ocean blue\"\nTry \"wall 2 in blue\"",
+        );
+        assert_eq!(long.lines.len(), 3, "{long:?}");
+        assert_eq!(long.lines[2], "Try \"wall 2 in blue\"");
+        // Five help lines keep their size of more lines.
+        let help = laid(
+            "storage 1 in blue\nswitch to Embers\nevery wall rings\nedit the room\nwall 2 on the bass",
+        );
+        assert_eq!(help.lines.len(), 5);
+        assert_close!(help.px, LINES_FONT_PX);
+        // Too long for the label even at its smallest: its first lines,
+        // the last cut.
+        let flood = laid(&"Lorem ipsum dolor sit amet, consectetur. ".repeat(30));
+        assert_eq!(flood.lines.len(), MAX_LINES);
+        assert!(flood.lines[MAX_LINES - 1].ends_with('\u{2026}'));
+        // Nothing to say is one empty line.
+        assert_eq!(layout("").lines, [""]);
     }
 
     #[test]

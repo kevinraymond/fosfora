@@ -3186,10 +3186,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         crate::label::space_text(text, after, out)
                     };
                     label.step(dt);
-                    // The label for an action: its text at the hit, and
-                    // how long it shows (the arm's for the whole arm).
+                    // The label for an action: its text at the hit, for
+                    // its reading time (board #5461), the arm's for exactly
+                    // the arm's window.
                     let mut labeled = None;
-                    let mut label_s = crate::label::LABEL_S;
+                    let mut held_s = None;
                     match frame.action {
                         Some(crate::room_edit::EditAction::Cycle(k)) => {
                             let before = effective(k).map(|(b, _)| b);
@@ -3230,7 +3231,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                     kind,
                                     next,
                                 ));
-                                label_s = crate::room_edit::ARM_S;
+                                held_s = Some(crate::room_edit::ARM_S);
                             }
                         }
                         Some(crate::room_edit::EditAction::AssignKind(k)) => {
@@ -3260,7 +3261,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         None => {}
                     }
                     if let (Some(text), Some(h)) = (labeled, frame.hit) {
-                        label.show_for(text, h.point, h.normal, label_s);
+                        match held_s {
+                            Some(s) => label.show_held(text, h.point, h.normal, s),
+                            None => label.show(text, h.point, h.normal),
+                        }
                     }
                     if !edit_on {
                         label.clear();
