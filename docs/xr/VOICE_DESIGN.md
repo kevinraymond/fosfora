@@ -75,8 +75,9 @@ on silence, or at a cap. Candidates, in the vocabulary of the gesture map
 
 Recommendation: the fist to open and the next fist to close, with the
 thumb tap as a second opener once the fist has proven itself worn. While
-the window is open the in-world label reads "Listening…" and the beat
-pulse pauses on the label, so the wearer sees the microphone is live.
+the window is open the in-world label reads "Listening…" with the
+microphone's level as a bar under it, so the wearer sees the microphone
+is live.
 
 ### Speech to text on the headset
 
@@ -175,14 +176,17 @@ agent is the grammar's consumer with a model in front of it.
 
 ### What the wearer sees
 
-- Window open: "Listening…" on the label in front of the far hand, the
-  mic's level as a thin bar under it (the wearer sees the headset hears).
-  Both stay up the whole time the window is open, up to 20 s for a fist
-  window. An agent reply that lands while a window is open goes to the
-  log, not the label.
-- Transcribed: the sentence on the label for 1.5 s.
+- Window open: "Listening…" on the label 1 m ahead of the view, a little
+  under the line of sight, the mic's level as a thin bar under it (the
+  wearer sees the headset hears). Both stay up the whole time the window
+  is open, up to 20 s for a fist window. An agent reply that lands while a
+  window is open goes to the log, not the label. The label follows the
+  head loosely and never sits at the hand ("Feedback where the wearer
+  looks" below).
+- Transcribing: "…" until the text returns. The transcript itself is in
+  the log, not on the label.
 - Acted: the same text the hands' actions show ("desk: streamlines ·
-  amber · mid"), after the sentence.
+  amber · mid") in place of the "…".
 - Not understood: "Didn't catch that" with the sentence, so the wearer
   can rephrase or point.
 - Agent: "Thinking…", then the actions' labels, or its one sentence.
@@ -279,7 +283,8 @@ head, while the window is open; "…" when it closes, until the text
 returns; then the sentence for 1.5 s, or "Didn't catch that" when nothing
 was heard (whisper's non-speech annotations such as `[BLANK_AUDIO]` count
 as nothing). The `voicefile` clip's label floats 1 m ahead of the head.
-The log has the window's length, the transcription's time and encoder
+(Board #5453 moved every voice label ahead of the view, "Feedback where
+the wearer looks" below.) The log has the window's length, the transcription's time and encoder
 window, the time from the window's close to the text, and
 `voice: heard "…" (N ms)`.
 
@@ -792,7 +797,8 @@ behavior of its kind, a color, a band, a strength and "what is"
 the world effects ("switch to Embers") and the kinds ("every wall
 rings"); each under 30 characters, and only those whose every clause
 parses on the same vocabulary, so the help never shows a phrase the
-grammar would miss.
+grammar would miss. (Amended by board #5453: the card stays until the
+next window or 30 s, "Feedback where the wearer looks" below.)
 
 **The hint.** A NoMatch the agent does not take gets one line under
 "Didn't catch that": the nearest example, by the words they share (glue
@@ -810,7 +816,8 @@ the log says so once per change. With voice off, Flock is as it was.
 the palm out of view (a tap from the right hand, the left one down), 1 m
 ahead of the head along its view, as the `say` knob's and the
 `voicefile` clip's label (`voice::label_anchor`). V1 put it at the head
-itself then.
+itself then. (Replaced by board #5453: always ahead of the view, never at
+the palm, "Feedback where the wearer looks" below.)
 
 **The knobs.** `debug.fosfora.voice 0|1` (forces the toggle at launch,
 saved), `debug.fosfora.voicequiet <level>` (the tap window's quiet level,
@@ -827,8 +834,8 @@ below.)
 | Amber on table 14 and the walls on the bass. | table 14: amber · all walls: bass |
 | Table fourteen in teal, then wall five on the highs. | table 14: teal · wall 5: high |
 | Wall sixteen pulse. | wall 16: pulse |
-| What can I say? | next effect / streamlines on table 0 / switch to Flux Cloud / every table curls / open the menu (4 s) |
-| Help. | storage 1 in blue / switch to Embers / every wall rings / music play and next effect / wall 2 on the bass (4 s) |
+| What can I say? | next effect / streamlines on table 0 / switch to Flux Cloud / every table curls / open the menu (30 s since board #5453) |
+| Help. | storage 1 in blue / switch to Embers / every wall rings / music play and next effect / wall 2 on the bass (30 s since board #5453) |
 | Flibber jabber. | Didn't catch that: "Flibber jabber." / Try "what can I say" |
 | Make table fourteen sort of glowy. | Didn't catch that: "Make table fourteen sort of glowy." / Try "what is table 14" |
 | Next effect, particles off, music play and edit the room. | Three things at most in one sentence |
@@ -1121,7 +1128,9 @@ once a second, fed once per value as `say` is (set `""` first to feed the
 same value again), through the same switch, and saved as a press is; a
 value the headset cannot pick logs `voice agent: agentpick "<v>" not
 available` and does nothing. There is no voice phrase for the control;
-the grammar is unchanged.
+the grammar is unchanged. (Amended by board #5453: "agent on", "agent
+off" and "agent local" are its phrases now, "Every control can be said"
+below.)
 
 ## The window's audio in the log (board #5375)
 
@@ -1198,6 +1207,135 @@ capture buffer reserves room for 20 s of 48 kHz stereo (7.7 MB) when a
 window opens. A long window takes longer to transcribe, and that is still
 to measure worn. The decode still stops at 64 tokens, about 45 words in
 one window.
+
+## Feedback where the wearer looks, and every control said (board #5453)
+
+The voice label sat where the left palm was when the fist closed. The fist
+hid it, and a fist resting in the lap put it at the bottom edge of the
+view or under it. A wearer who sees with one eye, or through a narrower
+view, missed "Listening…" and the replies. Three of the hand menu's
+controls could not be said, a denied microphone showed nothing while the
+menu read "Voice: on", and the command card was gone in 4 s.
+
+### Where the feedback sits
+
+- **Ahead of the view.** "Listening…" and its meter, "…", every reply and
+  miss, the card and the agent's answer all share one place: 1 m ahead of
+  the head, 10 degrees under the line of sight (`voice::DROP_DEG`), 0.4 m
+  wide (`voice::LABEL_W_M`). That is about 23 degrees across, and a
+  one-line reply's letters are about 2 degrees tall. The place reads only
+  the head, never the hand that made the fist (`voice::label_anchor`).
+- **When it is placed.** When a window opens, when the `say` knob or the
+  `voicefile` clip feeds a sentence, when the denied-microphone label
+  shows, and whenever a voice label shows with none before it (the
+  agent's answer after its "Thinking…" has gone, say).
+- **How it follows** (`voice::Follow`). It stays put in the room while the
+  head moves a little, so it doesn't swim with every small turn. Once its
+  center is 15 degrees from its place ahead of the view (`FOLLOW_DEG`), it
+  eases back at a rate of 4 per second (`FOLLOW_RATE`, about half a second
+  from 15 degrees) until it is within 2 (`SETTLE_DEG`). It always floats
+  1 m from the head, so leaning carries it along.
+- **Inside the view.** Whatever the head does, every corner of the label,
+  with the lines it shows, stays inside a 58 x 54 degree view with 1.5
+  degrees to spare. That is the smaller of the two glasses' views, so it
+  holds on the Quest 3 as well. A fast turn pushes it along the view's
+  edge, up or down first and then across, and it eases in from there.
+- **The label level with the eyes.** The scan, permission, opening and
+  fatal labels float level with the eyes, 1.2 m ahead. They share the
+  label's one texture with the voice label, so the two never draw at
+  once, and the voice label covers the other while it shows, as before.
+  Placed with the head level or lowered, the voice label at its most lines
+  sits wholly under the other anyway.
+
+The tests (`voice.rs`): `the_label_is_ahead_of_the_view_with_or_without_a_palm`,
+`the_label_follows_the_head_loosely`,
+`the_label_stays_inside_a_58_by_54_degree_view` (fast and slow turns, a
+look up at the ceiling lying back, a look down at the hands, a roll and a
+2000-frame wander, at one, two and six lines) and
+`the_label_clears_the_scan_label_for_a_level_or_lowered_head`.
+
+### Every control can be said
+
+| Control | Said | Reply |
+|---|---|---|
+| Edges, theme | "edges theme", "edges on", "show the edges" | edges: theme |
+| Edges, off | "edges off", "turn the edges off", "hide the edges", "no edges" | edges: off |
+| Edges, face | "edges face", "edges faces" | edges: face |
+| Edges, stand | "edges stand", "standing edges" | edges: stand |
+| Edges, in | "edges in", "edges inside", "set the edges to tunnel" | edges: in |
+| Agent, on | "agent on", "turn on the agent" | the pick it came to, "agent: local" |
+| Agent, off | "agent off", "turn the agent off", "stop the agent" | agent: off |
+| Agent, local | "agent local", "local agent", "use local", "agent on-device" | agent: local |
+| Voice, off | "voice off", "turn off the voice" | voice off / Turn it back on in the hand menu |
+| Music, stop | "stop", "pause" | music off |
+| Music, play | "play" | music on |
+
+"Edge bars" works where "edges" does, and "turn", "switch", "set" or
+"make" may lead. "Agent on" keeps a provider that is on, and from off
+takes the first in the control's cycle, as one press from off does
+(`intent::agent_step`). With nothing to pick ("Agent: none") every agent
+phrase answers "No agent on this headset", and "agent local" with only a
+network provider answers "No local agent on this headset". The network
+provider has no phrase of its own, since the release surface never shows
+it. "Voice on" parses too, which only the `say` knob can use.
+
+Each goes through the hand menu's own action (`SetEdges`, `SetAgent`,
+`SetVoice`, `SetMusic`), so it saves and logs as a press does. The "voice
+off" reply is two lines, so it stays 4 s as a list does. Turning voice off
+now clears only a window's own label and the card, so that reply stays.
+"What can I say" lists "edges off", "agent off" and "voice off" among the
+menu's examples, after its first page. The agent's actions don't reach
+the three controls. Tests (`intent.rs`): `every_menu_control_can_be_said`,
+`the_new_controls_reply_what_they_did`, `the_help_lists_every_menu_control`.
+
+### A denied microphone
+
+With `RECORD_AUDIO` denied, a fist (after its 0.15 s dwell, once per fist)
+or a thumb tap counts as it would, and the window it opens is dropped at
+once. For 5 s the label ahead of the view reads "The microphone isn't
+allowed" over "Allow it in the headset's Settings", and the log says
+`voice: RECORD_AUDIO missing, the window stays closed` once. While voice
+is on the app polls the grant once a second, so the first fist after
+allowing it opens a window, with no relaunch.
+
+The Voice toggle reads "Voice: no mic" while voice is on without the
+microphone (`voice::toggle_words`). In one line that is 94 points, wider
+than its 90-point half cell, so it sits as the Theme half beside it does,
+"Voice" over "no mic". Tests (`voice.rs`):
+`the_toggle_reads_no_mic_without_the_microphone`,
+`a_denied_microphone_answers_each_press_once`.
+
+### The card
+
+"What can I say" stays until the next fist or thumb tap opens a window,
+whose "Listening…" takes its place, or 30 s (`intent::CARD_S`), fading
+over its last 0.4 s. A kind's list and the other replies of several lines
+keep 4 s, a one-line reply 1.5 s and a miss 2.5 s. While the room editor's
+label shows, the card gives way to it and comes back after. Turning Voice
+off in the hand menu clears it. Test (`intent.rs`):
+`the_card_stays_until_the_next_window_or_30_s`.
+
+### Checking it unworn
+
+`debug.fosfora.voicetap <value>` is a thumb tap from the right hand, fed
+once per value as `say` is (set another value, or "" first, to tap
+again). With voice on it opens a tap window, which with no speech closes
+at 6 s and answers "Didn't catch that". With the microphone revoked
+before the launch (`adb shell pm revoke dev.fosfora.xr
+android.permission.RECORD_AUDIO`, and `debug.fosfora.ask 0` so the launch
+doesn't ask again) it shows the denied-microphone label instead. The
+panel `debug.fosfora.hudtest 1` parks ahead of the view, and dumps to
+`hud.rgba` 10 s after the launch, then reads "Voice" over "no mic".
+
+What only a worn check can tell:
+
+- Whether 10 degrees under the line of sight reads comfortably, seated and
+  lying back.
+- Whether the follow feels calm rather than late.
+- Whether whisper writes "edges", "agent" and a bare "stop" the way the
+  grammar expects them.
+- Whether a wearer finds the microphone permission in the headset's
+  Settings.
 
 ## Open questions for Kevin
 
