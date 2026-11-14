@@ -86,7 +86,10 @@
 //! never holds it. Once a hand has been seen, or the label has had its
 //! time, it never shows again in that run: a wearer lying back with their
 //! hands at rest out of view since the launch holds no controllers, and
-//! must not have the label in front of the show for good.
+//! must not have the label in front of the show for good. While the show
+//! waits for the wearer (board #5452, `first_run.rs`) the words go under
+//! the begin card instead ([`HandsHint::under_card`]), for as long as no
+//! hand is tracked.
 //!
 //! **Menu replies** ([`menu_reply_at`], board #5461). A hand-menu press
 //! that does nothing says why on a label over the menu, not behind it:
@@ -424,6 +427,15 @@ impl HandsHint {
     /// Whether a hand has been tracked this run.
     pub fn seen(&self) -> bool {
         self.seen
+    }
+
+    /// Whether [`HANDS_LABEL`] goes under the begin card while the show
+    /// waits (board #5452, `first_run::card_text`): no hand has been
+    /// tracked this run, for [`HANDS_WAIT_S`] of waiting. It has no
+    /// [`HANDS_SHOW_S`] there. The card asks for a pinch, and without a
+    /// tracked hand none can come.
+    pub fn under_card(&self) -> bool {
+        !self.seen && self.waited_s >= HANDS_WAIT_S
     }
 }
 
@@ -1711,6 +1723,19 @@ mod tests {
         h.step(true, false, dt);
         run(&mut h, false, true, 30.0);
         assert_eq!(h.now(), None);
+        // Board #5452: under the begin card the words stay for as long as
+        // no hand is tracked, past the label's own time, and go for good
+        // with the first hand.
+        let mut h = HandsHint::default();
+        run(&mut h, false, true, HANDS_WAIT_S - 0.1);
+        assert!(!h.under_card());
+        run(&mut h, false, true, 0.2);
+        assert!(h.under_card());
+        run(&mut h, false, true, 60.0);
+        assert!(h.under_card());
+        assert_eq!(h.now(), None);
+        h.step(true, true, dt);
+        assert!(!h.under_card());
     }
 
     #[test]
