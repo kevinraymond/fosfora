@@ -295,6 +295,17 @@ fn xr_side(x: f32) -> f32 {
     return select(-1.0, 1.0, x >= 0.0);
 }
 
+// The unit vector along box axis a (0 x, 1 y, 2 z). The collide picks its
+// axes at run time and reads and writes them through this, with a dot
+// product, so no vector is indexed by a variable.
+fn xr_axis(a: u32) -> vec3f {
+    return select(
+        select(vec3f(0.0, 1.0, 0.0), vec3f(0.0, 0.0, 1.0), a == 2u),
+        vec3f(1.0, 0.0, 0.0),
+        a == 0u
+    );
+}
+
 // The mask of the boxes that can touch a particle at p (the box cell list):
 // bit k for box k. Every bit with no grid or outside it.
 fn xr_box_mask(p: vec3f) -> u32 {
@@ -534,18 +545,19 @@ fn xr_collide(
         } else if pen.x <= pen.y {
             a = 0u;
         }
-        var n_local = vec3f(0.0);
-        n_local[a] = xr_side(l[a]);
+        let ea = xr_axis(a);
+        let n_local = ea * xr_side(dot(l, ea));
         let n = xr_quat_rotate(q, n_local);
         let inside = pen.x > 0.0 && pen.y > 0.0 && pen.z > 0.0;
         if inside {
-            l[a] = n_local[a] * h[a];
+            // Onto the face it is nearest.
+            l += n_local * dot(h, ea) - ea * dot(l, ea);
             let vn = dot(*vel, n);
             if vn < 0.0 {
                 *vel -= (1.0 + XR_HAND_RESTITUTION) * vn * n;
             }
         }
-        let over = max(-pen[a], 0.0);
+        let over = max(-dot(pen, ea), 0.0);
         if n.y > XR_UP {
             if band > 0.0 || inside {
                 xr_note_up(&c, n, over);
@@ -553,22 +565,23 @@ fn xr_collide(
             // The rims of a face that holds it up, within the band: the
             // edges it could slide off.
             for (var b = 0u; b < 3u; b++) {
-                if b == a || pen[b] >= band {
+                let eb = xr_axis(b);
+                let room = dot(pen, eb);
+                if b == a || room >= band {
                     continue;
                 }
-                var r_local = vec3f(0.0);
-                r_local[b] = xr_side(l[b]);
+                let r_local = eb * xr_side(dot(l, eb));
                 let rim = xr_quat_rotate(q, r_local);
-                xr_note_side(&c, rim, max(pen[b], 0.0));
+                xr_note_side(&c, rim, max(room, 0.0));
                 // The rim stops it: it does not slide off. Lying on the
                 // face, the nearer the rim the slower it may close on it,
                 // so it brakes over a few frames and comes no nearer than
                 // the stop, however fast it slid.
                 if inside {
-                    if pen[b] < XR_EDGE_STOP_M {
-                        l[b] = r_local[b] * (h[b] - XR_EDGE_STOP_M);
+                    if room < XR_EDGE_STOP_M {
+                        l += r_local * (dot(h, eb) - XR_EDGE_STOP_M) - eb * dot(l, eb);
                     }
-                    let most = max(pen[b] - XR_EDGE_STOP_M, 0.0)
+                    let most = max(room - XR_EDGE_STOP_M, 0.0)
                         * min(XR_EDGE_BRAKE_HZ, 1.0 / max(u.delta_time, 1e-4));
                     let vr = dot(*vel, rim);
                     if vr > most {
