@@ -64,15 +64,13 @@ pub fn start_gesture(hands: &HandEdges) -> Option<usize> {
     [1, 0].into_iter().find(|&h| hands.pinch_began[h])
 }
 
-/// The card's words while the show waits. With `voice` (voice is on and
-/// the microphone is allowed) it names the spoken way too. With
-/// `no_hands` (no hand has been tracked for `label::HANDS_WAIT_S`) the
-/// controllers line goes under it.
-pub fn card_text(voice: bool, no_hands: bool) -> String {
+/// The card's words while the show waits. With `no_hands` (no hand has
+/// been tracked for `label::HANDS_WAIT_S`) the controllers line goes under
+/// it. The card does not name the spoken "begin": the app does not listen
+/// by itself, so a wearer who read "say begin" and said it would get no
+/// answer.
+pub fn card_text(no_hands: bool) -> String {
     let mut text = format!("{START_WORD} to begin");
-    if voice {
-        text.push_str(", or say begin");
-    }
     if no_hands {
         text.push('\n');
         text.push_str(HANDS_LABEL);
@@ -644,28 +642,20 @@ mod tests {
     }
 
     #[test]
-    fn the_card_names_the_pinch_the_voice_and_the_controllers() {
-        assert_eq!(card_text(false, false), "Pinch to begin");
-        assert_eq!(card_text(true, false), "Pinch to begin, or say begin");
+    fn the_card_names_the_pinch_and_the_controllers() {
+        assert_eq!(card_text(false), "Pinch to begin");
         assert_eq!(
-            card_text(false, true),
+            card_text(true),
             "Pinch to begin\nPut the controllers down. Fosfora uses your hands."
         );
+        // One line without the controllers line, three with it.
+        assert_eq!(layout(&card_text(false)).lines.len(), 1);
+        let laid = layout(&card_text(true));
         assert_eq!(
-            card_text(true, true),
-            "Pinch to begin, or say begin\nPut the controllers down. Fosfora uses your hands."
+            laid.lines[1..],
+            ["Put the controllers down.", "Fosfora uses your hands."],
+            "{laid:?}"
         );
-        // One line each without the controllers line, three with it.
-        assert_eq!(layout(&card_text(false, false)).lines.len(), 1);
-        assert_eq!(layout(&card_text(true, false)).lines.len(), 1);
-        for voice in [false, true] {
-            let laid = layout(&card_text(voice, true));
-            assert_eq!(
-                laid.lines[1..],
-                ["Put the controllers down.", "Fosfora uses your hands."],
-                "{laid:?}"
-            );
-        }
     }
 
     #[test]

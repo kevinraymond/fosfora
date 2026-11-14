@@ -1352,8 +1352,8 @@ first run"). The pinch that begins the show has a spoken form.
   their meaning. "Play", "play music" and a song by name begin the show
   too, since the music starting is a begin.
 - **Not hands-free.** The window still opens with a thumb tap or the left
-  fist. The card reads "Pinch to begin, or say begin" only while voice is
-  on and the microphone is allowed.
+  fist. The card reads "Pinch to begin" and does not name the spoken way,
+  since a wearer who said it with no window open would get no answer.
 - **Not the agent's.** Its actions have no begin, and "what can I say"
   doesn't list it, since by the time a wearer asks the show is usually
   on.

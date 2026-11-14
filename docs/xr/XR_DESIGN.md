@@ -1490,8 +1490,7 @@ feeds them once a frame.
    embers the sound spawns, stays quiet.
 2. **The card.** When the scan's label has gone, a card sits at the
    center of the view, 1 m ahead and 0.4 m wide: **"Pinch to begin"**.
-   With voice on and the microphone allowed it reads **"Pinch to begin,
-   or say begin"**. It follows the head the way the voice label does
+   It follows the head the way the voice label does
    (`voice::Follow::centered`), so it is in view lying back and never
    rigid on the head.
 3. **No hands.** If no hand has been tracked for 4 s with the card up,
@@ -1572,15 +1571,15 @@ saved as taught and never shows again on that install.
 
 | Wearer | What happens |
 |---|---|
-| Voice off | The card reads "Pinch to begin". The tap hint is passed over. The swipe and the palm are taught. |
+| Voice off | The tap hint is passed over. The swipe and the palm are taught. |
 | Microphone denied | The same card and hints. A fist or a tap still shows "The microphone isn't allowed" as before. |
 | Controllers in hand | No hand is tracked, so after 4 s the card says to put them down. A pinch then begins. Left alone, the show begins by itself after 60 s, and the hints wait for a hand. |
 | One hand | Either hand pinches, swipes and taps. The palm hint asks for the left hand; a wearer without it lets it give up after 20 s, and "menu" by voice opens the menu with no palm. |
 | Can't pinch | With a thumb tap or a left fist the voice window opens and "begin" starts the show. With no gesture at all, the 60 s. |
 
-The card's "or say begin" needs the voice window open, and the window
-still opens with a thumb tap or the left fist. The app does not listen by
-itself while it waits.
+A spoken "begin" needs the voice window open, and the window still opens
+with a thumb tap or the left fist. The app does not listen by itself while
+it waits, so the card names the pinch only.
 
 ### Checking it unworn
 
@@ -1609,7 +1608,7 @@ The tests (`first_run.rs`):
 `the_start_gesture_is_a_pinch_on_either_hand`,
 `a_spoken_begin_the_music_and_the_knob_begin_without_the_card`,
 `nobody_is_stuck_the_show_begins_by_itself_after_a_minute`,
-`the_card_names_the_pinch_the_voice_and_the_controllers`,
+`the_card_names_the_pinch_and_the_controllers`,
 `every_hint_is_two_lines_at_the_two_line_size`,
 `the_hints_show_in_order_one_at_a_time_a_few_seconds_apart`,
 `a_gesture_made_before_its_hint_teaches_it_without_showing`,

@@ -4310,10 +4310,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // does.
                 card_ready = scan_label.now().is_none();
                 let card = wait.card_up(card_ready).then(|| {
-                    crate::first_run::card_text(
-                        controls.voice && voice.is_some() && voice_mic,
-                        hands_hint_on && hands_hint.under_card(),
-                    )
+                    crate::first_run::card_text(hands_hint_on && hands_hint.under_card())
                 });
                 match (&card, card_shown) {
                     (Some(text), shown) => {
