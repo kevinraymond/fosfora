@@ -23,7 +23,19 @@ pub const ENV: &str = "FOSFORA_TRAMA_DIRS";
 
 /// Extra directories from [`ENV`], absolute, in the order given.
 pub fn extra_dirs() -> Vec<PathBuf> {
-    parse(std::env::var_os(ENV), std::env::var_os("HOME"))
+    parse(std::env::var_os(ENV), home())
+}
+
+/// The home directory `~` expands to: `HOME`, else `USERPROFILE` (Windows, where
+/// `HOME` is usually unset).
+pub(crate) fn home() -> Option<OsString> {
+    home_from(std::env::var_os("HOME"), std::env::var_os("USERPROFILE"))
+}
+
+/// [`home`] over values, so it can be tested without touching the process environment.
+fn home_from(home: Option<OsString>, userprofile: Option<OsString>) -> Option<OsString> {
+    let set = |v: Option<OsString>| v.filter(|v| !v.is_empty());
+    set(home).or_else(|| set(userprofile))
 }
 
 /// The built-in directory, then every extra one: load and reload order.
@@ -137,6 +149,24 @@ mod tests {
                 PathBuf::from("/srv/me"),
             ]
         );
+    }
+
+    #[test]
+    fn home_falls_back_to_userprofile() {
+        let home = os(HOME);
+        let profile = os("C:\\Users\\me");
+        assert_eq!(home_from(home.clone(), profile.clone()), home, "HOME wins");
+        assert_eq!(
+            home_from(None, profile.clone()),
+            profile,
+            "unset HOME expands ~ from USERPROFILE"
+        );
+        assert_eq!(
+            home_from(os(""), profile),
+            os("C:\\Users\\me"),
+            "an empty HOME counts as unset"
+        );
+        assert_eq!(home_from(None, None), None);
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub const ENV: &str = "FOSFORA_EFFECT_DIRS";
 
 /// Extra directories from [`ENV`], absolute, in the order given.
 pub fn extra_dirs() -> Vec<PathBuf> {
-    crate::trama::dirs::parse(std::env::var_os(ENV), std::env::var_os("HOME"))
+    crate::trama::dirs::parse(std::env::var_os(ENV), crate::trama::dirs::home())
 }
 
 /// Is `path` inside one of `dirs` (at any depth)?
@@ -132,37 +132,42 @@ mod tests {
         .unwrap()
     }
 
+    // Roots are built from `temp_dir`, which is absolute on every platform: a `/srv/...`
+    // literal would be relative on Windows (it becomes `D:\srv\...`), so it would not
+    // start with the listed directory.
     #[test]
     fn extra_dir_effects_read_shaders_beside_their_pfx() {
-        let dirs = vec![PathBuf::from("/srv/tessera/out/effects")];
-        let mut e = effect("graphene.wgsl", &["sub/a.wgsl", "/abs/b.wgsl"]);
-        localize_in(
-            &mut e,
-            Path::new("/srv/tessera/out/effects/graphene.pfx"),
-            &dirs,
+        let root = std::env::temp_dir().join("tessera");
+        let dirs = vec![root.clone()];
+        let other = std::env::temp_dir().join("elsewhere").join("b.wgsl");
+        let mut e = effect(
+            "graphene.wgsl",
+            &["sub/a.wgsl", &other.display().to_string()],
         );
-        assert_eq!(e.shader, "/srv/tessera/out/effects/graphene.wgsl");
-        assert_eq!(e.passes[0].shader, "/srv/tessera/out/effects/sub/a.wgsl");
-        assert_eq!(e.passes[1].shader, "/abs/b.wgsl", "absolute paths are kept");
+        let pfx = root.join("graphene.pfx");
+        localize_in(&mut e, &pfx, &dirs);
+        assert_eq!(Path::new(&e.shader), root.join("graphene.wgsl"));
+        assert_eq!(
+            Path::new(&e.passes[0].shader),
+            root.join("sub").join("a.wgsl")
+        );
+        assert_eq!(
+            Path::new(&e.passes[1].shader),
+            other,
+            "absolute paths are kept"
+        );
 
         let once = e.shader.clone();
-        localize_in(
-            &mut e,
-            Path::new("/srv/tessera/out/effects/graphene.pfx"),
-            &dirs,
-        );
+        localize_in(&mut e, &pfx, &dirs);
         assert_eq!(e.shader, once, "a second call changes nothing");
     }
 
     #[test]
     fn built_in_effects_keep_assets_relative_shaders() {
-        let dirs = vec![PathBuf::from("/srv/tessera/out/effects")];
+        let dirs = vec![std::env::temp_dir().join("tessera")];
+        let built_in = std::env::temp_dir().join("assets").join("aurora.pfx");
         let mut e = effect("aurora.wgsl", &[]);
-        localize_in(
-            &mut e,
-            Path::new("/srv/fosfora/assets/effects/aurora.pfx"),
-            &dirs,
-        );
+        localize_in(&mut e, &built_in, &dirs);
         assert_eq!(e.shader, "aurora.wgsl");
     }
 
@@ -174,12 +179,20 @@ mod tests {
         for f in ["b.pfx", "a.pfx", "sub/c.pfx", "shader.wgsl"] {
             std::fs::write(root.join(f), "{}").unwrap();
         }
-        let found: Vec<String> = pfx_files(&root)
+        // Paths, not `display()` strings: a `\` separator would not match a `/` one.
+        let found: Vec<PathBuf> = pfx_files(&root)
             .iter()
-            .map(|p| p.strip_prefix(&root).unwrap().display().to_string())
+            .map(|p| p.strip_prefix(&root).unwrap().to_path_buf())
             .collect();
         let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(found, vec!["a.pfx", "b.pfx", "sub/c.pfx"]);
+        assert_eq!(
+            found,
+            [
+                PathBuf::from("a.pfx"),
+                PathBuf::from("b.pfx"),
+                Path::new("sub").join("c.pfx"),
+            ]
+        );
     }
 
     #[cfg(unix)]
