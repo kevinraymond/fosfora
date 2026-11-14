@@ -3508,7 +3508,24 @@ out of a stationary boundary?
 - Three seconds later the session went idle (`Tracking not valid`), which is
   the unworn headset with the guardian on and says nothing about the change.
 
-Not answered here: whether a wearer who walks out of the stationary
-boundary is still stopped by the "moved too far" screen. That needs the
-headset on a head. Captures: `recordings/boundary/`. The owner's app data
-was restored byte-identical.
+Captures: `recordings/boundary/`. The owner's app data was restored
+byte-identical.
+
+**Worn, the same day** (the same code, 14:26 to 14:43). The wearer turned
+roam on from a seated start four times and walked: down a flight of stairs,
+through the house and outside. Verdict: "it just worked great". The system
+never stopped the show at the boundary.
+
+- Each time roam came on the system took the request within 5 ms and went
+  to `SAFETY_SYSTEM_MR BOUNDARYLESS`. Each time roam went off it took the
+  request for the boundary back and returned to `SAFETY_SYSTEM_VR`.
+- The longest walk was 3 min 47 s with no session state change.
+- Three times in roam the guardian went `SUSPENDED` for 3 to 10 s by itself
+  and the request returned -2 while it was. The guardian came back
+  boundaryless each time, and the app's next ask, at most 2 s later, was
+  taken. Asking again every 2 s is what covers this.
+
+The frame rate in this sitting was under the display's 72 a second for most
+of it, seated and in roam alike, with the GPU clock held at 456 MHz from
+44 C on. That is not the boundary's doing (the request is one call every
+2 s) and is measured on its own.
