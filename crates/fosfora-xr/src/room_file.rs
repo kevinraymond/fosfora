@@ -859,6 +859,49 @@ mod tests {
         assert_eq!(RoomFile::from_json(&out).expect("reads").0, file);
     }
 
+    /// Board #5470: a room saved while a surface could be painted with
+    /// the cloud's particles still loads, embers and sparks and all, and
+    /// so does one that names an effect, which no file ever needed to. The
+    /// surface keeps what it was given, shows nothing, and the editor's
+    /// next step takes it to a look that shows.
+    #[test]
+    fn a_room_that_names_a_cut_effect_still_loads() {
+        use SurfaceBehavior as B;
+        let text = format!(
+            r#"{{ "version": 2, "effect": "Flock", "world_effect": "Embers",
+                "kind_defaults": {{ "table": "embers", "floor": "sparks", "wall": "spectrum" }},
+                "anchors": [
+                  {{ "uuid": "{}", "kind": "table", "behavior": "embers", "strength": 0.5 }},
+                  {{ "uuid": "{}", "kind": "other", "behavior": "sparks" }},
+                  {{ "uuid": "{}", "kind": "wall", "behavior": "streamlines" }}
+                ] }}"#,
+            uuid_hex(&uuid(1)),
+            uuid_hex(&uuid(2)),
+            uuid_hex(&uuid(3))
+        );
+        let (file, skipped) = RoomFile::from_json(&text).expect("an old room reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(file.kind_default(KIND_TABLE), B::Embers);
+        assert_eq!(file.kind_default(KIND_FLOOR), B::Sparks);
+        assert_eq!(file.resolve(&uuid(1), KIND_TABLE).0, B::Embers);
+        assert_close!(file.resolve(&uuid(1), KIND_TABLE).1, 0.5);
+        assert_eq!(file.resolve(&uuid(2), KIND_OTHER).0, B::Sparks);
+        assert_eq!(file.resolve(&uuid(3), KIND_WALL).0, B::Streamlines);
+        // Neither is offered any more, and one editor's step leaves each.
+        for (id, kind) in [(1, KIND_TABLE), (2, KIND_OTHER)] {
+            let was = file.resolve(&uuid(id), kind).0;
+            assert!(!was.offered(), "{was:?}");
+            let next = was.next_for(kind);
+            assert!(next.offered() && next != B::None, "{was:?} -> {next:?}");
+        }
+        // A save writes what it read, and the keys it never had are gone.
+        let saved = file.to_json();
+        let (again, skipped) = RoomFile::from_json(&saved).expect("its save reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(again, file);
+        assert!(!saved.contains("effect"), "{saved}");
+    }
+
     #[test]
     fn unknown_names_are_left_unset_and_bad_files_refused() {
         use SurfaceBehavior as B;

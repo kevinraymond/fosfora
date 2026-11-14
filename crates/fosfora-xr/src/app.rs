@@ -40,18 +40,13 @@ const SCENE_HEIGHT: u32 = 720;
 const QUAD_WIDTH_M: f32 = 1.2;
 pub const QUAD_CENTER: [f32; 3] = [0.0, 1.5, -1.5];
 const DEFAULT_EFFECT: &str = "Flux";
-/// C3b: the world-layout effect `mode world` runs unless
-/// `debug.fosfora.effect` names another.
-/// The world effect a launch starts on: the surface-born one, the room
-/// editor's (Kevin, Sep 30; the names as the wearer sees them since then:
-/// Embers was Embers, Flux Cloud was Flux Cloud, Flock was
-/// Flock; Flux Cloud Coarse, a sprite-size diagnostic, left the
-/// effect cycle and stays reachable by `debug.fosfora.effect`).
-const DEFAULT_WORLD_EFFECT: &str = "Embers";
 /// The world effects that read the per-hand lanes (board #3314): there the
-/// hand's pose picks its behavior and its pad. The others keep one behavior
-/// for every hand (Flux Cloud's worn-approved pad and kick).
-const POSE_EFFECTS: [&str; 1] = ["Flock"];
+/// hand's pose picked its behavior and its pad. Flock was the one, and it
+/// went with the other cloud effects (board #5470), so the list is empty
+/// and every hand keeps one behavior, the pad and the kick. What the list
+/// gates (`pose::decide`, the holds, the lanes' behaviors) is still built
+/// and nothing reaches it.
+const POSE_EFFECTS: [&str; 0] = [];
 const NOMINAL_FPS: u32 = 72;
 /// Board #5409: a gap between frames longer than this (s) is a pause of the
 /// session, after which the immersion level glides back to the song's.
@@ -86,11 +81,11 @@ const MR_RESTITUTION: f32 = 0.4;
 /// user stands inside the cube; near sprites are pure fill-rate cost).
 const MR_NEAR_CULL_M: f32 = 0.3;
 const PINCH_SIZE_BOOST: f32 = 3.0;
-/// World-effect defaults (Flux Cloud, board #3276): its 2-5 mm sprites
-/// are smaller and dimmer than the S5 test sim's, so the near fade starts
-/// closer (the cloud stays dense at hand distance), the hand pad is wider
-/// (a channel that reads) and the kick stronger. The settle drift is the
-/// `mr` gravity.
+/// World-effect defaults, set for Flux Cloud (board #3276) and kept for
+/// the fireflies and the hand particles: the near fade starts closer than
+/// the S5 test sim's, the hand pad is wider and the kick stronger. A hand
+/// particle fades from this radius to one and a half times it, a firefly
+/// from twice to three times it.
 const WORLD_NEAR_FADE_M: f32 = 0.15;
 const WORLD_HAND_PAD_M: f32 = 0.10;
 const WORLD_HAND_KICK: f32 = 0.4;
@@ -135,9 +130,9 @@ enum Mode {
     /// S7: world-space particles over passthrough, hands and room as
     /// obstacles, no quad.
     Mixed,
-    /// C3b: a core effect's world-layout variant (Flux Cloud) instead of
-    /// the S5 test sim, over the same mixed-reality setup as `Mixed`. The
-    /// default since board #3553: the room is what a launch shows.
+    /// C3b: a world-layout effect (the fireflies, `fireflies.rs`) instead
+    /// of the S5 test sim, over the same mixed-reality setup as `Mixed`.
+    /// The default since board #3553: the room is what a launch shows.
     World,
 }
 
@@ -234,12 +229,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.scene 1280x720
     //   adb shell setprop debug.fosfora.effect "Flux"            (mode quad; any effect)
     //   adb shell setprop debug.fosfora.emit <particles per second>   (mode quad)
-    //   adb shell setprop debug.fosfora.count <particles>        (mode particles)
+    //   adb shell setprop debug.fosfora.count <particles>        (mode particles; in mode world the pool everything alive shares, at
+    //       most 20000, `fireflies::POOL_CAP`)
     //   adb shell setprop debug.fosfora.sim 0                    (freeze the S5 sim: draw cost only)
     //   adb shell setprop debug.fosfora.simcut flow,boxes        (board #3806: skip parts of the world sim's alive path to
     //       apportion its dispatch cost: flow, turb, boxes, spheres, depth, lift, edge, atomics (no alive count: the draw
     //       shows nothing), all (every one of those), path (the whole alive path: write-back and atomic only); a diagnostic,
-    //       the look may break; unknown names are logged and ignored; default none; read at launch)
+    //       the look may break; unknown names are logged and ignored; default none; read at launch; the fireflies sim has no
+    //       flow and no turbulence, so those two cut nothing)
     //   adb shell setprop debug.fosfora.boxcells 8               (board #3808: the world sim's box cell list, N x N x N cells over the
     //       volume, each with the boxes that can touch it, so a particle tests only those; N in 2..16, 0 or 1 off (every particle
     //       against every box, the same result); default 8; read at launch)
@@ -265,9 +262,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.passthrough 0|1          (override the mode's default)
     //   adb shell setprop debug.fosfora.hands 0|1                (hand joints as obstacles + pinch)
     //   adb shell setprop debug.fosfora.micro 0|1                (board #3336: thumb microgestures, XR_META_hand_tracking_microgestures through one
-    //       action set on the EXT hand interaction profile; in world mode a thumb swipe right along the index steps to the next world
-    //       effect, left to the previous, either hand, not while the hand menu is up nor from the right hand in Edit room; forward
-    //       and backward are logged and unassigned; the thumb tap opens the voice window (board #3751, V4, with voice on); default 1;
+    //       action set on the EXT hand interaction profile; in world mode a thumb swipe right along the index steps to the next theme,
+    //       left to the one before (board #5470), either hand, not while the hand menu is up nor from the right hand in Edit room;
+    //       forward and backward are logged and unassigned; the thumb tap opens the voice window (board #3751, V4, with voice on); default 1;
     //       0 creates no action set; read at launch)
     //   adb shell setprop debug.fosfora.voice 0|1                (board #3751: the voice path: hold the left fist to talk, release it (or 6 s pass)
     //       and the transcription goes through the grammar (V2, intent.rs: the hand menu's and the room editor's actions by voice), the
@@ -327,7 +324,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       as static boxes, until a query returns live anchors; unset or any other value off; read at launch. Board #4204: the release
     //       surface saves the room only with replay or save, "save" saving without replaying)
     //   adb shell setprop debug.fosfora.floor 0|1                (the stage floor as an obstacle; default on in mr)
-    //   adb shell setprop debug.fosfora.gravity 0.5              (downward settle drift m/s; default 0.5 in mr and world, 0 otherwise)
+    //   adb shell setprop debug.fosfora.gravity 0.5              (downward settle drift m/s in the mr test sim; default 0.5 in mr and world,
+    //       0 otherwise; the fireflies sim does not read it: the hand particles' gravity is debug.fosfora.handgravity)
     //   adb shell setprop debug.fosfora.handpad 0.06             (m added to each hand joint's obstacle radius)
     //   adb shell setprop debug.fosfora.handocc 0.0              (m added to each joint's depth-occluder cube beyond the joint radius)
     //   adb shell setprop debug.fosfora.handkick 0.3             (outward speed, m/s, a hand gives the particles it touches)
@@ -341,11 +339,26 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.quadpos "0,1.5,-1.5"     (where the static quad sits; diagnostic for the S7 quad finding)
     //   adb shell setprop debug.fosfora.depthtest 0              (sprites drawn with depth compare Always; diagnostic)
     //   adb shell setprop debug.fosfora.primer 0|1               (mr without the quad: keep a 1 mm depth-writing quad in the pass; default on)
-    //   adb shell setprop debug.fosfora.mode world               (C3b: Flux Cloud through render_world, over the mr setup;
-    //       count = particles (default: the preset's 300K), size = sprite radius multiplier, sim 0 = freeze after warmup,
-    //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
-    //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default,
-    //       gravity = settle drift; tri/pull do not apply)
+    //   adb shell setprop debug.fosfora.mode world               (C3b: the fireflies through render_world, over the mr setup;
+    //       count = the pool (default: the preset's 20000, the cap), size = the hand particles' sprite radius multiplier,
+    //       sim 0 = freeze after warmup, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
+    //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default;
+    //       tri/pull do not apply)
+    //   adb shell setprop debug.fosfora.fireflies 2000           (board #5470, fireflies.rs: how many fireflies, 0..3000, the cap
+    //       (`fireflies::FIREFLY_CAP`); the ones past a lower count fade out over 1.5 s and a higher count fills in about a second;
+    //       default 2000; this and the six knobs after it are live: polled once a second, each change logged)
+    //   adb shell setprop debug.fosfora.fireflysize 0.01         (the fireflies' sprite radius, m, 0.002..0.04; each is 0.7 to 1.3 of it;
+    //       default 0.01)
+    //   adb shell setprop debug.fosfora.fireflygain 0.8          (the fireflies' brightness, 0..2: the opacity at the top of a firefly's
+    //       rhythm with the music silent; over 1 the top saturates and the dim part comes up; default 0.8)
+    //   adb shell setprop debug.fosfora.fireflydrift 0.06        (the fireflies' drift speed, m/s, 0..0.5; each moves at 0.35 to 1.8 of it
+    //       along its loop; default 0.06)
+    //   adb shell setprop debug.fosfora.fireflymusic 0.5         (how strongly the fireflies answer the music, 0..1: at 1 full loudness
+    //       lifts their light by 60% and their radius by 35%; 0 they ignore it; default 0.5)
+    //   adb shell setprop debug.fosfora.handgravity 2.5          (the hand particles' gravity, m/s2, 0..9.81; default 2.5)
+    //   adb shell setprop debug.fosfora.edgeflow 1               (the hand particles' edge flow, 0..2: 0 off, they land, lie and slide off a
+    //       rim; 1 a particle within 5 cm of where the face under it meets a second surface runs along that edge; 2 within 10 cm
+    //       and turning twice as fast; default 1)
     //   adb shell setprop debug.fosfora.hud 0|1                  (the debug panel on the hand menu, set and saved; unset = the menu's saved toggle;
     //       ignored on the release surface, which has no debug panel)
     //   adb shell setprop debug.fosfora.devmenu 0|1              (board #4204: the release surface (0) or the developer's (1) on either APK; unset =
@@ -360,6 +373,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: hands' sim spheres extend Go-Go style past a comfortable reach; default on in mr/world)
     //   adb shell setprop debug.fosfora.reachat 0.30             (reach: shoulder-to-palm distance, m, within which the hand is 1:1)
     //   adb shell setprop debug.fosfora.reachgain 40             (reach: quadratic gain, 1/m; 40 puts a 0.52 m palm at 2.5 m, capped at 3 m)
+    //   The next seven were the cloud effects' (Flock's hand poses and Embers' surface emitters) and change nothing since board
+    //   #5470: they are still read, and nothing the app runs reads what they set.
     //   adb shell setprop debug.fosfora.handscare 1              (Murmur: hand predator strength 0..1; 0 = hands only push)
     //   adb shell setprop debug.fosfora.poses 0|1                (Murmur: the hand's pose picks its behavior: fist = predator with handpad/handkick,
     //       open = push only with openpad/openkick, palm to the ceiling or two palms facing close together = hold; default on;
@@ -367,8 +382,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.openpad 0.05             (Murmur: an open hand's pad, m)
     //   adb shell setprop debug.fosfora.openkick 0.1             (Murmur: an open hand's kick, m/s)
     //   adb shell setprop debug.fosfora.holdradius 0.25          (Murmur: a palm-up hold's radius, m; a two-hand hold's is half the palms' distance, up to this)
-    //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
-    //       as the hand menu's effect row does; for measuring the switch unworn)
     //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Embers: the floor's emitter weight, 0..1)
     //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
     //       emitting table inside the volume gets this, the others by top-face area against it)
@@ -405,8 +418,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       unworn; a hint made or given up in such a launch is saved, and the file then holds only what that launch taught; read at
     //       launch)
     //   adb shell setprop debug.fosfora.swipe right|left         (board #5452: a thumb swipe from the right hand as if made, for the unworn
-    //       check of the swipe's caption and of the swipe hint's "Got it"; polled once a second, fed once per value as
-    //       debug.fosfora.say is (set "" or the other direction to swipe again))
+    //       check of the swipe's caption and of the swipe hint's "Got it": right steps to the next theme, left to the one before
+    //       (board #5470), and the caption names it; polled once a second, fed once per value as debug.fosfora.say is (set "" or
+    //       the other direction to swipe again))
     //   adb shell setprop debug.fosfora.immerselow 0.42          (board #5409: the immersion level at the bottom of the song's range, a breakdown,
     //       0..1; live: polled once a second and logged on a change, the level moving to it over the attack or the release; "" back
     //       to the default, 0.42)
@@ -414,7 +428,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[:<color>[:<band>]][@<strength>], target = an
     //       anchor UUID (32 hex, or a prefix of 8 or more unique in the room), #<k> a box by index (the log's "room <id>:" lane table;
     //       the stage floor too) or a kind (table, floor, wall, ceiling, frame, other: its default and every anchor of it), behavior =
-    //       none, embers, sparks, spectrum, rings (or its old name, ripple), streamlines, curls, pulse, strength 0..1 (default 1); board #3488:
+    //       none, spectrum, rings (or its old name, ripple), streamlines, curls, pulse (embers and sparks are still read and show
+    //       nothing since board #5470: they were the cloud's particles), strength 0..1 (default 1); board #3488:
     //       an optional ":<color>[:<band>]" after the behavior, color 0..8 (0 the kind's own, 1 blue, 2 violet, 3 warm white, 4 amber,
     //       5 green, 6 teal, 7 rose, 8 the key's tint), band 0..3 (rms, bass, mid, high), e.g. "table=curls:5:2@0.8"; "clear" drops
     //       every assignment; live: polled once a
@@ -426,38 +441,41 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       to "" first; an unknown name applies nothing and is logged)
     //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
     //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (board #3488,
-    //       the default first after none: table none, streamlines, curls, pulse, embers, sparks; floor none, rings, streamlines, curls,
-    //       sparks; wall none, spectrum, streamlines, rings, pulse; ceiling none, rings, pulse, streamlines; frame none, pulse, rings,
-    //       streamlines; other and unlabeled none, curls, streamlines, pulse, embers), a pinch-hold arms and a second within
+    //       the default first after none: table none, streamlines, curls, pulse; floor none, rings, streamlines, curls; wall none,
+    //       spectrum, streamlines, rings, pulse; ceiling none, rings, pulse, streamlines; frame none, pulse, rings, streamlines;
+    //       other and unlabeled none, curls, streamlines, pulse; then each kind's ported effects), a pinch-hold arms and a second within
     //       2.5 s cycles every surface of its kind one step past it (board #3336), through the same lanes and room file as
     //       debug.fosfora.surface; default 0, not saved)
-    //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
-    //       off, the world effect is hidden at once, whatever the effect, its sim stepping on so on shows it as it would have been (the
-    //       pitcher's pour and the throw's bursts are its particles and hide with it), Edit room on or off; default 1, not saved)
+    //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the particles at launch, as the hand menu's Particles toggle turns
+    //       them on and off: off, the world effect is hidden at once, the fireflies and the hand particles (the throw's bursts and the
+    //       pitcher's pour), its sim stepping on so on shows it as it would have been, Edit room on or off; default 1, not saved)
     //   adb shell setprop debug.fosfora.picktest 3               (diagnostic: the room editor's ray from 0.5 m ahead of the head along the view tilted
     //       20 degrees down, untracked, with a synthetic right-hand tap every 3 s, for an unworn check; implies editroom 1)
-    //   adb shell setprop debug.fosfora.throw 0|1                (Flux world effects: a pinch tap throws a burst where the far hand points; default on)
-    //   adb shell setprop debug.fosfora.burstcount 6000          (particles a throw bursts into on impact)
-    //   adb shell setprop debug.fosfora.lift 0|1                 (Flux world effects: an open far palm held still, facing down, lifts embers; default on)
+    //   adb shell setprop debug.fosfora.throw 0|1                (a pinch tap throws a burst where the far hand points; default on)
+    //   adb shell setprop debug.fosfora.burstcount 6000          (particles a throw bursts into on impact, at most 17000, the pool's slots the
+    //       fireflies never take, `fireflies::BURST_MAX`)
+    //   adb shell setprop debug.fosfora.lift 0|1                 (an open far palm held still, facing down, lifts the hand particles lying
+    //       under it; default on)
     //   adb shell setprop debug.fosfora.liftradius 0.35          (the lift's radius around the far palm, m)
     //   adb shell setprop debug.fosfora.throwtest 3              (diagnostic: every 3 s a right-hand throw from 0.5 m ahead of the head
     //       along the view, untracked, for an unworn check)
-    //   adb shell setprop debug.fosfora.pitcher 0|1              (board #3402, Flux world effects: the particle pitcher, a stream poured from the
+    //   adb shell setprop debug.fosfora.pitcher 0|1              (board #3402: the particle pitcher, a stream of hand particles poured from the
     //       right far palm along its normal; default 0; the hand menu's Pitcher row turns it on and off, not saved)
     //   adb shell setprop debug.fosfora.pitcherrate 4000         (the pitcher's particles per second, 500..10000; the debug panel's "pitcher /s";
-    //       above ~10000/s into a full cloud the steal path costs frames, so lower the cloud density with it)
+    //       once the hands' share of the pool is alive a pour takes its particles from the oldest hand particles)
     //   adb shell setprop debug.fosfora.pitcherspeed 1.5         (the pitcher's stream speed, m/s)
-    //   adb shell setprop debug.fosfora.density 1.0              (board #3402, world mode: the cloud density, the world effect's emission rate
-    //       against its preset's (scaled with the count), 0.05..1; the debug panel's "cloud density"; the pitcher's pour is not scaled)
-    //   adb shell setprop debug.fosfora.gov 0|1                  (board #3789, world mode: the thermal governor steps the cloud density down by 0.1
+    //   adb shell setprop debug.fosfora.density 1.0              (board #3402, world mode: the density, the share of the fireflies' count that is
+    //       asked for, 0.05..1; the debug panel's "firefly density"; the hand particles are not scaled)
+    //   adb shell setprop debug.fosfora.gov 0|1                  (board #3789, world mode: the thermal governor steps the density down by 0.1
     //       while the app GPU time is over budget for 3 s, to 0.3 at the lowest, and back up to the wearer's setting while under for 20 s;
-    //       default on in world and mr (mr has no cloud density, so it idles there); read at launch)
+    //       default on in world and mr (mr has no density, so it idles there); read at launch; the fireflies cost little, so what it
+    //       gives back is small)
     //   adb shell setprop debug.fosfora.govdown 0.92             (the governor's over budget, a fraction of the display period: 12.8 ms at 72 Hz)
     //   adb shell setprop debug.fosfora.govup 0.75               (the governor's under budget, a fraction of the display period: 10.4 ms at 72 Hz;
     //       held at or below govdown)
     //   adb shell setprop debug.fosfora.space 1.5                (board #3325, world mode: the space size, the half extent in meters of the cube
-    //       around the anchor the particles live in and respawn out of, 0.5..6, for every world effect; unset, each keeps its preset's;
-    //       the debug panel's "space half m", live, without resetting the cloud)
+    //       around the anchor the fireflies live in, 0.5..6; unset, the preset's 3; the debug panel's "space half m", live,
+    //       without resetting them)
     //   adb shell setprop debug.fosfora.pitchertest 1            (diagnostic: the pitcher on, pouring from 0.5 m ahead of the head, along the
     //       view tilted 30 degrees down, untracked, for an unworn cost measurement)
     //   adb shell setprop debug.fosfora.envdepth 0|1             (board #3324: the live environment depth map, XR_META_environment_depth,
@@ -1045,8 +1063,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let reach_gain = debug_prop("debug.fosfora.reachgain")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(crate::reach::GAIN);
-    // Board #3311: how much the hands scare Murmur's flock (1 = a hawk,
-    // 0 = the hands only push), for the scoop A/B and later per pose.
+    // Board #3311: how much the hands scared Murmur's flock (1 = a hawk,
+    // 0 = the hands only push). Flock is gone (board #5470) and nothing
+    // reads it.
     let hand_scare = debug_prop("debug.fosfora.handscare")
         .and_then(|v| v.parse::<f32>().ok())
         .map_or(1.0, |v| v.clamp(0.0, 1.0));
@@ -1060,8 +1079,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let open_pad = knob("debug.fosfora.openpad", crate::pose::OPEN_PAD_M);
     let open_kick = knob("debug.fosfora.openkick", crate::pose::OPEN_KICK_M_S);
     let hold_radius = knob("debug.fosfora.holdradius", crate::pose::HOLD_RADIUS_M);
-    // Board #3317: surfaces as emitters (only a world sim in surface mode,
-    // Embers, reads the weights).
+    // Board #3317: surfaces as emitters. Only a world sim in surface
+    // mode read the weights, which was Embers', gone since board #5470.
     let surface_weights = {
         let d = SurfaceWeights::default();
         SurfaceWeights {
@@ -1302,29 +1321,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     if music_at_launch && launch_clip.is_none() {
         music.prepare();
     }
-    // The world effects the hand menu's effect row cycles through: every
-    // `*_xr_world*.pfx` staged into the effects dir, in file-name order,
-    // starting at `debug.fosfora.effect` (added if it is not one of them).
-    let mut world_effects = if mode == Mode::World {
-        discover_world_effects(&dirs.assets.join("effects"))
-    } else {
-        Vec::new()
-    };
-    let start_effect =
-        debug_prop("debug.fosfora.effect").unwrap_or_else(|| DEFAULT_WORLD_EFFECT.to_owned());
-    let mut world_index = world_effects
-        .iter()
-        .position(|e| *e == start_effect)
-        .unwrap_or_else(|| {
-            world_effects.insert(0, start_effect.clone());
-            0
-        });
+    // Board #5470: world mode runs one effect, the fireflies
+    // (`fireflies.rs`), and its knobs are live: polled once a second in
+    // the frame loop. The three cloud effects it replaced (Flux Cloud,
+    // Embers, Flock) are loaded by nothing here. The names the voice path
+    // still hears, so it can say they are gone.
+    let world_effect = crate::fireflies::EFFECT;
+    let cut_effects = crate::intent::cut_effects();
+    let mut fireflies = crate::fireflies::Knobs::from_knobs(debug_prop);
     if mode == Mode::World {
-        info!("world effects (the hand menu's effect row cycles them): {world_effects:?}");
+        info!("{}", fireflies.line());
     }
+    // The loudness as the flash limit glides it, from the last frame's
+    // audio: what the fireflies' size swells with.
+    let mut firefly_swell = 0.0f32;
     let mut scene = None;
-    // World mode: the effects not showing, by index in `world_effects`.
-    let mut parked: Vec<Option<XrScene>> = Vec::new();
     let mut particles = None;
     let mut static_quad = None;
     match mode {
@@ -1387,46 +1398,26 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 static_quad = Some(tex);
             }
             if mode == Mode::World {
-                // Every world effect is built up front (~0.5 s each on the
-                // Quest 3) and parked, so an effect switch is instant
-                // instead of stalling the frame loop for a rebuild.
-                for (i, effect) in world_effects.iter().enumerate() {
-                    let started = Instant::now();
-                    let built = new_world_scene(
-                        &gfx,
-                        &dirs.config,
-                        effect,
-                        WorldOptions {
-                            count: count_knob,
-                            size_scale,
-                            sim_enabled,
-                            sim_cut,
-                            box_cells,
-                            flow_samples,
-                            anchor: cube_center,
-                        },
-                    );
-                    // The chosen effect must build; another that fails (a
-                    // shader the device rejects, a preset mid-edit) is left
-                    // out of the cycle instead of taking the app down.
-                    let s = match built {
-                        Ok(s) => s,
-                        Err(e) if i != world_index => {
-                            log::warn!("world effect '{effect}' left out of the cycle: {e:#}");
-                            parked.push(None);
-                            continue;
-                        }
-                        Err(e) => return Err(e),
-                    };
-                    info!(
-                        "world effect '{effect}' built in {:.0} ms",
-                        started.elapsed().as_secs_f64() * 1e3
-                    );
-                    parked.push(Some(s));
-                    if i == world_index {
-                        scene = parked[i].take();
-                    }
-                }
+                let started = Instant::now();
+                let s = new_world_scene(
+                    &gfx,
+                    &dirs.config,
+                    world_effect,
+                    WorldOptions {
+                        count: count_knob,
+                        size_scale,
+                        sim_enabled,
+                        sim_cut,
+                        box_cells,
+                        flow_samples,
+                        anchor: cube_center,
+                    },
+                )?;
+                info!(
+                    "world effect '{world_effect}' built in {:.0} ms",
+                    started.elapsed().as_secs_f64() * 1e3
+                );
+                scene = Some(s);
             }
             // In world mode the effect is the particles: the test sim keeps
             // only its obstacle block and occluders (count 0).
@@ -1490,9 +1481,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut menu_stay = switch_now("debug.fosfora.menustay").unwrap_or(true);
     let mut menu_idle: Option<f32> = None;
     info!("{}", crate::palm_panel::knob_line(menu_stay));
-    // Board #3789: the thermal governor (`governor.rs`) steps the cloud
-    // density, so it acts in world mode only; the knob's default follows
-    // the brief (on in world and mr), and mr has nothing to step.
+    // Board #3789: the thermal governor (`governor.rs`) steps the
+    // density, the share of the fireflies' count that is asked for, so it
+    // acts in world mode only; the knob's default follows the brief (on in
+    // world and mr), and mr has nothing to step.
     let gov_knob = toggle("debug.fosfora.gov", mixed);
     let gov_on = gov_knob && world;
     let gov_margins = {
@@ -1610,9 +1602,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // knob's until the knob's own value changes (board #5431: the theme's
     // modes, or one forced on every kind).
     let mut edge_override = crate::edge_bars::Override::new(edge_bars.choice);
-    // The cloud density each world effect's emission was last set for
-    // (by index in `world_effects`; `new_world` leaves it at 1).
-    let mut density_set = vec![1.0f32; world_effects.len()];
+    // The density the world effect was last set for (`new_world` leaves
+    // it at 1).
+    let mut density_set = 1.0f32;
     // Board #3789: the governor's density under the wearer's setting, the
     // last second of app GPU time it watches and the display period its
     // launch line was logged for.
@@ -1700,15 +1692,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // for the log: logged when the pick changes and once a second.
     let mut canvas_wall: Option<(usize, glam::Vec3)> = None;
     let mut canvas_mel = 0usize;
-    // Board #3327: the hands as instruments, on the Flux world sims (the
-    // effects not in POSE_EFFECTS; Murmur ignores the rows).
+    // Board #3327: the hands as instruments, whose particles are the
+    // world effect's hand particles. A throw's impact asks for no more
+    // than the pool's slots the fireflies never take (board #5470).
     let throw_on = toggle("debug.fosfora.throw", true);
     let lift_on = toggle("debug.fosfora.lift", true);
-    let mut thrower = crate::instruments::Thrower::new(
+    let mut thrower = crate::instruments::Thrower::new(crate::fireflies::burst_count(
         debug_prop("debug.fosfora.burstcount")
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(crate::instruments::BURST_COUNT),
-    );
+    ));
     let mut lifter = crate::instruments::Lifter::new(
         knob(
             "debug.fosfora.liftradius",
@@ -1782,7 +1775,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #5452: the first run (`first_run.rs`). The show waits for the
     // wearer behind a card at the center of view; three gestures are
     // taught once per install as the wearer makes them, on a label ahead
-    // of the view; a thumb swipe's caption names the effect it stepped to.
+    // of the view; a thumb swipe's caption names the theme it stepped to.
     // `begin_pinch` is the pinch that began the show, which does nothing
     // more than its burst until it opens. `hint_made` collects the taught
     // gestures made this frame, in `first_run::Hint::ALL`'s order.
@@ -1847,8 +1840,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut scan_logged: Option<crate::label::ScanState> = None;
     let mut edit_was_on = false;
     let mut edit_status = String::from(crate::label::STATUS_OFF);
-    // Step 2c: what the cloud ran last frame (`room_edit::Cloud`), to log
-    // its changes; on at launch unless the knob turned it off.
+    // Step 2c: what the particles ran last frame (`room_edit::Cloud`), to
+    // log its changes; on at launch unless the knob turned it off.
     let mut cloud_ran = crate::room_edit::Cloud::On;
     let mut last_pick_test = 0.0f32;
     info!(
@@ -1928,8 +1921,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
     };
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
-    // the hand, a tap toggles the S5 sprite size, a hold cycles the world
-    // effects.
+    // the hand, a tap toggles the S5 sprite size and throws in the world.
     let mut gestures = Gestures::default();
     let (mut anchor, mut anchor_half) = (cube_center, cube_half);
     let mut drag_total = glam::Vec3::ZERO;
@@ -1950,13 +1942,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut tip_min = [f32::MAX; 2];
     let mut size_boost = false;
     let mut recentered = false;
-    // A world effect to switch to after this frame (the scene is borrowed
-    // by the frame while the gesture fires).
-    let mut switch_to: Option<usize> = None;
-    let cycle_test_s = debug_prop("debug.fosfora.cycletest")
-        .and_then(|v| v.parse::<f32>().ok())
-        .filter(|s| *s > 0.0);
-    let mut last_switch_t = 0.0f32;
     let mut obstacle_log = (0u32, 0u32, [false; 2], [false; 2]);
 
     let started = Instant::now();
@@ -2005,15 +1990,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // starts seen (a new one adapts the history).
     let mut immerse_label_busy = false;
     let mut track_starts = music.track_starts();
-    // Board #5393: roam's rules (`roam.rs`): the cloud following the head,
-    // the head's speed for immersion, the switch to the effect that fills
-    // its volume, and the stage floor's center (x, z), under the head in
-    // roam and at the stage's origin seated. `debug.fosfora.roamwalk` fakes
-    // the head's speed (polled once a second).
+    // Board #5393: roam's rules (`roam.rs`): the fireflies following the
+    // head, the head's speed for immersion, and the stage floor's center
+    // (x, z), under the head in roam and at the stage's origin seated.
+    // `debug.fosfora.roamwalk` fakes the head's speed (polled once a
+    // second).
     let mut boundary_ask = crate::boundary::Ask::default();
     let mut follow = crate::roam::Follow::default();
     let mut walk = crate::roam::Walk::default();
-    let mut fill = crate::roam::Fill::default();
     let mut stage_floor_at = glam::Vec2::ZERO;
     let walk_knob = || {
         system_prop("debug.fosfora.roamwalk")
@@ -2646,20 +2630,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         anchor[1],
                         anchor[2]
                     ),
-                    // Board #3336: a hold no longer cycles the world effect
-                    // (a still pinch, aiming a throw or a hand at rest, fired
-                    // it unasked); the hand menu's effect row does.
+                    // Board #3336: a hold does nothing in the world (while
+                    // it cycled the world effect a still pinch, aiming a
+                    // throw or a hand at rest, fired it unasked).
                     Gesture::Hold { hand } => info!(
                         "gesture: hold {} (unassigned in the world since board #3336)",
                         hand_name(hand)
                     ),
                 }
             }
-            // Board #3336: thumb microgestures (`microgestures.rs`). A
-            // swipe right steps to the next world effect and left to the
-            // previous, either hand, by the path the menu's `<` `>` take;
-            // the gesture block's rules hold (nothing while the hand menu
-            // is up, nothing from the right hand in Edit room).
+            // Board #3336: thumb microgestures (`microgestures.rs`). Board
+            // #5470: a swipe right steps to the next theme and left to the
+            // one before, either hand, by the path the menu's Theme
+            // control and the spoken "next theme" take; the gesture
+            // block's rules hold (nothing while the hand menu is up,
+            // nothing from the right hand in Edit room).
             {
                 let mut micro = input.micro;
                 // Board #5452, `debug.fosfora.swipe`: a thumb swipe from
@@ -2695,10 +2680,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                 }
                 let micro = &micro;
-                let effects = if world { world_effects.len() } else { 0 };
                 let outcomes = [0, 1].map(|h| {
                     micro.swipe[h].map(|s| {
-                        (s, crate::microgestures::outcome(s, h, swipes_blocked, edit_on, effects))
+                        (s, crate::microgestures::outcome(s, h, swipes_blocked, edit_on, world))
                     })
                 });
                 let right_steps = outcomes[1].is_some_and(|(_, o)| o.step().is_some());
@@ -2717,20 +2701,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         info!("microgesture: tap thumb {}", hand_name(h));
                     }
                 }
-                if let Some(step) = crate::microgestures::consume(micro, swipes_blocked, edit_on, effects) {
-                    switch_to = cycle_index(&parked, world_index, if step > 0 { 1 } else { -1 });
-                    // Board #5460: a swipe that stepped the effect ticks.
-                    // Board #5452: and its caption names the effect it
+                if let Some(step) = crate::microgestures::consume(micro, swipes_blocked, edit_on, world) {
+                    // The theme one step along the cycle, on the whole
+                    // room and saved, as the menu's press applies it.
+                    let theme = surface_lanes.step_theme(&lane_boxes, "a thumb swipe", step);
+                    // Board #5460: a swipe that stepped the theme ticks.
+                    // Board #5452: and its caption names the theme it
                     // stepped to, ahead of the view where the voice label
                     // floats. It is the gesture the swipe hint teaches.
-                    if let Some(next) = switch_to {
-                        crate::ui_sound::play(crate::ui_sound::Cue::Press);
-                        let text =
-                            crate::first_run::swipe_caption(&world_effects[next], controls.cloud);
-                        info!("microgesture: the caption reads \"{text}\"");
-                        caption.show(text, glam::Vec3::ZERO, glam::Vec3::Z);
-                        hint_made[crate::first_run::Hint::Swipe.index()] = true;
-                    }
+                    crate::ui_sound::play(crate::ui_sound::Cue::Press);
+                    let text = crate::first_run::swipe_caption(theme);
+                    info!("microgesture: the caption reads \"{text}\"");
+                    caption.show(text, glam::Vec3::ZERO, glam::Vec3::Z);
+                    hint_made[crate::first_run::Hint::Swipe.index()] = true;
                 }
             }
             // The hand menu's actions this frame, after the voice path's
@@ -2744,13 +2727,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     let theme = surface_lanes.theme().value();
                     let view = View {
                         mode: mode_name,
-                        effect: world.then(|| {
-                            (
-                                world_effects[world_index].as_str(),
-                                world_index,
-                                world_effects.len(),
-                            )
-                        }),
                         alive: scene.as_deref().map(XrScene::alive_count),
                         frames: frames_window,
                         perf: input.perf,
@@ -2798,15 +2774,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             for (k, action) in actions.into_iter().enumerate() {
-                let n = world_effects.len();
                 // Board #5460: a menu press that does something ticks (a
                 // surface row's where it changes the surface, below); one
                 // that does nothing stays quiet. A spoken action already
                 // sounded as understood.
                 let acts = match action {
-                    Action::NextEffect | Action::PrevEffect => {
-                        world && n > 1 && cycle_index(&parked, world_index, 1).is_some()
-                    }
                     Action::SetAgent(pick) => available.has(pick),
                     Action::PrevTrack | Action::NextTrack => !music.tracks().titles.is_empty(),
                     Action::SetRoam(on) => {
@@ -2823,12 +2795,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     crate::ui_sound::play(crate::ui_sound::Cue::Press);
                 }
                 match action {
-                    Action::NextEffect if world && n > 1 => {
-                        switch_to = cycle_index(&parked, world_index, 1);
-                    }
-                    Action::PrevEffect if world && n > 1 => {
-                        switch_to = cycle_index(&parked, world_index, -1);
-                    }
                     Action::Recenter => {
                         anchor = [input.head[0], MR_CUBE_Y, input.head[2]];
                         moved = true;
@@ -3031,7 +2997,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                         }
                     }
-                    _ => {}
                 }
             }
             if all_none {
@@ -3108,11 +3073,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         input.head[2]
                     );
                 }
-                // Board #5393: in roam the cloud follows the wearer, by
+                // Board #5393: in roam the fireflies follow the wearer, by
                 // Recenter's path (the anchor moved, `moved` set), gliding
                 // there over 1.5 s once the head is a meter from it, at
                 // most every 3 s (`roam::Follow`). The sim keeps its
-                // particles relative to the anchor, so the cloud drifts
+                // particles relative to the anchor, so the layer drifts
                 // with it: none jumps, none dies.
                 if roam_on && recenter_on_wearer && recentered {
                     if let Some(step) = follow.step(
@@ -3123,7 +3088,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     ) {
                         if let Some(d) = step.started {
                             info!(
-                                "roam: the cloud follows the wearer, {d:.2} m from the head, gliding over {} s",
+                                "roam: the fireflies follow the wearer, {d:.2} m from the head, gliding over {} s",
                                 crate::roam::GLIDE_S
                             );
                         }
@@ -3183,8 +3148,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                 }
                 // Hand poses (board #3314): read on the real hand, acting
-                // at the far hand. Only the effects that read the lanes get
-                // a behavior per pose; elsewhere every hand is the hawk.
+                // at the far hand. Only the effects that read the lanes got
+                // a behavior per pose, and none does since board #5470, so
+                // `poses_apply` is false and every hand keeps the one pad
+                // and kick. The poses are still read: the left fist opens
+                // the voice window and an open palm lifts.
                 let pose_frame = poses.step(
                     [0, 1].map(|h| HandInput {
                         palm: input.hands.palm[h]
@@ -3194,9 +3162,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     dt,
                 );
                 left_fist = pose_frame.pose[0] == Some(Pose::Fist);
-                let poses_apply = poses_on
-                    && world
-                    && POSE_EFFECTS.contains(&world_effects[world_index].as_str());
+                let poses_apply = poses_on && world && POSE_EFFECTS.contains(&world_effect);
                 // Board #3751, V4: with voice on the left fist toggles the
                 // voice window everywhere (board #5380), so the flock sees
                 // an open left hand; the right fist keeps its predator.
@@ -3568,23 +3534,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     gfx.set_highlight(rows.as_ref());
                     edit_was_on = edit_on;
                 }
-                // Step 2c/2e: the cloud toggle. Off hides the world
-                // effect's draw, Edit room or not, the sim stepping on.
-                // The pitcher's pour and the throw's bursts are that
-                // effect's particles, so they hide with it.
-                let cloud = crate::room_edit::Cloud::of(
-                    controls.cloud,
-                    edit_on,
-                    editor.hit().map(|h| h.index),
-                );
+                // Step 2c/2e: the Particles toggle. Off hides the world
+                // effect's draw, Edit room or not, the sim stepping on:
+                // the fireflies, and with them the throw's bursts and the
+                // pitcher's pour, which are that effect's particles.
+                let cloud = crate::room_edit::Cloud::of(controls.cloud);
                 if world && cloud != cloud_ran {
                     info!(
                         "{}",
                         cloud.describe(|k| crate::surfaces::friendly_name(k, &lane_boxes))
                     );
-                }
-                if world && cloud != cloud_ran && !controls.cloud && edit_on {
-                    info!("cloud off, but Edit room is on: the world effect shows while editing");
                 }
                 cloud_ran = cloud;
                 gfx.set_world_visible(cloud.visible());
@@ -3607,9 +3566,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // Board #5452: not while the show waits for the wearer.
                 // The pinch that begins it is past the wait by here, so
                 // its burst is thrown.
-                let instruments = world
-                    && !wait.waiting()
-                    && !POSE_EFFECTS.contains(&world_effects[world_index].as_str());
+                let instruments =
+                    world && !wait.waiting() && !POSE_EFFECTS.contains(&world_effect);
                 let (instrument_rows, pour_row) = if instruments {
                     let head = glam::Vec3::from(input.head);
                     // The far pinch point of this frame's throw, if any: a
@@ -3749,6 +3707,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             scanned_n,
                             live_levels.iter().copied(),
                         )),
+                        // Board #5470: the fireflies' knobs, and the
+                        // loudness their size swells with.
+                        &fireflies,
+                        firefly_swell,
                     );
                 }
                 if let Some(offset) = hand_mesh_test {
@@ -3783,8 +3745,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // fist (hand 0, board #5380: a fist opens it, the next closes
             // it), or (V4) opened by a thumb tap on either hand, while the
             // hand menu's Voice toggle is on. It opens whatever else the
-            // hands are doing: with Edit room on, with the hand menu up, on
-            // Flock, where the left fist is then no predator (above).
+            // hands are doing: with Edit room on and with the hand menu up.
             voice_label.step(dt);
             // The sentence heard this frame, for the grammar below.
             let mut sentence: Option<String> = None;
@@ -3973,16 +3934,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             // Board #3751, V2: the sentence through the grammar, generated
-            // from what the frame holds (the world effects, the behaviors,
-            // the lane boxes by their friendly names, the surface under the
-            // editor's beam), applied by `apply_intent` (`lane_boxes` being
-            // this frame's). With the agent on (V3), a sentence no template
+            // from what the frame holds (the behaviors a surface can be
+            // given, the lane boxes by their friendly names, the surface
+            // under the editor's beam, and the cut effects' names, which
+            // are answered as gone, board #5470), applied by
+            // `apply_intent` (`lane_boxes` being this frame's). With the agent on (V3), a sentence no template
             // fits, or one naming an unknown behavior, goes to the model
             // instead of the miss's label.
             if let Some(sentence) = sentence.take() {
                 let vocab = crate::intent::Vocabulary {
-                    effects: &world_effects,
-                    behaviors: &crate::surfaces::SurfaceBehavior::ALL,
+                    effects: &cut_effects,
+                    behaviors: &crate::surfaces::SurfaceBehavior::OFFERED,
                     // Board #5397: not the live planes.
                     surfaces: crate::live_wire::offered(&lane_boxes),
                     pointed: editor
@@ -4023,7 +3985,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 &lane_boxes,
                                 &mut controls,
                                 &mut voice_actions,
-                                &mut switch_to,
                                 menu_stay,
                                 &available,
                             )
@@ -4055,9 +4016,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             [2.0 * face.half[0], 2.0 * face.half[1]]
                         })
                         .collect();
+                    // Board #5470: the room has no effect to show the
+                    // model, so it has none to name.
                     let room = crate::agent::room_state(
-                        &vocab,
-                        (mode == Mode::World).then_some(world_index),
+                        &crate::intent::Vocabulary {
+                            effects: &[],
+                            ..vocab.clone()
+                        },
+                        None,
                         &sizes,
                         &surface_lanes,
                         &lane_boxes,
@@ -4188,8 +4154,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 surface_labels.miss();
                             }
                             let vocab = crate::intent::Vocabulary {
-                                effects: &world_effects,
-                                behaviors: &crate::surfaces::SurfaceBehavior::ALL,
+                                effects: &cut_effects,
+                                behaviors: &crate::surfaces::SurfaceBehavior::OFFERED,
                                 surfaces: crate::intent::surfaces(&lane_boxes),
                                 pointed,
                                 tracks: crate::intent::Tracks::default(),
@@ -4209,8 +4175,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         }
                         Ok(reply) => {
                             let vocab = crate::intent::Vocabulary {
-                                effects: &world_effects,
-                                behaviors: &crate::surfaces::SurfaceBehavior::ALL,
+                                effects: &cut_effects,
+                                behaviors: &crate::surfaces::SurfaceBehavior::OFFERED,
                                 surfaces: crate::intent::surfaces(&lane_boxes),
                                 pointed,
                                 tracks: crate::intent::Tracks::default(),
@@ -4234,7 +4200,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                                 &lane_boxes,
                                                 &mut controls,
                                                 &mut voice_actions,
-                                                &mut switch_to,
                                                 menu_stay,
                                                 &available,
                                             )
@@ -4254,7 +4219,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 surface_labels.miss();
                             }
                             understood = missed.is_empty();
-                            crate::agent::label(&reply.say, &applied, &missed)
+                            // Board #5470: an action that asks for an
+                            // effect did nothing, whatever the model says
+                            // it did, so the label is the grammar's answer.
+                            let say = if outcomes
+                                .iter()
+                                .flatten()
+                                .any(crate::intent::asks_for_effect)
+                            {
+                                ""
+                            } else {
+                                reply.say.as_str()
+                            };
+                            crate::agent::label(say, &applied, &missed)
                         }
                         Err(e) => {
                             debug!(
@@ -4422,7 +4399,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         label_free,
                         hands_seen: hands_hint.seen() || hints_knob,
                         can: [
-                            micro_on && world && world_effects.len() > 1,
+                            micro_on && world,
                             micro_on && controls.voice && voice.is_some() && voice_mic,
                             hud.is_some() && !hud_test,
                         ],
@@ -4565,6 +4542,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // levels gliding (`flash::Limiter::glided`).
             let mut f_shapes = f;
             flash_limit.glided(f_shapes.as_slice_mut());
+            // Board #5470: the loudness gliding is what the fireflies'
+            // size swells with, from the next frame's sim inputs on. Their
+            // light reads the limited loudness itself, in the sim.
+            firefly_swell = f_shapes.rms;
             (last_rms, last_bass) = (f.rms, f.bass);
             if hop.beat_fired {
                 beat_env = 1.0;
@@ -5260,62 +5241,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         {
             log::warn!("debug panel dump: {e:#}");
         }
-        if let Some(every) = cycle_test_s
-            && world
-            && t - last_switch_t > every
-        {
-            switch_to = cycle_index(&parked, world_index, 1);
-        }
-        // Board #5393: in roam, the surface-born effect with nothing in
-        // reach to spawn from gives way, once, to the effect that fills its
-        // volume; roam off switches back unless the wearer picked another
-        // meanwhile (`roam::Fill`). A switch asked for this frame wins.
-        if world {
-            let fill_index = world_effects
-                .iter()
-                .position(|e| e == crate::roam::FILL_EFFECT)
-                .filter(|&i| i == world_index || parked.get(i).is_some_and(Option::is_some));
-            let asked = fill.step(crate::roam::FillInput {
-                roam: roam.now().is_on(),
-                scan: session.scan_state(),
-                showing: world_index,
-                surface_born: scene.as_ref().is_some_and(XrScene::surface_born),
-                weight: scene.as_ref().map_or(0.0, XrScene::emitter_weight),
-                fill: fill_index,
-                dt,
-            });
-            if switch_to.is_none() {
-                match asked {
-                    Some(crate::roam::FillSwitch::To(i)) => {
-                        info!(
-                            "roam: nothing in reach emits on '{}': '{}' fills the space",
-                            world_effects[world_index], world_effects[i]
-                        );
-                        switch_to = Some(i);
-                    }
-                    Some(crate::roam::FillSwitch::Back(i)) => {
-                        info!("roam off: back to '{}'", world_effects[i]);
-                        switch_to = Some(i);
-                    }
-                    None => {}
-                }
-            }
-        }
-        if let Some(next) = switch_to.take()
-            && let Some(mut s) = parked[next].take()
-        {
-            // The parked effect resumes where it stopped, at today's anchor.
-            last_switch_t = t;
-            s.set_anchor(anchor);
-            parked[world_index] = scene.replace(s);
-            world_index = next;
-            info!(
-                "world effect switched to '{}' ({}/{})",
-                world_effects[next],
-                next + 1,
-                world_effects.len()
-            );
-        }
         // Board #3789: the thermal governor, once a frame in world mode:
         // the last second's mean app GPU time against the display period,
         // or without the counters the frame window's fps and long frames.
@@ -5366,7 +5291,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         };
                         let what = if c.level == crate::governor::Level::Starved {
                             format!(
-                                "density {:.2} at the floor: starved (the next stage, board #3788, is not built)",
+                                "density {:.2} at the floor: starved (the density thins the fireflies alone; the next stage, board #3788, is not built)",
                                 c.to
                             )
                         } else if (c.from - c.to).abs() < 1e-4 {
@@ -5381,12 +5306,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             controls.density_gov = gov.governed();
         }
-        // The cloud density: the showing world effect's emission against
-        // the rate `new_world` set, applied when it changes and when an
-        // effect switch swaps in one set for another. The cloud toggle
-        // leaves it alone: off hides the effect (step 2e; 2c took the
-        // emission to 0 here). The governor's density, at most the
-        // wearer's (`controls.density`; the same with it off).
+        // The density: the share of the fireflies' count that is asked
+        // for, applied when it changes. The Particles toggle leaves it
+        // alone: off hides the effect (step 2e). The governor's density, at
+        // most the wearer's (`controls.density`; the same with it off).
         let density = if gov_on {
             gov.density()
         } else {
@@ -5394,30 +5317,26 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         };
         if world
             && let Some(s) = scene.as_mut()
-            && let Some(base) = s.base_emit_rate()
-            && let Some(set) = density_set.get_mut(world_index)
-            && (*set - density).abs() > 1e-4
+            && (density_set - density).abs() > 1e-4
         {
-            *set = density;
-            s.set_emit_rate(base * density);
+            density_set = density;
+            s.set_density(density);
             info!(
-                "cloud density {:.2}{}: '{}' emits {:.0}/s (preset {:.0}/s)",
+                "firefly density {:.2}{}: {} of {} fireflies",
                 density,
                 if gov.governed().is_some() {
                     " (gov)"
                 } else {
                     ""
                 },
-                world_effects[world_index],
-                base * density,
-                base
+                fireflies.fireflies(density),
+                fireflies.count
             );
         }
-        // The space size: the showing world effect's volume, applied when
-        // the stepper moves, when an effect switch swaps in one set for
-        // another, and for the surface-born effect when the room fit
-        // changes (step 2h: the boxes or the anchor moved) while no size
-        // is asked; the stepper shows the size it runs at.
+        // The space size: the world effect's volume, applied when the
+        // stepper moves; the stepper shows the size it runs at. (A
+        // surface-born effect's followed the room fit, step 2h. The
+        // fireflies fill their volume and keep the preset's.)
         if world
             && let Some(s) = scene.as_mut()
             && let Some((requested, preset)) = s.space()
@@ -5431,8 +5350,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             ) {
                 s.set_space_half(half);
                 info!(
-                    "space size: '{}' at {:.2} m half extent",
-                    world_effects[world_index], controls.space_half
+                    "space size: '{world_effect}' at {:.2} m half extent",
+                    controls.space_half
                 );
             }
             let applied = fit.filter(|_| space.asked().is_none());
@@ -5580,11 +5499,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 info!("{}", now.change_line(&depth_light, depth_light_blocked));
                 depth_light = now;
             }
-            if let Some(scene) = &scene {
+            // Board #5470: the fireflies' knobs, live.
+            let now = crate::fireflies::Knobs::from_knobs(system_prop);
+            if now != fireflies {
+                info!("{}", now.change_line(&fireflies));
+                fireflies = now;
+            }
+            if let Some(scene) = &scene
+                && let Some(pool) = scene.pool()
+            {
                 info!(
-                    "particles alive {} · emitter weight {:.2}",
+                    "particles alive {} of a pool of {pool} · fireflies asked {} (cap {})",
                     scene.alive_count(),
-                    scene.emitter_weight()
+                    fireflies.fireflies(density_set),
+                    crate::fireflies::FIREFLY_CAP
                 );
             }
             // Board #5451: the flash limit's knob, live.
@@ -5858,7 +5786,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     drop(session);
     drop(hud);
     drop(scene);
-    drop(parked);
     drop(music);
     drop(live_audio);
     drop(particles);
@@ -6361,10 +6288,12 @@ fn hidden_reply(
 /// Board #3751: one intent applied, the grammar's (V2) and the agent's
 /// (V3) alike, and its label. The menu's intents become the `Action`s the
 /// hand menu's presses produce, consumed by the next frame's action loop
-/// (a toggle sets its `controls` field first, as the menu does; naming a
-/// world effect sets `switch_to`); the surface intents write through the
-/// lanes' typed writers now (`intent::apply`). Board #5453: the Agent
-/// control's intent picks among what `available` has.
+/// (a toggle sets its `controls` field first, as the menu does); the
+/// surface intents write through the lanes' typed writers now
+/// (`intent::apply`). Board #5453: the Agent control's intent picks among
+/// what `available` has. Board #5470: an intent that asks for a cloud
+/// effect changes nothing, and its label says the effects are gone
+/// (`intent::EFFECTS_GONE`).
 fn apply_intent(
     intent: &crate::intent::Intent,
     vocab: &crate::intent::Vocabulary<'_>,
@@ -6372,17 +6301,11 @@ fn apply_intent(
     boxes: &[crate::lanes::LaneBox<'_>],
     controls: &mut Controls,
     actions: &mut Vec<Action>,
-    switch_to: &mut Option<usize>,
     menu_stay: bool,
     available: &crate::agent::Available,
 ) -> String {
     use crate::intent::Intent;
     match *intent {
-        Intent::NextEffect => actions.push(Action::NextEffect),
-        Intent::PrevEffect => actions.push(Action::PrevEffect),
-        // The effect showing has nothing parked, so naming it switches
-        // nothing.
-        Intent::Effect(i) => *switch_to = Some(i),
         Intent::EditRoom(on) => {
             controls.edit_room = on;
             actions.push(Action::SetEditRoom(on));
@@ -6454,20 +6377,6 @@ fn hand_name(h: usize) -> &'static str {
     if h == 0 { "left" } else { "right" }
 }
 
-/// An Android system property, for spike-time knobs. Empty means unset.
-/// The next world effect to switch to from `from`, `step` = 1 forward or
-/// -1 back, skipping slots with nothing parked (the effect showing now, and
-/// any that failed to build at launch). `None` when nothing else is parked.
-fn cycle_index(parked: &[Option<XrScene>], from: usize, step: isize) -> Option<usize> {
-    let n = parked.len();
-    (1..n)
-        .map(|k| {
-            let offset = (k as isize * step).rem_euclid(n as isize) as usize;
-            (from + offset) % n
-        })
-        .find(|&i| parked[i].is_some())
-}
-
 /// How `audio_source` (`debug.fosfora.audio`) opens the microphones, from
 /// its knobs; `None` for a source that does not listen. Read once at
 /// launch, so the retry after a late `RECORD_AUDIO` grant (board #3264)
@@ -6505,6 +6414,7 @@ fn mic_source_for(audio_source: &str) -> Option<MicSource> {
     }
 }
 
+/// An Android system property, for spike-time knobs. Empty means unset.
 fn debug_prop(name: &str) -> Option<String> {
     let out = std::process::Command::new("getprop")
         .arg(name)
@@ -6610,32 +6520,6 @@ fn new_world_scene(
         options,
     )
     .with_context(|| format!("creating the world scene for '{effect}'"))
-}
-
-/// Names of the world-layout presets in `effects_dir` (files named
-/// `*_xr_world*.pfx`), in file-name order.
-fn discover_world_effects(effects_dir: &std::path::Path) -> Vec<String> {
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(effects_dir)
-        .map(|dir| {
-            dir.filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| {
-                    p.extension().is_some_and(|x| x == "pfx")
-                        && p.file_stem()
-                            .and_then(|s| s.to_str())
-                            .is_some_and(|s| s.contains("_xr_world"))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    files.sort();
-    files
-        .iter()
-        .filter_map(|p| {
-            let json: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
-            Some(json.get("name")?.as_str()?.to_owned())
-        })
-        .collect()
 }
 
 /// A one-cue scene showing `effect` with its default parameters, written

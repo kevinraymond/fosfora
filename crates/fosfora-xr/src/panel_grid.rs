@@ -8,8 +8,8 @@
 //! quad shows (the whole panel with debug on, the menu strip without), the
 //! bottom row [`MARGIN`] above that edge in both, so the row under the
 //! pointer stays there when debug toggles. Rows are [`ROW_H`] tall with
-//! [`ROW_GAP`] between them. A row is wide (one action, or a left and a
-//! right one: Prev/Next) or a pair of cells, one per column, each about
+//! [`ROW_GAP`] between them. A row is wide (a left and a right action:
+//! a surface row's `<` `>`) or a pair of cells, one per column, each about
 //! half the width with its own -/+ end boxes ([`END_BOX_W`]) or one
 //! action. The pointer picks a row by its height alone (a row owns half
 //! the gap above and below it, so the rows tile the block), a column by
@@ -34,22 +34,21 @@ pub const MARGIN: f32 = 10.0;
 pub const ROW_H: f32 = 34.0;
 pub const ROW_GAP: f32 = 6.0;
 pub const COL_GAP: f32 = 6.0;
-/// The -/+ and Prev/Next boxes at a cell's or a row's ends.
+/// The -/+ and `<` `>` boxes at a cell's or a row's ends.
 pub const END_BOX_W: f32 = 40.0;
 /// The room a status cell's text keeps from each end (points; `hud.rs`).
 pub const STATUS_PAD: f32 = 4.0;
-/// The hand menu's rows with Edit room off on the developer surface: the
-/// world effect's `<` `>` row on top (board #3336: the effect cycle left
-/// the bare pinch-hold), then, in both layouts at the bottom of the block,
-/// Recenter and Rescan (in the menu since board #4192, so the scan label's
-/// "Rescan from the hand menu" has a row to find; since board #5393 the
-/// two share the left cell and Roam has the right one), over the agent's
-/// provider (board #3776), over the pitcher and debug toggles, over the
-/// room editor's (board #3326), over the cloud's (step 2c), over the
-/// music's (board #3472). The debug panel shows the effect row at the top
-/// of its block, over the steppers. The release surface (board #4204)
-/// leaves out the pitcher and debug row ([`menu`]).
-pub const MENU_ROWS: usize = 7;
+/// The hand menu's rows with Edit room off on the developer surface, in
+/// both layouts at the bottom of the block: Recenter and Rescan (in the
+/// menu since board #4192, so the scan label's "Rescan from the hand menu"
+/// has a row to find; since board #5393 the two share the left cell and
+/// Roam has the right one), over the agent's provider (board #3776), over
+/// the pitcher and debug toggles, over the room editor's (board #3326),
+/// over the particles' (step 2c), over the music's (board #3472). The
+/// release surface (board #4204) leaves out the pitcher and debug row
+/// ([`menu`]). Board #5470: the world effect's `<` `>` row, which was on
+/// top, went with the effects it stepped, so the menu is one row shorter.
+pub const MENU_ROWS: usize = 6;
 /// The rows Edit room adds under its own (board #3472, D3): the pointed
 /// surface's color, band and strength.
 pub const SURFACE_ROWS: usize = 3;
@@ -57,8 +56,6 @@ pub const SURFACE_ROWS: usize = 3;
 /// One row of the hand menu (`hud.rs` paints each).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuRow {
-    /// The world effect's `<` `>`.
-    Effect,
     /// Recenter and Rescan, a half each, beside Roam.
     Recenter,
     /// The Agent control beside the Immersion control.
@@ -85,7 +82,7 @@ pub enum MenuRow {
 /// rows close up and no cell or half stands empty.
 pub fn menu(surface: Surface, editing: bool) -> Vec<MenuRow> {
     let developer = surface.developer();
-    let mut rows = vec![MenuRow::Effect, MenuRow::Recenter, MenuRow::Agent];
+    let mut rows = vec![MenuRow::Recenter, MenuRow::Agent];
     if developer {
         rows.push(MenuRow::Developer);
     }
@@ -137,13 +134,10 @@ pub const HEADER_H: f32 = 300.0;
 /// The debug panel's -/+ steppers (`STEPPERS` in `hud.rs`, which checks
 /// the count), two to a row.
 pub const STEPPERS: usize = 10;
-/// The most rows the debug panel shows: the menu's effect row (Prev/Next)
-/// at the top, the steppers' pair rows, then the menu's other rows
-/// (Recenter and Rescan, Agent, Pitcher and Debug, Edit room and its
-/// status, with Edit room on the surface's Color, Band and Strength,
-/// Particles and All: none, Music and Voice). Recenter and Rescan were the
-/// debug panel's own row until the menu took them (board #4192), so the
-/// count did not change.
+/// The most rows the debug panel shows: the steppers' pair rows, then the
+/// menu's rows (Recenter and Rescan, Agent, Pitcher and Debug, Edit room
+/// and its status, with Edit room on the surface's Color, Band and
+/// Strength, Particles and All: none, Music and Voice).
 pub const fn debug_rows(editing: bool) -> usize {
     STEPPERS.div_ceil(2) + menu_rows(Surface::Developer, editing)
 }
@@ -473,34 +467,35 @@ mod tests {
         // steppers in five full pair rows (the space size filled the fifth
         // row's empty cell, board #3325), so no taller than with nine,
         // the room editor's row under the menu's (board #3326), the
-        // cloud's under that (step 2c) and the music's at the bottom
+        // particles' under that (step 2c) and the music's at the bottom
         // (board #3472); with Edit room on, the surface's three rows under
-        // its own (D3), which is the headroom the header leaves. The
-        // menu's effect row (board #3336) is the panel's Prev/Next row, so
-        // the count is as it was. The Agent row (board #3776) adds one.
-        // Recenter and Rescan joining the menu (board #4192) add none: the
-        // panel had them.
-        assert_eq!(debug_rows(false), 12);
-        assert_eq!(debug_rows(true), 15);
+        // its own (D3). The Agent row (board #3776) added one. Recenter
+        // and Rescan joining the menu (board #4192) added none: the panel
+        // had them. The effect row's going (board #5470) took one away, so
+        // the header now has one row of headroom over the fullest block
+        // and no more.
+        assert_eq!(debug_rows(false), 11);
+        assert_eq!(debug_rows(true), 14);
         for editing in [false, true] {
             assert!(block_top(PANEL_H, debug_rows(editing)) >= MARGIN + HEADER_H);
         }
-        assert!(block_top(PANEL_H, debug_rows(true) + 1) < MARGIN + HEADER_H);
-        // The hand menu: a title over seven rows (the effect's on top since
-        // board #3336, Recenter and Rescan under it since board #4192, the
-        // Agent row under those since board #3776), or ten with Edit room
-        // on, 40 points taller for each past the first. No row or font
-        // shrinks for them.
+        assert!(block_top(PANEL_H, debug_rows(true) + 1) >= MARGIN + HEADER_H);
+        assert!(block_top(PANEL_H, debug_rows(true) + 2) < MARGIN + HEADER_H);
+        // The hand menu: a title over six rows (Recenter and Rescan on top
+        // since board #4192, the Agent row under them since board #3776;
+        // the effect's row was over them until board #5470), or nine with
+        // Edit room on, 40 points taller for each past the first. No row
+        // or font shrinks for them.
         let dev = Surface::Developer;
-        assert_eq!((menu_rows(dev, false), menu_rows(dev, true)), (7, 10));
-        assert_close!(menu_h(menu_rows(dev, false)), 324.0);
-        assert_close!(menu_h(menu_rows(dev, true)), 444.0);
+        assert_eq!((menu_rows(dev, false), menu_rows(dev, true)), (6, 9));
+        assert_close!(menu_h(menu_rows(dev, false)), 284.0);
+        assert_close!(menu_h(menu_rows(dev, true)), 404.0);
         // The release surface (board #4204): one row fewer, 40 points
         // shorter.
         let rel = Surface::Release;
-        assert_eq!((menu_rows(rel, false), menu_rows(rel, true)), (6, 9));
-        assert_close!(menu_h(menu_rows(rel, false)), 284.0);
-        assert_close!(menu_h(menu_rows(rel, true)), 404.0);
+        assert_eq!((menu_rows(rel, false), menu_rows(rel, true)), (5, 8));
+        assert_close!(menu_h(menu_rows(rel, false)), 244.0);
+        assert_close!(menu_h(menu_rows(rel, true)), 364.0);
         for editing in [false, true] {
             for surface in [dev, rel] {
                 let n = menu_rows(surface, editing);
@@ -525,7 +520,7 @@ mod tests {
         };
         // A button with a cell of its own, at the button's size: the
         // words `hud.rs` paints itself, then the controls' own.
-        let mut whole: Vec<&str> = vec!["Edit room: on", "Edit room: off", "Recenter the cloud"];
+        let mut whole: Vec<&str> = vec!["Edit room: on", "Edit room: off", "Recenter"];
         whole.extend(
             [
                 crate::roam::Roam::Off,
@@ -553,8 +548,8 @@ mod tests {
             whole.push(edges.label());
             edges = edges.next();
         }
-        for (on, editing) in [(true, false), (true, true), (false, true), (false, false)] {
-            whole.push(crate::room_edit::particles_label(on, editing));
+        for on in [true, false] {
+            whole.push(crate::room_edit::particles_label(on));
         }
         for text in whole {
             fits(text, FONT_BUTTON, cell_w());
@@ -616,7 +611,6 @@ mod tests {
         assert_eq!(
             menu(Surface::Developer, false),
             [
-                Effect,
                 Recenter,
                 Agent,
                 Developer,
@@ -628,7 +622,6 @@ mod tests {
         assert_eq!(
             menu(Surface::Developer, true),
             [
-                Effect,
                 Recenter,
                 Agent,
                 Developer,
@@ -650,19 +643,11 @@ mod tests {
         // control takes the whole cell.
         assert_eq!(
             menu(Surface::Release, false),
-            [
-                Effect,
-                Recenter,
-                Agent,
-                Edit,
-                Cloud { all_none: false },
-                Music
-            ]
+            [Recenter, Agent, Edit, Cloud { all_none: false }, Music]
         );
         assert_eq!(
             menu(Surface::Release, true),
             [
-                Effect,
                 Recenter,
                 Agent,
                 Edit,

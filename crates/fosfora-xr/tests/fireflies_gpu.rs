@@ -4,7 +4,9 @@
 //! is hammered with bursts, the count knob, the fireflies' calm motion and
 //! their answer to the music, and the hand particles: the arc, the landing
 //! without a bounce, and the edge flow along a wall's foot, round a table's
-//! rim and down a corner. The tests are `#[ignore]`d like the core's probes
+//! rim and down a corner. One test runs the preset itself through the
+//! core: its loader, its particle system and its world draw, with the aux
+//! block the XR app uploads. The tests are `#[ignore]`d like the core's probes
 //! (they need an adapter); run them with
 //! `cargo test -p fosfora-xr --test fireflies_gpu -- --ignored`.
 #![cfg(not(target_os = "android"))]
@@ -1116,4 +1118,301 @@ fn a_burst_takes_the_hands_slots_and_never_a_firefly() {
     let young = after.iter().filter(|s| s.hand() && s.age < 0.9).count();
     assert!(young > 300, "{young} hand particles born from the living");
     sim.finish();
+}
+
+/// The preset as the app runs it: loaded by the core's effect loader into a
+/// one-cue scene, its layer disabled, its sim dispatched outside the scene
+/// renderer's frame and drawn by `render_world`, as `scene.rs` does on the
+/// headset. The pool is the cap, the fireflies fill to the count, a burst
+/// adds its particles, the alive count the app logs never passes the pool,
+/// and the eye target gets light.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn the_preset_runs_through_the_cores_particle_system() {
+    use fosfora_app::audio::AudioFrame;
+    use fosfora_app::audio::analyzer::{SPECTROGRAM_MELS, SPECTRUM_BINS};
+    use fosfora_app::audio::hop::HopOutput;
+    use fosfora_app::gpu::particle::types::ParticleAux;
+    use fosfora_app::gpu::particle::{ParticleSystem, WorldCamera, WorldTarget};
+    use fosfora_app::headless::scene_renderer::SceneRenderer;
+
+    const PRESET: &str = include_str!("../../../assets/xr/effects/fireflies_xr_world.pfx");
+    const DIM: u32 = 256;
+    let (device, queue, _guard) = gpu();
+    // The core finds its assets from the working directory.
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    std::env::set_current_dir(&repo).unwrap();
+    // The one-cue scene the XR app writes for `mode world`.
+    let dir = std::env::temp_dir().join(format!("fosfora-fireflies-world-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Cue.json"),
+        r#"{"layers":[{"effect_name":"Fireflies"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("_scene.json"),
+        r#"{"version":1,"name":"XR Fireflies","loop_mode":false,"advance_mode":"Manual",
+           "cues":[{"preset_name":"Cue","transition":"Cut","label":"Fireflies"}]}"#,
+    )
+    .unwrap();
+
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut sr = SceneRenderer::new(
+        device.clone(),
+        queue.clone(),
+        64,
+        64,
+        fosfora_app::settings::ParticleQuality::High,
+        dir.clone(),
+    )
+    .expect("renderer");
+    // The desktop library does not scan assets/xr/; the APK stages the
+    // preset among the effects.
+    let pfx: fosfora_app::effect::format::PfxEffect =
+        serde_json::from_str(PRESET).expect("fireflies_xr_world.pfx parses");
+    assert_eq!(pfx.particles.as_ref().unwrap().max_count, POOL_CAP);
+    sr.effect_loader.effects.push(pfx);
+    sr.install_scene(fosfora_app::headless::load::load_scene_dir(&dir).expect("scene loads"));
+    sr.start();
+    assert!(sr.warnings.is_empty(), "warnings: {:?}", sr.warnings);
+    assert_eq!(sr.layer_stack.layers.len(), 1);
+    sr.layer_stack.layers[0].enabled = false;
+    fn system(sr: &mut SceneRenderer) -> &mut ParticleSystem {
+        sr.layer_stack.layers[0]
+            .as_effect_mut()
+            .and_then(|e| e.pass_executor.particle_system.as_mut())
+            .expect("the preset builds a particle system")
+    }
+
+    // The head at the anchor with the app's near fade, the floor a meter
+    // under it, and the default knobs.
+    let knobs = Knobs::default();
+    let mut rows = aux_for(
+        &[TestBox {
+            center: Vec3::new(0.0, -1.05, 0.0),
+            half: Vec3::new(10.0, 0.05, 10.0),
+        }],
+        &knobs,
+    );
+    rows[0] = [0.0, 0.0, 0.0, 0.15];
+    assert_eq!(rows.len(), WORLD_AUX_ROWS);
+    let aux = |rows: &[[f32; 4]]| -> Vec<ParticleAux> {
+        rows.iter().map(|&home| ParticleAux { home }).collect()
+    };
+    let anchor = Vec3::new(0.0, 1.0, 0.0);
+    let camera = WorldCamera {
+        view: glam::Mat4::from_translation(-anchor),
+        proj: glam::Mat4::perspective_rh(90f32.to_radians(), 1.0, 0.05, 100.0),
+        anchor,
+    };
+    let texture = |format, usage| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("fireflies-eye"),
+            size: wgpu::Extent3d {
+                width: DIM,
+                height: DIM,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usage,
+            view_formats: &[],
+        })
+    };
+    let color = texture(
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        wgpu::TextureUsages::COPY_SRC,
+    );
+    let depth = texture(
+        wgpu::TextureFormat::Depth32Float,
+        wgpu::TextureUsages::empty(),
+    );
+    let (color_view, depth_view) = (
+        color.create_view(&wgpu::TextureViewDescriptor::default()),
+        depth.create_view(&wgpu::TextureViewDescriptor::default()),
+    );
+    let fps = FPS as u32;
+    let alive = |sr: &mut SceneRenderer| {
+        let ps = system(sr);
+        ps.request_counter_readback();
+        wait(device);
+        ps.poll_counter_readback();
+        ps.alive_count
+    };
+    let mut frame = 0u32;
+    let mut run = |sr: &mut SceneRenderer, rows: &[[f32; 4]], frames: u32, draw: bool| {
+        for k in 0..frames {
+            let ts = f64::from(frame) / f64::from(fps);
+            let mut f = fosfora_app::headless::loop_driver::synth_features(frame, fps, 120.0);
+            f.rms = 0.5;
+            let hop = HopOutput {
+                frame: AudioFrame {
+                    features: f,
+                    spectrum: [0.3; SPECTRUM_BINS],
+                    mel: [0.3; SPECTROGRAM_MELS],
+                    dmfcc: [0.0; 13],
+                    timestamp: ts,
+                    phase_frozen: false,
+                    bar_duration: 2.0,
+                    beat_time: None,
+                    downbeat_time: None,
+                    section_boundary: None,
+                },
+                beat_fired: false,
+                downbeat_fired: false,
+                drop_fired: false,
+                beat_activation: 0.0,
+                pre_norm: f,
+            };
+            let wave = vec![0.0; fosfora_app::gpu::audio_textures::WAVEFORM_PEEK];
+            system(sr).update_aux_in_place(queue, &aux(rows));
+            sr.step(ts, DT, &hop, &wave, false);
+            let ps = system(sr);
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            ps.poll_counter_readback();
+            ps.dispatch(&mut enc, queue);
+            if draw && k + 1 == frames {
+                // The eye pass: clear color to alpha 0 (passthrough) and
+                // depth to far, then the world pass loads both.
+                drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("fireflies-eye"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &color_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                }));
+                ps.render_world(
+                    device,
+                    &mut enc,
+                    queue,
+                    WorldTarget {
+                        color: &color_view,
+                        color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        depth: Some(&depth_view),
+                        depth_format: wgpu::TextureFormat::Depth32Float,
+                    },
+                    &camera,
+                    wgpu::LoadOp::Load,
+                );
+            }
+            queue.submit([enc.finish()]);
+            frame += 1;
+        }
+    };
+
+    // Eight seconds: the fireflies are all there, and nothing else.
+    run(&mut sr, &rows, 8 * fps, true);
+    assert_eq!(alive(&mut sr), knobs.count);
+    // Light in the eye target: sprites over the cleared, transparent view.
+    let bpr = DIM * 4;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("fireflies-readback"),
+        size: u64::from(bpr * DIM),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    enc.copy_texture_to_buffer(
+        color.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bpr),
+                rows_per_image: Some(DIM),
+            },
+        },
+        wgpu::Extent3d {
+            width: DIM,
+            height: DIM,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([enc.finish()]);
+    buf.slice(..)
+        .map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+    wait(device);
+    let pixels = buf.slice(..).get_mapped_range().to_vec();
+    buf.unmap();
+    let lit = pixels
+        .chunks_exact(4)
+        .filter(|p| p[0] > 8 || p[1] > 8)
+        .count();
+    let brightest = pixels
+        .chunks_exact(4)
+        .map(|p| p[0].max(p[1]))
+        .max()
+        .unwrap();
+    eprintln!(
+        "{lit} of {} pixels lit, the brightest at {brightest}",
+        DIM * DIM
+    );
+    // Sparse: points of light, not a wash over the view.
+    assert!(lit > 50, "{lit} pixels lit");
+    assert!(lit < (DIM * DIM / 4) as usize, "{lit} pixels lit");
+    // Warm: more red and green than blue where it is lit.
+    let (mut r, mut g, mut b) = (0u64, 0u64, 0u64);
+    for p in pixels.chunks_exact(4) {
+        r += u64::from(p[0]);
+        g += u64::from(p[1]);
+        b += u64::from(p[2]);
+    }
+    assert!(b < r && b < g, "rgb sums {r} {g} {b}");
+
+    // A throw's impact: its 6,000 over four frames join the fireflies.
+    let impact = |count: u32| Burst {
+        center: Vec3::new(0.0, 0.2, -1.5),
+        radius: 0.12,
+        count,
+        hand: 1,
+        impact: true,
+        brightness: 1.0,
+    };
+    let mut bursting = rows.clone();
+    bursting[AUX_INSTRUMENTS..AUX_INSTRUMENTS + 3].copy_from_slice(&instrument_rows(
+        Some(impact(1_500)),
+        None,
+        Vec3::ZERO,
+    ));
+    run(&mut sr, &bursting, 4, false);
+    run(&mut sr, &rows, 2, false);
+    assert_eq!(alive(&mut sr), knobs.count + 6_000);
+    // Hammered for five seconds at the steal's most: the pool is full and
+    // the alive count the app logs is the pool, never more.
+    let mut hammer = instrument_rows(Some(impact(50_000)), None, Vec3::ZERO);
+    hammer[0][3] = MAX_STEAL;
+    bursting[AUX_INSTRUMENTS..AUX_INSTRUMENTS + 3].copy_from_slice(&hammer);
+    for _ in 0..5 {
+        run(&mut sr, &bursting, fps, false);
+        assert!(alive(&mut sr) <= POOL_CAP);
+    }
+    assert_eq!(alive(&mut sr), POOL_CAP);
+    // Left alone, the hand particles land, fade and die, and the fireflies
+    // are what is left.
+    run(&mut sr, &rows, 8 * fps, false);
+    assert_eq!(alive(&mut sr), knobs.count);
+
+    wait(device);
+    let err = pollster::block_on(device.pop_error_scope());
+    assert!(err.is_none(), "validation error: {err:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -7,14 +7,14 @@
 //! on the palm).
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
-//! turned more to the ceiling is a hold instead, `palm_panel.rs`): seven
-//! rows on the developer surface (`panel_grid::menu`), the world effect's
-//! `<` `>` on top (board #3336: the effect cycle left the bare pinch-hold;
-//! "one effect in this mode" outside world mode), Recenter and Rescan
-//! beside Roam under it (board #4192, #5393), the Agent control beside
+//! turned more to the ceiling is a hold instead, `palm_panel.rs`): six
+//! rows on the developer surface (`panel_grid::menu`), Recenter and Rescan
+//! beside Roam on top (board #4192, #5393; the world effect's `<` `>` row
+//! was over them until the three cloud effects went, board #5470), the
+//! Agent control beside
 //! Immersion (board #3776, #5384), the particle pitcher's on/off toggle
 //! and the debug panel's, then the room editor's toggle beside its status
-//! ("desk: embers", board #3326), under that the Particles toggle
+//! ("desk: curls", board #3326), under that the Particles toggle
 //! (`room_edit::Cloud`) beside "All: none" and the Edges control, and at
 //! the bottom the music's play/stop (`music.rs`, board #3472), with the
 //! track's title and `<` `>` for the previous and the next track around
@@ -23,19 +23,20 @@
 //! Edit room on, three more rows under the editor's (board #3472, D3):
 //! the color, the band and the strength of the surface under the beam,
 //! each stepped with `<` and `>`, the menu growing upward to hold them.
-//! The release surface (board #4204, `release.rs`) shows six rows, the
+//! The release surface (board #4204, `release.rs`) shows five rows, the
 //! menu without the pitcher's and the debug panel's row and without "All:
 //! none", the rows closed up, and never the debug panel.
 //! With debug on the same quad grows upward into the debug
-//! panel (frame timing, the effect, hands, reach, anchor and audio, and
-//! controls for what can change without a restart), the menu rows still
-//! at its bottom (the effect row at the top of its controls). The quad keeps its bottom edge when it resizes, so the
-//! toggles stay under the pointer either way.
+//! panel (frame timing, hands, reach, anchor and audio, and controls for
+//! what can change without a restart), the menu rows still at its bottom.
+//! The quad keeps its bottom edge when it resizes, so the toggles stay
+//! under the pointer either way.
 //!
 //! The controls are built for low precision (they must work without stereo
 //! depth perception, and a ray jitters): rows 1.7 cm tall at the bottom of
 //! the panel, picked by the pointer's height alone, then by its side: a
-//! wide row (Prev/Next) has a left and a right half, the others two cells
+//! wide row (a surface row's `<` `>`) has a left and a right half, the
+//! others two cells
 //! side by side, each with a left and a right half where it has two
 //! actions (-/+); `panel_grid.rs` holds the layout and the hit test. The
 //! target under the pointer when a press starts fires at once and stays
@@ -85,7 +86,7 @@ const STEPPERS: [(&str, f32, f32, f32); 10] = [
         crate::instruments::PITCHER_RATE_MAX,
         500.0,
     ),
-    ("cloud density", 0.05, 1.0, 0.05),
+    ("firefly density", 0.05, 1.0, 0.05),
     (
         "space half m",
         crate::space::SPACE_HALF_MIN,
@@ -95,7 +96,7 @@ const STEPPERS: [(&str, f32, f32, f32); 10] = [
 ];
 
 const _: () = assert!(STEPPERS.len() == grid::STEPPERS);
-/// The "cloud density" row of `STEPPERS`.
+/// The "firefly density" row of `STEPPERS`.
 const DENSITY: usize = 8;
 
 /// Values the panel's -/+ rows change; the app applies them every frame.
@@ -113,11 +114,11 @@ pub struct Controls {
     pub pitcher: bool,
     /// The pitcher's particles per second.
     pub pitcher_rate: f32,
-    /// The world effect's emission against its preset's, 0.05..1: thins
-    /// the cloud (not the pitcher's pour). The wearer's setting, the most
-    /// the thermal governor gives back.
+    /// The share of the fireflies' count that is asked for, 0.05..1 (the
+    /// hand particles are not scaled). The wearer's setting, the most the
+    /// thermal governor gives back.
     pub density: f32,
-    /// The thermal governor's density while it holds the cloud below
+    /// The thermal governor's density while it holds the fireflies below
     /// `density` (board #3789; the app sets it each frame): the stepper
     /// shows it, marked "(gov)", and steps from it.
     pub density_gov: Option<f32>,
@@ -127,9 +128,9 @@ pub struct Controls {
     /// The room editor is on (the hand menu's Edit room toggle; not saved,
     /// off at launch).
     pub edit_room: bool,
-    /// The world effect's cloud is on (the hand menu's Cloud toggle; not
-    /// saved, on at launch): off, the effect is hidden, its sim stepping
-    /// on, or with `edit_room` on only the pointed surface spawns
+    /// The world effect's particles are on, the fireflies and the hand
+    /// particles (the hand menu's Particles toggle; not saved, on at
+    /// launch): off, the effect is hidden, its sim stepping on
     /// (`room_edit::Cloud`).
     pub cloud: bool,
     /// The bundled clip plays, the analysis on its tap (the hand menu's
@@ -164,8 +165,6 @@ pub struct Controls {
 /// What the panel's buttons asked for this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    PrevEffect,
-    NextEffect,
     /// Put the anchor back around the wearer.
     Recenter,
     /// Relaunch Space Setup and requery the room's anchors.
@@ -174,12 +173,12 @@ pub enum Action {
     SetDebug(bool),
     /// The hand menu's pitcher toggle changed (not saved).
     SetPitcher(bool),
-    /// The cloud density stepper moved: `Controls::density` is the
+    /// The density stepper moved: `Controls::density` is the
     /// wearer's new setting, which clears the thermal governor's debt.
     SetDensity,
     /// The hand menu's Edit room toggle changed (not saved).
     SetEditRoom(bool),
-    /// The hand menu's Cloud toggle changed (not saved).
+    /// The hand menu's Particles toggle changed (not saved).
     SetCloud(bool),
     /// The hand menu's Music row changed: play or stop (saved in
     /// `music.json` since board #5385).
@@ -238,8 +237,6 @@ impl Controls {
 /// A control the pointer can land on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
-    Prev,
-    Next,
     Recenter,
     Rescan,
     ToggleDebug,
@@ -285,7 +282,6 @@ pub struct FrameWindow {
 /// Everything the panel shows this frame.
 pub struct View<'a> {
     pub mode: &'a str,
-    pub effect: Option<(&'a str, usize, usize)>,
     pub alive: Option<u32>,
     pub frames: FrameWindow,
     pub perf: PerfSample,
@@ -751,8 +747,8 @@ impl Hud {
             && pressed
             && now >= self.repeat_at
         {
-            // From now, not from the schedule: after a stall (an effect
-            // switch, a hand-mesh upload) a scheduled repeat fired once per
+            // From now, not from the schedule: after a stall (a hand-mesh
+            // upload) a scheduled repeat fired once per
             // frame until it caught up and jumped the value to its clamp.
             // A held Strength `>` ramps too; the color and the band do not
             // repeat (a held press would spin through them).
@@ -762,8 +758,6 @@ impl Hud {
             None
         };
         match fire {
-            Some(Target::Prev) => actions.push(Action::PrevEffect),
-            Some(Target::Next) => actions.push(Action::NextEffect),
             Some(Target::Recenter) => actions.push(Action::Recenter),
             Some(Target::Rescan) => actions.push(Action::RescanRoom),
             Some(Target::ToggleDebug) => {
@@ -1481,12 +1475,8 @@ fn panel_ui(
     let header_end = ui.cursor().top();
 
     // Controls: rows at the bottom, picked by the pointer's height, then
-    // its side (`panel_grid.rs`). The effect row on top, as in the menu;
-    // outside world mode the panel leaves it out.
+    // its side (`panel_grid.rs`): the steppers over the menu's rows.
     let mut block = Vec::new();
-    if view.effect.is_some() {
-        block.push(effect_row(view.effect));
-    }
     let steppers: Vec<Cell<'_>> = STEPPERS
         .iter()
         .enumerate()
@@ -1515,12 +1505,7 @@ fn panel_ui(
     if controls.edit_room {
         block.extend(surface_rows(view.surface_params));
     }
-    block.push(cloud_row(
-        controls.cloud,
-        controls.edit_room,
-        controls.edges,
-        true,
-    ));
+    block.push(cloud_row(controls.cloud, controls.edges, true));
     block.push(music_row(
         controls.music,
         view.track,
@@ -1551,14 +1536,13 @@ fn menu_ui(
         .iter()
         .filter_map(|row| {
             Some(match *row {
-                grid::MenuRow::Effect => effect_row(view.effect),
                 grid::MenuRow::Recenter => recenter_row(view.room, controls.roam),
                 grid::MenuRow::Agent => agent_row(controls.agent, controls.immerse),
                 grid::MenuRow::Developer => menu_row(false, controls.pitcher),
                 grid::MenuRow::Edit => edit_row(editing, view.edit_status),
                 grid::MenuRow::SurfaceParam(_) => params.next()?,
                 grid::MenuRow::Cloud { all_none } => {
-                    cloud_row(controls.cloud, editing, controls.edges, all_none)
+                    cloud_row(controls.cloud, controls.edges, all_none)
                 }
                 grid::MenuRow::Music => music_row(
                     controls.music,
@@ -1606,23 +1590,6 @@ fn surface_rows(params: Option<(u32, u32, f32)>) -> [Control<'static>; grid::SUR
     ]
 }
 
-/// The world effect's row, the top of the menu and of the debug panel's
-/// block (board #3336): `<` and `>` around the effect's name and place,
-/// "Embers  1/3", the hand menu's home for the effect cycle since the bare
-/// pinch-hold stopped cycling it (`Action::PrevEffect` / `NextEffect`).
-/// With no world effect (`effect` `None`, not world mode) a status in its
-/// place, so the menu keeps its height and nothing presses.
-fn effect_row(effect: Option<(&str, usize, usize)>) -> Control<'static> {
-    match effect {
-        Some((name, i, n)) => Control::Wide {
-            left: (Target::Prev, "<"),
-            right: (Target::Next, ">"),
-            middle: format!("{name}  {}/{n}", i + 1),
-        },
-        None => Control::Text("One effect in this mode".to_owned()),
-    }
-}
-
 /// The music's row, the bottom row in both layouts: play or stop (board
 /// #3472) with the track's `title` and `<` `>` around it (board #5385,
 /// [`Cell::Music`]), and the voice path's toggle in the right cell (board
@@ -1667,16 +1634,16 @@ fn music_row<'a>(
     ])
 }
 
-/// Recenter the cloud, and with the room on Rescan the room beside it,
-/// over the agent's row in both layouts: under the effect's in the menu,
-/// under the steppers in the debug panel. It was the debug panel's alone
+/// Recenter the fireflies around the wearer, and with the room on Rescan
+/// the room beside it, over the agent's row in both layouts: the menu's
+/// top row, under the steppers in the debug panel. It was the debug panel's alone
 /// until board #4192: the scan label sends a wearer whose room was not
 /// found to the hand menu ("No room found. Rescan from the hand menu"),
 /// and with the debug panel off the menu had no Rescan to find. It went
-/// in under the effect's row as the Agent row did, so no row the wearer
-/// already reaches for moved (the quad keeps its bottom edge and grows
-/// upward). Without the room there is nothing to rescan, and Recenter
-/// takes the cell.
+/// in at the top as the Agent row did, so no row the wearer already
+/// reaches for moved (the quad keeps its bottom edge and grows upward).
+/// Without the room there is nothing to rescan, and Recenter takes the
+/// cell.
 ///
 /// Board #5393: the Roam control takes the right cell ("Roam: off", "Roam:
 /// on", "Roam: on (no room)" when the scan turned it on), and Recenter and
@@ -1690,7 +1657,7 @@ fn recenter_row(room: bool, roam: crate::roam::Roam) -> Control<'static> {
             Half::one(Target::Rescan, "Rescan"),
         ])
     } else {
-        Cell::Button(Target::Recenter, "Recenter the cloud")
+        Cell::Button(Target::Recenter, "Recenter")
     };
     Control::Pair([
         Some(left),
@@ -1701,9 +1668,9 @@ fn recenter_row(room: bool, roam: crate::roam::Roam) -> Control<'static> {
 /// The agent's provider (board #3776), one action across the row, over
 /// the pitcher's and the debug panel's toggles in both layouts: each press
 /// steps the cycle (local, the network provider `voice.json` configures,
-/// off; what the headset lacks is skipped). It went in as the menu's top
-/// row under the effect's (the Recenter row has been between them since
-/// board #4192), so adding it moved no row the wearer already reaches for
+/// off; what the headset lacks is skipped). It went in near the top of
+/// the menu (the Recenter row has been over it since board #4192), so
+/// adding it moved no row the wearer already reaches for
 /// (the quad keeps its bottom edge and grows upward). The state is in the
 /// words, not a color; "Agent: none" with nothing to pick, and a press then
 /// does nothing. Board #5384: the Agent control takes the left cell, and
@@ -1722,23 +1689,19 @@ fn agent_row(
     ])
 }
 
-/// The cloud's row, over the music's in both layouts: its toggle
+/// The particles' row, over the music's in both layouts: the toggle that
+/// hides the fireflies and the hand particles
 /// (`room_edit::particles_label`), and every surface to none (step 2c)
 /// sharing a cell with the edge bars' choice (board #5420, #5431: the
 /// theme's or the mode forced on every kind), a half each, as Recenter and
 /// Rescan share theirs. Without `all_none` (the release surface, board
 /// #4204) the edge bars' choice has the cell to itself. The state is in
 /// the words, not a color.
-fn cloud_row(
-    on: bool,
-    editing: bool,
-    edges: crate::edge_bars::Choice,
-    all_none: bool,
-) -> Control<'static> {
+fn cloud_row(on: bool, edges: crate::edge_bars::Choice, all_none: bool) -> Control<'static> {
     Control::Pair([
         Some(Cell::Button(
             Target::ToggleCloud,
-            crate::room_edit::particles_label(on, editing),
+            crate::room_edit::particles_label(on),
         )),
         // Every surface to none in one press, for telling what a single
         // assignment does afterwards (board #3326). Board #5461: the edge
@@ -1755,7 +1718,7 @@ fn cloud_row(
     ])
 }
 
-/// The room editor's row, over the cloud's in both layouts: its toggle and
+/// The room editor's row, over the particles' in both layouts: its toggle and
 /// its status (board #3326). The state is in the words, not a color.
 fn edit_row(on: bool, status: &str) -> Control<'_> {
     Control::Pair([

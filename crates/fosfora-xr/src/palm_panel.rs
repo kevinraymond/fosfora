@@ -1025,6 +1025,40 @@ mod tests {
 
     /// Board #5452: the hints taught round-trip, are written once one is
     /// taught, and a file from before them has taught none.
+    /// Board #5470: the menu no longer has an effect row. A
+    /// `hand_menu.json` that names an effect, cut or not, loads with every
+    /// field it does have, and a save leaves the name out.
+    #[test]
+    fn a_menu_file_that_names_a_cut_effect_still_loads() {
+        let json = r#"{"agent":"local","debug":true,"effect":"Flock","world_effect":"Embers","effect_index":2,"immerse":"low","roam":true,"taught":["swipe"],"voice":false}"#;
+        let file = MenuFile::parse(json);
+        let mut taught = crate::first_run::Taught::default();
+        taught.set(crate::first_run::Hint::Swipe);
+        assert_eq!(
+            file,
+            MenuFile {
+                debug: true,
+                voice: false,
+                agent: Some(crate::agent::Pick::Local),
+                immerse: crate::immerse::Depth::Low,
+                roam: true,
+                space_setup_asked: false,
+                taught,
+            }
+        );
+        let saved = file.to_json();
+        assert!(
+            !saved.contains("effect") && !saved.contains("Flock"),
+            "{saved}"
+        );
+        assert_eq!(MenuFile::parse(&saved), file);
+        // The effect's name alone is the defaults.
+        assert_eq!(
+            MenuFile::parse(r#"{"effect":"Flux Cloud"}"#),
+            MenuFile::default()
+        );
+    }
+
     #[test]
     fn the_menu_file_saves_the_hints_taught_and_reads_none_when_absent() {
         use crate::first_run::{Hint, Taught};

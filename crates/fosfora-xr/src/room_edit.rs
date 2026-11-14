@@ -48,23 +48,14 @@
 //! arm left while reading it still runs out. [`EditFrame::armed`] says
 //! which box is armed.
 //!
-//! **The cloud toggle** (step 2c, [`Cloud`]): the hand menu's Cloud row.
-//! Off, the world effect is hidden at once, whatever the effect
-//! ([`Cloud::visible`], step 2e): the eye pass skips its draw while its
-//! sim steps on, so on shows the room as it would have been. (Step 2c
-//! took the emission to 0 instead, and the living sprites drew on until
-//! they died.) Off while Edit room is on, the pointed surface is soloed: the effect
-//! shows, but every other box's lane row goes to the sim as `none`
-//! ([`solo`]), so only the hit spawns, at the full rate (step 2d), and the
-//! wearer sees its embers, its sparks or nothing, alone. The particle
-//! system offers no way to clear the living cloud without a core change,
-//! so moving the solo to another surface, or into it from on, leaves what
-//! is alive to die over its lifetime (12 s for Embers). Kevin,
-//! worn, Sep 29: "Half the time I don't even know what's happening
-//! because the giant particle cloud is everywhere"; with every table
-//! shedding into 400K living sprites, one table's change was lost in the
-//! mass. And, after 2d: "The whole entire scene, clouds, glow, flock,
-//! whatever persist no matter what I'm trying."
+//! **The Particles toggle** (step 2c, [`Cloud`]): the hand menu's Particles
+//! row. Off, the world effect is hidden at once, the fireflies and the
+//! hand particles ([`Cloud::visible`], step 2e): the eye pass skips its
+//! draw while its sim steps on, so on shows the room as it would have
+//! been. Board #5470: with the three cloud effects gone the editor paints
+//! no particles on a surface, so off hides the effect with Edit room on
+//! too. [`Cloud::Solo`] and [`solo`] are what is left of the soloed
+//! surface of the time a table shed embers. Nothing reaches them.
 
 use glam::Vec3;
 
@@ -344,23 +335,22 @@ impl RoomEditor {
     }
 }
 
-/// The hand menu's Particles toggle's words (`hud.rs`) for the toggle `on`
-/// and Edit room `editing`. "Particles", not "cloud": the toggle hides
-/// every particle of the effect, the embers painted on a surface included,
-/// and the word cloud read as the ambient mass alone (Kevin, Sep 30). Off
-/// with Edit room on, the effect still shows ([`Cloud::of`]): the painted
-/// embers are its particles, which the words say. Board #5461: they said
-/// it as "Particles: off (shown: editing)", 208 points in a 187-point cell.
-pub fn particles_label(on: bool, editing: bool) -> &'static str {
-    match (on, editing) {
-        (true, _) => "Particles: on",
-        (false, true) => "Particles: off (editing)",
-        (false, false) => "Particles: off",
+/// The hand menu's Particles toggle's words (`hud.rs`) for the toggle
+/// `on`. "Particles", not "cloud": the toggle hides every particle of the
+/// world effect, the fireflies and what a hand throws (board #5470). While
+/// surfaces could be painted with embers, off read "Particles: off
+/// (editing)" with Edit room on, when the effect still showed. Nothing is
+/// painted with particles any more, so off is off.
+pub fn particles_label(on: bool) -> &'static str {
+    if on {
+        "Particles: on"
+    } else {
+        "Particles: off"
     }
 }
 
-/// What the world effect's cloud runs this frame, from the hand menu's
-/// Cloud toggle and Edit room.
+/// What the world effect's particles run this frame, from the hand menu's
+/// Particles toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cloud {
     /// Shown, the lane rows as the lanes give them.
@@ -379,25 +369,19 @@ pub enum Cloud {
 }
 
 impl Cloud {
-    /// The cloud for the toggle `cloud`: off hides the effect, except
-    /// while Edit room is on, when the effect always shows: the embers
-    /// and sparks the editor paints on a surface are that effect's
-    /// particles, and a hidden effect made every tap look like nothing
-    /// (Kevin's seventh worn pass, Sep 30). `hit` is kept for the
-    /// explicit solo to come.
-    pub fn of(cloud: bool, edit_room: bool, hit: Option<usize>) -> Self {
-        let _ = hit;
-        if cloud || edit_room {
-            Self::On
-        } else {
-            Self::Off
-        }
+    /// The particles for the toggle `cloud`: off hides the world effect,
+    /// the fireflies and the hand particles, with Edit room on or off
+    /// (board #5470). While the editor could paint a surface with embers
+    /// or sparks, which were the effect's particles, Edit room kept the
+    /// effect showing whatever the toggle said. The editor paints no
+    /// particles any more.
+    pub fn of(cloud: bool) -> Self {
+        if cloud { Self::On } else { Self::Off }
     }
 
     /// Whether the eye pass draws the world effect (`Gfx::set_world_visible`):
-    /// not while off. The emission and the lane rows do not hide it, so
-    /// the effects that ignore the lanes (Flux Cloud, Coarse, Murmur)
-    /// hide as well, and what is alive goes at once.
+    /// not while off. The sim steps on, so what is alive goes at once and
+    /// comes back as it would have been.
     pub fn visible(self) -> bool {
         !matches!(self, Self::Off)
     }
@@ -416,8 +400,10 @@ impl Cloud {
     /// (`surfaces::friendly_name`).
     pub fn describe(self, name: impl FnOnce(usize) -> String) -> String {
         match self {
-            Self::On => "cloud on".to_owned(),
-            Self::Off => "cloud off: the world effect is hidden".to_owned(),
+            Self::On => "particles on".to_owned(),
+            Self::Off => {
+                "particles off: the fireflies and the hand particles are hidden".to_owned()
+            }
             Self::Solo(Some(k)) => format!("cloud off, edit room: solo {}", name(k)),
             Self::Solo(None) => {
                 "cloud off, edit room: solo, no surface (nothing spawns)".to_owned()
@@ -933,19 +919,18 @@ mod tests {
     }
 
     #[test]
-    fn the_cloud_follows_the_toggle_and_edit_room() {
-        assert_eq!(Cloud::of(true, false, None), Cloud::On);
-        assert_eq!(Cloud::of(true, true, Some(3)), Cloud::On);
-        assert_eq!(Cloud::of(false, false, Some(3)), Cloud::Off);
-        // Editing shows the effect whatever the toggle says (the seventh
-        // worn pass): the painted embers are the effect.
-        assert_eq!(Cloud::of(false, true, Some(3)), Cloud::On);
-        assert_eq!(Cloud::of(false, true, None), Cloud::On);
+    fn the_particles_follow_the_toggle_alone() {
+        // Off hides the fireflies and the hand particles, Edit room on or
+        // off: the editor paints no particles any more.
+        assert_eq!(Cloud::of(true), Cloud::On);
+        assert_eq!(Cloud::of(false), Cloud::Off);
+        assert_eq!(particles_label(true), "Particles: on");
+        assert_eq!(particles_label(false), "Particles: off");
         let name = |k: usize| format!("desk {k}");
-        assert_eq!(Cloud::On.describe(name), "cloud on");
+        assert_eq!(Cloud::On.describe(name), "particles on");
         assert_eq!(
             Cloud::Off.describe(name),
-            "cloud off: the world effect is hidden"
+            "particles off: the fireflies and the hand particles are hidden"
         );
         assert_eq!(
             Cloud::Solo(Some(2)).describe(name),
@@ -963,8 +948,8 @@ mod tests {
         assert!(!Cloud::Off.visible());
         assert!(Cloud::Solo(Some(1)).visible());
         assert!(Cloud::Solo(None).visible());
-        assert!(Cloud::of(true, true, None).visible());
-        assert!(!Cloud::of(false, false, Some(2)).visible());
+        assert!(Cloud::of(true).visible());
+        assert!(!Cloud::of(false).visible());
         // What the sim is fed while off is what it is fed while on: the
         // lanes' rows as they are, and the emission at the density, which
         // the density path takes from the density alone (step 2c went to

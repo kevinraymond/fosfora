@@ -36,7 +36,7 @@
 //! only while it is the label showing.
 //!
 //! **The caption** ([`swipe_caption`]). A thumb swipe that changes the
-//! world effect names the new one on the label, every time.
+//! room's theme names the new one on the label, every time.
 
 use crate::label::{HANDS_LABEL, fade_for};
 
@@ -185,7 +185,7 @@ impl Wait {
 /// A gesture the first run teaches, in the order the hints show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hint {
-    /// The thumb swipe along the index finger, which steps the effect.
+    /// The thumb swipe along the index finger, which steps the theme.
     Swipe,
     /// The thumb tap on the index finger, which opens the voice window.
     Tap,
@@ -302,8 +302,8 @@ pub struct HintInput {
     /// A hand has been tracked this run. Without one the hints wait, so a
     /// wearer still holding the controllers does not use them up.
     pub hands_seen: bool,
-    /// The gesture works in this run: the swipe has an effect to step to,
-    /// the tap has a voice window to open, the palm has a menu.
+    /// The gesture works in this run: the swipe has a theme to step, the
+    /// tap has a voice window to open, the palm has a menu.
     pub can: [bool; 3],
     /// The wearer made the gesture this frame, and it did what it does.
     pub made: [bool; 3],
@@ -488,15 +488,10 @@ impl Hints {
     }
 }
 
-/// The label after a thumb swipe stepped the world effect: the new
-/// effect's name as the hand menu shows it. With the particles off the
-/// swipe changes nothing in view, so the caption says so.
-pub fn swipe_caption(effect: &str, particles: bool) -> String {
-    if particles {
-        effect.to_owned()
-    } else {
-        format!("{effect} \u{b7} particles off")
-    }
+/// The label after a thumb swipe stepped the room's theme (board #5470):
+/// the new theme's name as the hand menu's Theme control shows it.
+pub fn swipe_caption(theme: crate::themes::Theme) -> String {
+    theme.title().to_owned()
 }
 
 #[cfg(test)]
@@ -987,17 +982,64 @@ mod tests {
     }
 
     #[test]
-    fn the_swipe_caption_names_the_new_effect() {
-        assert_eq!(swipe_caption("Flux Cloud", true), "Flux Cloud");
-        assert_eq!(swipe_caption("Embers", true), "Embers");
+    fn the_swipe_caption_names_the_new_theme() {
+        use crate::themes::{Shown, Theme};
+        assert_eq!(swipe_caption(Theme::Aurora), "Aurora");
+        assert_eq!(swipe_caption(Theme::Classic), "Classic");
+        for theme in Theme::ALL {
+            let text = swipe_caption(theme);
+            // The name the menu's Theme control shows for it.
+            assert_eq!(text, Shown::Theme(theme).value());
+            // One line, at the label's largest size.
+            let laid = layout(&text);
+            assert_eq!(laid.lines.len(), 1, "{text}");
+            assert_close!(laid.px, crate::label::FONT_PX);
+        }
+        // The theme a swipe came to is the one named: right from Tide is
+        // Aurora, left from Classic wraps to Mirror.
+        assert_eq!(swipe_caption(Shown::Theme(Theme::Tide).step(1)), "Aurora");
         assert_eq!(
-            swipe_caption("Embers", false),
-            "Embers \u{b7} particles off"
+            swipe_caption(Shown::Theme(Theme::Classic).step(-1)),
+            "Mirror"
         );
-        // One line, at the label's largest size for a short name.
-        let laid = layout(&swipe_caption("Embers", true));
-        assert_eq!(laid.lines.len(), 1);
-        assert_close!(laid.px, crate::label::FONT_PX);
-        assert_eq!(layout(&swipe_caption("Flux Cloud", false)).lines.len(), 1);
+    }
+
+    /// The swipe hint is taught by a swipe that changed the theme: "Got
+    /// it" goes up once the swipe's caption has had the label, and the
+    /// hint is saved as taught. A swipe that changed nothing (the menu was
+    /// up, or there is no theme to step) is not fed as made and teaches
+    /// nothing.
+    #[test]
+    fn the_swipe_hint_is_taught_by_a_swipe_that_changed_the_theme() {
+        use crate::microgestures::{MicroFrame, Swipe, consume};
+        let frame = MicroFrame {
+            swipe: [None, Some(Swipe::Left)],
+            tap: [false; 2],
+        };
+        // What `app.rs` feeds as made: whether the swipe stepped the theme.
+        let fed = |panel_up: bool, themes: bool| {
+            let mut made = [false; 3];
+            made[Hint::Swipe.index()] = consume(&frame, panel_up, false, themes).is_some();
+            HintInput { made, ..ON }
+        };
+        let mut hints = Hints::new(Taught::default());
+        assert_eq!(
+            hints_for(&mut hints, HINT_GAP_S + 0.1, ON),
+            [HintEvent::Shown(Hint::Swipe)]
+        );
+        assert_eq!(hints.now().map(|n| n.0), Some(SWIPE_HINT));
+        // The menu is up, or no theme to step: the hint stays.
+        assert!(hints.step(DT, fed(true, true)).is_empty());
+        assert!(hints.step(DT, fed(false, false)).is_empty());
+        assert!(!hints.taught().has(Hint::Swipe));
+        // The swipe steps the theme: taught, and "Got it".
+        assert_eq!(
+            hints.step(DT, fed(false, true)),
+            [HintEvent::Made(Hint::Swipe), HintEvent::GotIt]
+        );
+        assert!(hints.taught().has(Hint::Swipe));
+        assert_eq!(hints.now().map(|n| n.0), Some(GOT_IT));
+        // The hint's words are the ones it always had.
+        assert_eq!(SWIPE_HINT, "Swipe your thumb\nalong your finger");
     }
 }

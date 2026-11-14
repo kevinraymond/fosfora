@@ -13,24 +13,24 @@
 //! scanned room the default is off. `debug.fosfora.roam 0|1` forces it for
 //! a launch, not saved, and a press takes over from the knob.
 //!
-//! **The cloud follows** ([`Follow`]). When the head is more than
-//! [`ROAM_FOLLOW_M`] from the cloud's center, measured level, the center
-//! glides to the head over [`GLIDE_S`] (Recenter's spot, at Recenter's
-//! height), at most once every [`FOLLOW_EVERY_S`]. The sim keeps its
-//! particles relative to the center, so they ride along with it: the cloud
-//! drifts after the wearer, nothing jumps and nothing dies.
+//! **The fireflies follow** ([`Follow`]). When the head is more than
+//! [`ROAM_FOLLOW_M`] from the center of the world effect's volume,
+//! measured level, the center glides to the head over [`GLIDE_S`]
+//! (Recenter's spot, at Recenter's height), at most once every
+//! [`FOLLOW_EVERY_S`]. The sim keeps its particles relative to the center,
+//! so they ride along with it: the fireflies drift after the wearer,
+//! nothing jumps and nothing dies.
 //!
 //! **The floor follows** ([`floor_center`]). The stage floor's slab is 20 m
 //! across. In roam it re-centers under the head whenever the head is more
 //! than [`FLOOR_FOLLOW_M`] from its center, so there are always at least
 //! 7 m of floor around the wearer. Its height stays y = 0.
 //!
-//! **Something to see** ([`Fill`]). The default world effect, Embers,
-//! spawns only from surfaces that carry emitter weight, and with no room
-//! nothing does. In roam, when the effect showing is the surface-born one
-//! and nothing in reach emits, the show switches to [`FILL_EFFECT`], the
-//! volume emitter, once. Turning roam off switches back, unless the wearer
-//! picked another effect meanwhile.
+//! **Something to see.** The world effect, the fireflies, fills its volume
+//! around that center with or without a room, so roam has nothing
+//! to switch. Until board #5470 the default effect spawned from the room's
+//! surfaces alone, and a fill rule here switched roam to the effect that
+//! filled its volume. Both effects are gone, and the rule with them.
 //!
 //! **Immersion gives way to walking** ([`Walk`], [`immerse_floor`],
 //! [`immerse_level`]). In roam the room gets no darker than
@@ -195,7 +195,7 @@ pub fn launch_line(state: &RoamState) -> String {
     }
 }
 
-/// How far the head may get from the cloud's center, level, before the
+/// How far the head may get from the volume's center, level, before the
 /// center follows (m).
 pub const ROAM_FOLLOW_M: f32 = 1.0;
 /// How long a follow glides (s).
@@ -234,13 +234,13 @@ struct Glide {
 /// What a follow did this frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FollowStep {
-    /// The cloud's center this frame.
+    /// The volume's center this frame.
     pub center: Vec3,
     /// A glide started this frame, this far (m, level) from the head.
     pub started: Option<f32>,
 }
 
-/// The cloud following the wearer in roam.
+/// The world effect's volume following the wearer in roam.
 #[derive(Debug, Clone, Copy)]
 pub struct Follow {
     glide: Option<Glide>,
@@ -258,7 +258,7 @@ impl Default for Follow {
 }
 
 impl Follow {
-    /// Once a frame in roam: `head`, the cloud's `center` now, the height
+    /// Once a frame in roam: `head`, the volume's `center` now, the height
     /// a re-center puts it at (Recenter's) and `dt`. Returns where the
     /// center goes this frame, or `None` to leave it.
     pub fn step(&mut self, head: Vec3, center: Vec3, height: f32, dt: f32) -> Option<FollowStep> {
@@ -321,108 +321,6 @@ pub fn floor_center(center: Vec2, head: Vec3) -> Vec2 {
         head
     } else {
         center
-    }
-}
-
-/// The world effect that fills its volume, switched to in roam when the
-/// surface-born one has nothing in reach to spawn from.
-pub const FILL_EFFECT: &str = "Flux Cloud";
-/// How long a found room's surfaces may all weigh nothing before the show
-/// switches (s): its anchors locate one by one after the query.
-pub const FILL_AFTER_S: f32 = 3.0;
-
-/// What the fill rule sees this frame.
-#[derive(Debug, Clone, Copy)]
-pub struct FillInput {
-    pub roam: bool,
-    /// The room's scan state (`None`: no room in this mode).
-    pub scan: Option<ScanState>,
-    /// The world effect showing, by index.
-    pub showing: usize,
-    /// It spawns from surfaces (Embers).
-    pub surface_born: bool,
-    /// Its summed emitter weight last frame.
-    pub weight: f32,
-    /// [`FILL_EFFECT`]'s index, when it can show.
-    pub fill: Option<usize>,
-    pub dt: f32,
-}
-
-/// A switch the fill rule asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FillSwitch {
-    /// To the fill effect: nothing in reach emits.
-    To(usize),
-    /// Roam went off: back to the effect it left.
-    Back(usize),
-}
-
-/// The fill rule across frames.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Fill {
-    /// Roam was on last frame.
-    on: bool,
-    /// May still switch in this roam.
-    armed: bool,
-    /// How long nothing has emitted (s).
-    empty_s: f32,
-    /// The effect the switch left.
-    left: Option<usize>,
-    /// The effect showing last frame, or the one a switch asked for.
-    seen: Option<usize>,
-}
-
-impl Fill {
-    /// Once a frame. At most one switch per roam: an effect change the rule
-    /// did not make is the wearer's, and from then on it is theirs.
-    pub fn step(&mut self, input: FillInput) -> Option<FillSwitch> {
-        let wearer = self.seen.is_some_and(|s| s != input.showing);
-        self.seen = Some(input.showing);
-        if wearer {
-            self.armed = false;
-            self.left = None;
-        }
-        if !input.roam {
-            let back = self
-                .left
-                .take()
-                .filter(|_| self.on && input.fill == Some(input.showing));
-            *self = Self {
-                seen: back.or(Some(input.showing)),
-                ..Self::default()
-            };
-            return back.map(FillSwitch::Back);
-        }
-        if !self.on {
-            self.on = true;
-            self.armed = true;
-            self.empty_s = 0.0;
-        }
-        if !self.armed {
-            return None;
-        }
-        let nothing = input.surface_born && input.weight <= 0.0;
-        // No room found (or none in this mode): no anchors to wait for.
-        // A room found: its anchors locate one by one, so a while.
-        let wait = match input.scan {
-            Some(ScanState::Found(_)) => FILL_AFTER_S,
-            Some(ScanState::None | ScanState::NotAllowed) | None => 0.0,
-            Some(ScanState::Scanning) => f32::INFINITY,
-        };
-        self.empty_s = if nothing {
-            self.empty_s + step_s(input.dt)
-        } else {
-            0.0
-        };
-        match input.fill {
-            Some(f) if nothing && self.empty_s >= wait && f != input.showing => {
-                self.armed = false;
-                self.left = Some(input.showing);
-                self.seen = Some(f);
-                Some(FillSwitch::To(f))
-            }
-            _ => None,
-        }
     }
 }
 
@@ -678,7 +576,7 @@ mod tests {
         for w in starts.windows(2) {
             assert!(w[1] - w[0] >= FOLLOW_EVERY_S - 1e-3, "{starts:?}");
         }
-        // The cloud stays within reach of the wearer.
+        // The volume stays within reach of the wearer.
         let gap = (center.z + 20.0).abs();
         assert!(gap < 5.0, "{gap}");
     }
@@ -715,114 +613,6 @@ mod tests {
             c = floor_center(c, head);
             assert!(level(head).distance(c) <= FLOOR_FOLLOW_M + 1e-4);
         }
-    }
-
-    fn fill_input(roam: bool, showing: usize, weight: f32) -> FillInput {
-        FillInput {
-            roam,
-            scan: Some(ScanState::None),
-            showing,
-            // Embers is 1, Flux Cloud 0.
-            surface_born: showing == 1,
-            weight,
-            fill: Some(0),
-            dt: DT,
-        }
-    }
-
-    #[test]
-    fn no_room_switches_embers_to_the_volume_and_back() {
-        let mut fill = Fill::default();
-        // Seated: nothing.
-        assert_eq!(fill.step(fill_input(false, 1, 0.0)), None);
-        // Roam on with no room: at once.
-        assert_eq!(fill.step(fill_input(true, 1, 0.0)), Some(FillSwitch::To(0)));
-        // The switch lands; nothing more while roaming.
-        for _ in 0..1000 {
-            assert_eq!(fill.step(fill_input(true, 0, 0.0)), None);
-        }
-        // Roam off: back to Embers.
-        assert_eq!(
-            fill.step(fill_input(false, 0, 0.0)),
-            Some(FillSwitch::Back(1))
-        );
-        assert_eq!(fill.step(fill_input(false, 1, 0.0)), None);
-    }
-
-    #[test]
-    fn a_surface_that_emits_keeps_embers() {
-        let mut fill = Fill::default();
-        for _ in 0..1000 {
-            assert_eq!(fill.step(fill_input(true, 1, 0.8)), None);
-        }
-        // Flock, or Flux Cloud already: nothing to switch.
-        let mut fill = Fill::default();
-        for _ in 0..1000 {
-            assert_eq!(fill.step(fill_input(true, 2, 0.0)), None);
-            assert_eq!(fill.step(fill_input(true, 2, 0.0)), None);
-        }
-    }
-
-    #[test]
-    fn a_found_room_gets_time_for_its_anchors_and_a_scan_none() {
-        let found = |weight: f32| FillInput {
-            scan: Some(ScanState::Found(17)),
-            ..fill_input(true, 1, weight)
-        };
-        let mut fill = Fill::default();
-        let frames = (FILL_AFTER_S * FPS) as usize;
-        for _ in 0..frames - 2 {
-            assert_eq!(fill.step(found(0.0)), None);
-        }
-        // The desk located and emits: the wait starts over.
-        assert_eq!(fill.step(found(0.5)), None);
-        for _ in 0..frames - 2 {
-            assert_eq!(fill.step(found(0.0)), None);
-        }
-        let switched = (0..10).find_map(|_| fill.step(found(0.0)));
-        assert_eq!(switched, Some(FillSwitch::To(0)));
-        // While the scan runs, never.
-        let mut fill = Fill::default();
-        for _ in 0..10_000 {
-            let scanning = FillInput {
-                scan: Some(ScanState::Scanning),
-                ..fill_input(true, 1, 0.0)
-            };
-            assert_eq!(fill.step(scanning), None);
-        }
-    }
-
-    #[test]
-    fn the_wearers_effect_is_left_alone() {
-        // On Flock when roam went on, then Embers by hand: no switch.
-        let mut fill = Fill::default();
-        assert_eq!(fill.step(fill_input(true, 2, 0.0)), None);
-        for _ in 0..1000 {
-            assert_eq!(fill.step(fill_input(true, 1, 0.0)), None);
-        }
-        // Switched to Flux Cloud, then the wearer went to Flock: roam off
-        // stays on Flock.
-        let mut fill = Fill::default();
-        assert_eq!(fill.step(fill_input(true, 1, 0.0)), Some(FillSwitch::To(0)));
-        assert_eq!(fill.step(fill_input(true, 0, 0.0)), None);
-        assert_eq!(fill.step(fill_input(true, 2, 0.0)), None);
-        assert_eq!(fill.step(fill_input(false, 2, 0.0)), None);
-        // No fill effect to show: nothing.
-        let mut fill = Fill::default();
-        let none = FillInput {
-            fill: None,
-            ..fill_input(true, 1, 0.0)
-        };
-        assert_eq!(fill.step(none), None);
-        // The next roam may switch again.
-        let mut fill = Fill::default();
-        assert_eq!(fill.step(fill_input(true, 1, 0.0)), Some(FillSwitch::To(0)));
-        assert_eq!(
-            fill.step(fill_input(false, 0, 0.0)),
-            Some(FillSwitch::Back(1))
-        );
-        assert_eq!(fill.step(fill_input(false, 1, 0.0)), None);
-        assert_eq!(fill.step(fill_input(true, 1, 0.0)), Some(FillSwitch::To(0)));
     }
 
     #[test]

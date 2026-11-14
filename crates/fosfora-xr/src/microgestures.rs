@@ -2,7 +2,8 @@
 //! #3336): a thumb swipe left, right, forward or backward along the index
 //! finger, or a thumb tap on it, reported as boolean inputs on the EXT hand
 //! interaction profile (`XR_EXT_hand_interaction`). Small, deliberate and
-//! hard to make by accident, so a swipe steps the world effect.
+//! hard to make by accident, so a swipe steps the room's theme (board
+//! #5470; it stepped the world effect while there were three).
 //!
 //! Two halves. The decision (what a frame's swipes do) is plain data and
 //! builds and tests on every target. The OpenXR half, Android only, is the
@@ -33,8 +34,8 @@ impl Swipe {
         }
     }
 
-    /// The world effect step this swipe asks for: right the next effect,
-    /// left the previous one; forward and backward are reserved.
+    /// The theme step this swipe asks for: right the next theme, left the
+    /// one before; forward and backward are reserved.
     pub fn step(self) -> Option<i32> {
         match self {
             Self::Right => Some(1),
@@ -62,9 +63,9 @@ impl MicroFrame {
 /// What one hand's swipe does this frame (the log's words after `->`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// Steps to the next world effect.
+    /// Steps to the next theme.
     Next,
-    /// Steps to the previous world effect.
+    /// Steps to the theme before.
     Previous,
     /// Forward and backward: nothing assigned yet.
     Unassigned,
@@ -72,23 +73,23 @@ pub enum Outcome {
     MenuUp,
     /// Edit room is on and this is the right hand: the editor's.
     EditRoom,
-    /// Not in world mode, or only one world effect: nothing to step to.
-    NoOtherEffect,
+    /// Not in world mode: no room's theme to step.
+    NoTheme,
 }
 
 impl Outcome {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Next => "next effect",
-            Self::Previous => "previous effect",
+            Self::Next => "next theme",
+            Self::Previous => "previous theme",
             Self::Unassigned => "unassigned",
             Self::MenuUp => "nothing (hand menu up)",
             Self::EditRoom => "nothing (edit room)",
-            Self::NoOtherEffect => "nothing (no other world effect)",
+            Self::NoTheme => "nothing (no theme outside world mode)",
         }
     }
 
-    /// The world effect step this outcome takes, if any.
+    /// The theme step this outcome takes, if any.
     pub fn step(self) -> Option<i32> {
         match self {
             Self::Next => Some(1),
@@ -100,15 +101,9 @@ impl Outcome {
 
 /// What `swipe` on `hand` (0 left, 1 right) does, under the gesture
 /// block's rules: nothing while the hand menu is up, nothing from the
-/// right hand while Edit room is on, nothing without a second world effect
-/// (`world_effects` is 0 outside world mode).
-pub fn outcome(
-    swipe: Swipe,
-    hand: usize,
-    panel_up: bool,
-    edit_on: bool,
-    world_effects: usize,
-) -> Outcome {
+/// right hand while Edit room is on, nothing where there is no theme to
+/// step (`themes` is false outside world mode).
+pub fn outcome(swipe: Swipe, hand: usize, panel_up: bool, edit_on: bool, themes: bool) -> Outcome {
     if panel_up {
         Outcome::MenuUp
     } else if edit_on && hand == 1 {
@@ -116,24 +111,19 @@ pub fn outcome(
     } else {
         match swipe.step() {
             None => Outcome::Unassigned,
-            Some(_) if world_effects < 2 => Outcome::NoOtherEffect,
+            Some(_) if !themes => Outcome::NoTheme,
             Some(1) => Outcome::Next,
             Some(_) => Outcome::Previous,
         }
     }
 }
 
-/// The world effect step this frame asks for: +1 next, -1 previous, `None`
-/// for nothing. Either hand counts; when both step in one frame the right
-/// hand's wins.
-pub fn consume(
-    frame: &MicroFrame,
-    panel_up: bool,
-    edit_on: bool,
-    world_effects: usize,
-) -> Option<i32> {
+/// The theme step this frame asks for: +1 the next theme, -1 the one
+/// before, `None` for nothing. Either hand counts; when both step in one
+/// frame the right hand's wins.
+pub fn consume(frame: &MicroFrame, panel_up: bool, edit_on: bool, themes: bool) -> Option<i32> {
     [1, 0].into_iter().find_map(|hand| {
-        frame.swipe[hand].and_then(|s| outcome(s, hand, panel_up, edit_on, world_effects).step())
+        frame.swipe[hand].and_then(|s| outcome(s, hand, panel_up, edit_on, themes).step())
     })
 }
 
@@ -348,58 +338,140 @@ mod tests {
 
     #[test]
     fn right_swipe_steps_forward_left_back() {
-        assert_eq!(consume(&swipe(1, Swipe::Right), false, false, 3), Some(1));
-        assert_eq!(consume(&swipe(1, Swipe::Left), false, false, 3), Some(-1));
+        assert_eq!(
+            consume(&swipe(1, Swipe::Right), false, false, true),
+            Some(1)
+        );
+        assert_eq!(
+            consume(&swipe(1, Swipe::Left), false, false, true),
+            Some(-1)
+        );
+        // The log names the theme's step.
+        assert_eq!(
+            outcome(Swipe::Right, 1, false, false, true).label(),
+            "next theme"
+        );
+        assert_eq!(
+            outcome(Swipe::Left, 1, false, false, true).label(),
+            "previous theme"
+        );
+    }
+
+    /// Right is the next theme and left the one before, from the theme the
+    /// room shows, round the cycle and back, wrapping both ways.
+    #[test]
+    fn a_swipe_steps_the_theme_both_ways_and_wraps() {
+        use crate::themes::{Shown, Theme};
+        let swiped = |shown: Shown, s: Swipe| {
+            consume(&swipe(1, s), false, false, true).map(|step| shown.step(step))
+        };
+        let mut shown = Shown::Theme(Theme::Classic);
+        let mut right = Vec::new();
+        for _ in 0..6 {
+            let t = swiped(shown, Swipe::Right).expect("a right swipe steps");
+            right.push(t);
+            shown = Shown::Theme(t);
+        }
+        assert_eq!(
+            right,
+            [
+                Theme::Drift,
+                Theme::Tide,
+                Theme::Aurora,
+                Theme::Mirror,
+                Theme::Classic,
+                Theme::Drift
+            ]
+        );
+        let mut left = Vec::new();
+        for _ in 0..6 {
+            let t = swiped(shown, Swipe::Left).expect("a left swipe steps");
+            left.push(t);
+            shown = Shown::Theme(t);
+        }
+        assert_eq!(
+            left,
+            [
+                Theme::Classic,
+                Theme::Mirror,
+                Theme::Aurora,
+                Theme::Tide,
+                Theme::Drift,
+                Theme::Classic
+            ]
+        );
+        // The same step as the menu's Theme control and the spoken "next
+        // theme" take, from an edited theme and from a custom room too.
+        for shown in [
+            Shown::Theme(Theme::Aurora),
+            Shown::Edited(Theme::Aurora),
+            Shown::Custom,
+        ] {
+            assert_eq!(swiped(shown, Swipe::Right), Some(shown.next()));
+            assert_eq!(swiped(shown, Swipe::Left), Some(shown.prev()));
+        }
+        // Forward and backward step nothing.
+        assert_eq!(swiped(shown, Swipe::Forward), None);
     }
 
     #[test]
     fn either_hand_counts() {
-        assert_eq!(consume(&swipe(0, Swipe::Right), false, false, 3), Some(1));
-        assert_eq!(consume(&swipe(0, Swipe::Left), false, false, 3), Some(-1));
+        assert_eq!(
+            consume(&swipe(0, Swipe::Right), false, false, true),
+            Some(1)
+        );
+        assert_eq!(
+            consume(&swipe(0, Swipe::Left), false, false, true),
+            Some(-1)
+        );
     }
 
     #[test]
     fn nothing_with_the_menu_up() {
         for hand in [0, 1] {
             for s in [Swipe::Left, Swipe::Right] {
-                assert_eq!(consume(&swipe(hand, s), true, false, 3), None);
-                assert_eq!(outcome(s, hand, true, false, 3), Outcome::MenuUp);
+                assert_eq!(consume(&swipe(hand, s), true, false, true), None);
+                assert_eq!(outcome(s, hand, true, false, true), Outcome::MenuUp);
             }
         }
     }
 
     #[test]
     fn edit_room_takes_the_right_hand_only() {
-        assert_eq!(consume(&swipe(1, Swipe::Right), false, true, 3), None);
-        assert_eq!(outcome(Swipe::Right, 1, false, true, 3), Outcome::EditRoom);
-        assert_eq!(consume(&swipe(0, Swipe::Right), false, true, 3), Some(1));
-        assert_eq!(consume(&swipe(0, Swipe::Left), false, true, 3), Some(-1));
+        assert_eq!(consume(&swipe(1, Swipe::Right), false, true, true), None);
+        assert_eq!(
+            outcome(Swipe::Right, 1, false, true, true),
+            Outcome::EditRoom
+        );
+        assert_eq!(consume(&swipe(0, Swipe::Right), false, true, true), Some(1));
+        assert_eq!(consume(&swipe(0, Swipe::Left), false, true, true), Some(-1));
     }
 
     #[test]
-    fn nothing_with_one_effect_or_outside_world_mode() {
-        for n in [0, 1] {
-            assert_eq!(consume(&swipe(1, Swipe::Right), false, false, n), None);
-            assert_eq!(
-                outcome(Swipe::Left, 0, false, false, n),
-                Outcome::NoOtherEffect
-            );
-        }
-        assert_eq!(consume(&swipe(1, Swipe::Right), false, false, 2), Some(1));
+    fn nothing_outside_world_mode() {
+        assert_eq!(consume(&swipe(1, Swipe::Right), false, false, false), None);
+        assert_eq!(
+            outcome(Swipe::Left, 0, false, false, false),
+            Outcome::NoTheme
+        );
+        assert_eq!(
+            consume(&swipe(1, Swipe::Right), false, false, true),
+            Some(1)
+        );
     }
 
     #[test]
     fn forward_backward_and_tap_are_unassigned() {
         for hand in [0, 1] {
             for s in [Swipe::Forward, Swipe::Backward] {
-                assert_eq!(consume(&swipe(hand, s), false, false, 3), None);
-                assert_eq!(outcome(s, hand, false, false, 3), Outcome::Unassigned);
+                assert_eq!(consume(&swipe(hand, s), false, false, true), None);
+                assert_eq!(outcome(s, hand, false, false, true), Outcome::Unassigned);
             }
             let mut tap = MicroFrame::default();
             tap.tap[hand] = true;
-            assert_eq!(consume(&tap, false, false, 3), None);
+            assert_eq!(consume(&tap, false, false, true), None);
         }
-        assert_eq!(consume(&MicroFrame::default(), false, false, 3), None);
+        assert_eq!(consume(&MicroFrame::default(), false, false, true), None);
     }
 
     #[test]
@@ -408,10 +480,10 @@ mod tests {
             swipe: [Some(Swipe::Left), Some(Swipe::Right)],
             tap: [false; 2],
         };
-        assert_eq!(consume(&f, false, false, 3), Some(1));
+        assert_eq!(consume(&f, false, false, true), Some(1));
         // With Edit room on the right hand's swipe is the editor's, so the
         // left one steps.
-        assert_eq!(consume(&f, false, true, 3), Some(-1));
+        assert_eq!(consume(&f, false, true, true), Some(-1));
     }
 
     #[test]

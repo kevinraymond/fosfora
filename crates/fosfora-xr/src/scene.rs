@@ -5,8 +5,9 @@
 //!   and devices; it post-processes into its own capture texture, which has
 //!   no sampling usage, so each frame ends with a copy into `quad`, the
 //!   texture the world-locked quad samples.
-//! - **World** (C3b, `mode world`): a world-layout effect (a hidden
-//!   `assets/xr/effects/*_xr_world.pfx`) whose sim writes meters around an
+//! - **World** (C3b, `mode world`): a world-layout effect (a hidden preset
+//!   under `assets/xr/effects/`; since board #5470 the one the app runs is
+//!   the fireflies, `fireflies.rs`) whose sim writes meters around an
 //!   anchor. The scene renderer still owns the per-frame state (uniforms,
 //!   audio, bindings, timeline, counter readbacks, the ping-pong flip), but
 //!   the effect's layer is disabled so none of its 2D frame runs (fragment
@@ -56,7 +57,13 @@ pub struct XrScene {
 
 /// Rows of the world-mode aux block: the head, the obstacle block,
 /// Murmur's per-hand lanes, then Flux's instrument rows, its live depth
-/// rows, its pour row and the surface behavior lanes. The obstacle block
+/// rows, its pour row, the surface behavior lanes and the box cell list,
+/// then the fireflies' rows. The layout up to the cell list's end is the
+/// one the Flux and Murmur sims were written against, and the fireflies
+/// sim (`assets/xr/shaders/fireflies_xr_sim.wgsl`) reads its rows from the
+/// same places, so the block has one writer; the hand lanes and the
+/// surface lanes are still written and no sim the app runs reads them.
+/// The obstacle block
 /// ends at row 163 (`XR_AUX_*` in `assets/xr/shaders/flux_xr_sim.wgsl`),
 /// the lanes at 170 (`XR_AUX_END` in `murmur_xr_sim.wgsl`), the
 /// instruments at 173 (`XR_AUX_INSTRUMENTS` + `XR_AUX_INSTRUMENT_ROWS` in
@@ -65,8 +72,11 @@ pub struct XrScene {
 /// board #3402), the surface lanes after it, one per box, ending at 213
 /// (`XR_AUX_SURFACE` + `XR_AUX_SURFACE_ROWS`, board #3326), then the box
 /// cell list's header and masks, ending at 1238 (`XR_AUX_CELLS` + 1 +
-/// `XR_AUX_CELL_ROWS`, board #3808); core tests pin the sims' side up to
-/// 173, `tests/depth_collide_gpu.rs` the rows after.
+/// `XR_AUX_CELL_ROWS`, board #3808), and the fireflies' rows at 1240
+/// (`XR_AUX_FIREFLIES` + `XR_AUX_FIREFLY_ROWS`, board #5470); core tests
+/// pin the Flux and Murmur sims' side up to 173,
+/// `tests/depth_collide_gpu.rs` the rows after, and `fireflies.rs` the
+/// fireflies sim's.
 const OBSTACLE_END: usize = 1 + std::mem::size_of::<ObstacleSet>() / 16;
 const _: () = assert!(OBSTACLE_END == 163, "flux_xr_sim.wgsl reads 163 aux rows");
 const HAND_LANES_END: usize = OBSTACLE_END + crate::pose::HAND_LANE_ROWS;
@@ -99,7 +109,13 @@ const _: () = assert!(
     CELLS_END == 1238,
     "flux_xr_sim.wgsl reads the box cell list 213..1238"
 );
-const WORLD_AUX_ROWS: usize = CELLS_END;
+/// The fireflies' rows (`XR_AUX_FIREFLIES`), right after the cell list.
+const FIREFLIES_AT: usize = CELLS_END;
+const WORLD_AUX_ROWS: usize = FIREFLIES_AT + crate::fireflies::ROWS;
+const _: () = assert!(
+    WORLD_AUX_ROWS == 1240,
+    "fireflies_xr_sim.wgsl reads the fireflies' rows 1238..1240"
+);
 /// See [`crate::env_depth::ATLAS_MAX_AGE_MS`].
 const ATLAS_MAX_AGE: Duration = Duration::from_millis(crate::env_depth::ATLAS_MAX_AGE_MS);
 
@@ -134,21 +150,21 @@ struct World {
     /// The preset's `emitter.radius` (meters).
     preset_radius: f32,
     /// Whether the preset spawns on the room's surfaces (it has the
-    /// `surface_emit` input on, as Embers does): its space size follows
-    /// the room (`space::fit_room`).
+    /// `surface_emit` input on, as Embers did): its space size follows
+    /// the room (`space::fit_room`). The fireflies' does not, so this is
+    /// false for every effect the app runs.
     surface_born: bool,
     /// The space size asked for ([`XrScene::set_space_half`]), 0 = the
     /// preset's: re-applied should the particle system's def lose it
     /// (board #3325).
     space_half: f32,
-    /// This frame's summed emitter weight (for the log).
-    emitter_weight: f32,
     /// The particle count (`max_count`): with the alive count, how many
     /// dead slots a burst can claim.
     max_count: u32,
-    /// The emission rate `new_world` set (the preset's, scaled with the
-    /// count): the base the cloud density scales (board #3402).
-    base_emit_rate: f32,
+    /// The density (board #3402, 0..1): the share of the fireflies' count
+    /// the sim is asked for, the debug panel's stepper and the thermal
+    /// governor's under it ([`XrScene::set_density`]).
+    density: f32,
     /// The depth atlas last written into this effect's obstacle texture:
     /// the poses it was built from and when (board #3352).
     depth: Option<(crate::env_depth::DepthCollide, Instant)>,
@@ -159,7 +175,8 @@ struct World {
 /// How a world-mode effect is set up for this run.
 #[derive(Debug, Clone, Copy)]
 pub struct WorldOptions {
-    /// Particle count (`max_count`); `None` keeps the preset's.
+    /// Particle count (`max_count`); `None` keeps the preset's. Either way
+    /// it is held at or under `fireflies::POOL_CAP`.
     pub count: Option<u32>,
     /// Sprite radius multiplier (initial and end size).
     pub size_scale: f32,
@@ -229,7 +246,6 @@ impl XrScene {
         let mut warmup = WARMUP_FRAMES;
         let mut preset_radius = 0.0;
         let mut max_count = 0;
-        let mut base_emit_rate = 0.0;
         let mut surface_born = false;
         // `count` is the particle count itself, so no quality scaling.
         let mut renderer = start_renderer(
@@ -251,21 +267,27 @@ impl XrScene {
                 let Some(particles) = pfx.particles.as_mut() else {
                     bail!("effect '{effect}' has no particle system");
                 };
-                if let Some(count) = options.count {
-                    // The aux buffer holds one row per particle and the XR
-                    // inputs need `WORLD_AUX_ROWS` of it (`update_aux_in_place`
-                    // drops the upload otherwise, silently losing the
-                    // obstacles), so the count never goes below that.
-                    let count = count.max(WORLD_AUX_ROWS as u32);
+                // The pool (board #5470): the knob's count or the preset's,
+                // never past the cap on everything alive at once. The aux
+                // buffer holds one row per particle and the XR inputs need
+                // `WORLD_AUX_ROWS` of it (`update_aux_in_place` drops the
+                // upload otherwise, silently losing the obstacles), so the
+                // count never goes below that.
+                let count = crate::fireflies::pool(
+                    options.count,
+                    particles.max_count,
+                    WORLD_AUX_ROWS as u32,
+                );
+                if count != particles.max_count {
                     // Keep the preset's fill: emission scales with the count.
                     particles.emit_rate *= count as f32 / particles.max_count.max(1) as f32;
                     particles.max_count = count;
-                    particles.max_scaled_count = 0;
                 }
+                // No quality scaling: the count is the pool itself.
+                particles.max_scaled_count = 0;
                 preset_radius = particles.emitter.radius;
                 surface_born = has_surface_emit(&pfx.inputs);
                 max_count = particles.max_count;
-                base_emit_rate = particles.emit_rate;
                 particles.initial_size *= options.size_scale;
                 particles.size_end *= options.size_scale;
                 // Fill time at the emission rate, plus a quarter for the
@@ -273,9 +295,9 @@ impl XrScene {
                 let fill_s = particles.max_count as f32 / particles.emit_rate.max(1.0);
                 warmup = warmup.max((fill_s * 1.25 * fps as f32).ceil() as u32);
                 info!(
-                    "world effect '{effect}': {} particles, emit {}/s, sprite radius {} -> {} m",
+                    "world effect '{effect}': a pool of {} particles (cap {}), sprite radius {} -> {} m",
                     particles.max_count,
-                    particles.emit_rate,
+                    crate::fireflies::POOL_CAP,
                     particles.initial_size,
                     particles.size_end
                 );
@@ -319,19 +341,12 @@ impl XrScene {
                 preset_radius,
                 surface_born,
                 space_half: 0.0,
-                emitter_weight: 0.0,
                 max_count,
-                base_emit_rate,
+                density: 1.0,
                 depth: None,
                 depth_frame: 0,
             }),
         })
-    }
-
-    /// World mode: the summed emitter weight of the boxes last uploaded (0
-    /// keeps a surface-mode sim on its volume emitter).
-    pub fn emitter_weight(&self) -> f32 {
-        self.world.as_ref().map_or(0.0, |w| w.emitter_weight)
     }
 
     /// Whether this scene draws through [`Self::render_world`] (else the quad).
@@ -349,7 +364,8 @@ impl XrScene {
 
     /// Upload this frame's world-mode sim inputs: the wearer's head (for the
     /// near fade within `near_fade_m`; 0 = off), the settle drift
-    /// (`drift_m_s` downward; 0 = none), the obstacles with their emitter
+    /// (`drift_m_s` downward; 0 = none; the fireflies sim has a gravity of
+    /// its own and ignores it), the obstacles with their emitter
     /// weights (`surfaces`, from the kinds and flags the boxes carry and
     /// where they sit against this effect's volume), Murmur's per-hand
     /// lanes (`pose::lane_rows`, already in the anchor's frame), the
@@ -359,8 +375,10 @@ impl XrScene {
     /// collide, without a recent one), the pour row
     /// (`instruments::pour_row`) and the surface lanes (`lanes.rs`, one
     /// row per box in the obstacles' order; the weights follow the
-    /// behaviors they give), the positions moved into the anchor's frame.
-    /// Call before [`Self::dispatch_world`].
+    /// behaviors they give), the positions moved into the anchor's frame,
+    /// and the fireflies' rows (`fireflies`, the live knobs, at this
+    /// scene's density, with `swell`, the loudness as the flash limit
+    /// glides it, 0..1). Call before [`Self::dispatch_world`].
     #[allow(
         clippy::too_many_arguments,
         reason = "one call per frame, each argument a separate input"
@@ -378,6 +396,8 @@ impl XrScene {
         instruments: &[[f32; 4]; crate::instruments::INSTRUMENT_ROWS],
         pour: [f32; 4],
         surface_lanes: &[[f32; 4]; crate::surfaces::SURFACE_LANE_ROWS],
+        fireflies: &crate::fireflies::Knobs,
+        swell: f32,
     ) {
         let Some(world) = self.world.as_mut() else {
             return;
@@ -404,21 +424,18 @@ impl XrScene {
         // so a dragged anchor never emits from a surface it has left.
         let mut relative = obstacles.relative_to(a);
         relative.set_emitter_weights(world.emitter_half, surfaces, surface_lanes);
-        world.emitter_weight = relative.emitter_weight_sum();
         world
             .aux
             .extend(relative.as_vec4s().iter().map(|&home| ParticleAux { home }));
         // The obstacle block's second header row has two unused lanes; the
-        // sim reads the drift from the third (`flux_xr_sim.wgsl`, aux[2].z).
+        // Flux sim read the drift from the third (aux[2].z).
         world.aux[2].home[2] = drift_m_s;
         // The first lane carries the occluder's sphere shrink, which no sim
         // reads (the occluder takes it from `ObstacleSet`'s uniform): the
-        // sim-cut mask goes there (`flux_xr_sim.wgsl`, aux[2].x; Murmur
-        // ignores it).
+        // sim-cut mask goes there (aux[2].x).
         world.aux[2].home[0] = f32::from_bits(world.sim_cut);
-        // The fourth lane: how calm the hands leave Murmur's flock, 1 -
-        // scare, so a writer that never sets it keeps the full scare. Flux
-        // ignores it.
+        // The fourth lane: how calm the hands left Murmur's flock, 1 -
+        // scare, so a writer that never sets it keeps the full scare.
         world.aux[2].home[3] = 1.0 - hand_scare.clamp(0.0, 1.0);
         world
             .aux
@@ -426,8 +443,14 @@ impl XrScene {
         let mut instruments = *instruments;
         let alive =
             particle_system(&mut self.renderer.layer_stack.layers).map_or(0, |ps| ps.alive_count);
-        instruments[0][3] =
-            crate::instruments::steal_fraction(instruments[0][0].to_bits(), alive, world.max_count);
+        // The burst takes what it cannot claim from the living hand
+        // particles alone: the fireflies' slots are not the hands'.
+        instruments[0][3] = crate::fireflies::hand_steal(
+            instruments[0][0].to_bits(),
+            alive,
+            world.max_count,
+            fireflies.fireflies(world.density),
+        );
         world
             .aux
             .extend(instruments.iter().map(|&home| ParticleAux { home }));
@@ -445,16 +468,29 @@ impl XrScene {
             .aux
             .extend(surface_lanes.iter().map(|&home| ParticleAux { home }));
         // The box cell list over the volume the sim runs in, from the same
-        // anchor-relative boxes.
+        // anchor-relative boxes, each widened by the edge band at its
+        // widest, so a box a particle is beside is in its cell.
         world.aux.extend(
             relative
-                .cell_rows(world.box_cells, world.emitter_half)
+                .cell_rows(
+                    world.box_cells,
+                    world.emitter_half,
+                    crate::fireflies::EDGE_BAND_MAX_M,
+                )
                 .into_iter()
                 .map(|home| ParticleAux { home }),
         );
         // The header's spare z lane: the flow samples mode
-        // (`flux_xr_sim.wgsl`, aux[213].z; Murmur ignores it).
+        // (`flux_xr_sim.wgsl`, aux[213].z; the fireflies sim samples no
+        // flow and ignores it).
         world.flow_samples.write(&mut world.aux[CELLS_HEADER].home);
+        debug_assert_eq!(world.aux.len(), FIREFLIES_AT);
+        world.aux.extend(
+            fireflies
+                .rows(world.density, swell)
+                .iter()
+                .map(|&home| ParticleAux { home }),
+        );
         world.depth_frame = world.depth_frame.wrapping_add(1);
         debug_assert_eq!(world.aux.len(), WORLD_AUX_ROWS);
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
@@ -587,8 +623,9 @@ impl XrScene {
     }
 
     /// World mode: whether the effect spawns on the room's surfaces (its
-    /// preset has `surface_emit` on; Embers): the one whose space size
-    /// follows the room and whose surfaces the room editor steers.
+    /// preset has `surface_emit` on, as Embers' had): the one whose space
+    /// size follows the room and whose surfaces the room editor steers.
+    /// False since board #5470, whose one effect fills its volume.
     pub fn surface_born(&self) -> bool {
         self.world.as_ref().is_some_and(|w| w.surface_born)
     }
@@ -600,10 +637,23 @@ impl XrScene {
         self.world.as_ref().map(|w| w.emitter_half)
     }
 
-    /// World mode: the emission rate [`Self::new_world`] set (particles
-    /// per second), the base the cloud density scales.
-    pub fn base_emit_rate(&self) -> Option<f32> {
-        self.world.as_ref().map(|w| w.base_emit_rate)
+    /// World mode: the density (board #3402), 0..1: the share of the
+    /// fireflies' count the sim is asked for from the next frame's inputs
+    /// on. The fireflies past it fade out, and they fade back in when it
+    /// rises. The hand particles are not scaled.
+    pub fn set_density(&mut self, density: f32) {
+        if let Some(world) = self.world.as_mut() {
+            world.density = if density.is_finite() {
+                density.clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+        }
+    }
+
+    /// World mode: the particle count, the pool everything alive shares.
+    pub fn pool(&self) -> Option<u32> {
+        self.world.as_ref().map(|w| w.max_count)
     }
 
     /// Alive particles as of the last counter readback (first particle layer).

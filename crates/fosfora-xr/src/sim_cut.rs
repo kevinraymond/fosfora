@@ -1,10 +1,13 @@
 //! The world sim's cut mask (board #3806): `debug.fosfora.simcut`, a
-//! comma-separated list of the parts of `flux_xr_sim.wgsl`'s alive path to
+//! comma-separated list of the parts of the world sim's alive path to
 //! skip, so a cost sweep can apportion the sim dispatch among them. A
 //! diagnostic: the look may break under it, and the mask is 0 (nothing cut)
 //! when the knob is unset. The XR app writes the mask into the obstacle
 //! block's second header row, `.x` lane (aux[2].x, as u32 bits); the bits
-//! match the shader's `XR_CUT_*` constants.
+//! match the shaders' `XR_CUT_*` constants. The parts were named for
+//! `flux_xr_sim.wgsl`. The fireflies sim the app runs since board #5470
+//! (`fireflies_xr_sim.wgsl`) has the same bits and no flow or turbulence,
+//! so `flow` and `turb` cut nothing there.
 
 /// The cuttable parts, by knob name, in bit order (bit 0 first):
 ///
@@ -120,17 +123,27 @@ mod tests {
         assert_eq!(unknown, vec!["bogus".to_owned()]);
     }
 
-    /// The shader's `XR_CUT_*` constants are these bits.
+    /// The shaders' `XR_CUT_*` constants are these bits.
     #[test]
     fn the_shader_reads_the_same_bits() {
-        let sim = include_str!("../../../assets/xr/shaders/flux_xr_sim.wgsl");
-        for (i, part) in PARTS.iter().enumerate() {
-            let line = format!(
-                "const XR_CUT_{}: u32 = {}u;",
-                part.to_ascii_uppercase(),
-                1u32 << i
-            );
-            assert!(sim.contains(&line), "flux_xr_sim.wgsl lacks `{line}`");
+        for (name, sim) in [
+            (
+                "flux_xr_sim.wgsl",
+                include_str!("../../../assets/xr/shaders/flux_xr_sim.wgsl"),
+            ),
+            (
+                "fireflies_xr_sim.wgsl",
+                include_str!("../../../assets/xr/shaders/fireflies_xr_sim.wgsl"),
+            ),
+        ] {
+            for (i, part) in PARTS.iter().enumerate() {
+                let line = format!(
+                    "const XR_CUT_{}: u32 = {}u;",
+                    part.to_ascii_uppercase(),
+                    1u32 << i
+                );
+                assert!(sim.contains(&line), "{name} lacks `{line}`");
+            }
         }
     }
 

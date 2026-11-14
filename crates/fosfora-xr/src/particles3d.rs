@@ -231,8 +231,12 @@ impl ObstacleSet {
     /// The box cell list's rows for this set (`crate::box_cells`, board
     /// #3808): the header for `cells` per axis over the cube of half extent
     /// `half` around the origin (0 cells: no grid), then the boxes' masks.
+    /// `reach` (m) widens every box's bounds beyond the collide's margin:
+    /// the fireflies sim also asks which boxes a particle is beside, within
+    /// its edge band (board #5470). The masks stay a superset of the boxes
+    /// a point can be inside, so the collide's result is the same.
     /// Call on the anchor-relative set ([`Self::relative_to`]).
-    pub fn cell_rows(&self, cells: u32, half: f32) -> Vec<[f32; 4]> {
+    pub fn cell_rows(&self, cells: u32, half: f32, reach: f32) -> Vec<[f32; 4]> {
         let n = self.box_count as usize;
         let boxes: Vec<([f32; 3], [f32; 4], [f32; 3])> = (0..n)
             .map(|k| {
@@ -240,7 +244,7 @@ impl ObstacleSet {
                 ([c[0], c[1], c[2]], self.box_rot[k], [h[0], h[1], h[2]])
             })
             .collect();
-        crate::box_cells::rows(&boxes, self.margin, cells, half)
+        crate::box_cells::rows(&boxes, self.margin + reach.max(0.0), cells, half)
     }
 
     /// The block as the `vec4`s it is made of, in WGSL order: the two header
