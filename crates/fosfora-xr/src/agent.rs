@@ -70,14 +70,15 @@ const ANTHROPIC_BETA: &str = "server-side-fallback-2026-07-01";
 /// The OpenAI default (the model has none: it must be named).
 pub const OPENAI_URL: &str = "https://api.openai.com/v1";
 
-/// The action kinds the schema allows, the [`AgentAction::kind`] values
-/// [`Intent::from_json`] reads. `cloud` and `particles` are both the hand
-/// menu's "Particles" toggle (the grammar takes both words); `pitcher` is
-/// the menu's "Pitcher" toggle.
-pub const ACTION_KINDS: [&str; 16] = [
-    "next_effect",
-    "prev_effect",
-    "effect",
+/// The action kinds the schema allows, among the [`AgentAction::kind`]
+/// values [`Intent::from_json`] reads. `cloud` and `particles` are both the
+/// hand menu's "Particles" toggle (the grammar takes both words); `pitcher`
+/// is the menu's "Pitcher" toggle. Board #5470: the three kinds that
+/// stepped or named a cloud effect left the schema and the instruction
+/// with the effects. `from_json` still reads them, for the on-device
+/// model, whose own list has them, and they are answered
+/// `intent::EFFECTS_GONE`.
+pub const ACTION_KINDS: [&str; 13] = [
     "edit_room",
     "cloud",
     "particles",
@@ -95,7 +96,7 @@ pub const ACTION_KINDS: [&str; 16] = [
 
 /// The system instruction, shared by both providers and fixed, so the
 /// Anthropic API can cache it: one paragraph.
-pub const INSTRUCTION: &str = "You are the assistant of a mixed-reality room in which music drives light on the room's real surfaces. You get the room as JSON (the world effect showing and every effect there is; every surface with its name, its kind, its size in meters and what it runs now: behavior, color, band and strength; the name of the surface the wearer points at, or null; the behaviors each kind can run; the color names; the band names), then one sentence the wearer said. Answer only with one JSON object and nothing before or after it: {\"actions\": [...], \"say\": \"...\"}. Each action is {\"kind\": ..., \"target\": ..., \"value\": ...}, three strings. The kinds: next_effect and prev_effect step the world effect; effect switches to the effect named in value; edit_room, cloud (the particle cloud, also called particles), pitcher (the particle pitcher) and music turn on or off by value \"on\" or \"off\"; rescan scans the room again; recenter brings the cloud back around the wearer; all_none sets every surface to none; behavior sets what a surface runs to value, a behavior from the list of the target's own kind, or none; color sets its color to value, a color name (own is the kind's own color, key follows the music's key); band sets which part of the music drives it to value, a band name (rms is the overall level, bass, mid and high the three bands); strength sets its brightness by value up, down, half, full or off; describe shows what the target runs. The behaviors look like this: embers shed glowing embers off a top face on the beat; sparks fly up off a top face with the bass; spectrum draws the music's spectrum as bars across a wall; rings are rings of light spreading on the beat; streamlines are lines of light flowing across the face; curls are tight swirling curls with a faint fill; pulse is a whole-face glow that jumps on the downbeat and breathes with the bar; aurora is flowing curtains of light; prism is a kaleidoscope turning about the center; shards are cells with glowing edges; astrolabe is a dial assembling ring by ring; bezel is chrome hugging the face's edges; fenestra is panels snapping into place across the bar; reticle is crosshairs taking a new target every bar; tessera is a grid of tiles revealing in waves; none is nothing. The target is a surface's name exactly as the room gives it, a kind word (table, floor, wall, ceiling, frame, other) for every surface of that kind, \"pointed\" for the surface the wearer points at, or \"\" for the kinds that take no target; value is \"\" for the kinds that take none. Use the pointed surface when the sentence says this, that or here, or names no surface. List the actions in the order to apply them, as few as do what was asked. say is one short sentence for the wearer's label, at most 60 characters, saying what you did. When the sentence asks for something these actions cannot express, return no actions and say so in say. Never invent a surface, effect, behavior, color or band: use only the names the room gives.";
+pub const INSTRUCTION: &str = "You are the assistant of a mixed-reality room in which music drives light on the room's real surfaces. You get the room as JSON (every surface with its name, its kind, its size in meters and what it runs now: behavior, color, band and strength; the name of the surface the wearer points at, or null; the behaviors each kind can run; the color names; the band names), then one sentence the wearer said. Answer only with one JSON object and nothing before or after it: {\"actions\": [...], \"say\": \"...\"}. Each action is {\"kind\": ..., \"target\": ..., \"value\": ...}, three strings. The kinds: edit_room, cloud (the fireflies around the wearer and the particles a hand throws, also called particles), pitcher (the particle pitcher) and music turn on or off by value \"on\" or \"off\"; rescan scans the room again; recenter brings the fireflies back around the wearer; all_none sets every surface to none; behavior sets what a surface runs to value, a behavior from the list of the target's own kind, or none; color sets its color to value, a color name (own is the kind's own color, key follows the music's key); band sets which part of the music drives it to value, a band name (rms is the overall level, bass, mid and high the three bands); strength sets its brightness by value up, down, half, full or off; describe shows what the target runs. The behaviors look like this: spectrum draws the music's spectrum as bars across a wall; rings are rings of light spreading on the beat; streamlines are lines of light flowing across the face; curls are tight swirling curls with a faint fill; pulse is a whole-face glow that jumps on the downbeat and breathes with the bar; aurora is flowing curtains of light; prism is a kaleidoscope turning about the center; shards are cells with glowing edges; astrolabe is a dial assembling ring by ring; bezel is chrome hugging the face's edges; fenestra is panels snapping into place across the bar; reticle is crosshairs taking a new target every bar; tessera is a grid of tiles revealing in waves; none is nothing. The target is a surface's name exactly as the room gives it, a kind word (table, floor, wall, ceiling, frame, other) for every surface of that kind, \"pointed\" for the surface the wearer points at, or \"\" for the kinds that take no target; value is \"\" for the kinds that take none. Use the pointed surface when the sentence says this, that or here, or names no surface. List the actions in the order to apply them, as few as do what was asked. say is one short sentence for the wearer's label, at most 60 characters, saying what you did. When the sentence asks for something these actions cannot express, return no actions and say so in say. Never invent a surface, behavior, color or band: use only the names the room gives.";
 
 /// Which API a config talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,12 +541,18 @@ pub struct SurfaceState {
     pub strength: f32,
 }
 
-/// The room as the model sees it: the world effect showing and every
-/// effect, every surface, the pointed one's name, each kind's behaviors
-/// (`SurfaceBehavior::catalogue`), the color names and the band names.
+/// The room as the model sees it: every surface, the pointed one's name,
+/// each kind's behaviors (`SurfaceBehavior::catalogue`, those the
+/// vocabulary has), the color names and the band names. The effect
+/// showing and every effect are left over from the three cloud effects
+/// (board #5470): the app gives none, and the JSON then leaves both out.
+/// The on-device model's rendering still has a place for them
+/// (`local.rs`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RoomState {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub effect: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<String>,
     pub surfaces: Vec<SurfaceState>,
     pub pointed: Option<String>,
@@ -1333,6 +1340,53 @@ mod tests {
     /// The fixture room's JSON, as the user message carries it.
     const ROOM_JSON: &str = r#"{"effect":"Embers","effects":["Flux Cloud","Embers","Flock"],"surfaces":[{"name":"desk","kind":"table","size_m":[1.2,0.6],"behavior":"streamlines","color":"own","band":"rms","strength":1.0},{"name":"table 1","kind":"table","size_m":[0.8,0.8],"behavior":"streamlines","color":"own","band":"rms","strength":1.0},{"name":"table 2","kind":"table","size_m":[1.6,0.9],"behavior":"streamlines","color":"own","band":"rms","strength":1.0},{"name":"wall 3","kind":"wall","size_m":[4.12,2.5],"behavior":"spectrum","color":"own","band":"rms","strength":1.0},{"name":"wall 4","kind":"wall","size_m":[3.0,2.5],"behavior":"spectrum","color":"own","band":"rms","strength":1.0},{"name":"floor","kind":"floor","size_m":[4.0,3.5],"behavior":"rings","color":"own","band":"bass","strength":1.0},{"name":"ceiling","kind":"ceiling","size_m":[4.0,3.5],"behavior":"none","color":"own","band":"rms","strength":1.0},{"name":"lamp","kind":"other","size_m":[0.3,0.3],"behavior":"curls","color":"own","band":"rms","strength":1.0}],"pointed":"desk","behaviors":{"ceiling":["none","rings","pulse","streamlines","aurora","astrolabe"],"floor":["none","rings","streamlines","curls","sparks","tessera","prism","astrolabe","aurora"],"other":["none","curls","streamlines","pulse","embers","shards","reticle","tessera"],"table":["none","streamlines","curls","pulse","embers","sparks","shards","prism"],"wall":["none","spectrum","streamlines","rings","pulse","aurora","fenestra","bezel"]},"colors":["own","blue","violet","warm white","amber","green","teal","rose","key"],"bands":["rms","bass","mid","high"]}"#;
 
+    /// The room as the app describes it since board #5470: no effect to
+    /// name, and no behavior that painted a surface with the cloud's
+    /// particles on any kind's list.
+    #[test]
+    fn the_room_names_no_effect_and_no_particle_behavior() {
+        let boxes = room();
+        let (lanes, dir) = lanes("no-effects", &boxes);
+        let vocab = Vocabulary {
+            effects: &[],
+            behaviors: &SurfaceBehavior::OFFERED,
+            surfaces: crate::intent::surfaces(&boxes),
+            pointed: Some(0),
+            tracks: crate::intent::Tracks::default(),
+        };
+        let room = room_state(&vocab, None, &SIZES, &lanes, &boxes);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(room.effect, None);
+        assert!(room.effects.is_empty());
+        let json = serde_json::to_string(&room).unwrap();
+        for gone in ["effect", "embers", "sparks", "Flux", "Flock"] {
+            assert!(!json.contains(gone), "{gone} in {json}");
+        }
+        // The lists are each kind's own, in order, without the two.
+        assert_eq!(
+            room.behaviors["table"],
+            ["none", "streamlines", "curls", "pulse", "shards", "prism"]
+        );
+        assert_eq!(
+            room.behaviors["floor"],
+            [
+                "none",
+                "rings",
+                "streamlines",
+                "curls",
+                "tessera",
+                "prism",
+                "astrolabe",
+                "aurora"
+            ]
+        );
+        // The rest of the room is the fixture's.
+        assert!(
+            json.starts_with(r#"{"surfaces":[{"name":"desk","kind":"table""#),
+            "{json}"
+        );
+    }
+
     #[test]
     fn the_room_as_json() {
         let room = fixture_room("json");
@@ -1641,10 +1695,16 @@ mod tests {
         for kind in ACTION_KINDS {
             assert!(INSTRUCTION.contains(kind), "{kind}");
         }
-        for b in SurfaceBehavior::ALL {
+        for b in SurfaceBehavior::OFFERED {
             assert!(INSTRUCTION.contains(b.name()), "{}", b.name());
         }
         assert!(!INSTRUCTION.contains('\n'));
+        // Board #5470: nothing of the three cloud effects, nor of the two
+        // behaviors that painted a surface with their particles.
+        for gone in ["effect", "embers", "sparks", "particle cloud"] {
+            assert!(!INSTRUCTION.contains(gone), "{gone}");
+            assert!(!ACTION_KINDS.iter().any(|k| k.contains(gone)), "{gone}");
+        }
     }
 
     const TWO: &str = r#"{"actions":[{"kind":"behavior","target":"desk","value":"embers"},{"kind":"color","target":"desk","value":"amber"}],"say":"Embers on the desk, in amber"}"#;

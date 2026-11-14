@@ -5,7 +5,9 @@
 //! equivalent.
 //!
 //! **Data plus one matcher.** The words come from what the app holds at the
-//! moment of the sentence ([`Vocabulary`]): the world effects' names, the
+//! moment of the sentence ([`Vocabulary`]): the names of the three cloud
+//! effects the app once had ([`CUT_EFFECTS`]), kept so that a sentence
+//! asking for one is answered and not missed ([`EFFECTS_GONE`]), the
 //! surface behaviors' names (`surfaces::SurfaceBehavior::name`), the room's
 //! surfaces by their friendly names (`surfaces::friendly_name`), the color
 //! and band names the hand menu shows (`surfaces::color_name`,
@@ -73,13 +75,38 @@ pub fn surfaces(boxes: &[LaneBox<'_>]) -> Vec<Surface> {
         .collect()
 }
 
+/// The three cloud effects the app had until board #5470, by the names the
+/// hand menu showed. The grammar still knows them ([`Vocabulary::effects`]),
+/// so "switch to Flock" is answered [`EFFECTS_GONE`] and not missed.
+pub const CUT_EFFECTS: [&str; 3] = ["Flux Cloud", "Embers", "Flock"];
+
+/// What the label says to a sentence, or an agent's action, that asks for
+/// a cloud effect, the next one or the one before (board #5470): there is
+/// one world effect now, the fireflies, and nothing to switch.
+pub const EFFECTS_GONE: &str = "The effects are gone";
+
+/// Whether `intent` asks for a cloud effect, by name or by a step: it does
+/// nothing and is answered [`EFFECTS_GONE`].
+pub fn asks_for_effect(intent: &Intent) -> bool {
+    matches!(
+        intent,
+        Intent::NextEffect | Intent::PrevEffect | Intent::Effect(_)
+    )
+}
+
+/// [`CUT_EFFECTS`] as [`Vocabulary::effects`] takes them.
+pub fn cut_effects() -> Vec<String> {
+    CUT_EFFECTS.map(str::to_owned).to_vec()
+}
+
 /// What the grammar can name, built at the moment of the sentence.
 #[derive(Debug, Clone)]
 pub struct Vocabulary<'a> {
-    /// The world effects, in the hand menu's order ("Flux Cloud", "Embers",
-    /// "Flock").
+    /// The effect names the grammar recognizes: in the app the cut ones
+    /// ([`cut_effects`]), which it answers [`EFFECTS_GONE`].
     pub effects: &'a [String],
-    /// The behaviors a surface can run (`SurfaceBehavior::ALL`).
+    /// The behaviors a surface can be given (`SurfaceBehavior::OFFERED` in
+    /// the app).
     pub behaviors: &'a [SurfaceBehavior],
     /// The room's surfaces, one per lane box.
     pub surfaces: Vec<Surface>,
@@ -170,11 +197,12 @@ pub enum ThemeStep {
 /// What a sentence asks for. Each variant does what a hand already does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
-    /// The hand menu's effect row, `>`.
+    /// The next cloud effect, while there were three. It does nothing now
+    /// and is answered [`EFFECTS_GONE`].
     NextEffect,
-    /// The hand menu's effect row, `<`.
+    /// The cloud effect before, likewise.
     PrevEffect,
-    /// The world effect at this index, as stepping the effect row to it.
+    /// The cloud effect at this index of [`Vocabulary::effects`], likewise.
     Effect(usize),
     /// The hand menu's "Edit room" toggle.
     EditRoom(bool),
@@ -892,7 +920,9 @@ fn fill(slot: Slot, target_words: &[&str], vocab: &Vocabulary<'_>) -> Result<Int
     }
 }
 
-/// The menu's phrases: the effect row, the toggles and the buttons.
+/// The menu's phrases: the toggles and the buttons, and the phrases that
+/// stepped the cloud effects, which are still heard so they can be
+/// answered.
 fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
     if any(ts, &HELP) {
         return Some(Intent::Help);
@@ -1153,7 +1183,7 @@ fn track(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Result<Intent, Reason>> 
     })
 }
 
-/// A world effect by name, alone or after a switching verb.
+/// A cloud effect by name, alone or after a switching verb.
 fn effect(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<usize> {
     let named = |ts: &[&str]| {
         vocab.effects.iter().position(|e| {
@@ -1456,29 +1486,29 @@ pub fn parse_clauses(sentence: &str, vocab: &Vocabulary<'_>) -> Vec<Clause> {
 /// Every example the room gives, in the order the help pages through
 /// them: a round robin over the menu's phrases, the room's surfaces (a
 /// template each, turning through a behavior of the surface's kind, a
-/// color, a band, a strength and "what is"), the world effects and the
-/// kinds ("every wall aurora"). Names come from the vocabulary, so each
-/// one is a surface or an effect of this room.
+/// color, a band, a strength and "what is") and the kinds ("every wall
+/// aurora"). Names come from the vocabulary, so each one is a surface of
+/// this room. Board #5470: no example steps or names an effect, since
+/// there is none to switch to, and a behavior the vocabulary lacks
+/// (embers, sparks) is never an example.
 fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
     // Board #5459: "open the menu" on the first page, for the wearer who
     // has one hand free.
     let menu: Vec<String> = [
-        "next effect",
+        "next theme",
         "open the menu",
-        "music play and next effect",
+        "music play and next theme",
         "edit the room",
         "particles off",
         // Board #5453: every control the menu has.
         "edges off",
         "agent off",
         "voice off",
-        "previous effect",
         "music stop",
-        "recenter the cloud",
+        "recenter",
         "rescan the room",
         "next song",
         "what is playing",
-        "next theme",
         "theme aurora",
         "close the menu",
         "menu",
@@ -1508,18 +1538,6 @@ fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
             })
         })
         .collect();
-    let effects: Vec<String> = vocab
-        .effects
-        .iter()
-        .map(|e| {
-            let switch = format!("switch to {e}");
-            if switch.chars().count() <= MAX_EXAMPLE_CHARS {
-                switch
-            } else {
-                e.clone()
-            }
-        })
-        .collect();
     let mut kinds: Vec<u32> = Vec::new();
     for s in &vocab.surfaces {
         if [KIND_TABLE, KIND_WALL, KIND_FLOOR, KIND_CEILING, KIND_FRAME].contains(&s.kind)
@@ -1533,7 +1551,7 @@ fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
         .enumerate()
         .filter_map(|(i, &kind)| Some(format!("every {} {}", kind_name(kind), runs(kind, i + 1)?)))
         .collect();
-    let lists = [menu, surfaces, effects, kinds];
+    let lists = [menu, surfaces, kinds];
     let longest = lists.iter().map(Vec::len).max().unwrap_or(0);
     (0..longest)
         .flat_map(|k| lists.iter().filter_map(move |l| l.get(k).cloned()))
@@ -1872,14 +1890,12 @@ pub fn target_name(target: Target, vocab: &Vocabulary<'_>) -> String {
 
 /// The label's confirmation, in the house style of the editor's labels
 /// (`label::cycle_text`, `class_text`): "desk: streamlines", "all walls:
-/// spectrum", "desk: amber", "next effect".
+/// spectrum", "desk: amber", "next theme".
 pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
     let on_off = |on: bool| if on { "on" } else { "off" };
     let of = |t: Target, what: &str| format!("{}: {what}", target_name(t, vocab));
     match *intent {
-        Intent::NextEffect => "next effect".to_owned(),
-        Intent::PrevEffect => "previous effect".to_owned(),
-        Intent::Effect(i) => vocab.effects.get(i).cloned().unwrap_or_default(),
+        Intent::NextEffect | Intent::PrevEffect | Intent::Effect(_) => EFFECTS_GONE.to_owned(),
         Intent::EditRoom(on) => format!("edit room {}", on_off(on)),
         Intent::Cloud(on) => format!("particles {}", on_off(on)),
         Intent::Pitcher(on) => format!("pitcher {}", on_off(on)),
@@ -1901,7 +1917,7 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         }
         Intent::ScanMusic => "looking for new music".to_owned(),
         Intent::Rescan => "rescanning the room".to_owned(),
-        Intent::Recenter => "cloud recentered".to_owned(),
+        Intent::Recenter => "recentered".to_owned(),
         Intent::AllNone => "every surface: none".to_owned(),
         Intent::Menu(true) => "menu open".to_owned(),
         Intent::Menu(false) => "menu closed".to_owned(),
@@ -2820,8 +2836,8 @@ mod tests {
         assert_eq!(card.label.lines().count(), HELP_LINES);
         assert_close!(card.seconds, CARD_S);
         // With another clause, still the card.
-        let r = say("Next effect and what can I say?");
-        assert!(r.label.starts_with("next effect\n"), "{}", r.label);
+        let r = say("Next theme and what can I say?");
+        assert!(r.label.starts_with("theme: Drift\n"), "{}", r.label);
         assert_close!(r.seconds, CARD_S);
         let r = say("what are the walls");
         assert_close!(r.seconds, HELP_S);
@@ -3700,9 +3716,9 @@ mod tests {
         let (e, boxes) = (effects(), room());
         let v = vocab(&e, &boxes, Some(0));
         for (intent, want) in [
-            (Intent::NextEffect, "next effect"),
-            (Intent::PrevEffect, "previous effect"),
-            (Intent::Effect(1), "Embers"),
+            (Intent::NextEffect, EFFECTS_GONE),
+            (Intent::PrevEffect, EFFECTS_GONE),
+            (Intent::Effect(1), EFFECTS_GONE),
             (Intent::EditRoom(true), "edit room on"),
             (Intent::EditRoom(false), "edit room off"),
             (Intent::Cloud(false), "particles off"),
@@ -3710,7 +3726,7 @@ mod tests {
             (Intent::Music(true), "music on"),
             (Intent::Music(false), "music off"),
             (Intent::Rescan, "rescanning the room"),
-            (Intent::Recenter, "cloud recentered"),
+            (Intent::Recenter, "recentered"),
             (Intent::AllNone, "every surface: none"),
             (on(Target::Surface(0), B::Streamlines), "desk: streamlines"),
             (on(Target::Pointed, B::Curls), "desk: curls"),
@@ -4104,8 +4120,8 @@ mod tests {
             lines.push(log_line(sentence, &outcome, &label));
         }
         let want = [
-            "voice: heard \"Next effect.\" → NextEffect · label \"next effect\"",
-            "voice: heard \"Embers.\" → Effect(1) · label \"Embers\"",
+            "voice: heard \"Next effect.\" → NextEffect · label \"The effects are gone\"",
+            "voice: heard \"Embers.\" → Effect(1) · label \"The effects are gone\"",
             "voice: heard \"Edit the room.\" → EditRoom(true) · label \"edit room on\"",
             "voice: heard \"Every table streamlines.\" → Behavior { target: Kind(1), behavior: Streamlines } · label \"all tables: streamlines\"",
             "voice: heard \"Table 14 in amber.\" → Color { target: Surface(14), color: 4 } · label \"table 14: amber\"",
@@ -4289,17 +4305,17 @@ mod tests {
                 assert_eq!(seen.len(), all.len());
             }
         }
-        // The examples name this room's surfaces and effects.
+        // The examples name this room's surfaces, and no effect.
         let boxes = replayed_room();
         let v = vocab(&e, &boxes, None);
         assert_eq!(
             examples(&v, 0),
             [
-                "next effect",
+                "next theme",
                 "streamlines on table 0",
-                "switch to Flux Cloud",
                 "every table curls",
                 "open the menu",
+                "storage 1 in blue",
             ]
         );
     }
@@ -4310,8 +4326,8 @@ mod tests {
         let v = vocab(&e, &boxes, None);
         // Words in common: the example that shares the most.
         assert_eq!(
-            hint("Switch over to the flock now.", &v),
-            "Try \"switch to Flock\""
+            hint("Let me edit this whole room now.", &v),
+            "Try \"edit the room\""
         );
         assert_eq!(
             hint("Make table 14 sort of glowy.", &v),
@@ -4402,7 +4418,10 @@ mod tests {
         assert_eq!(r.label, TOO_MANY_LABEL);
         // A miss the agent does not take stays the grammar's answer.
         let (r, _) = say("Next effect and the shelf in blue.", true, &mut page);
-        assert_eq!(r.label, "next effect \u{b7} No surface called \"shelf\"");
+        assert_eq!(
+            r.label,
+            "The effects are gone \u{b7} No surface called \"shelf\""
+        );
         assert_eq!(r.agent, None);
         // Help: five lines, the page turned.
         let before = page;
@@ -4465,13 +4484,13 @@ mod tests {
                 REPLY_S,
             ),
             (
-                "voice: heard \"What can I say?\" \u{2192} Help \u{b7} label \"next effect | streamlines on table 0 | switch to Flux Cloud | every table curls | open the menu\"",
-                "next effect\nstreamlines on table 0\nswitch to Flux Cloud\nevery table curls\nopen the menu",
+                "voice: heard \"What can I say?\" \u{2192} Help \u{b7} label \"next theme | streamlines on table 0 | every table curls | open the menu | storage 1 in blue\"",
+                "next theme\nstreamlines on table 0\nevery table curls\nopen the menu\nstorage 1 in blue",
                 CARD_S,
             ),
             (
-                "voice: heard \"Help.\" \u{2192} Help \u{b7} label \"storage 1 in blue | switch to Embers | every wall rings | music play and next effect | wall 2 on the bass\"",
-                "storage 1 in blue\nswitch to Embers\nevery wall rings\nmusic play and next effect\nwall 2 on the bass",
+                "voice: heard \"Help.\" \u{2192} Help \u{b7} label \"every wall rings | music play and next theme | wall 2 on the bass | every floor sparks | edit the room\"",
+                "every wall rings\nmusic play and next theme\nwall 2 on the bass\nevery floor sparks\nedit the room",
                 CARD_S,
             ),
             (
@@ -4497,5 +4516,128 @@ mod tests {
             assert_close!(*seconds, want_s);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The vocabulary `app.rs` builds since board #5470: the cut effects'
+    /// names, and the behaviors a surface can still be given.
+    fn app_vocab<'a>(effects: &'a [String], boxes: &[LaneBox<'_>]) -> Vocabulary<'a> {
+        Vocabulary {
+            effects,
+            behaviors: &SurfaceBehavior::OFFERED,
+            surfaces: surfaces(boxes),
+            pointed: Some(0),
+            tracks: Tracks::default(),
+        }
+    }
+
+    /// The three cloud effects are gone: a sentence that steps them or
+    /// names one, and an agent's action that does, is answered in one
+    /// short sentence and changes nothing.
+    #[test]
+    fn the_effect_phrases_answer_that_the_effects_are_gone() {
+        let dir = std::env::temp_dir().join(format!("fosfora-intent-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (e, boxes) = (cut_effects(), room());
+        assert_eq!(e, ["Flux Cloud", "Embers", "Flock"]);
+        let v = app_vocab(&e, &boxes);
+        let id = room_id(boxes.iter().map(|b| b.uuid));
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        let before: Vec<_> = (0..boxes.len())
+            .map(|k| lanes.effective(k, &boxes))
+            .collect();
+        for said in [
+            "Next effect.",
+            "previous effect",
+            "last effect",
+            "Switch to Flux Cloud.",
+            "show flock",
+            "Go to embers",
+            "Embers.",
+            "Flock",
+        ] {
+            let intent = parse(said, &v).unwrap_or_else(|m| panic!("{said}: {m:?}"));
+            assert!(asks_for_effect(&intent), "{said}: {intent:?}");
+            // Nothing to write, and the label says why.
+            assert_eq!(apply(&intent, &v, &mut lanes, &boxes), None, "{said}");
+            assert_eq!(reply(&intent, &v), "The effects are gone", "{said}");
+        }
+        // The agent's ids for them, the on-device model's too.
+        for (kind, value) in [
+            ("next_effect", ""),
+            ("prev_effect", ""),
+            ("previous_effect", ""),
+            ("effect", "Flock"),
+        ] {
+            let action = AgentAction {
+                kind: kind.to_owned(),
+                target: String::new(),
+                value: value.to_owned(),
+            };
+            let intent = Intent::from_json(&action, &v).unwrap_or_else(|m| panic!("{kind}: {m:?}"));
+            assert_eq!(reply(&intent, &v), EFFECTS_GONE, "{kind}");
+        }
+        // One short sentence, on one line of the label.
+        assert_eq!(crate::label::layout(EFFECTS_GONE).lines.len(), 1);
+        assert!(EFFECTS_GONE.chars().count() < MAX_EXAMPLE_CHARS);
+        // The room is as it was.
+        let after: Vec<_> = (0..boxes.len())
+            .map(|k| lanes.effective(k, &boxes))
+            .collect();
+        assert_eq!(before, after);
+        // Embers and sparks painted a surface with the cloud's particles:
+        // they are no longer behaviors to ask for.
+        for said in [
+            "Embers on the desk.",
+            "sparks on the floor",
+            "every table embers",
+        ] {
+            assert!(parse(said, &v).is_err(), "{said}: {:?}", parse(said, &v));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The help card lists nothing that no longer works: no example steps
+    /// or names an effect or paints embers or sparks, and each one the
+    /// grammar hears does something.
+    #[test]
+    fn the_help_lists_nothing_that_is_gone() {
+        let e = cut_effects();
+        for boxes in [room(), replayed_room()] {
+            let v = app_vocab(&e, &boxes);
+            let all = shown_pool(&v);
+            assert!(all.len() >= 20, "{all:?}");
+            assert_eq!(all, pool(&v), "every example parses");
+            for example in &all {
+                let low = example.to_lowercase();
+                for dead in ["effect", "embers", "sparks", "cloud", "flock", "flux"] {
+                    assert!(!low.contains(dead), "\"{example}\" names {dead}");
+                }
+                for c in parse_clauses(example, &v) {
+                    let intent = c.outcome.unwrap_or_else(|m| panic!("{example}: {m:?}"));
+                    assert!(
+                        !asks_for_effect(&intent),
+                        "\"{example}\" asks for an effect"
+                    );
+                    assert_ne!(reply(&intent, &v), EFFECTS_GONE, "{example}");
+                }
+            }
+            // Every page of the card, round the pool.
+            for page in 0..all.len() {
+                for line in examples(&v, page) {
+                    assert!(all.contains(&line), "{line}");
+                }
+            }
+            // The theme's step, which the thumb swipe takes too, is the
+            // first example.
+            assert_eq!(all[0], "next theme");
+            // A miss is never sent to a phrase that is gone.
+            for said in ["Switch over to the flock now.", "Make it glow like embers."] {
+                let hinted = hint(said, &v).to_lowercase();
+                for dead in ["effect", "embers", "sparks", "flock", "flux"] {
+                    assert!(!hinted.contains(dead), "{said}: {hinted}");
+                }
+            }
+        }
     }
 }
