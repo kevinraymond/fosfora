@@ -616,6 +616,14 @@ impl Drive {
         self.music
     }
 
+    /// This drive with its music at `music` (0..1), for what the flash
+    /// limit lets through of it (board #5451, `flash.rs`).
+    #[must_use]
+    pub fn with_music(mut self, music: f32) -> Self {
+        self.music = unit(music);
+        self
+    }
+
     /// The wave's phase, 0..1 of a band.
     pub fn phase(&self) -> f32 {
         self.phase

@@ -75,8 +75,8 @@ use crate::surfaces::Face;
 /// One ported effect: the `.pfx` stem (its catalogue name), its shader and
 /// its `.pfx`, both the core's files, the float inputs a surface runs at
 /// another value than the `.pfx`'s default (name, value), whether it draws
-/// the sky (`sky.rs`), and the float inputs its reflection on a floor runs
-/// at besides those.
+/// the sky (`sky.rs`), the float inputs its reflection on a floor runs at
+/// besides those, and whether the music moves its shapes.
 #[derive(Debug, Clone, Copy)]
 pub struct Port {
     pub name: &'static str,
@@ -85,6 +85,10 @@ pub struct Port {
     pub overrides: &'static [(&'static str, f32)],
     pub sky: bool,
     pub reflection: &'static [(&'static str, f32)],
+    /// Whether it moves its shapes with the music (a zoom, a fold, a
+    /// structure), not only its light: its uniform then takes the levels
+    /// the flash limit lets glide (`flash::Limiter::glided`, board #5451).
+    pub shapes: bool,
 }
 
 impl Port {
@@ -112,6 +116,7 @@ macro_rules! port {
             overrides: $overrides,
             sky: false,
             reflection: &[],
+            shapes: true,
         }
     };
 }
@@ -126,6 +131,9 @@ pub const PORTS: [Port; 8] = [
     Port {
         sky: true,
         reflection: &[("glow_width", 0.8)],
+        // Its curtains brighten and widen with their bands: light, which
+        // the flash limit's direction holds as it is.
+        shapes: false,
         ..port!("aurora")
     },
     port!("prism"),

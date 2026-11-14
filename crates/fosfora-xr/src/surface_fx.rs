@@ -230,12 +230,28 @@ pub struct Slot {
     pub band: u32,
 }
 
-/// What a spectrum slot draws: the bars ([`Canvas`]) and the sign of its
-/// face's `u` (`canvas::spectrum_face`).
+/// What a spectrum slot draws: the bars' heights and the bottom glow (a
+/// [`Canvas`]'s, or what the flash limiter lets through of them,
+/// `flash::follower`), the canvas's gain, and the sign of its face's `u`
+/// (`canvas::spectrum_face`).
 #[derive(Debug, Clone, Copy)]
 pub struct Spectrum<'a> {
-    pub canvas: &'a Canvas,
+    pub heights: &'a [f32],
+    pub glow: f32,
+    pub gain: f32,
     pub sign: f32,
+}
+
+impl<'a> Spectrum<'a> {
+    /// `canvas`'s bars as they are, on a face whose `u` has sign `sign`.
+    pub fn of(canvas: &'a Canvas, sign: f32) -> Self {
+        Self {
+            heights: canvas.heights(),
+            glow: canvas.glow(),
+            gain: canvas.gain,
+            sign,
+        }
+    }
 }
 
 /// `p`'s (u, v) on `face`: meters along its two axes from its center, the
@@ -319,7 +335,7 @@ pub fn rows(
         SurfaceBehavior::Pulse => (0.0, PULSE_PEAK_ALPHA),
         SurfaceBehavior::Spectrum => (
             0.0,
-            crate::canvas::PEAK_ALPHA * spectrum.map_or(0.0, |s| s.canvas.gain),
+            crate::canvas::PEAK_ALPHA * spectrum.map_or(0.0, |s| s.gain),
         ),
         _ => (STREAM_SPEED_M_S, STREAM_PEAK_ALPHA),
     };
@@ -360,11 +376,11 @@ pub fn rows(
         }
         SurfaceBehavior::Spectrum => {
             if let Some(s) = spectrum {
-                let heights = s.canvas.heights();
+                let heights = s.heights;
                 rows[9] = [
                     s.sign,
                     heights.len() as f32,
-                    s.canvas.glow(),
+                    s.glow,
                     crate::canvas::BAR_FILL,
                 ];
                 for (i, h) in heights.iter().take(MAX_BARS).enumerate() {
@@ -1112,7 +1128,7 @@ mod tests {
             rms: 0.3,
             ..Audio::default()
         };
-        let rows = rows(&s, audio, None, Some(Spectrum { canvas: &c, sign }), 0.0);
+        let rows = rows(&s, audio, None, Some(Spectrum::of(&c, sign)), 0.0);
         for (row, p) in rows.iter().zip(face.corners(LIFT_M)) {
             assert_close!(*row, [p.x, p.y, p.z, 1.0]);
         }
@@ -1138,10 +1154,7 @@ mod tests {
         // Another kind (the ceiling test) keeps the warm white; a color
         // index paints it.
         let s = slot(face, KIND_CEILING, SurfaceBehavior::Spectrum);
-        let spectrum = Some(Spectrum {
-            canvas: &c,
-            sign: 1.0,
-        });
+        let spectrum = Some(Spectrum::of(&c, 1.0));
         assert_close!(rows_of(&s, spectrum)[6][..3], w);
         let s = Slot { color: 6, ..s };
         assert_close!(

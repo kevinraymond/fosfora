@@ -1,5 +1,6 @@
-//! Photosensitive safety (board #5451): the rule every look must meet, and
-//! the count that checks it.
+//! Photosensitive safety (board #5451): the rule every look must meet, the
+//! count that checks it, and the limiter every audio-driven light goes
+//! through so it holds.
 //!
 //! **The rule** (WCAG 2.3.1, three flashes or below threshold): no more
 //! than three general flashes and no more than three red flashes in any
@@ -23,6 +24,70 @@
 //! that holds more than [`MAX_TRANSITIONS`] fails. The window is the
 //! frames of one second, ending at each frame in turn ([`in_window`]), as
 //! the usual flash analyzers count it.
+//!
+//! **The limiter** ([`Limiter`]). One place between the analysis and
+//! everything the audio lights. `app.rs` hands it the frame's hop as the
+//! analysis made it, and every look reads what comes out: the features
+//! (every level limited, the triggers let through or held, the beat's
+//! phase held), the mel bands, and the values the frame works out from
+//! them before they light anything (the beat and downbeat envelopes, the
+//! spectrum's bars and glow, the key's tint, the depth light's music:
+//! [`follower`]). It holds the guarantee in one rule: every value it lets
+//! through moves in one shared direction at a time. In a rise any value may
+//! go up or hold, none may go down; in a fall the other way round. The
+//! direction turns at most [`TURNS_PER_WINDOW`] times in any second, and
+//! each direction lasts [`MIN_PHASE_S`] at least.
+//!
+//! **Why that holds the count.** A look's light in a region goes up with
+//! the levels it reads: more bass, a brighter curtain; more onset, a
+//! brighter sky. Sums, products, curves and the brightest of several such
+//! values all go up with them too. So within one direction every region's
+//! light only rises, or only falls, and it can change direction only where
+//! the limiter turns. Four turns in a second leave at most five
+//! runs, so at most five transitions: two and a half flashes, general or
+//! red, whatever the music does, on every theme and on any look added later
+//! that reads the music this way. The sixth transition the rule allows is
+//! left for what the looks do on their own: Aurora's curtains drift across
+//! a region with the music held still.
+//!
+//! **Keeping the show.** A rise takes a value up at once, so a hit lands on
+//! its own frame. A beat turns the direction to a rise as it fires when the
+//! turns allow, and the direction falls again once something wants to
+//! fall. A level falls quickly after a sparse hit and more slowly the more
+//! often it is hit ([`RELEASE_S`], by its own pace, [`PACE_HZ`]), so a run
+//! of hi-hats rides on a swell instead of strobing. Beats up to 120 BPM all
+//! go through, each one rise and one fall. Faster, every other beat goes
+//! through (half time, [`HALF_TIME_S`]), and the beats held back leave the
+//! light as it is for a moment ([`BEAT_FALL_S`]) so the next one has its
+//! turns. What the wearer loses: within a direction, a value that wants to
+//! go the other way waits for the next turn, so in busy music the light
+//! moves in steps a few times a second; fast beats land at half time; and
+//! nothing pulses on the beat's phase (Aurora's 10 % beat breathing, the
+//! world effects' beat-phase envelopes), since the phase runs on its own
+//! clock and no direction could hold it.
+//!
+//! **Triggers.** The light a beat starts runs on by itself: a ring spreads,
+//! a burst of embers fades. Those cannot follow the direction, so a beat
+//! goes through only when the direction may rise now and fall again within
+//! [`BEAT_FALL_S`], and at least [`BEAT_GAP_S`] after the last one;
+//! downbeats and drops have their own gaps. A ring's rise and fall then
+//! land on the turns the beat used where it starts, under the wearer.
+//!
+//! **What it does not cover.** The real room behind the passthrough: the
+//! limiter dims nothing it does not draw. The looks' own motion with the
+//! music held still (measured: under one flash a second, `flash_room.rs`).
+//! A delayed copy of the light (the edge bars' tunnel shows the bars of the
+//! last 0.6 s, rung by rung) and light a beat set going (a ring far from
+//! where it started) follow the turns only where they start; they are
+//! bounded by the beats that go through and measured. So is a bar's tip:
+//! a bar is brightest at its top, with a cap line, so a region the tip
+//! rises through sees a little light pass. A look that maps the music to a
+//! hue or a position rather than to light, so that more of the music can
+//! mean less light, is outside the proof and has to be measured as the
+//! themes are.
+//!
+//! **The knob.** `debug.fosfora.flashlimit 0` turns it off for an A/B on
+//! the debug surface; unset or 1 it runs. The wearer has no setting for it.
 
 use std::collections::VecDeque;
 
@@ -301,6 +366,566 @@ impl Counter {
     }
 }
 
+/// The direction every limited value may move in this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Values may rise or hold.
+    Rise,
+    /// Values may fall or hold.
+    Fall,
+}
+
+/// Direction changes allowed in any window ([`in_window`]): four turns
+/// make at most five runs, and so at most five transitions, two and a half
+/// flashes, which leaves one transition's room for what the looks do on
+/// their own (curtains drifting across a region).
+pub const TURNS_PER_WINDOW: usize = 4;
+/// The shortest a direction lasts (s), so the turns spread out.
+pub const MIN_PHASE_S: f32 = 0.1;
+/// How far a value must be from where it is held (0..1) to ask for the
+/// other direction.
+pub const SWITCH_GAP: f32 = 0.04;
+/// The shortest time between two beats, two downbeats and two drops let
+/// through (s). 0.38 s lets every beat through up to 157 BPM; faster, about
+/// every other one.
+pub const BEAT_GAP_S: f64 = 0.38;
+pub const DOWNBEAT_GAP_S: f64 = 0.75;
+/// When the light a beat starts has fallen (s after the beat): a beat goes
+/// through only if the direction may turn back down by then, and a beat
+/// held back keeps the light from turning up until then.
+pub const BEAT_FALL_S: f64 = 0.25;
+/// Beats closer than the first (s, 125 BPM) go through every other one
+/// (half time) until they are further apart than the second (120 BPM).
+pub const HALF_TIME_S: [f64; 2] = [0.48, 0.5];
+pub const DROP_GAP_S: f64 = 2.0;
+/// A level's fall time constant (s) at a sparse pace and at a dense one:
+/// a single hit clears at once, a fast run of them rides on a swell.
+pub const RELEASE_S: [f32; 2] = [0.05, 0.4];
+/// The pace (a level's own hits a second) over which its fall lengthens
+/// from the first to the second.
+pub const PACE_HZ: [f32; 2] = [2.5, 5.0];
+/// How fast the pace forgets (s).
+const PACE_TAU_S: f32 = 1.0;
+/// The share of their speed the looks' clocks run at while the turns are
+/// nearly spent ([`Limiter::motion`]), and how fast they glide there and
+/// back (s).
+pub const MOTION_BUSY: f32 = 0.5;
+pub const MOTION_GLIDE_S: f32 = 0.25;
+/// How fast the levels a look that moves its shapes reads follow the
+/// music (s, [`Limiter::glided`]).
+pub const SHAPE_GLIDE_S: f32 = 0.5;
+/// How fast a level that glides follows the music (s): the spectral shape,
+/// the key, the pans, which the looks map to hues and places, so a hue
+/// drifts instead of jumping.
+pub const LEVEL_GLIDE_S: f32 = 0.3;
+/// A level's rise of this much from its last low is a hit (the general
+/// flash's threshold on a 0..1 value).
+const HIT_DELTA: f32 = 0.1;
+
+/// The beat's phase while the limiter runs: held at its end, as long
+/// after a beat, so nothing pulses on the phase between the beats it lets
+/// through.
+pub const BEAT_PHASE_HELD: f32 = 0.999;
+
+/// The knob, `debug.fosfora.flashlimit` (1 or unset: on; 0: off, for an
+/// A/B on the debug surface only).
+pub const KNOB: &str = "debug.fosfora.flashlimit";
+
+/// Whether the limiter runs, from the knob's value: anything but `0` is on.
+pub fn on_from_knob(value: Option<&str>) -> bool {
+    value.map(str::trim) != Some("0")
+}
+
+/// The log line for the limiter's state.
+pub fn line(on: bool) -> String {
+    if on {
+        format!(
+            "flash limit: on · every audio-driven light turns at most {TURNS_PER_WINDOW} times a second \
+             (each direction at least {:.0} ms), beats {:.0} ms apart at least",
+            MIN_PHASE_S * 1000.0,
+            BEAT_GAP_S * 1000.0
+        )
+    } else {
+        format!("flash limit: OFF ({KNOB} 0), the music drives the light unlimited")
+    }
+}
+
+/// The audio's triggers this frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Triggers {
+    pub beat: bool,
+    pub downbeat: bool,
+    pub drop: bool,
+}
+
+/// The audio features' slots the limiter treats by name (the order of the
+/// core's `AudioFeatures`, which is frozen).
+pub mod slot {
+    pub const COUNT: usize = 85;
+    pub const SUB_BASS: usize = 0;
+    pub const BRILLIANCE: usize = 6;
+    pub const RMS: usize = 7;
+    pub const KICK: usize = 8;
+    pub const ONSET: usize = 15;
+    pub const BEAT: usize = 16;
+    pub const BEAT_PHASE: usize = 17;
+    pub const BEAT_STRENGTH: usize = 19;
+    pub const LOUDNESS_M: usize = 46;
+    pub const DOWNBEAT: usize = 52;
+    pub const BAR_PHASE: usize = 53;
+    pub const BEAT_IN_BAR: usize = 54;
+    pub const DROP: usize = 60;
+    pub const PERCUSSIVE_ENERGY: usize = 61;
+    pub const HARMONIC_ENERGY: usize = 62;
+    pub const BAR_INDEX: usize = 81;
+    pub const BEAT_INDEX: usize = 82;
+}
+
+/// What the limiter does with a feature slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A level: limited, and it may ask for the other direction.
+    Drive,
+    /// A level that follows the direction gliding ([`LEVEL_GLIDE_S`]) and
+    /// does not ask for it (the spectral shape, the key, the tempo, the
+    /// pans: the looks map them to hues and places more than to light, and
+    /// their wobble would only turn the direction more often).
+    Level,
+    /// A trigger: let through at most once per its gap.
+    Trigger,
+    /// A clock or a counter: passed as it is (the beat's phase holds at
+    /// its end after a beat that was not let through).
+    Clock,
+}
+
+/// How the limiter treats feature slot `i`.
+pub fn kind(i: usize) -> Kind {
+    use slot::*;
+    match i {
+        SUB_BASS..=KICK
+        | ONSET
+        | BEAT_STRENGTH
+        | LOUDNESS_M
+        | PERCUSSIVE_ENERGY
+        | HARMONIC_ENERGY => Kind::Drive,
+        BEAT | DOWNBEAT | DROP => Kind::Trigger,
+        BEAT_PHASE | BAR_PHASE | BEAT_IN_BAR | BAR_INDEX | BEAT_INDEX => Kind::Clock,
+        _ => Kind::Level,
+    }
+}
+
+/// The values the frame works out from the audio after the analysis, each
+/// of which the limiter follows ([`Limiter::follow`]): the beat and
+/// downbeat envelopes, the depth light's music, the wall spectrum's glow,
+/// the key's tint (three) and the spectrum's bars (`canvas::MAX_BARS`).
+pub mod follower {
+    pub const BEAT_ENV: usize = 0;
+    pub const DOWNBEAT_ENV: usize = 1;
+    pub const DEPTH_MUSIC: usize = 2;
+    pub const BAR_GLOW: usize = 3;
+    pub const TINT: usize = 4;
+    pub const BARS: usize = TINT + 3;
+    /// The features' beat, downbeat and drop slots (the limiter's own: 1
+    /// from a trigger let through until the light falls).
+    pub const TRIGGERS: usize = BARS + crate::canvas::MAX_BARS;
+    pub const COUNT: usize = TRIGGERS + 3;
+}
+
+/// The mel bands the limiter holds (the analysis makes 64).
+pub const MELS: usize = 64;
+
+/// How a level moves within the direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pace {
+    /// Up at once, down by its own pace ([`RELEASE_S`]), and it may ask for
+    /// the other direction: the levels that carry the light.
+    Drive,
+    /// The same, without asking: the mel bands, which the bars follow.
+    Follow,
+    /// Gliding both ways ([`LEVEL_GLIDE_S`]), without asking: the levels
+    /// the looks map to a hue or a place rather than to light.
+    Glide,
+}
+
+/// One level's state: where it is held, whether it has a value yet, its
+/// own hits (a zigzag on its raw value) and their pace.
+#[derive(Debug, Clone, Copy, Default)]
+struct LevelState {
+    y: f32,
+    primed: bool,
+    rising: bool,
+    ext: f32,
+    pace: f32,
+}
+
+/// The photosensitive limiter (board #5451): one place every audio-driven
+/// light passes through, so the light cannot flash more than three times
+/// a second (the module docs).
+#[derive(Debug, Clone)]
+pub struct Limiter {
+    on: bool,
+    phase: Phase,
+    since_s: f32,
+    now_s: f64,
+    /// When the direction turned, the last second's.
+    turns: VecDeque<f64>,
+    /// The largest pending move up and down after last frame's limiting,
+    /// over the values that may ask.
+    up: f32,
+    down: f32,
+    levels: Vec<LevelState>,
+    /// The share of their speed the looks' clocks run at ([`Self::motion`]).
+    motion: f32,
+    /// Every level gliding after its limited value ([`SHAPE_GLIDE_S`]),
+    /// within the direction: what a look that moves its shapes with the
+    /// music reads ([`Self::glided`]).
+    glide: [f32; slot::COUNT],
+    followers: Vec<(f32, bool)>,
+    last_beat: f64,
+    last_downbeat: f64,
+    last_drop: f64,
+    /// Whether the last beat the audio fired was let through, when it
+    /// fired, and whether the beats come too fast for each to go through
+    /// (then every other one does: half time).
+    beat_kept: bool,
+    last_raw_beat: f64,
+    half_time: bool,
+    /// Until when a beat held back keeps the light from turning up: its hit
+    /// rides on the light as it is, and the turns are left for the next
+    /// beat.
+    hold_until: f64,
+    /// Beats let through and held back since the start.
+    pub beats_kept: u32,
+    pub beats_held: u32,
+}
+
+impl Limiter {
+    pub fn new(on: bool) -> Self {
+        Self {
+            on,
+            phase: Phase::Rise,
+            since_s: 0.0,
+            now_s: 0.0,
+            turns: VecDeque::new(),
+            up: 0.0,
+            down: 0.0,
+            levels: vec![LevelState::default(); slot::COUNT + MELS],
+            glide: [0.0; slot::COUNT],
+            motion: 1.0,
+            followers: vec![(0.0, false); follower::COUNT],
+            last_beat: f64::NEG_INFINITY,
+            last_downbeat: f64::NEG_INFINITY,
+            last_drop: f64::NEG_INFINITY,
+            beat_kept: true,
+            last_raw_beat: f64::NEG_INFINITY,
+            half_time: false,
+            hold_until: f64::NEG_INFINITY,
+            beats_kept: 0,
+            beats_held: 0,
+        }
+    }
+
+    pub fn on(&self) -> bool {
+        self.on
+    }
+
+    /// Turn it on or off; either way it starts over from the next values.
+    pub fn set_on(&mut self, on: bool) {
+        if on != self.on {
+            *self = Self {
+                beats_kept: self.beats_kept,
+                beats_held: self.beats_held,
+                ..Self::new(on)
+            };
+        }
+    }
+
+    /// The direction this frame.
+    pub fn phase(&self) -> Phase {
+        self.phase
+    }
+
+    /// The turns in the last second, this frame's included.
+    pub fn turns_last_second(&self) -> usize {
+        self.turns
+            .iter()
+            .filter(|&&t| in_window(self.now_s - t))
+            .count()
+    }
+
+    /// Start a frame `dt` seconds after the last: decide the direction
+    /// from the moves last frame left pending and this frame's beat, and
+    /// let the triggers through that their gaps allow. Off, the triggers
+    /// pass as they are.
+    pub fn begin(&mut self, dt: f32, raw: Triggers) -> Triggers {
+        let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
+        self.now_s += f64::from(dt);
+        self.since_s += dt;
+        if !self.on {
+            return raw;
+        }
+        let now = self.now_s;
+        while self.turns.front().is_some_and(|&t| !in_window(now - t)) {
+            self.turns.pop_front();
+        }
+        let room = TURNS_PER_WINDOW.saturating_sub(self.turns.len());
+        let settled = self.since_s >= MIN_PHASE_S - 1e-6;
+        let pass = |last: &mut f64, fired: bool, gap: f64| {
+            let ok = fired && now - *last >= gap - 1e-9;
+            if ok {
+                *last = now;
+            }
+            ok
+        };
+        // A beat starts light that runs on by itself (the rings, a burst):
+        // it goes through only when the light may rise now and fall again
+        // by the time a hit's light has fallen ([`BEAT_FALL_S`]), so its
+        // rise and fall are the frame's own turns, not more.
+        let later = self
+            .turns
+            .iter()
+            .filter(|&&t| in_window(now + BEAT_FALL_S - t))
+            .count();
+        let beat_room = match self.phase {
+            Phase::Rise => later < TURNS_PER_WINDOW,
+            Phase::Fall => room >= 1 && settled && later + 1 < TURNS_PER_WINDOW,
+        };
+        // Beats faster than two a second (each takes two turns) go
+        // through every other one, a downbeat always when it fits.
+        if raw.beat {
+            let period = now - self.last_raw_beat;
+            self.last_raw_beat = now;
+            if period < HALF_TIME_S[0] {
+                self.half_time = true;
+            } else if period > HALF_TIME_S[1] {
+                self.half_time = false;
+            }
+        }
+        let skip = self.half_time && self.beat_kept && !raw.downbeat;
+        let gated = Triggers {
+            beat: beat_room && !skip && pass(&mut self.last_beat, raw.beat, BEAT_GAP_S),
+            downbeat: beat_room && pass(&mut self.last_downbeat, raw.downbeat, DOWNBEAT_GAP_S),
+            drop: pass(&mut self.last_drop, raw.drop, DROP_GAP_S),
+        };
+        if raw.beat {
+            self.beat_kept = gated.beat;
+            if gated.beat {
+                self.beats_kept += 1;
+            } else {
+                self.beats_held += 1;
+                self.hold_until = now + BEAT_FALL_S;
+            }
+        }
+        let turn = if gated.beat {
+            // The beat rises now, and holds the rise for the shortest
+            // phase before anything may fall.
+            let turn = self.phase == Phase::Fall;
+            self.since_s = 0.0;
+            self.phase = Phase::Rise;
+            if turn {
+                self.turns.push_back(now);
+            }
+            false
+        } else {
+            let wants = match self.phase {
+                Phase::Rise => self.down >= SWITCH_GAP,
+                Phase::Fall => (self.up >= SWITCH_GAP || gated.downbeat) && now >= self.hold_until,
+            };
+            wants && settled && room >= 1
+        };
+        if turn {
+            self.phase = match self.phase {
+                Phase::Rise => Phase::Fall,
+                Phase::Fall => Phase::Rise,
+            };
+            self.since_s = 0.0;
+            self.turns.push_back(now);
+        }
+        // The looks' own motion slows while the turns are nearly spent.
+        let busy = self.turns.len() + 1 >= TURNS_PER_WINDOW;
+        let target = if busy { MOTION_BUSY } else { 1.0 };
+        self.motion += (target - self.motion) * (1.0 - (-dt / MOTION_GLIDE_S).exp());
+        self.up = 0.0;
+        self.down = 0.0;
+        gated
+    }
+
+    /// The share of their speed the looks' clocks run at this frame (the
+    /// surfaces' clock, the ports' drifts): 1, gliding to [`MOTION_BUSY`]
+    /// while three of the second's four turns are spent. A look's own
+    /// motion (a curtain drifting across a region) changes the light
+    /// without the music, and the turns leave room for one such change a
+    /// second; a slower drift keeps it to that while the music uses the
+    /// rest. Off, 1.
+    pub fn motion(&self) -> f32 {
+        if self.on { self.motion } else { 1.0 }
+    }
+
+    /// Note a value's pending moves after limiting: `x` where the audio
+    /// has it, `y` where it is held.
+    fn ask(&mut self, x: f32, y: f32) {
+        self.up = self.up.max(x - y);
+        self.down = self.down.max(y - x);
+    }
+
+    /// Level `i` (a feature slot, or `slot::COUNT` plus a mel band) to
+    /// `x` this frame, `dt` after the last, as `pace` says: in a rise it
+    /// goes up (at once, or gliding) and holds where it would fall; in a
+    /// fall it goes down (at once at a sparse pace and slower the denser its
+    /// own hits, or gliding) and holds where it would rise.
+    fn level(&mut self, i: usize, x: f32, dt: f32, pace: Pace) -> f32 {
+        let asks = pace == Pace::Drive;
+        let glides = pace == Pace::Glide;
+        if !x.is_finite() {
+            return x;
+        }
+        let phase = self.phase;
+        let s = &mut self.levels[i];
+        if !s.primed {
+            *s = LevelState {
+                y: x,
+                primed: true,
+                rising: true,
+                ext: x,
+                pace: 0.0,
+            };
+            return x;
+        }
+        // The level's own pace: its hits, a zigzag on the raw value.
+        s.pace *= (-dt / PACE_TAU_S).exp();
+        if s.rising {
+            if x > s.ext {
+                s.ext = x;
+            } else if s.ext - x >= HIT_DELTA {
+                (s.rising, s.ext) = (false, x);
+            }
+        } else if x < s.ext {
+            s.ext = x;
+        } else if x - s.ext >= HIT_DELTA {
+            (s.rising, s.ext) = (true, x);
+            s.pace += 1.0;
+        }
+        let y = s.y;
+        let glide = 1.0 - (-dt / LEVEL_GLIDE_S).exp();
+        s.y = match phase {
+            Phase::Rise if glides && x > y => y + (x - y) * glide,
+            Phase::Fall if glides && x < y => y - (y - x) * glide,
+            Phase::Rise => y.max(x),
+            Phase::Fall if x < y => {
+                let t = ((s.pace - PACE_HZ[0]) / (PACE_HZ[1] - PACE_HZ[0])).clamp(0.0, 1.0);
+                let tau = RELEASE_S[0] + (RELEASE_S[1] - RELEASE_S[0]) * t * t * (3.0 - 2.0 * t);
+                x.max(y - (y - x) * (1.0 - (-dt / tau).exp()))
+            }
+            Phase::Fall => y,
+        };
+        let y = s.y;
+        if asks {
+            self.ask(x, y);
+        }
+        y
+    }
+
+    /// This frame's features, `dt` after the last, in place: every level
+    /// limited, the triggers set to `gated` ([`Self::begin`]), the beat's
+    /// phase held at its end after a beat that was not let through, the
+    /// other clocks as they are. Off, untouched.
+    pub fn features(&mut self, f: &mut [f32; slot::COUNT], dt: f32, gated: Triggers) {
+        if !self.on {
+            return;
+        }
+        for i in 0..slot::COUNT {
+            f[i] = match kind(i) {
+                Kind::Drive => self.level(i, f[i], dt, Pace::Drive),
+                Kind::Level => self.level(i, f[i], dt, Pace::Glide),
+                Kind::Trigger => {
+                    let (fired, k) = match i {
+                        slot::BEAT => (gated.beat, 0),
+                        slot::DOWNBEAT => (gated.downbeat, 1),
+                        _ => (gated.drop, 2),
+                    };
+                    self.follow(follower::TRIGGERS + k, f32::from(u8::from(fired)))
+                }
+                Kind::Clock => Self::clock(i, f),
+            };
+        }
+        let a = 1.0 - (-dt.max(0.0) / SHAPE_GLIDE_S).exp();
+        for i in (0..slot::COUNT).filter(|&i| matches!(kind(i), Kind::Drive | Kind::Level)) {
+            let (g, y) = (self.glide[i], f[i]);
+            self.glide[i] = match self.phase {
+                Phase::Rise if y > g => g + (y - g) * a,
+                Phase::Fall if y < g => g - (g - y) * a,
+                _ => g,
+            };
+        }
+    }
+
+    /// `f` (this frame's features as [`Self::features`] left them) with
+    /// every level gliding after its value, for a look that moves its
+    /// shapes with the music (`surface_port::Port::shapes`): a kaleidoscope
+    /// that zooms with the bass sweeps its pattern across every region, so
+    /// the bass it reads swells instead of jumping. The glide keeps to the
+    /// direction too. Off, untouched.
+    pub fn glided(&self, f: &mut [f32; slot::COUNT]) {
+        if !self.on {
+            return;
+        }
+        for i in (0..slot::COUNT).filter(|&i| matches!(kind(i), Kind::Drive | Kind::Level)) {
+            f[i] = self.glide[i];
+        }
+    }
+
+    /// Clock slot `i`: the beat's phase held at its end; the bar's clock
+    /// and the counts as the analysis has them. A bar is a second or more
+    /// at any tempo the analysis reports, and a clock that jumped where the
+    /// analysis's runs on would make its own steps in the looks that read
+    /// it.
+    fn clock(i: usize, f: &[f32; slot::COUNT]) -> f32 {
+        if i == slot::BEAT_PHASE {
+            BEAT_PHASE_HELD
+        } else {
+            f[i]
+        }
+    }
+
+    /// This frame's mel bands, limited as levels in place. Off, untouched.
+    pub fn mel(&mut self, mel: &mut [f32], dt: f32) {
+        if !self.on {
+            return;
+        }
+        for (k, m) in mel.iter_mut().take(MELS).enumerate() {
+            *m = self.level(slot::COUNT + k, *m, dt, Pace::Follow);
+        }
+    }
+
+    /// Follower `id` ([`follower`]) at `x` this frame: in a rise it takes
+    /// `x` where that is higher and holds otherwise, in a fall where that
+    /// is lower. Off, `x`.
+    pub fn follow(&mut self, id: usize, x: f32) -> f32 {
+        if !self.on || !x.is_finite() {
+            return x;
+        }
+        let (y, primed) = self.followers[id];
+        let y = if !primed {
+            x
+        } else {
+            match self.phase {
+                Phase::Rise => y.max(x),
+                Phase::Fall => y.min(x),
+            }
+        };
+        self.followers[id] = (y, true);
+        self.ask(x, y);
+        y
+    }
+
+    /// Followers `id..` at `xs`, in place.
+    pub fn follow_all(&mut self, id: usize, xs: &mut [f32]) {
+        for (k, x) in xs.iter_mut().enumerate() {
+            *x = self.follow(id + k, *x);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +1068,461 @@ mod tests {
         assert_eq!((m.general, m.red), (5, 7));
         assert!(!m.passes());
         assert_close!([m.general_flashes(), m.red_flashes()], [2.5, 3.5]);
+    }
+
+    /// A small deterministic generator for the tests' inputs.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> f32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((self.0 >> 40) as f32) / (1u64 << 24) as f32
+        }
+    }
+
+    /// One frame of input: the features, the mel bands, the followers'
+    /// raw values and the triggers.
+    struct Input {
+        f: [f32; slot::COUNT],
+        mel: [f32; MELS],
+        followers: [f32; follower::TRIGGERS],
+        triggers: Triggers,
+    }
+
+    /// Every input at `level`, a beat when `beat`.
+    fn input(level: f32, beat: bool) -> Input {
+        Input {
+            f: [level; slot::COUNT],
+            mel: [level; MELS],
+            followers: [level; follower::TRIGGERS],
+            triggers: Triggers {
+                beat,
+                downbeat: false,
+                drop: false,
+            },
+        }
+    }
+
+    /// What the limiter made of one frame: the direction, the limited
+    /// features, mel bands and followers, and the triggers let through.
+    struct Output {
+        phase: Phase,
+        f: [f32; slot::COUNT],
+        mel: [f32; MELS],
+        followers: [f32; follower::TRIGGERS],
+        gated: Triggers,
+    }
+
+    fn step(l: &mut Limiter, mut i: Input) -> Output {
+        let dt = (1.0 / FPS) as f32;
+        let gated = l.begin(dt, i.triggers);
+        l.features(&mut i.f, dt, gated);
+        l.mel(&mut i.mel, dt);
+        l.follow_all(0, &mut i.followers);
+        Output {
+            phase: l.phase(),
+            f: i.f,
+            mel: i.mel,
+            followers: i.followers,
+            gated,
+        }
+    }
+
+    /// Every limited value of an output, in one list.
+    fn values(o: &Output) -> Vec<f32> {
+        let levels = (0..slot::COUNT).filter(|&i| matches!(kind(i), Kind::Drive | Kind::Level));
+        levels
+            .map(|i| o.f[i])
+            .chain(o.mel)
+            .chain(o.followers)
+            .collect()
+    }
+
+    /// A named input over time.
+    type Source = (String, Box<dyn FnMut(f64) -> Input>);
+    /// A named light worked out from the limited values.
+    type Light = (&'static str, Box<dyn Fn(&[f32]) -> f32>);
+
+    /// The inputs the tests drive: noise on every value, a pulse train at
+    /// `hz` on every value at full depth, and both mixed with beats.
+    fn sources() -> Vec<Source> {
+        let mut out: Vec<Source> = Vec::new();
+        for hz in [2.0, 4.0, 8.0, 12.0, 16.0, 30.0] {
+            out.push((
+                format!("pulse {hz} Hz"),
+                Box::new(move |t: f64| {
+                    let k = (t * hz).floor();
+                    let prev = ((t - 1.0 / FPS) * hz).floor();
+                    let level = if (t * hz).fract() < 0.5 { 1.0 } else { 0.0 };
+                    input(level, k > prev)
+                }),
+            ));
+        }
+        for seed in 1..4u64 {
+            let mut rng = Rng(seed);
+            out.push((
+                format!("noise {seed}"),
+                Box::new(move |_| {
+                    let mut i = input(0.0, rng.next() < 0.3);
+                    for v in i.f.iter_mut().chain(&mut i.mel).chain(&mut i.followers) {
+                        *v = rng.next();
+                    }
+                    i
+                }),
+            ));
+        }
+        out
+    }
+
+    #[test]
+    fn the_direction_turns_at_most_four_times_in_any_second() {
+        for (name, mut source) in sources() {
+            let mut l = Limiter::new(true);
+            let mut turns = Vec::new();
+            let mut last = l.phase();
+            let mut since = f64::NEG_INFINITY;
+            for n in 0..(20.0 * FPS) as u32 {
+                let t = f64::from(n) / FPS;
+                let o = step(&mut l, source(t));
+                if o.phase != last {
+                    // Each direction lasts the shortest phase at least.
+                    assert!(t - since >= f64::from(MIN_PHASE_S) - 1e-3, "{name} at {t}");
+                    turns.push(t);
+                    since = t;
+                    last = o.phase;
+                }
+                let window = turns.iter().filter(|&&s| in_window(t - s)).count();
+                assert!(window <= TURNS_PER_WINDOW, "{name}: {window} turns by {t}");
+            }
+            assert!(
+                turns.len() > 10,
+                "{name}: it turns at all ({})",
+                turns.len()
+            );
+        }
+    }
+
+    #[test]
+    fn every_value_moves_with_the_direction_or_holds() {
+        for (name, mut source) in sources() {
+            let mut l = Limiter::new(true);
+            let mut was: Option<Vec<f32>> = None;
+            for n in 0..(10.0 * FPS) as u32 {
+                let o = step(&mut l, source(f64::from(n) / FPS));
+                let now = values(&o);
+                if let Some(was) = &was {
+                    for (k, (a, b)) in was.iter().zip(&now).enumerate() {
+                        let ok = match o.phase {
+                            Phase::Rise => b >= a,
+                            Phase::Fall => b <= a,
+                        };
+                        assert!(ok, "{name}: value {k} went {a} -> {b} in {:?}", o.phase);
+                    }
+                }
+                was = Some(now);
+            }
+        }
+    }
+
+    /// The construction: any light that rises with every limited value
+    /// (weighted sums, products, the brightest of several, a curve) turns
+    /// with the direction alone, so at most five transitions fit in a
+    /// second however the music moves.
+    #[test]
+    fn any_light_that_rises_with_the_values_stays_within_the_rule() {
+        let mut weights = Rng(7);
+        let lights: Vec<Light> = vec![
+            (
+                "mean",
+                Box::new(|v: &[f32]| v.iter().sum::<f32>() / v.len() as f32),
+            ),
+            ("one value", Box::new(|v: &[f32]| v[3])),
+            (
+                "brightest",
+                Box::new(|v: &[f32]| v.iter().copied().fold(0.0, f32::max)),
+            ),
+            (
+                "product",
+                Box::new(|v: &[f32]| v[0] * v[7] * (1.0 + 0.8 * v[15])),
+            ),
+            ("curve", Box::new(|v: &[f32]| (v[1] * v[1] * 3.0).min(1.0))),
+        ];
+        let w: Vec<f32> = (0..200).map(|_| weights.next()).collect();
+        let weighted = move |v: &[f32]| {
+            let s: f32 = v.iter().zip(&w).map(|(x, w)| x * w).sum();
+            s / w.iter().sum::<f32>()
+        };
+        for (name, mut source) in sources() {
+            let mut l = Limiter::new(true);
+            let mut counters: Vec<Counter> = (0..=lights.len()).map(|_| Counter::new()).collect();
+            for n in 0..(20.0 * FPS) as u32 {
+                let t = f64::from(n) / FPS;
+                let o = step(&mut l, source(t));
+                let v = values(&o);
+                for (c, (_, light)) in counters.iter_mut().zip(&lights) {
+                    c.push(t, [light(&v); 3]);
+                }
+                counters[lights.len()].push(t, [weighted(&v); 3]);
+            }
+            for (c, light) in counters
+                .iter()
+                .zip(lights.iter().map(|l| l.0).chain(["weighted"]))
+            {
+                let w = c.worst();
+                assert!(
+                    w.general <= TURNS_PER_WINDOW as u32 + 1,
+                    "{name}, {light}: {w:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_kick_at_120_bpm_lands_on_its_beat_and_clears_before_the_next() {
+        let mut l = Limiter::new(true);
+        let kick = |t: f64| {
+            // A hit of 80 ms every half second.
+            let phase = t % 0.5;
+            let level = if phase < 0.08 { 1.0 } else { 0.05 };
+            input(level, phase < 1.0 / FPS - 1e-9)
+        };
+        let mut peaks = 0;
+        let mut beats = (0, 0);
+        for n in 0..(8.0 * FPS) as u32 {
+            let t = f64::from(n) / FPS;
+            let i = kick(t);
+            let raw = i.f[slot::KICK];
+            let beat = i.triggers.beat;
+            let o = step(&mut l, i);
+            beats.0 += u32::from(beat);
+            beats.1 += u32::from(o.gated.beat);
+            if t > 1.0 {
+                if beat {
+                    // On the beat's own frame, at full height.
+                    assert_close!(o.f[slot::KICK], raw);
+                    peaks += 1;
+                }
+                // Clear before the next kick.
+                if t % 0.5 > 0.4 {
+                    assert!(o.f[slot::KICK] < 0.15, "{t}: {}", o.f[slot::KICK]);
+                }
+            }
+        }
+        assert_eq!(beats.0, beats.1, "every beat goes through");
+        assert!(peaks >= 13, "{peaks}");
+    }
+
+    #[test]
+    fn a_fast_run_of_hits_rides_on_a_swell() {
+        // Hits at 9 a second on one band, a steady kick elsewhere: the
+        // band's light stays up between its hits instead of strobing.
+        let mut l = Limiter::new(true);
+        let mut low = f32::MAX;
+        for n in 0..(6.0 * FPS) as u32 {
+            let t = f64::from(n) / FPS;
+            let mut i = input(0.3, false);
+            i.f[slot::BRILLIANCE] = if (t * 9.0).fract() < 0.3 { 1.0 } else { 0.0 };
+            let o = step(&mut l, i);
+            if t > 2.0 {
+                low = low.min(o.f[slot::BRILLIANCE]);
+            }
+        }
+        assert!(low > 0.5, "the swell's low {low}");
+    }
+
+    #[test]
+    fn beats_go_through_at_most_every_beat_gap_and_the_phase_holds() {
+        // 230 BPM: beats every 0.26 s, about every other one goes through.
+        let mut l = Limiter::new(true);
+        let mut kept = Vec::new();
+        for n in 0..(10.0 * FPS) as u32 {
+            let t = f64::from(n) / FPS;
+            let beat = ((t - 1.0 / FPS) * 230.0 / 60.0).floor() < (t * 230.0 / 60.0).floor();
+            let mut i = input(0.5, beat);
+            i.triggers.downbeat = beat;
+            i.f[slot::BEAT_PHASE] = (t * 230.0 / 60.0).fract() as f32;
+            let o = step(&mut l, i);
+            assert_close!(o.f[slot::BEAT_PHASE], BEAT_PHASE_HELD);
+            // The beat's slot: 1 from a beat let through while the light
+            // rises, 0 once it falls.
+            if o.gated.beat {
+                assert_close!(o.f[slot::BEAT], 1.0);
+            }
+            if o.phase == Phase::Fall {
+                assert_close!(o.f[slot::BEAT], 0.0);
+            }
+            assert!(o.f[slot::BEAT_PHASE] <= BEAT_PHASE_HELD);
+            if o.gated.beat {
+                kept.push(t);
+            }
+        }
+        for w in kept.windows(2) {
+            assert!(w[1] - w[0] >= BEAT_GAP_S - 1e-6, "{w:?}");
+        }
+        let (all, through) = (l.beats_kept + l.beats_held, l.beats_kept);
+        assert!(
+            through * 3 >= all && through * 3 <= 2 * all,
+            "{through} of {all}"
+        );
+    }
+
+    #[test]
+    fn off_it_passes_everything_as_it_is() {
+        for (name, mut source) in sources() {
+            let mut l = Limiter::new(false);
+            for n in 0..(3.0 * FPS) as u32 {
+                let i = source(f64::from(n) / FPS);
+                let (f, mel, followers, triggers) = (i.f, i.mel, i.followers, i.triggers);
+                let o = step(&mut l, i);
+                assert_eq!(o.gated, triggers, "{name}");
+                assert!(o.f.iter().zip(f).all(|(a, b)| a.to_bits() == b.to_bits()));
+                assert!(
+                    o.mel
+                        .iter()
+                        .zip(mel)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                );
+                assert!(
+                    o.followers
+                        .iter()
+                        .zip(followers)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                );
+            }
+        }
+        // Turned on and off, it starts over from the next values.
+        let mut l = Limiter::new(true);
+        step(&mut l, input(1.0, true));
+        l.set_on(false);
+        assert!(!l.on());
+        l.set_on(true);
+        let o = step(&mut l, input(0.2, false));
+        assert_close!(o.f[slot::RMS], 0.2);
+    }
+
+    #[test]
+    fn the_knob_and_its_lines() {
+        assert!(on_from_knob(None));
+        assert!(on_from_knob(Some("1")));
+        assert!(on_from_knob(Some("")));
+        assert!(on_from_knob(Some("yes")));
+        assert!(!on_from_knob(Some("0")));
+        assert!(!on_from_knob(Some(" 0 ")));
+        assert!(line(true).starts_with("flash limit: on"), "{}", line(true));
+        assert!(line(false).contains(KNOB), "{}", line(false));
+    }
+
+    #[test]
+    fn the_slots_are_the_core_features() {
+        use fosfora_app::audio::features::{AudioFeatures, NUM_FEATURES};
+        assert_eq!(slot::COUNT, NUM_FEATURES);
+        assert_eq!(MELS, fosfora_app::audio::analyzer::SPECTROGRAM_MELS);
+        let at = |set: fn(&mut AudioFeatures)| {
+            let mut f = AudioFeatures::default();
+            set(&mut f);
+            f.as_slice().iter().position(|&v| v > 0.5).expect("a slot")
+        };
+        assert_eq!(at(|f| f.sub_bass = 1.0), slot::SUB_BASS);
+        assert_eq!(at(|f| f.brilliance = 1.0), slot::BRILLIANCE);
+        assert_eq!(at(|f| f.rms = 1.0), slot::RMS);
+        assert_eq!(at(|f| f.kick = 1.0), slot::KICK);
+        assert_eq!(at(|f| f.onset = 1.0), slot::ONSET);
+        assert_eq!(at(|f| f.beat = 1.0), slot::BEAT);
+        assert_eq!(at(|f| f.beat_phase = 1.0), slot::BEAT_PHASE);
+        assert_eq!(at(|f| f.beat_strength = 1.0), slot::BEAT_STRENGTH);
+        assert_eq!(at(|f| f.loudness_m = 1.0), slot::LOUDNESS_M);
+        assert_eq!(at(|f| f.downbeat = 1.0), slot::DOWNBEAT);
+        assert_eq!(at(|f| f.bar_phase = 1.0), slot::BAR_PHASE);
+        assert_eq!(at(|f| f.beat_in_bar = 1.0), slot::BEAT_IN_BAR);
+        assert_eq!(at(|f| f.drop = 1.0), slot::DROP);
+        assert_eq!(at(|f| f.percussive_energy = 1.0), slot::PERCUSSIVE_ENERGY);
+        assert_eq!(at(|f| f.harmonic_energy = 1.0), slot::HARMONIC_ENERGY);
+        assert_eq!(at(|f| f.bar_index = 1.0), slot::BAR_INDEX);
+        assert_eq!(at(|f| f.beat_index = 1.0), slot::BEAT_INDEX);
+        // The bands, the rms and the kick drive; the triggers and clocks
+        // are their own.
+        for i in 0..=slot::KICK {
+            assert_eq!(kind(i), Kind::Drive, "{i}");
+        }
+        assert_eq!(kind(slot::BEAT), Kind::Trigger);
+        assert_eq!(kind(slot::BEAT_PHASE), Kind::Clock);
+    }
+
+    /// The share of beats that go through by tempo, a hit on each: every
+    /// one up to 120 BPM, and every other one (half time) from 125 BPM.
+    #[test]
+    fn every_beat_goes_through_to_120_bpm_and_every_other_one_faster() {
+        for (bpm, share) in [
+            (90.0, 1.0),
+            (120.0, 1.0),
+            (128.0, 0.5),
+            (140.0, 0.5),
+            (150.0, 0.5),
+            (174.0, 0.5),
+            (230.0, 0.5),
+        ] {
+            let mut l = Limiter::new(true);
+            let hz = bpm / 60.0;
+            let (mut all, mut through) = (0u32, 0u32);
+            for n in 0..(30.0 * FPS) as u32 {
+                let t = f64::from(n) / FPS;
+                // The beat on the first frame of each cycle (the 1e-9 keeps
+                // rounding from finding one twice).
+                let beat = ((t - 1.0 / FPS) * hz + 1e-9).floor() < (t * hz + 1e-9).floor();
+                let level = if (t * hz + 1e-9).fract() < 0.2 {
+                    1.0
+                } else {
+                    0.1
+                };
+                let o = step(&mut l, input(level, beat));
+                if t > 2.0 {
+                    all += u32::from(beat);
+                    through += u32::from(o.gated.beat);
+                }
+            }
+            let got = f64::from(through) / f64::from(all);
+            eprintln!("{bpm} BPM: {through} of {all} beats through ({got:.2})");
+            assert!((got - share).abs() < 0.03, "{bpm} BPM: {got}");
+        }
+    }
+
+    #[test]
+    fn the_looks_slow_while_the_turns_are_spent_and_shapes_glide() {
+        // A calm song: full speed. A busy one (8 Hz pulses): half speed.
+        let mut calm = Limiter::new(true);
+        let mut busy = Limiter::new(true);
+        let (mut slowest, mut glided) = (1.0f32, Vec::new());
+        for n in 0..(6.0 * FPS) as u32 {
+            let t = f64::from(n) / FPS;
+            step(&mut calm, input(0.5, false));
+            let level = if (t * 8.0).fract() < 0.5 { 1.0 } else { 0.0 };
+            let o = step(&mut busy, input(level, false));
+            let mut f = o.f;
+            busy.glided(&mut f);
+            if t > 2.0 {
+                slowest = slowest.min(busy.motion());
+                glided.push((f[slot::RMS], o.f[slot::RMS], o.phase));
+            }
+        }
+        assert_close!(calm.motion(), 1.0);
+        assert!((slowest - MOTION_BUSY).abs() < 0.05, "{slowest}");
+        assert_close!(Limiter::new(false).motion(), 1.0);
+        // The gliding view swings less than the levels, and with the
+        // direction.
+        let swing = |k: usize| {
+            let v = glided.iter().map(|g| if k == 0 { g.0 } else { g.1 });
+            v.clone().fold(0.0f32, f32::max) - v.fold(1.0f32, f32::min)
+        };
+        assert!(swing(0) < 0.6 * swing(1), "{} {}", swing(0), swing(1));
+        for w in glided.windows(2) {
+            let ok = match w[1].2 {
+                Phase::Rise => w[1].0 >= w[0].0,
+                Phase::Fall => w[1].0 <= w[0].0,
+            };
+            assert!(ok, "{w:?}");
+        }
     }
 }

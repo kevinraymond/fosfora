@@ -208,7 +208,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       default: the bundled CC0 track under assets/audio/; board #5385: set, it is also what the Music row plays
     //       at launch on any source, looped, over the music folders and the saved track, until the row steps to a track)
     //   adb shell setprop debug.fosfora.flash 1        (whole view white for 2 frames on each beat: the
-    //       audio-to-photon measurement, filmed with a phone)
+    //       audio-to-photon measurement, filmed with a phone; a strobe by design, so it runs only with
+    //       debug.fosfora.flashlimit 0)
+    //   adb shell setprop debug.fosfora.flashlimit 0|1 (board #5451, flash.rs: the photosensitive limit every
+    //       audio-driven light goes through, at most three flashes a second; default 1, and the wearer cannot turn it
+    //       off; 0 for an A/B on the debug surface only; logs the state at launch and each change; live: polled once a
+    //       second)
     //   adb shell setprop debug.fosfora.playperf lowlatency|none   (AAudio performance mode of the playback
     //       output; default lowlatency: 36 ms to the speaker on the Quest 3 against 140-215 ms for none)
     //   adb shell setprop debug.fosfora.playbuf <ms>   (playback output buffer; default 84 ms in lowlatency so the
@@ -1897,8 +1902,30 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #3488: 1 on the downbeat, decaying with a 0.6 s time constant
     // (`surface_fx::downbeat_step`): the pulse's envelope.
     let mut downbeat_env = 0.0f32;
+    // Board #5451: the beat envelope as the flash limit lets it through,
+    // which is what the looks and the debug panel's meter read.
+    let mut beat_shown = 0.0f32;
     let flash = debug_prop("debug.fosfora.flash").as_deref() == Some("1");
     let mut flash_frames = 0u32;
+    // Board #5451: the photosensitive limit (`flash.rs`), between the
+    // analysis and everything the audio lights: the features, the mel
+    // bands, the triggers, and the values worked out from them below (the
+    // envelopes, the bars, the key's tint, the depth light's music). Its
+    // knob is polled once a second below.
+    let mut flash_limit = crate::flash::Limiter::new(crate::flash::on_from_knob(
+        system_prop(crate::flash::KNOB).as_deref(),
+    ));
+    info!("{}", crate::flash::line(flash_limit.on()));
+    if flash && flash_limit.on() {
+        info!(
+            "debug.fosfora.flash: the beat strobe waits for {} 0",
+            crate::flash::KNOB
+        );
+    }
+    // The spectrum's bars and glow as the limit lets them through, for the
+    // wall spectrum and the edge bars.
+    let mut shown_bars: Vec<f32> = Vec::with_capacity(crate::canvas::MAX_BARS);
+    let mut shown_glow = 0.0f32;
     // Board #5384: the last frame's immersion level (0 without
     // passthrough), with the `loudness_s` and `buildup` it followed, for the
     // style call after the frame and the log; and whether the log's last
@@ -2532,7 +2559,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         room_boxes: room_boxes.len(),
                         rms: last_rms,
                         bass: last_bass,
-                        beat: beat_env,
+                        beat: beat_shown,
                         audio: crate::music::header(music.playing(), &audio_source),
                         track: music.title(),
                         reach: reach_now.map(|r| r.map(|r| (r.real_m, r.virtual_m))),
@@ -4191,15 +4218,38 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             cue_out.want(!music.playing() && cue_gain > 0.0);
             // This frame's audio: the music's tap, the headset microphones
             // or the synthetic 120 BPM groove.
-            let hop = match music.analysis.as_mut().or(live_audio.as_mut()) {
+            let mut hop = match music.analysis.as_mut().or(live_audio.as_mut()) {
                 Some(a) => a.frame(dt, f64::from(t)),
                 None => synth_hop_for(frame_index, t),
             };
+            // Board #5451: the flash limit, before anything reads the
+            // audio: the triggers it lets through, the features and the
+            // mel bands it limits. Everything below reads this hop.
+            let raw_beat = hop.beat_fired;
+            let gate = flash_limit.begin(
+                dt,
+                crate::flash::Triggers {
+                    beat: hop.beat_fired,
+                    downbeat: hop.downbeat_fired,
+                    drop: hop.drop_fired,
+                },
+            );
+            (hop.beat_fired, hop.downbeat_fired, hop.drop_fired) = (gate.beat, gate.downbeat, gate.drop);
+            flash_limit.features(hop.frame.features.as_slice_mut(), dt, gate);
+            flash_limit.mel(&mut hop.frame.mel, dt);
+            let hop = hop;
             let f = hop.frame.features;
+            // What a port that moves its shapes with the music reads: the
+            // levels gliding (`flash::Limiter::glided`).
+            let mut f_shapes = f;
+            flash_limit.glided(f_shapes.as_slice_mut());
             (last_rms, last_bass) = (f.rms, f.bass);
             if hop.beat_fired {
                 beat_env = 1.0;
-                if flash {
+            }
+            if raw_beat {
+                // The strobe flashes every beat: only with the limit off.
+                if flash && !flash_limit.on() {
                     flash_frames = 2;
                 }
                 if let Some(p) = &music.playback {
@@ -4215,7 +4265,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             beat_env *= (-dt * 6.0).exp();
             downbeat_env = crate::surface_fx::downbeat_step(downbeat_env, hop.downbeat_fired, dt);
-            surface_clock.advance(dt, beat_env);
+            // What the looks read of the envelopes: as the limit lets them
+            // through.
+            beat_shown = flash_limit.follow(crate::flash::follower::BEAT_ENV, beat_env);
+            let downbeat_shown =
+                flash_limit.follow(crate::flash::follower::DOWNBEAT_ENV, downbeat_env);
+            // The looks' own motion, slowed while the limit's turns are
+            // spent.
+            let motion = flash_limit.motion();
+            surface_clock.advance(dt * motion, beat_shown);
             if let Some(r) = ripple.as_mut() {
                 r.update(
                     t,
@@ -4237,6 +4295,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 Some(c) => {
                     c.update(dt, &hop.frame.mel);
                     canvas_mel = hop.frame.mel.len();
+                    // Board #5451: the bars and their glow as the flash
+                    // limit lets them through.
+                    shown_bars.clear();
+                    shown_bars.extend_from_slice(c.heights());
+                    flash_limit.follow_all(crate::flash::follower::BARS, &mut shown_bars);
+                    shown_glow = flash_limit.follow(crate::flash::follower::BAR_GLOW, c.glow());
                     let head = glam::Vec3::from(input.head);
                     let forward = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
                     let face_of = |b: &ObstacleBox| {
@@ -4358,11 +4422,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let mut audio = crate::surface_fx::Audio {
                     rms: f.rms,
                     bass: f.bass,
-                    beat: beat_env,
+                    beat: beat_shown,
                     clock: surface_clock.seconds(),
                     mid: f.mid,
                     high: f.presence.max(f.brilliance),
-                    downbeat: downbeat_env,
+                    downbeat: downbeat_shown,
                     bar_phase: f.bar_phase,
                     key_tint: [1.0; 3],
                 };
@@ -4372,7 +4436,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // not, one state per effect: two walls on aurora drift in
                 // step, and an effect picks up where the clock is.
                 for e in surface_ports.iter_mut().flatten() {
-                    e.advance(dt);
+                    e.advance(dt * motion);
                 }
                 // Board #5436: the sky. The room is the scanned walls' (a
                 // hidden wall closes its outline), or the stage floor's
@@ -4532,6 +4596,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .get("audio.key_hue")
                         .map_or(0.5, |v| v.0);
                     audio.key_tint = crate::surfaces::key_tint(hue);
+                    // Board #5451: as the flash limit lets it through.
+                    flash_limit.follow_all(crate::flash::follower::TINT, &mut audio.key_tint);
                 }
                 // The light follows the band the theme gives other surfaces,
                 // its peak and its veil the immersion level; logged when its
@@ -4543,11 +4609,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             &audio,
                             crate::depth_light::band(light_theme),
                         ),
-                        beat_env,
+                        beat_shown,
                     );
+                    // Board #5451: the music the light swells with, as the
+                    // flash limit lets it through.
+                    let shown_drive = depth_drive.with_music(flash_limit.follow(
+                        crate::flash::follower::DEPTH_MUSIC,
+                        depth_drive.music(),
+                    ));
                     gfx.set_depth_light(Some(crate::depth_light::frame(
                         &depth_light,
-                        &depth_drive,
+                        &shown_drive,
                         light_theme,
                         audio.key_tint,
                         immerse_level,
@@ -4608,7 +4680,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 crate::gfx::PortFace {
                                     effect: i,
                                     uniforms: crate::surface_port::uniforms(
-                                        &f,
+                                        if crate::surface_port::PORTS[i].shapes {
+                                            &f_shapes
+                                        } else {
+                                            &f
+                                        },
                                         audio.clock,
                                         dt,
                                         frame_index,
@@ -4625,7 +4701,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     })
                     .unwrap_or_default();
                 let spectrum = canvas.as_ref().map(|c| crate::surface_fx::Spectrum {
-                    canvas: c,
+                    heights: &shown_bars,
+                    glow: shown_glow,
+                    gain: c.gain,
                     sign: spectrum_sign,
                 });
                 let faces: Vec<_> = slots
@@ -4670,16 +4748,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 if edge_on {
                     if let Some(c) = edge_canvas.as_mut() {
                         c.update(dt, &hop.frame.mel);
+                        // Board #5451: as the flash limit lets them through.
+                        shown_bars.clear();
+                        shown_bars.extend_from_slice(c.heights());
+                        flash_limit.follow_all(crate::flash::follower::BARS, &mut shown_bars);
                     }
                     let presence = edge_presence.step(
                         dt,
                         music.analysis.is_some() || live_audio.is_some(),
                         f.loudness_m,
                     );
-                    let heights = canvas
-                        .as_ref()
-                        .or(edge_canvas.as_ref())
-                        .map_or(&[][..], crate::canvas::Canvas::heights);
+                    let heights = if canvas.is_some() || edge_canvas.is_some() {
+                        &shown_bars[..]
+                    } else {
+                        &[][..]
+                    };
                     edge_history.step(dt, heights);
                     // Board #5431: each shape in its kind's mode under the
                     // room's saved theme, or the mode forced on every kind.
@@ -4778,7 +4861,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 match music.analysis.as_mut().or(live_audio.as_mut()) {
                     Some(a) => scene.step(f64::from(t), dt, &hop, a.waveform()),
                     None => {
-                        let hop = scene.synth(f64::from(t));
+                        // The scene's synthetic waveform, and the frame's
+                        // hop as the flash limit let it through (board
+                        // #5451): the same groove.
+                        scene.synth(f64::from(t));
                         let wave = scene.synth_waveform().to_vec();
                         scene.step(f64::from(t), dt, &hop, &wave);
                     }
@@ -4793,7 +4879,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     t,
                     dt,
                     (0.6 + 1.2 * f.bass) * flow_mul,
-                    (0.7 + 0.9 * f.rms) * (1.0 + 0.5 * beat_env) * boost,
+                    (0.7 + 0.9 * f.rms) * (1.0 + 0.5 * beat_shown) * boost,
                 );
             }
         });
@@ -5177,6 +5263,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     scene.alive_count(),
                     scene.emitter_weight()
                 );
+            }
+            // Board #5451: the flash limit's knob, live.
+            let now = crate::flash::on_from_knob(system_prop(crate::flash::KNOB).as_deref());
+            if now != flash_limit.on() {
+                flash_limit.set_on(now);
+                info!("{}", crate::flash::line(now));
             }
             // Board #5436: the sky's knob, live; the surfaces pass logs the
             // sky's line on the next frame.
