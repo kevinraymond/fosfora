@@ -48,7 +48,9 @@
 //! red, whatever the music does, on every theme and on any look added later
 //! that reads the music this way. The sixth transition the rule allows is
 //! left for what the looks do on their own: Aurora's curtains drift across
-//! a region with the music held still.
+//! a region with the music held still. While three of the second's four
+//! turns are spent the looks' clocks run at half speed ([`Limiter::motion`])
+//! so the drift stays inside it.
 //!
 //! **Keeping the show.** A rise takes a value up at once, so a hit lands on
 //! its own frame. A beat turns the direction to a rise as it fires when the
@@ -64,7 +66,10 @@
 //! moves in steps a few times a second; fast beats land at half time; and
 //! nothing pulses on the beat's phase (Aurora's 10 % beat breathing, the
 //! world effects' beat-phase envelopes), since the phase runs on its own
-//! clock and no direction could hold it.
+//! clock and no direction could hold it. The spectral shape, the key and the
+//! pans glide ([`LEVEL_GLIDE_S`]), and a port that moves its shapes with the
+//! music reads its levels gliding ([`Limiter::glided`]), so a zoom swells
+//! instead of snapping. In busy passages the looks drift at half speed.
 //!
 //! **Triggers.** The light a beat starts runs on by itself: a ring spreads,
 //! a burst of embers fades. Those cannot follow the direction, so a beat
@@ -84,7 +89,8 @@
 //! rises through sees a little light pass. A look that maps the music to a
 //! hue or a position rather than to light, so that more of the music can
 //! mean less light, is outside the proof and has to be measured as the
-//! themes are.
+//! themes are; so is a look built on the bar's clock, which passes as the
+//! analysis has it.
 //!
 //! **The knob.** `debug.fosfora.flashlimit 0` turns it off for an A/B on
 //! the debug surface; unset or 1 it runs. The wearer has no setting for it.

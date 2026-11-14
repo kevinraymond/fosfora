@@ -1,9 +1,11 @@
 #!/usr/bin/env -S uv run --quiet --with numpy python
 """Audio-to-photon latency from a phone video of the headset (S6).
 
-The app runs with `debug.fosfora.audio file`, `debug.fosfora.file click`
-and `debug.fosfora.flash 1`: a 120 BPM click through the headset speakers
-and a two-frame white flash on each detected beat. The phone films a lens
+The app runs with `debug.fosfora.audio file`, `debug.fosfora.file click`,
+`debug.fosfora.flash 1` and `debug.fosfora.flashlimit 0` (the strobe is a
+flash by design and waits for the photosensitive limit to be off): a 120
+BPM click through the headset speakers and a two-frame white flash on each
+detected beat. The phone films a lens
 and records the click. This script finds the click times in the video's
 audio, scores each click by the sharpest brightening in the 400 ms after
 it (the flash), and prints the offsets.

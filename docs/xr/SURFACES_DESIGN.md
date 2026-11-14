@@ -1599,3 +1599,191 @@ pulse on the walls and the ceiling, the curls on the floor), then Classic
 (about 1 ms, as in D2a). A theme does not pick the world effect. Since
 board #5431 it does pick the edge bars' mode per kind; Mirror's worn look
 and its cost seated are still to take.
+
+## Photosensitive safety (Nov 14, board #5451)
+
+**Why.** Worn on Aurora, the flashing was too much for someone with
+photosensitive epilepsy. In a headset the picture fills the view, so this is
+a safety requirement, not a taste setting: it holds for every theme and
+every behavior, today's and any added later, whatever the song does. The
+wearer cannot turn it off.
+
+**The rule** (WCAG 2.3.1, three flashes or below threshold). No more than
+three general flashes and no more than three red flashes in any one-second
+period. A general flash is a pair of opposing changes in relative luminance
+of 0.1 or more, where the darker state is under 0.8. A red flash is a pair of
+opposing transitions involving a saturated red (`R / (R + G + B)` at least
+0.8) where `(R - G - B) x 320` changes by more than 20. The rule exempts
+flashes over less than a quarter of a 10 degree field; the sky and the walls
+fill the view, so nothing here takes the exemption. `flash.rs` counts it per
+region: a zigzag on each region's luminance and red value with the rule's
+thresholds, two transitions to a flash, over the frames of each second.
+
+**What flashed.** Every way the audio reaches the light, and how much it
+flashed on its own before the limit: the worst second in any region on the
+pulse trains below, general / red. Real songs, measured outside the repo,
+flashed on the same paths.
+
+- *The sky and its reflection* (Aurora, the port): seven curtains, each as
+  bright as its band times `1.5 + 0.5 rms` and wider with it, all times
+  `1 + 0.8 onset` (the onset jumps in one hop) and a 10 % beat breathing on
+  the beat's phase, in the key's tint: 16.5 / 16 on the sky, 16.5 / 0 on its
+  reflection, in two thirds of the regions. With the key on C or A the tint
+  is red and the low curtains a saturated red.
+- *The wall spectrum* (Classic) and *the edge bars*: the mel bands as bars,
+  each up at once and down at 2.5 wall heights a second: 8 / 0 on the wall
+  spectrum, 0.5 / 0 on the edge strips and the tunnels.
+- *The rings*: born on each beat, 0.8 s of decay, spreading at 2.5 m/s, over
+  a glow with the bass. They flashed wherever a theme has them (the floor,
+  Drift's ceiling, Tide's frames): up to 16 / 0.
+- *The pulse*: the downbeat's envelope over 0.15 of its band. At most once a
+  bar, so it flashed only on the fastest pulses: 4 / 0 at 16 Hz.
+- *The streamlines and the curls*: their band never takes them under 0.6 of
+  their light, and the lines are thin: 0.5 / 0 at most.
+- *The other ports* (hand edits only): prism zooms its kaleidoscope with the
+  bass, astrolabe, bezel, fenestra, reticle and tessera build on the bar's
+  clock, shards breaks on the kick: up to 21 / 0 (prism).
+- *The depth light's points* and *the particles* (the band's level, the beat
+  envelope, the beat and onset at a birth, the beat's phase): not drawn on
+  the desktop.
+- *Immersion* follows the song's loudness over 2 s up and 4 s down (a drop:
+  0.25 s, then 8 s held): too slow to flash.
+- *The debug panel's meters* and *the beat strobe* (`debug.fosfora.flash`).
+
+**Where the limit sits.** `flash::Limiter`, one place between the analysis
+and everything the audio lights. `app.rs` hands it the frame's hop as the
+analysis made it, and every look reads what comes out: the features, the mel
+bands, the triggers, and the values the frame works out from them before
+they light anything (the beat and downbeat envelopes, the spectrum's bars and
+glow, the key's tint, the depth light's music). The world effect's sim and
+the rings take the same hop.
+
+**How it holds the count.** Every value the limiter lets through moves in one
+shared direction at a time: in a rise any value may go up or hold and none
+may go down; in a fall the other way round. The direction turns at most four
+times in any second, each direction lasting 0.1 s at least. A look's light
+in a region goes up with the levels it reads (more bass, a brighter curtain;
+more onset, a brighter sky), and so do sums, products and curves of them. So
+within a direction each region only brightens or only dims, and it can turn
+only where the limiter turns: four turns, five runs, at most five
+transitions, two and a half flashes, general or red. The sixth transition
+the rule allows is left for what the looks do on their own, Aurora's curtains
+drifting across a region; while three of the second's four turns are spent,
+the looks' clocks run at half speed so that drift stays within it.
+
+**Keeping the show.** A rise takes a value up at once, so a hit lands on its
+own frame. A beat turns the direction to a rise as it fires. A level falls
+fast after a sparse hit and more slowly the more often it is hit (0.05 s to
+0.4 s from 2.5 to 5 hits a second), so a run of hi-hats rides on a swell
+instead of strobing. Every beat up to 120 BPM goes through, each one rise
+and one fall; from 125 BPM every other beat does (half time), and a beat
+held back leaves the light as it is for a quarter second so the next one has
+its turns.
+
+**What the wearer loses.** In busy music the light moves in steps a few times
+a second: a value that wants the other way waits for the next turn. Fast
+songs land at half time. Nothing pulses on the beat's phase any more
+(Aurora's 10 % beat breathing, the embers' shedding after a beat, the
+sprites' beat size), since the phase runs on its own clock and no direction
+could hold it; the beat, the downbeat and the drop now stay up until the
+light falls instead of one frame. The spectral shape, the key and the pans
+glide over 0.3 s, so hues drift instead of jumping. A port that moves its
+shapes with the music (every port but Aurora) reads its levels gliding over
+0.5 s, so prism's zoom swells with the bass instead of snapping. And in busy
+passages the curtains, the streaks and the curls drift at half speed. The
+edge bars follow the turns too, so they step with them: 0.5 flashes a second
+before on the pulse trains, up to 2.5 now, within the rule.
+
+**What it does not cover.**
+- *The real room* behind the passthrough: the limit dims nothing it does not
+  draw. Immersion moves the passthrough too slowly to flash, and the
+  measurement takes the room black, the worst contrast.
+- *Light that runs on by itself*: a ring far from where it started, a burst
+  of embers, the tunnel's rungs (the bars of the last 0.6 s). A beat goes
+  through only when the direction may rise now and fall within a quarter
+  second, so these start on the limiter's turns, and they are measured, not
+  proven.
+- *Light that is not monotone in the music*: a bar's tip and cap line moving
+  through a region, a look mapping a level to a hue or a place. Measured.
+- *A look built on the bar's clock* (astrolabe, bezel, fenestra, reticle,
+  tessera, all hand edits): the clock passes as the analysis has it, a bar a
+  second or longer, and their steps on it are measured, not proven.
+- *The looks' own motion*: measured with the music held still, at most one
+  flash a second.
+- *The depth light and the particles*: not drawn on the desktop, so
+  measured on neither; they read only what the limiter lets through.
+- *The beat strobe* (`debug.fosfora.flash`) is a strobe by design and runs
+  only with the limit off.
+
+**Measured** (`flash_room.rs`, desktop GPU). The room scanned for the sky
+tests (4.6 by 3.8 m, 2.45 m high) with a table ahead, a frame on the right
+wall and a chair on the left, seen from a seated eye as a cube of six
+160-pixel faces, every way the wearer can look, at 72 frames a second with
+the room black and every look at immersion 1. Regions 10 degrees square,
+every 5 degrees (1,734). The worst flashes a second in any region, general /
+red, the limiter off then on.
+
+Pulse trains, every level at full depth together, a beat on each pulse, the
+key on C so Aurora's tint is red (6 s each):
+
+| theme | 4 Hz | 8 Hz | 12 Hz | 16 Hz |
+| --- | --- | --- | --- | --- |
+| Classic | 4.5 / 0 -> 2.5 / 0 | 8.5 / 0 -> 2.5 / 0 | 12 / 0 -> 2.5 / 0 | 16 / 0 -> 3 / 0 |
+| Drift | 4.5 / 0 -> 2.5 / 0 | 8 / 0 -> 2.5 / 0 | 3.5 / 0 -> 2.5 / 0 | 1 / 0 -> 3 / 0 |
+| Tide | 3 / 0 -> 2.5 / 0 | 2.5 / 0 -> 2 / 0 | 3.5 / 0 -> 2.5 / 0 | 4 / 0 -> 2.5 / 0 |
+| Aurora | 4.5 / 4.5 -> 2.5 / 3 | 8.5 / 8.5 -> 2.5 / 2.5 | 12.5 / 12.5 -> 2.5 / 2.5 | 16.5 / 16 -> 2.5 / 2.5 |
+| Mirror | 4.5 / 0 -> 2.5 / 0 | 8 / 0 -> 2.5 / 0 | 0.5 / 0 -> 2.5 / 0 | 0.5 / 0 -> 3 / 0 |
+
+Each behavior alone on every surface that offers it, no edge bars, the worst
+of the four pulse trains, off -> on: the rings 16 -> 3, the wall spectrum 8
+-> 2, the pulse 4 -> 1, the streamlines 0.5 -> 0, the curls 0 both ways,
+Aurora 16.5 -> 2.5, prism 21 -> 2.5, shards 16.5 -> 1, astrolabe 16 -> 1.5,
+bezel 11 -> 1.5, fenestra 10.5 -> 2, reticle 6 -> 1.5, tessera 15 -> 1.5.
+With the music held still (every level at 0.3, then 0.8, no beat) every
+theme stays at 1 or under, limited or not.
+
+The same runs over real songs (`the_dumped_songs_stay_within_three_flashes`,
+eight tracks, fast ones and dense hi-hats among them) read dumps kept
+outside the repo, and their numbers stay there too. Every theme stayed
+within the rule on all of them. Two hand edits went just over it, each in
+one region on one song: astrolabe on the ceiling and fenestra on a wall.
+Both build their picture on the bar's clock and the buildup, which cross
+the look's own thresholds where the limiter does not turn.
+
+**Tests.** In `cargo test` (`flash.rs`, no GPU), the count:
+`a_square_wave_flashes_at_its_rate_and_three_a_second_pass`,
+`small_and_bright_changes_are_not_flashes`,
+`a_slow_wave_counts_by_its_swings_not_its_speed`,
+`red_flashes_need_a_saturated_red_and_a_swing_of_twenty`,
+`the_window_is_a_rolling_second`,
+`a_steady_or_unreadable_region_never_flashes`. The construction, on pulse
+trains from 2 to 30 Hz and on noise in every value:
+`the_direction_turns_at_most_four_times_in_any_second`,
+`every_value_moves_with_the_direction_or_holds`,
+`any_light_that_rises_with_the_values_stays_within_the_rule`. The show:
+`a_kick_at_120_bpm_lands_on_its_beat_and_clears_before_the_next`,
+`a_fast_run_of_hits_rides_on_a_swell`,
+`every_beat_goes_through_to_120_bpm_and_every_other_one_faster`,
+`beats_go_through_at_most_every_beat_gap_and_the_phase_holds`,
+`the_looks_slow_while_the_turns_are_spent_and_shapes_glide`; and
+`off_it_passes_everything_as_it_is`, `the_knob_and_its_lines`,
+`the_slots_are_the_core_features`. On a GPU (`flash_room.rs`, `#[ignore]`d,
+`cargo test -p fosfora-xr --lib flash_room -- --ignored --nocapture`), each
+failing on any region over three:
+`every_theme_stays_within_three_flashes_on_the_pulse_trains`,
+`every_part_alone_stays_within_three_flashes_on_the_pulse_trains`,
+`every_behavior_on_every_surface_stays_within_three_flashes`,
+`the_looks_own_motion_never_flashes`, and
+`the_dumped_songs_stay_within_three_flashes` (`FOSFORA_FLASH_DUMPS`).
+
+**The knob.** `debug.fosfora.flashlimit 0` turns the limit off for an A/B on
+the debug surface; unset or 1 it runs. Read at launch and polled once a
+second; the log says `flash limit: on · every audio-driven light turns at
+most 4 times a second (each direction at least 100 ms), beats 380 ms apart at
+least`, or `flash limit: OFF (debug.fosfora.flashlimit 0), the music drives
+the light unlimited`, at launch and on each change.
+
+**Not yet.** The device: the worn look of each theme with the limit on, its
+cost (a few hundred values a frame on the CPU, nothing on the GPU), and a
+screen capture with the limit off and on. The depth light and the particles
+measured on the headset's own frames.
