@@ -1321,8 +1321,9 @@ compared worn in one sitting.
 - **The closes.** There is no new row. In the air, no pointer on it for
   8 s closes it; on the palm the count never runs. A pinch that starts
   away from it closes it: the right hand's ray landing outside the panel
-  grown by half its size (1.5 times its half extents) or missing it, or a
-  left pinch while the menu is in the air. That pinch is masked from the
+  grown by half its size (1.5 times its half extents) or missing it. The
+  left hand's pinch never closes it, since that hand is on its way down
+  after summoning the menu. The closing pinch is masked from the
   gesture machine until it is released, so it does nothing else. A pinch
   that just misses a row, inside that margin, does nothing and the menu
   stays. "Close the menu" (also "hide the menu", "menu off") closes it. A

@@ -444,7 +444,6 @@ impl Hud {
             ray,
             hands.pinching[1],
         );
-        self.placement.left_pinch(hands.pinching[0]);
         self.placement.tick(dt);
         // After the closes, so a menu that closed this frame draws nothing.
         let placement = self.placement.placement();

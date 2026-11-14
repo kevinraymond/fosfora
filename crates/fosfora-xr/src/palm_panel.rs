@@ -321,8 +321,6 @@ pub struct PalmPanel {
     /// Board #5459, per hand (0 left, 1 right): a pinch that closed the
     /// menu from away from it, which nothing else reads until released.
     swallowed: [bool; 2],
-    /// The left hand's pinch last frame (board #5459).
-    left_was_pinching: bool,
     /// Why the menu last closed by itself, until taken for the log.
     closed: Option<Close>,
     pressed: bool,
@@ -574,24 +572,6 @@ impl PalmPanel {
             self.close(Close::Spoken);
         }
         true
-    }
-
-    /// Board #5459: the left hand's pinch this frame, after [`Self::input`].
-    /// The left hand does not point at the menu, so a pinch of it that
-    /// starts while the menu is in the air, with no pointer on it, is away
-    /// from it: the menu closes and the pinch is swallowed. On the palm the
-    /// menu is the left hand's own and its pinches stay the menu's, as
-    /// before.
-    pub fn left_pinch(&mut self, pinching: bool) {
-        let began = pinching && !self.left_was_pinching;
-        self.left_was_pinching = pinching;
-        if !pinching {
-            self.swallowed[0] = false;
-        }
-        if self.stay && began && self.at == At::Air && !self.pointed() {
-            self.close(Close::PinchAway(0));
-            self.swallowed[0] = true;
-        }
     }
 
     /// Board #5459: `dt` seconds pass, after [`Self::input`]. A menu in the
@@ -1411,17 +1391,18 @@ mod tests {
     }
 
     /// One frame as the hand menu runs it: the left palm, the right hand's
-    /// ray and pinch, the left hand's pinch, time. Where the panel is drawn.
+    /// ray and pinch, time. Where the panel is drawn. `_left_pinch` is the
+    /// left hand's pinch, which the menu does not read: lowering the hand
+    /// that summoned it must not close it.
     fn frame(
         panel: &mut PalmPanel,
         palm: Option<(Vec3, Quat)>,
         ray: Option<(Vec3, Vec3)>,
         right_pinch: bool,
-        left_pinch: bool,
+        _left_pinch: bool,
     ) -> Option<Placement> {
         panel.place(palm, HEAD, Quat::IDENTITY);
         panel.input(None, ray, right_pinch);
-        panel.left_pinch(left_pinch);
         panel.tick(DT);
         panel.placement()
     }
@@ -1513,22 +1494,16 @@ mod tests {
             .is_none()
         );
         assert_eq!(panel.swallowed(), [false, true]);
-        // The left hand: in the air, its pinch closes the menu...
+        // The left hand's pinch never closes it, in the air or on the palm:
+        // the hand that summoned the menu is on its way down.
         let (mut panel, _) = staying();
         frame(&mut panel, None, None, false, false);
-        assert!(frame(&mut panel, None, None, false, true).is_none());
-        assert_eq!(panel.take_closed(), Some(Close::PinchAway(0)));
-        assert_eq!(panel.swallowed(), [true, false]);
-        frame(&mut panel, None, None, false, false);
+        assert!(frame(&mut panel, None, None, false, true).is_some());
+        assert_eq!(panel.take_closed(), None);
         assert_eq!(panel.swallowed(), [false, false]);
-        // ...on the palm it is the menu's own hand, and nothing happens.
         let (mut panel, _) = staying();
         assert!(frame(&mut panel, Some(palm(1.0)), None, false, true).is_some());
         assert_eq!(panel.swallowed(), [false, false]);
-        // A left pinch while the right hand points at the menu: not away.
-        let (mut panel, p) = staying();
-        frame(&mut panel, None, None, false, false);
-        assert!(frame(&mut panel, None, ray_at(&p, 0.0, 0.0), false, true).is_some());
     }
 
     /// A pinch that just misses a row, inside the panel grown by half its
