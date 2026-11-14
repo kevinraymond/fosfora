@@ -33,6 +33,7 @@ pub mod depth_light;
 pub mod edge_bars;
 pub mod env_depth;
 pub mod faces_layer;
+pub mod fireflies;
 pub mod first_run;
 pub mod flash;
 #[cfg(all(test, not(target_os = "android")))]
