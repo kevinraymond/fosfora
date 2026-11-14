@@ -362,6 +362,64 @@ are empty.
   length and decode time: `music: playing "<title>" · 3:42 · decoded in
   1.8 s`.
 
+### Interface sounds (board #5460)
+
+*As built (`ui_sound.rs`, `playback.rs`).* Bare hands give no click and no
+haptic, so a short sound tells the wearer that a press or a gesture
+registered, and that the microphone is open. The sounds are synthesized at
+launch from plucked notes in E major. There are no audio files.
+
+| Cue | When | Notes | Length | Peak, default gain |
+|---|---|---|---|---|
+| Press | a hand menu press that does something; a thumb swipe that stepped the effect; a surface row step or an Edit room pinch that changed a surface | B6 tick with a woodblock partial | 30 ms | -14 dBFS |
+| Listening | the voice window opened | E6, then B6 | 120 ms | -16.5 dBFS |
+| Closed | the voice window closed | B6, then E6 | 120 ms | -16.5 dBFS |
+| Understood | every clause of a sentence matched; an agent reply's actions all resolved; the room editor's second hold applied | G#6 | 160 ms | -16.5 dBFS |
+| Not understood | a clause missed; an empty transcript; an agent miss or error | B5, a plain sine with a softer attack | 180 ms | -16.5 dBFS |
+| Armed | the room editor's first hold armed the class cycle | F#6 twice | 110 ms | -16.5 dBFS |
+
+A press that does nothing makes no sound: an effect step with no other
+effect, a track step with no tracks, an Agent pick the headset doesn't
+have, Roam already as asked, a stepper at its end, a surface row with no
+surface under the beam. The voice's actions don't tick, because the
+sentence already sounded. The debug panel's steppers other than density
+make no sound either; they send the app no action.
+
+- **After the tap.** The app analyzes the music it plays, so a cue in the
+  analysis would flash the room. The output callback writes each frame to
+  the speaker and into the delay line toward the tap, and only then adds the
+  cues to the speaker's frames (`ui_sound::output_block`). The tap never
+  sees them. A test runs that block with and without a cue and compares the
+  tap's frames bit for bit.
+- **The audio thread.** The frame loop asks for a cue by setting its bit in
+  an atomic, and the callback picks the bits up at its next buffer. The mix
+  allocates, locks and logs nothing. While a cue sounds, each sum goes
+  through a soft knee above 0.85 that stays under full scale. Frames without
+  a cue are left as the music made them. A cue asked while no stream runs,
+  or picked up more than 300 ms after the ask, is dropped rather than played
+  late.
+- **Music stopped.** A stop closes the music's stream, so the cues get a
+  low-latency stream of their own while the music is stopped. It has no tap,
+  plays at half the gain because nothing masks it, and opens and closes on
+  its own thread so the frame loop never waits. Between tracks nothing
+  changes: the next track swaps in on the same stream, which plays silence
+  if nothing is queued yet.
+- **The microphones.** While the analysis runs on the microphones (the
+  `mic`, `micxr`, `aaudio` and `loop` sources), the cues are off. The voice
+  window's microphone opens just before the rising notes are asked for, so
+  they play during its first 200 ms or so. The headset cancels its own
+  speaker output from its microphones (the loopback read zero worn, see
+  `MEASURED.md`), so they should not reach whisper or the tap window's quiet
+  closer. Only a worn window with `debug.fosfora.voicedump 1` can confirm it.
+  The falling notes play after the window's stream has closed.
+- **The knob.** `debug.fosfora.uisound` is the gain from 0 to 1, read live.
+  Unset it is 0.5, and 0 silences the cues. The log has `ui sound: gain 0.50
+  (default)` at launch and on each change, and each cue at the debug level
+  (`ui sound: press`).
+- **Listening without the headset.** `UI_SOUND_WAV=/tmp/cues.wav cargo test
+  -p fosfora-xr --lib write_the_cues -- --ignored` writes every cue at both
+  levels to a WAV.
+
 ## Mixed reality (S7)
 
 *As built (`crates/fosfora-xr/src/room.rs`, `input.rs`, `particles3d_sim.wgsl`,

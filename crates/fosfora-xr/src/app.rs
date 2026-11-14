@@ -218,7 +218,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.tapdelay <ms>  (fixed delay of the analysis tap behind the frames
     //       handed to AAudio; default: estimated from the stream's DAC timestamps, minus the detection time,
     //       so beats land on the sound; 0 = the S6 behavior that flashed 115 ms early)
-    //   adb shell setprop debug.fosfora.music 0|1               (board #3472: the bundled clip playing at launch, as the hand menu's Music row
+    //   adb shell setprop debug.fosfora.uisound 0..1   (board #5460: the interface sounds' gain, read live; default 0.5,
+    //       0 silences them; off whatever it says while the analysis is on the microphones)
+    //   adb shell setprop debug.fosfora.music 0|1              (board #3472: the bundled clip playing at launch, as the hand menu's Music row
     //       plays it: on the speakers, the analysis on its tap; the row's stop puts the analysis back on the launch source, synth or
     //       the microphones, and a play resumes where it stopped; board #4191: unset, it plays unless the source is mic, micxr or
     //       aaudio (synth, the default, file and loop play); 1 plays it over any source, 0 over none, file's and loop's clip
