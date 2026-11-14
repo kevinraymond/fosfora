@@ -40,6 +40,7 @@ done
 headless_off() {
     adb shell am force-stop "$PACKAGE"
     adb shell setprop debug.fosfora.ask '""'
+    adb shell setprop debug.fosfora.handshint '""'
     adb shell setprop debug.oculus.guardian_pause 0
     adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable >/dev/null
 }
@@ -63,8 +64,10 @@ emit "t_s\tfps\tstale\tapp_ms\tcpu_mhz\tgpu_mhz\tvrapi_temp\tpls\tthermal_status
 
 adb shell am broadcast -a com.oculus.vrpowermanager.prox_close >/dev/null
 adb shell setprop debug.oculus.guardian_pause 1
-# No permission dialog over the unworn run (board #3264).
+# No permission dialog over the unworn run (board #3264), nor the
+# controllers label (board #5461): no hand is tracked unworn.
 adb shell setprop debug.fosfora.ask 0
+adb shell setprop debug.fosfora.handshint 0
 sleep 3
 adb shell am force-stop "$PACKAGE"
 adb shell setprop debug.fosfora.mode particles

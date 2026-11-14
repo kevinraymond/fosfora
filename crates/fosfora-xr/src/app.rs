@@ -384,6 +384,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.immerseopen 0            (board #5409: no opening this launch, neither "Sit back and relax" nor its
     //       7 s at the plain room and the glide, for measurement runs and captures; the music's start glides to the show in about 2 s;
     //       unset or 1, the opening; read at launch)
+    //   adb shell setprop debug.fosfora.handshint 0              (board #5461: no "Put the controllers down" label this launch, for unworn
+    //       runs and captures, where no hand is ever tracked; unset or 1, the label after 4 s with no hand; read at launch)
     //   adb shell setprop debug.fosfora.immerselow 0.42          (board #5409: the immersion level at the bottom of the song's range, a breakdown,
     //       0..1; live: polled once a second and logged on a change, the level moving to it over the attack or the release; "" back
     //       to the default, 0.42)
@@ -1739,6 +1741,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #3488: the room scan's state on the same label while the
     // editor's shows nothing.
     let mut scan_label = crate::label::ScanLabel::default();
+    // Board #5461: no hand tracked since the launch, a while after the
+    // scan's label has gone: put the controllers down. Last on the label,
+    // after the opening's message. `debug.fosfora.handshint 0` keeps it
+    // off for unworn runs, where no hand is ever tracked.
+    let mut hands_hint = crate::label::HandsHint::default();
+    let hands_hint_on = debug_prop("debug.fosfora.handshint").as_deref() != Some("0");
+    let mut hands_hint_logged = false;
+    if !hands_hint_on {
+        info!("controllers label: off (debug.fosfora.handshint 0)");
+    }
     // Board #5378: every surface's voice name on the surface, while the
     // editor is on, while a voice window is open and a while after, after
     // a miss on a name, and always with `debug.fosfora.labels 1`
@@ -4001,6 +4013,25 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // turned roam on.
             let roam_now = roam.now();
             scan_label.step_with(scan_state, dt, |s| crate::roam::scan_text(s, roam_now));
+            // Board #5461: the controllers label's wait counts while the
+            // scan's label is gone.
+            hands_hint.step(
+                input.hands.tracked.contains(&true),
+                scan_label.now().is_none(),
+                dt,
+            );
+            let hands_label = hands_hint.now().filter(|_| hands_hint_on);
+            if hands_label.is_some() != hands_hint_logged {
+                hands_hint_logged = hands_label.is_some();
+                info!(
+                    "{}",
+                    if hands_hint_logged {
+                        "controllers label: shown, no hand tracked since the launch"
+                    } else {
+                        "controllers label: gone, a hand is tracked"
+                    }
+                );
+            }
             {
                 // Board #5453: the voice label ahead of the view, placed
                 // when it starts to show (a window's opening placed it
@@ -4031,16 +4062,24 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             (text, alpha, None, crate::label::scan_billboard(head, head_rot))
                         })
                     });
-                // Board #5409: the opening's message last, where the scan
+                // Board #5409: the opening's message next, where the scan
                 // label shows: it waits for the scan's and the permission's
                 // label, and the voice's and the editor's cover it (its
                 // hold counts only while it shows).
                 immerse_label_busy = shown.is_some();
-                let shown = shown.or_else(|| {
-                    immersion.message().map(|(text, alpha)| {
-                        (text, alpha, None, crate::label::scan_billboard(head, head_rot))
+                // Board #5461: the controllers label after it, so it never
+                // holds the show.
+                let shown = shown
+                    .or_else(|| {
+                        immersion.message().map(|(text, alpha)| {
+                            (text, alpha, None, crate::label::scan_billboard(head, head_rot))
+                        })
                     })
-                });
+                    .or_else(|| {
+                        hands_label.map(|text| {
+                            (text, 1.0, None, crate::label::scan_billboard(head, head_rot))
+                        })
+                    });
                 label_texture.show(&gfx, shown);
                 // Board #5378: the surface labels. Only while they show
                 // are the names, the behaviors and the poses worked out;

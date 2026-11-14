@@ -77,6 +77,15 @@
 //! state takes over without a label of its own ([`ScanLabel::step_with`]):
 //! the wearer has been told.
 //!
+//! **The controllers** ([`HandsHint`], board #5461). The app reads bare
+//! hands only, so a wearer holding the controllers has no menu, no voice
+//! and no gesture. When no hand has been tracked since the launch,
+//! [`HANDS_WAIT_S`] after the scan's and the permission's labels have gone
+//! the label says [`HANDS_LABEL`], held until a hand is tracked. It shows
+//! after the opening's message and never holds it. Once a hand has been
+//! seen it never shows again in that run, so a wearer resting their hands
+//! out of view is not told to put down controllers they don't hold.
+//!
 //! **The voice path's label** (board #3751, V4) is the same label with two
 //! more things the render reads: a meter, a thin bar under "Listening…"
 //! whose length is the microphone's level ([`Label::meter`],
@@ -365,6 +374,46 @@ pub const STATUS_NO_SURFACE: &str = "Point at a surface";
 /// beside the "Edit room: off" button, so it looked like a second button
 /// saying the same thing (board #5461).
 pub const STATUS_OFF: &str = "";
+
+/// The controllers label's words (board #5461): the app reads bare hands,
+/// never the controllers.
+pub const HANDS_LABEL: &str = "Put the controllers down. Fosfora uses your hands.";
+/// How long no hand is tracked, with the show free to start, before the
+/// controllers label shows (s).
+pub const HANDS_WAIT_S: f32 = 4.0;
+
+/// Whether to show [`HANDS_LABEL`] (board #5461), across frames.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HandsHint {
+    /// The time with no hand tracked and the show free to start (s).
+    waited_s: f32,
+    /// A hand has been tracked this run.
+    seen: bool,
+}
+
+impl HandsHint {
+    /// This frame, `dt` after the last: whether either hand is `tracked`,
+    /// and whether the show is free to start (`ready`: no scan or
+    /// permission label up). The wait counts only while ready.
+    pub fn step(&mut self, tracked: bool, ready: bool, dt: f32) {
+        if tracked {
+            self.seen = true;
+        } else if ready && !self.seen {
+            self.waited_s += dt.max(0.0);
+        }
+    }
+
+    /// The label's words while it shows: from [`HANDS_WAIT_S`] of waiting
+    /// until a hand is tracked, and never once one has been.
+    pub fn now(&self) -> Option<&'static str> {
+        (!self.seen && self.waited_s >= HANDS_WAIT_S).then_some(HANDS_LABEL)
+    }
+
+    /// Whether a hand has been tracked this run.
+    pub fn seen(&self) -> bool {
+        self.seen
+    }
+}
 
 /// The label for a step of the hand menu's surface rows (board #3472,
 /// D3): the surface's name, its behavior and the three values it runs
@@ -1585,6 +1634,48 @@ mod tests {
         assert_eq!(l.now(), Some((NOT_ALLOWED_LABEL, 1.0)));
         run(&mut l, given_up, SCAN_NONE_S + FADE_S);
         assert_eq!(l.now(), None);
+    }
+
+    #[test]
+    fn the_controllers_label_waits_for_the_show_then_holds_until_a_hand() {
+        // Two lines at the size of two.
+        let words = laid(HANDS_LABEL);
+        assert_eq!(
+            words.lines,
+            ["Put the controllers down.", "Fosfora uses your hands."]
+        );
+        assert_close!(words.px, TWO_LINES_FONT_PX);
+        let dt = 1.0 / 72.0;
+        let run = |h: &mut HandsHint, tracked: bool, ready: bool, s: f32| {
+            for _ in 0..(s / dt).round() as usize {
+                h.step(tracked, ready, dt);
+            }
+        };
+        let mut h = HandsHint::default();
+        // The scan's label up: no wait counts, however long.
+        run(&mut h, false, false, 30.0);
+        assert_eq!(h.now(), None);
+        // The show free to start: shown after HANDS_WAIT_S.
+        run(&mut h, false, true, HANDS_WAIT_S - 0.1);
+        assert_eq!(h.now(), None);
+        run(&mut h, false, true, 0.2);
+        assert_eq!(h.now(), Some(HANDS_LABEL));
+        // Held while no hand comes, gone the frame one does.
+        run(&mut h, false, true, 60.0);
+        assert_eq!(h.now(), Some(HANDS_LABEL));
+        h.step(true, true, dt);
+        assert_eq!(h.now(), None);
+        assert!(h.seen());
+        // And never again this run: hands resting out of view are not
+        // controllers.
+        run(&mut h, false, true, 120.0);
+        assert_eq!(h.now(), None);
+        // A hand seen at the launch, before the show could start, is
+        // enough.
+        let mut h = HandsHint::default();
+        h.step(true, false, dt);
+        run(&mut h, false, true, 30.0);
+        assert_eq!(h.now(), None);
     }
 
     #[test]
