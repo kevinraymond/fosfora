@@ -3673,3 +3673,43 @@ Not measured: anything worn. The seated room as the headset really sees it
 (the 7.05 ms row of the section above) was not available, so the seated
 numbers here are the depth light's worst case and are not to be set beside
 that row.
+
+## Launch time, and taking the headset off and on (boards #4194, #4195)
+
+Quest 3, v209, unworn on a desk in a dark room, the debug APK of xr-next
+at 96a87a3, seated, the saved 22-anchor room replayed
+(`debug.fosfora.anchors replay`), `debug.fosfora.begin 1`.
+
+**Launch**, from `am start` to the session's `VISIBLE -> FOCUSED`:
+
+| Launch | Time |
+|---|---|
+| The first after an install (unpacks 230 asset files, 182 MB, in 0.42 s) | 5.4 s |
+| The next one | 5.0 s |
+
+No single step holds it: the assets, the surfaces' 8 pipelines (0.43 s),
+the particle system and the geometry-first passes each take 0.3 to 0.5 s.
+The voice model loads after the session has focus (0.9 s) and does not
+hold the show. The APK is 237.7 MB, most of it the speech model.
+
+**Off and on.** The headset had been off the head for 6 h 16 min with the
+app left running (debug APK of e9df95e, the session stopped by the
+headset). At the doff: Android `Pause`, the session from `FOCUSED` to
+`IDLE` in 50 ms, `Stop`; the process idles at 0% CPU and the music stops
+with it. At the don (`prox_close`): `IDLE` to `FOCUSED` in 0.25 s, the song
+goes on from where it stopped (166.7 s into the clip, 0 xruns), 72 fps
+within 3 s (15 long frames in the first second), the depth provider with 0
+errors, the hand profiles back in 0.5 s, the immersion level and the
+fireflies as they were. The frame statistics print one line with the gap as
+its longest interval.
+
+Not covered: a doff with the voice window open, a change of audio output
+while off, a recenter, and any of it worn.
+
+**Checked in the log on 96a87a3:** with the room's file set aside the room
+logs `no rooms/<id>.json, starts on aurora` and writes no file until
+something changes. `debug.fosfora.say 'credits'` shows the credits card;
+`'embers on table 1'` logs `behavior: Curls` and the label `table 1:
+curls`; `'astrolabe on the ceiling'` logs `miss NotAvailable(Astrolabe)`
+and `Astrolabe is not available`; `'something like a campfire on the
+desk'` comes back from the on-device model in 508 ms as curls on a table.
