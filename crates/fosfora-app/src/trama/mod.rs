@@ -5,6 +5,7 @@
 //! manifest registry, the scene-level executor behind the
 //! `execute_and_composite` seam, and the canvas.
 pub mod audio;
+pub mod dirs;
 pub mod effect;
 pub mod exec;
 pub mod graph;
@@ -89,8 +90,7 @@ impl TramaSystem {
         width: u32,
         height: u32,
     ) -> Self {
-        let registry =
-            effect::TramaRegistry::load(device, cache, loader, &effect::trama_effects_dir());
+        let registry = effect::TramaRegistry::load_all(device, cache, loader, &dirs::all_dirs());
         let master = graph::NodeGraph::new_with_output();
         let canvas = ui::canvas::CanvasState::default();
         Self {
@@ -242,12 +242,9 @@ impl TramaSystem {
             .map(|p| self.registry.reload_file(device, cache, loader, p))
             .collect();
         if all {
-            outcomes.extend(self.registry.reload_all(
-                device,
-                cache,
-                loader,
-                &effect::trama_effects_dir(),
-            ));
+            for dir in dirs::all_dirs() {
+                outcomes.extend(self.registry.reload_all(device, cache, loader, &dir));
+            }
         }
         for outcome in outcomes {
             let effect::Reloaded::Swapped {

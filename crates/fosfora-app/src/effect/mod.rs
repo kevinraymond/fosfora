@@ -1,3 +1,4 @@
+pub mod dirs;
 pub mod format;
 pub mod loader;
 pub mod rates;

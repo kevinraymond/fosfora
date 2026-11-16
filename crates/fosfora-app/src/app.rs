@@ -1873,6 +1873,7 @@ impl App {
             };
             let new_effect = match serde_json::from_str::<crate::effect::format::PfxEffect>(&json) {
                 Ok(mut e) => {
+                    crate::effect::dirs::localize(&mut e, pfx_path);
                     e.source_path = Some(pfx_path.clone());
                     e
                 }

@@ -14,6 +14,7 @@
 - **Tempo-synced LFOs as binding sources.** Bind any control to a sine, triangle, saw, square or sample-and-hold LFO from 4 bars down to 1/16, with an optional phase offset, from the new LFO group in the binding matrix or as `lfo.sine.bar` / `lfo.saw.beat.90` in a bindings file; this used to need the external Smart LFO bridge.
 - **Seven more blend modes: Lighten, Darken, Soft Light, Hue, Saturation, Color and Luminosity,** in the layer menus and the web remote, numbered 13–19 over OSC. A preset that says `SoftLight` used to load as Overlay and now gets the real, gentler Soft Light; set it to Overlay to keep the old look. A blend driven from the binding bus still sweeps only modes 0–9.
 - **Opt-in hardware video decode for media layers.** `FOSFORA_HWACCEL=cuda` (or `vaapi`, `qsv`, `vulkan`, `auto`) hands decoding to the GPU and uses a cheaper color conversion, cutting CPU time on a 1080p clip from 17 s to 6.5 s; unset or `none`, nothing changes. A method this machine cannot start logs a warning and decodes in software.
+- **Your own effect folders.** `FOSFORA_EFFECT_DIRS` and `FOSFORA_TRAMA_DIRS` list extra directories (split like `PATH`) whose `.pfx` layer effects and trama `.wgsl` effects load next to the built-in ones and hot-reload when an external tool writes to them. A leading `~` means your home folder, on Windows too.
 
 ### Changed
 - **Audio analysis picks up each block of samples as it arrives instead of checking every 10 ms,** so features and beats reach the visuals up to 10 ms sooner, with that much less frame-to-frame jitter.
