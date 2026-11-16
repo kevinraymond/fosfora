@@ -52,6 +52,15 @@ LLVM libc++ (libc++_shared.so, the C++ runtime whisper.cpp uses)
     Apache-2.0 WITH LLVM-exception, from the Android NDK.
     Source: https://github.com/llvm/llvm-project
 
+The bundled tracks (audio/Let_the_Night_Come_In.ogg, audio/Slow_Blue.ogg)
+    CC0 1.0, a public domain dedication. "Let the Night Come In" and
+    "Slow Blue" were made for this app with YuE2, run locally. The YuE2
+    weights are licensed CC BY-NC 4.0 with an additional permission
+    (2026-09-16) that lets individual creators publish and distribute
+    what they generate; the outputs are not under the weights'
+    NonCommercial term.
+    Source: https://github.com/multimodal-art-projection/YuE (the model)
+
 "Ember Glow" by oglsdl (audio/ember_glow_excerpt.ogg, seconds 30 to 75)
     CC0 1.0, a public domain dedication.
     Source: https://opengameart.org/content/ember-glow

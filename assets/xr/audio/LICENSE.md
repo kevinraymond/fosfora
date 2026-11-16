@@ -1,4 +1,22 @@
-# Test track for the XR build (S6)
+# Audio in the XR build
+
+## Bundled tracks
+
+`Let_the_Night_Come_In.ogg` and `Slow_Blue.ogg` were made for this app with YuE2
+(https://github.com/multimodal-art-projection/YuE, model `m-a-p/YuE2-3B` with the
+`m-a-p/YuE2-Vae` decoder), run locally. The style prompts and the lyrics of "Let the
+Night Come In" were written for this app. Each file is the model's output with the level
+lowered 1.5 dB, encoded with
+`ffmpeg -af volume=-1.5dB -ar 48000 -ac 2 -c:a libvorbis -q:a 5`.
+
+The YuE2 weights are licensed CC BY-NC 4.0 with an additional permission (2026-09-16)
+that lets individual creators publish and distribute what they generate; the outputs are
+not under the weights' NonCommercial term.
+
+License of the two tracks: CC0 1.0 (public domain dedication,
+https://creativecommons.org/publicdomain/zero/1.0/).
+
+## Test track (S6)
 
 `ember_glow_excerpt.ogg`: seconds 30–75 of "Ember Glow" by oglsdl, from
 OpenGameArt (https://opengameart.org/content/ember-glow), released under

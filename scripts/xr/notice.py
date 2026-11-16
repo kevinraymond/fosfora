@@ -14,7 +14,8 @@ What goes in, in order:
 
   * assets/xr/licenses/components.txt, by hand: Fosfora, whisper.cpp, the
     Whisper weights, the voice model, ONNX Runtime, the OpenXR loader,
-    libc++ and the bundled clip, with their copyright lines.
+    libc++, the bundled tracks and the test clip, with their copyright
+    lines.
   * The Rust crates linked into libfosfora_xr.so for the headset:
     `cargo tree -p fosfora-xr --target aarch64-linux-android
     -e normal,no-proc-macro`, which resolves features for that crate alone

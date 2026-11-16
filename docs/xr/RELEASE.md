@@ -114,9 +114,10 @@ What it holds, in order:
 - The parts besides the Rust crates, from
   `assets/xr/licenses/components.txt` (by hand): Fosfora, whisper.cpp, the
   Whisper base.en weights, the voice model and Ettin, ONNX Runtime, the
-  OpenXR loader, the NDK's libc++ and the bundled "Ember Glow" clip, each
-  with its license, its copyright line where its license asks for one,
-  and its source. A new bundled file or library gets an entry there.
+  OpenXR loader, the NDK's libc++, the bundled tracks and the "Ember Glow"
+  test clip, each with its license, its copyright line where its license
+  asks for one, and its source. A new bundled file or library gets an
+  entry there.
 - The Rust crates linked into `libfosfora_xr.so` for the headset, with
   each crate's SPDX license from its manifest. The list is `cargo tree -p
   fosfora-xr --target aarch64-linux-android -e normal,no-proc-macro`: the
