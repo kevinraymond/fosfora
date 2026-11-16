@@ -172,7 +172,7 @@ pub struct PlaybackOptions {
     /// length): the hand menu's Music row resumes where it stopped
     /// ([`Playback::resume_frame`]). 0 = the top.
     pub start_frame: usize,
-    /// Loop the clip at its end (the bundled clip, a playlist of one);
+    /// Loop the clip at its end (the test clip, a playlist of one);
     /// false plays it once, then silence until a queued clip takes over
     /// (board #5385). [`Playback::set_looping`] changes it.
     pub looping: bool,

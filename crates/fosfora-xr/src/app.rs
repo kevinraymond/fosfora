@@ -200,7 +200,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       over the view: the app still checks and logs them and picks up a later `pm grant` within 120 s)
     //   adb shell setprop debug.fosfora.file <path>   (.ogg/.mp3/.wav/.flac decoded by the core, or a raw
     //       48 kHz stereo f32 file ending in .f32, or "click" / "click:100" for a click track at that BPM;
-    //       default: the bundled CC0 track under assets/audio/; board #5385: set, it is also what the Music row plays
+    //       default: the CC0 test clip under assets/audio/; board #5385: set, it is also what the Music row plays
     //       at launch on any source, looped, over the music folders and the saved track, until the row steps to a track)
     //   adb shell setprop debug.fosfora.flash 1        (whole view white for 2 frames on each beat: the
     //       audio-to-photon measurement, filmed with a phone; a strobe by design, so it runs only with
@@ -218,13 +218,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       so beats land on the sound; 0 = the S6 behavior that flashed 115 ms early)
     //   adb shell setprop debug.fosfora.uisound 0..1   (board #5460: the interface sounds' gain, read live; default 0.5,
     //       0 silences them; off whatever it says while the analysis is on the microphones)
-    //   adb shell setprop debug.fosfora.music 0|1              (board #3472: the bundled clip playing at launch, as the hand menu's Music row
+    //   adb shell setprop debug.fosfora.music 0|1              (board #3472: the music playing at launch, as the hand menu's Music row
     //       plays it: on the speakers, the analysis on its tap; the row's stop puts the analysis back on the launch source, synth or
     //       the microphones, and a play resumes where it stopped; board #4191: unset, it plays unless the source is mic, micxr or
     //       aaudio (synth, the default, file and loop play); 1 plays it over any source, 0 over none, file's and loop's clip
-    //       included, so a quiet run needs 0; not saved; board #5385: the row plays the wearer's music folders, the bundled
-    //       clip only while they are empty (or debug.fosfora.file), and unset, over a source that is no microphone, the
-    //       wearer's last play or stop decides, saved in music.json under the config dir with the track)
+    //       included, so a quiet run needs 0; not saved; board #5385: the row plays the wearer's music folders, or
+    //       debug.fosfora.file, and unset, over a source that is no microphone, the wearer's last play or stop decides,
+    //       saved in music.json under the config dir with the track; board #5528: while the folders hold no track the row
+    //       plays the tracks the app ships with, music::BUNDLED, in that list's order)
+    //   adb shell setprop debug.fosfora.bundled 1                (board #5528: the Music row's playlist is the bundled tracks whatever
+    //       the music folders hold, so they can be reached on a headset that has music of its own; the launch line says so; the
+    //       track is not saved, so each launch starts on the first one and the wearer's saved track is kept; default off; read at
+    //       launch)
     //   adb shell setprop debug.fosfora.quality low|medium|high|ultra|max
     //   adb shell setprop debug.fosfora.scene 1280x720
     //   adb shell setprop debug.fosfora.effect "Flux"            (mode quad; any effect)
@@ -1203,10 +1208,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // forbids it (`music::plays_at_launch`), which holds for `file` and
     // `loop` too, so the knob's 0 means no clip whatever the source.
     // Board #5385: the row plays the wearer's music folders (`player.rs`),
-    // the saved track first and the bundled clip only while they are
-    // empty; `debug.fosfora.file` wins when set; unset, the knob leaves the
-    // launch to the wearer's last play or stop.
-    let bundled_clip = dirs.assets.join("audio").join(crate::music::CLIP);
+    // the saved track first; `debug.fosfora.file` wins when set; unset, the
+    // knob leaves the launch to the wearer's last play or stop. Board
+    // #5528: while the folders hold no track the row plays the tracks the
+    // app ships with, and `debug.fosfora.bundled 1` plays those whatever
+    // the folders hold. The test clip is the `file` and `loop` sources',
+    // and the row's only when no track plays at all.
+    let bundled_dir = dirs.assets.join("audio");
+    let bundled_clip = bundled_dir.join(crate::music::CLIP);
+    let (bundled, missing) = crate::playlist::bundled(&bundled_dir, crate::music::BUNDLED);
+    for name in &missing {
+        log::warn!("music: the bundled track {name} is not in the assets: skipped");
+    }
+    let only_bundled = switch("debug.fosfora.bundled") == Some(true);
     let file_knob = debug_prop("debug.fosfora.file").map(std::path::PathBuf::from);
     let fallback = file_knob.clone().unwrap_or_else(|| bundled_clip.clone());
     let (shared_music, own_music) = permissions.as_ref().map_or((None, None), |p| {
@@ -1255,6 +1269,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             shared: shared_music,
             own: own_music,
             shared_readable: storage_granted,
+            bundled,
+            only_bundled,
         },
         saved_file,
         saved,
@@ -1271,12 +1287,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     } else {
         info!(
             "{}",
-            crate::playlist::launch_line(
-                &music_scan,
-                music.track_title(),
-                resumed,
-                music_at_launch
-            )
+            music.launch_line(&music_scan, resumed, music_at_launch)
         );
     }
     drop(music_scan);
@@ -1308,7 +1319,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         )),
         "file" | "loop" => {
             info!(
-                "music: debug.fosfora.music 0: {audio_source} starts without its clip, the analysis on {} (the Music row plays the music folders, else the bundled clip)",
+                "music: debug.fosfora.music 0: {audio_source} starts without its clip, the analysis on {} (the Music row plays the music folders, else the bundled tracks)",
                 crate::music::analysis(false, &audio_source).name()
             );
             None

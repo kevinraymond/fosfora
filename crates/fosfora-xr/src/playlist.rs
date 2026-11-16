@@ -1,7 +1,7 @@
 //! The wearer's own music (board #5385): the files in the two music
 //! folders as one playlist that the hand menu's Music row and the voice
-//! step through. The bundled clip stays the fallback while both folders
-//! are empty.
+//! step through. Board #5528: while both folders hold no track, the
+//! playlist is the tracks the app ships with ([`bundled`], [`listed`]).
 //!
 //! The folders are the shared `Music/` folder, which needs the storage
 //! permission (`permissions::storage`), and the app's own external files
@@ -46,6 +46,8 @@ pub enum Folder {
     Shared,
     /// The app's own external files folder.
     App,
+    /// The app's assets: a track the app ships with (board #5528).
+    Bundled,
 }
 
 /// One file of the playlist.
@@ -241,6 +243,53 @@ fn walk(
     }
 }
 
+/// The tracks the app ships with (board #5528): `names` in `dir`, in
+/// `names`' order, and the names with no file there, which the caller
+/// logs. The order is the list's, never the folder's.
+pub fn bundled(dir: &Path, names: &[&str]) -> (Vec<Track>, Vec<String>) {
+    let mut missing = Vec::new();
+    let tracks = names
+        .iter()
+        .filter_map(|name| {
+            let path = dir.join(name);
+            if path.is_file() {
+                Some(Track {
+                    title: title(name),
+                    path,
+                    folder: Folder::Bundled,
+                })
+            } else {
+                missing.push((*name).to_owned());
+                None
+            }
+        })
+        .collect();
+    (tracks, missing)
+}
+
+/// The Music row's tracks for what a scan `found` (board #5528): the
+/// wearer's own, and none of the `bundled` ones, when the folders hold
+/// any; else the bundled ones. `only_bundled` (`debug.fosfora.bundled 1`)
+/// is the bundled ones whatever the folders hold.
+pub fn listed(found: Vec<Track>, bundled: &[Track], only_bundled: bool) -> Vec<Track> {
+    if only_bundled || found.is_empty() {
+        bundled.to_vec()
+    } else {
+        found
+    }
+}
+
+/// Whether the first track of a rescan's playlist takes over from what
+/// the Music row is on, at once while the music plays and at the next
+/// play otherwise. From the test clip (`on_clip`) it does, unless
+/// `debug.fosfora.file` put the row there (`pinned`). From a track it does
+/// only when the playlist changed hands (`swapped`): the bundled tracks
+/// gave way to the wearer's, or came back (board #5528). A rescan that
+/// leaves the playlist in the same hands leaves the playing track alone.
+pub fn takes_over(on_clip: bool, pinned: bool, swapped: bool) -> bool {
+    if on_clip { !pinned } else { swapped }
+}
+
 /// What a spoken name found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Found {
@@ -321,6 +370,14 @@ impl Playlist {
 
     pub fn is_empty(&self) -> bool {
         self.tracks.is_empty()
+    }
+
+    /// Whether these are the tracks the app ships with ([`listed`] never
+    /// mixes them with the wearer's).
+    pub fn is_bundled(&self) -> bool {
+        self.tracks
+            .first()
+            .is_some_and(|t| t.folder == Folder::Bundled)
     }
 
     pub fn tracks(&self) -> &[Track] {
@@ -440,6 +497,21 @@ impl Saved {
         }
     }
 
+    /// What to save with the row on `current` (`None` on the test clip,
+    /// which keeps the track saved before) and play asked for or not. With
+    /// `debug.fosfora.bundled` (`only_bundled`) the track saved before
+    /// stays too: the knob's playlist is not the wearer's choice.
+    #[must_use]
+    pub fn next(&self, current: Option<&Track>, only_bundled: bool, playing: bool) -> Self {
+        Self {
+            track: current
+                .filter(|_| !only_bundled)
+                .map(|t| t.path.clone())
+                .or_else(|| self.track.clone()),
+            playing: Some(playing),
+        }
+    }
+
     /// `{"track":"/storage/emulated/0/Music/a.mp3","playing":true}`, the
     /// fields saved so far.
     pub fn to_json(&self) -> String {
@@ -463,24 +535,22 @@ fn tracks_n(n: usize) -> String {
     }
 }
 
-/// The launch line: how many tracks each folder gave and which one the
-/// Music row starts on (`title`, whether it was the saved one and whether
-/// it plays), or that the bundled clip stands in.
-pub fn launch_line(scan: &Scan, title: Option<&str>, resumed: bool, playing: bool) -> String {
+/// The launch line: how many tracks each folder gave (`scan`), the
+/// bundled tracks by name when they are the playlist (`list`), because
+/// the folders are empty or because `debug.fosfora.bundled` says so
+/// (`only_bundled`), and which track the Music row starts on (whether it
+/// was the saved one and whether it plays). With no track at all, that
+/// the test clip stands in.
+pub fn launch_line(
+    scan: &Scan,
+    list: &Playlist,
+    only_bundled: bool,
+    resumed: bool,
+    playing: bool,
+) -> String {
     let n = scan.tracks.len();
-    let Some(title) = title.filter(|_| n > 0) else {
-        return format!(
-            "music: no tracks found, {} the bundled clip (put files in Music/)",
-            if playing { "playing" } else { "stopped on" }
-        );
-    };
-    let start = match (playing, resumed) {
-        (true, true) => format!("resuming \"{title}\""),
-        (true, false) => format!("playing \"{title}\""),
-        (false, _) => format!("\"{title}\", stopped"),
-    };
-    format!(
-        "music: {} ({} in Music, {} in the app folder){} \u{b7} {start}",
+    let found = format!(
+        "{} ({} in Music, {} in the app folder){}",
         tracks_n(n),
         scan.count(Folder::Shared),
         scan.count(Folder::App),
@@ -489,7 +559,38 @@ pub fn launch_line(scan: &Scan, title: Option<&str>, resumed: bool, playing: boo
         } else {
             String::new()
         },
-    )
+    );
+    let Some(title) = list.current_track().map(|t| t.title.as_str()) else {
+        let none = if only_bundled {
+            format!("debug.fosfora.bundled 1 over {found}, and no bundled track")
+        } else {
+            "no tracks found and no bundled track".to_owned()
+        };
+        return format!(
+            "music: {none}, {} the test clip (put files in Music/)",
+            if playing { "playing" } else { "stopped on" }
+        );
+    };
+    let start = match (playing, resumed) {
+        (true, true) => format!("resuming \"{title}\""),
+        (true, false) => format!("playing \"{title}\""),
+        (false, _) => format!("\"{title}\", stopped"),
+    };
+    if !list.is_bundled() {
+        return format!("music: {found} \u{b7} {start}");
+    }
+    let why = if only_bundled {
+        format!("debug.fosfora.bundled 1 over {found}")
+    } else {
+        "no tracks in the music folders".to_owned()
+    };
+    let names = list
+        .titles()
+        .iter()
+        .map(|t| format!("\"{t}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("music: {why} \u{b7} bundled: {names} \u{b7} {start}")
 }
 
 /// The line for a track that starts: its title, length and decode time.
@@ -514,6 +615,18 @@ mod tests {
 
     fn list(names: &[&str]) -> Playlist {
         Playlist::new(names.iter().map(|n| track(n)).collect())
+    }
+
+    /// Two tracks as the app ships them.
+    fn shipped() -> Vec<Track> {
+        ["First_Song.ogg", "Second.ogg"]
+            .iter()
+            .map(|n| Track {
+                path: PathBuf::from(format!("/assets/audio/{n}")),
+                title: title(n),
+                folder: Folder::Bundled,
+            })
+            .collect()
     }
 
     #[test]
@@ -730,34 +843,181 @@ mod tests {
                 .collect(),
             ..Scan::default()
         };
+        let own = |scan: &Scan| Playlist::new(listed(scan.tracks.clone(), &shipped(), false));
         assert_eq!(
-            launch_line(&scan, Some("Song"), true, true),
-            "music: 14 tracks (12 in Music, 2 in the app folder) \u{b7} resuming \"Song\""
+            launch_line(&scan, &own(&scan), false, true, true),
+            "music: 14 tracks (12 in Music, 2 in the app folder) \u{b7} resuming \"0\""
         );
         assert_eq!(
-            launch_line(&scan, Some("Song"), false, true),
-            "music: 14 tracks (12 in Music, 2 in the app folder) \u{b7} playing \"Song\""
+            launch_line(&scan, &own(&scan), false, false, true),
+            "music: 14 tracks (12 in Music, 2 in the app folder) \u{b7} playing \"0\""
         );
         assert_eq!(
-            launch_line(&scan, Some("Song"), true, false),
-            "music: 14 tracks (12 in Music, 2 in the app folder) \u{b7} \"Song\", stopped"
+            launch_line(&scan, &own(&scan), false, true, false),
+            "music: 14 tracks (12 in Music, 2 in the app folder) \u{b7} \"0\", stopped"
+        );
+        // The knob: the bundled tracks by name, over what the folders hold.
+        let forced = Playlist::new(listed(scan.tracks.clone(), &shipped(), true));
+        assert_eq!(
+            launch_line(&scan, &forced, true, false, true),
+            "music: debug.fosfora.bundled 1 over 14 tracks (12 in Music, 2 in the app folder) \u{b7} bundled: \"First Song\", \"Second\" \u{b7} playing \"First Song\""
         );
         scan.full = true;
-        assert!(launch_line(&scan, Some("Song"), true, true).contains(", the first 2000 \u{b7}"));
+        assert!(
+            launch_line(&scan, &own(&scan), false, true, true).contains(", the first 2000 \u{b7}")
+        );
         scan.tracks.truncate(1);
-        assert!(launch_line(&scan, Some("0"), false, true).starts_with("music: 1 track (1 in"));
+        assert!(
+            launch_line(&scan, &own(&scan), false, false, true).starts_with("music: 1 track (1 in")
+        );
+        // Empty folders: the bundled tracks by name, the saved one resumed.
+        let empty = Scan::default();
+        let mut bundled = Playlist::new(listed(Vec::new(), &shipped(), false));
         assert_eq!(
-            launch_line(&Scan::default(), None, false, true),
-            "music: no tracks found, playing the bundled clip (put files in Music/)"
+            launch_line(&empty, &bundled, false, false, true),
+            "music: no tracks in the music folders \u{b7} bundled: \"First Song\", \"Second\" \u{b7} playing \"First Song\""
+        );
+        bundled.select(1);
+        assert_eq!(
+            launch_line(&empty, &bundled, false, true, false),
+            "music: no tracks in the music folders \u{b7} bundled: \"First Song\", \"Second\" \u{b7} \"Second\", stopped"
+        );
+        // No track at all: the test clip stands in.
+        let none = Playlist::default();
+        assert_eq!(
+            launch_line(&empty, &none, false, false, true),
+            "music: no tracks found and no bundled track, playing the test clip (put files in Music/)"
         );
         assert_eq!(
-            launch_line(&Scan::default(), None, false, false),
-            "music: no tracks found, stopped on the bundled clip (put files in Music/)"
+            launch_line(&empty, &none, false, false, false),
+            "music: no tracks found and no bundled track, stopped on the test clip (put files in Music/)"
+        );
+        assert_eq!(
+            launch_line(&scan, &none, true, false, true),
+            "music: debug.fosfora.bundled 1 over 1 track (1 in Music, 0 in the app folder), the first 2000, and no bundled track, playing the test clip (put files in Music/)"
         );
         assert_eq!(
             start_line("Song", 222.4, 1.84),
             "music: playing \"Song\" \u{b7} 3:42 \u{b7} decoded in 1.8 s"
         );
+    }
+
+    #[test]
+    fn with_empty_folders_the_playlist_is_the_bundled_tracks_in_the_lists_order() {
+        let p = Playlist::new(listed(Vec::new(), &shipped(), false));
+        assert!(p.is_bundled());
+        assert_eq!(p.titles(), ["First Song", "Second"]);
+        assert_eq!(p.current(), Some(0));
+        // Whatever the list's length: one, or three in an order no sort
+        // gives.
+        let three: Vec<Track> = ["b.ogg", "c.ogg", "a.ogg"]
+            .iter()
+            .map(|n| Track {
+                folder: Folder::Bundled,
+                ..track(n)
+            })
+            .collect();
+        for n in 1..=three.len() {
+            let p = Playlist::new(listed(Vec::new(), &three[..n], false));
+            assert_eq!(p.titles(), &["b", "c", "a"][..n]);
+        }
+        // No bundled track either: nothing.
+        let none = Playlist::new(listed(Vec::new(), &[], false));
+        assert!(none.is_empty() && !none.is_bundled());
+    }
+
+    #[test]
+    fn the_wearers_tracks_win_and_no_bundled_one_is_among_them() {
+        let own = vec![track("mine.mp3"), track("yours.flac")];
+        let p = Playlist::new(listed(own.clone(), &shipped(), false));
+        assert!(!p.is_bundled());
+        assert_eq!(p.titles(), ["mine", "yours"]);
+        assert!(p.tracks().iter().all(|t| t.folder != Folder::Bundled));
+        // One track of the wearer's is enough.
+        let p = Playlist::new(listed(own[..1].to_vec(), &shipped(), false));
+        assert_eq!(p.titles(), ["mine"]);
+        // The knob: the bundled ones whatever the folders hold.
+        let p = Playlist::new(listed(own, &shipped(), true));
+        assert!(p.is_bundled());
+        assert_eq!(p.titles(), ["First Song", "Second"]);
+        assert!(Playlist::new(listed(Vec::new(), &shipped(), true)).is_bundled());
+    }
+
+    #[test]
+    fn the_folders_emptying_and_filling_swap_the_playlist() {
+        // Empty at launch, on the second bundled track.
+        let mut p = Playlist::new(listed(Vec::new(), &shipped(), false));
+        p.select(1);
+        // The wearer's tracks arrive: theirs only, the first current.
+        p.replace(listed(
+            vec![track("a.mp3"), track("b.mp3")],
+            &shipped(),
+            false,
+        ));
+        assert!(!p.is_bundled());
+        assert_eq!(
+            (p.titles(), p.current()),
+            (&["a", "b"].map(String::from)[..], Some(0))
+        );
+        // A rescan among their tracks keeps the current one by its path.
+        p.select(1);
+        p.replace(listed(
+            vec![track("0.mp3"), track("a.mp3"), track("b.mp3")],
+            &shipped(),
+            false,
+        ));
+        assert_eq!(p.current(), Some(2));
+        // The folders empty again: the bundled tracks return, from the
+        // first.
+        p.replace(listed(Vec::new(), &shipped(), false));
+        assert!(p.is_bundled());
+        assert_eq!(
+            p.current_track().map(|t| t.title.as_str()),
+            Some("First Song")
+        );
+        // A rescan that still finds none keeps the bundled track the row
+        // is on.
+        p.select(1);
+        p.replace(listed(Vec::new(), &shipped(), false));
+        assert_eq!(p.current(), Some(1));
+    }
+
+    #[test]
+    fn a_rescan_takes_over_only_from_the_clip_or_when_the_playlist_changes_hands() {
+        // On a track, the playlist in the same hands: it plays on.
+        assert!(!takes_over(false, false, false));
+        // The bundled tracks gave way to the wearer's, or came back.
+        assert!(takes_over(false, false, true));
+        assert!(takes_over(false, true, true));
+        // On the test clip: the first track takes over, unless
+        // debug.fosfora.file put the row there.
+        assert!(takes_over(true, false, false));
+        assert!(takes_over(true, false, true));
+        assert!(!takes_over(true, true, false));
+        assert!(!takes_over(true, true, true));
+    }
+
+    #[test]
+    fn a_bundled_track_is_saved_as_the_wearers_are_but_not_under_the_knob() {
+        let before = Saved {
+            track: Some(PathBuf::from("/m/mine.mp3")),
+            playing: Some(false),
+        };
+        let bundled = shipped();
+        // With empty folders the bundled track the row is on is saved,
+        // and a launch finds it again by its path.
+        let saved = before.next(Some(&bundled[1]), false, true);
+        assert_eq!(saved.track.as_deref(), Some(bundled[1].path.as_path()));
+        assert_eq!(saved.playing, Some(true));
+        let again = Playlist::new(listed(Vec::new(), &bundled, false));
+        assert_eq!(again.index_of(saved.track.as_deref().unwrap()), Some(1));
+        // The knob keeps the wearer's saved track; the play or stop is
+        // still theirs.
+        let knob = before.next(Some(&bundled[1]), true, true);
+        assert_eq!(knob.track, before.track);
+        assert_eq!(knob.playing, Some(true));
+        // On the test clip the track saved before stays.
+        assert_eq!(before.next(None, false, false), before);
     }
 
     /// A folder tree under the temp dir, removed on drop.
@@ -824,6 +1084,28 @@ mod tests {
         );
         assert!(!scan.full && scan.unreadable.is_empty());
         assert!(scan.tracks[2].path.ends_with("album 9/x.flac"));
+    }
+
+    #[test]
+    fn a_missing_bundled_file_is_left_out_and_named() {
+        let dir = Tree::new(
+            "bundled",
+            &["Slow_Burn.ogg", "01 - Opener.ogg", "other.ogg"],
+        );
+        let names = ["Slow_Burn.ogg", "Gone.ogg", "01 - Opener.ogg"];
+        let (tracks, missing) = bundled(&dir.0, &names);
+        // The list's order, not the folder's, and only the list's files.
+        let titles: Vec<&str> = tracks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["Slow Burn", "Opener"]);
+        assert!(tracks.iter().all(|t| t.folder == Folder::Bundled));
+        assert_eq!(tracks[0].path, dir.0.join("Slow_Burn.ogg"));
+        assert_eq!(missing, ["Gone.ogg"]);
+        // None of them there: no track, every name missing, no panic.
+        let nowhere = std::env::temp_dir().join("fosfora-playlist-no-assets");
+        let (tracks, missing) = bundled(&nowhere, &names);
+        assert!(tracks.is_empty());
+        assert_eq!(missing, names);
+        assert_eq!(bundled(&dir.0, &[]), (Vec::new(), Vec::new()));
     }
 
     #[test]
