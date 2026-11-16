@@ -529,6 +529,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.sonarcontours 1          (sonar: the standing lines' strength, 0..1; 0 never shows them; live)
     //   adb shell setprop debug.fosfora.sonartest <s>            (sonar: a sweep every that many seconds whatever the music does, never under 0.7 s, for
     //       unworn captures; unset or 0 off; live)
+    //   adb shell setprop debug.fosfora.sonarbuild <0..1>        (sonar: the build the standing lines read held at that value whatever the music does, for
+    //       unworn captures; 0.4 is where they start, 1 the tightest; unset the music's; live)
     //   adb shell setprop debug.fosfora.edgebars 0|1|2|3         (board #5420, edge_bars.rs: the room's outline drawn as the spectrum, bars along the edges of
     //       every plane and box drawn as an occluder (hidden walls and the stage floor left out), in the surface's color, while music
     //       plays; unset each kind of surface in its theme's mode (board #5431, themes.rs); 1 the bars lie on each face and grow in from its

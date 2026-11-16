@@ -101,8 +101,10 @@
 //! branch), `sonarspeed` (a factor on the speed), `sonarwidth` (on the
 //! lines' width), `sonargain` (brightness, 0 to [`GAIN_MAX`]), `sonartail`
 //! (the tail, s), `sonarcontours` (the standing lines' strength, 0 to 1; 0
-//! never shows them) and `sonartest <s>` (a sweep every that many seconds
-//! whatever the music does, for unworn captures).
+//! never shows them), and for unworn captures `sonartest <s>` (a sweep
+//! every that many seconds whatever the music does) and `sonarbuild
+//! <0..1>` (the build the standing lines read held there whatever the
+//! music does).
 //!
 //! **What it cannot do.** It draws only where the depth light draws: with
 //! geometry first on, not on the scanned walls, floor and tables. It needs
@@ -131,6 +133,7 @@ pub const KNOB_GAIN: &str = "debug.fosfora.sonargain";
 pub const KNOB_TAIL: &str = "debug.fosfora.sonartail";
 pub const KNOB_CONTOURS: &str = "debug.fosfora.sonarcontours";
 pub const KNOB_TEST: &str = "debug.fosfora.sonartest";
+pub const KNOB_BUILD: &str = "debug.fosfora.sonarbuild";
 
 /// Rows of [`Sonar::rows`], the end of `struct EnvEye` from `sonar` on
 /// (`depth_light::SONAR_ROW`).
@@ -265,6 +268,9 @@ pub struct SonarOptions {
     /// `debug.fosfora.sonartest`: a sweep every this many seconds whatever
     /// the music does, never under [`MIN_GAP_S`]; `None` unset or 0.
     pub test_s: Option<f32>,
+    /// `debug.fosfora.sonarbuild`: the build the standing lines read, 0..1,
+    /// held there whatever the music does; `None` unset, the music's.
+    pub build: Option<f32>,
 }
 
 impl Default for SonarOptions {
@@ -277,15 +283,17 @@ impl Default for SonarOptions {
             tail_s: TAIL_S,
             contours: 1.0,
             test_s: None,
+            build: None,
         }
     }
 }
 
 impl SonarOptions {
-    /// The options the seven knobs ask, each read through `prop` (a system
+    /// The options the eight knobs ask, each read through `prop` (a system
     /// property by name, `None` unset): an unreadable number is the
     /// default, one out of range the nearest end. `sonar` is 0, 1 or 2;
-    /// `sonartest` is off unset, unreadable or not above 0.
+    /// `sonartest` is off unset, unreadable or not above 0; `sonarbuild`
+    /// is the music's unset or unreadable.
     pub fn from_knobs(prop: impl Fn(&str) -> Option<String>) -> Self {
         let d = Self::default();
         let number = |name: &str| {
@@ -306,6 +314,7 @@ impl SonarOptions {
             test_s: number(KNOB_TEST)
                 .filter(|&v| v > 0.0)
                 .map(|v| v.max(MIN_GAP_S)),
+            build: number(KNOB_BUILD).map(|v| v.clamp(0.0, 1.0)),
         }
     }
 
@@ -327,8 +336,11 @@ impl SonarOptions {
         let test = self.test_s.map_or_else(String::new, |s| {
             format!(" \u{b7} a test sweep every {s} s ({KNOB_TEST})")
         });
+        let build = self.build.map_or_else(String::new, |b| {
+            format!(" \u{b7} the build held at {b} ({KNOB_BUILD})")
+        });
         format!(
-            "on, the depth light's things{room} \u{b7} speed x{} ({SPAN_M} m a bar, {} to {} m/s) \u{b7} width x{} ({} m each side near) \u{b7} gain {} \u{b7} tail {} s \u{b7} contours {} \u{b7} starts {MIN_GAP_S} s apart at least, {SWEEPS} alive at most{test}",
+            "on, the depth light's things{room} \u{b7} speed x{} ({SPAN_M} m a bar, {} to {} m/s) \u{b7} width x{} ({} m each side near) \u{b7} gain {} \u{b7} tail {} s \u{b7} contours {} \u{b7} starts {MIN_GAP_S} s apart at least, {SWEEPS} alive at most{test}{build}",
             self.speed,
             SPEED_M_S[0],
             SPEED_M_S[1],
@@ -573,8 +585,9 @@ impl Sonar {
     /// [`MIN_GAP_S`] old and fewer than [`SWEEPS`] are alive: from the
     /// head, at [`speed`], at the drop's strength when a drop asks.
     ///
-    /// The standing lines: the tension the sets read follows
-    /// [`tension`] at most [`TENSION_SLEW_PER_S`]; the strength ramps
+    /// The standing lines: the tension the sets read follows [`tension`]
+    /// of `buildup` (of the `sonarbuild` knob's value when set, quiet or
+    /// not) at most [`TENSION_SLEW_PER_S`]; the strength ramps
     /// toward the lesser of that and the tension as it is, over
     /// [`CONTOUR_FULL_AT`], taking [`CONTOUR_FADE_S`] for the whole way; a
     /// drop takes it down in [`DROP_FADE_S`] and holds it there for
@@ -664,10 +677,15 @@ impl Sonar {
         }
         let dropped = c.quiet_s > 0.0;
         c.quiet_s = (c.quiet_s - dt).max(0.0);
-        let raw = if dropped || input.quiet || opts.contours <= 0.0 {
+        // The test knob's build needs no music.
+        let (buildup, quiet) = match opts.build {
+            Some(held) => (held, false),
+            None => (input.buildup, input.quiet),
+        };
+        let raw = if dropped || quiet || opts.contours <= 0.0 {
             0.0
         } else {
-            tension(input.buildup)
+            tension(buildup)
         };
         let slew = TENSION_SLEW_PER_S * dt;
         c.tension += (raw - c.tension).clamp(-slew, slew);
@@ -1266,6 +1284,19 @@ mod tests {
         let mut sonar = Sonar::default();
         build(&mut sonar, &none, 1.0, 6.0);
         assert!(!sonar.shows());
+        // The test knob's build: held whatever the music does, in
+        // silence too, by the same slow ramps.
+        let held = SonarOptions {
+            build: Some(0.7),
+            ..opts
+        };
+        let mut sonar = Sonar::default();
+        run(&mut sonar, &held, 8.0, |_| Input {
+            quiet: true,
+            ..input()
+        });
+        assert!(within(sonar.contours().strength, 1.0, 1e-4));
+        assert!(within(sonar.contours().tension, 0.5, 1e-3));
     }
 
     #[test]
@@ -1451,7 +1482,7 @@ mod tests {
     fn the_knobs_read_within_their_ranges_and_say_so() {
         let d = SonarOptions::default();
         assert_eq!(SonarOptions::from_knobs(|_| None), d);
-        assert_eq!((d.mode, d.test_s), (1, None));
+        assert_eq!((d.mode, d.test_s, d.build), (1, None, None));
         let set = |pairs: &'static [(&'static str, &'static str)]| {
             SonarOptions::from_knobs(move |name| {
                 pairs
@@ -1468,6 +1499,7 @@ mod tests {
             (KNOB_TAIL, "0.6"),
             (KNOB_CONTOURS, "0.4"),
             (KNOB_TEST, "2"),
+            (KNOB_BUILD, "0.7"),
         ]);
         assert_eq!(o.mode, 2);
         assert_close!(
@@ -1475,7 +1507,11 @@ mod tests {
             [0.5, WIDTH_FACTOR[1], 0.0, 0.6, 0.4]
         );
         assert_eq!(o.test_s, Some(2.0));
+        assert_eq!(o.build, Some(0.7));
         assert!(o.describe().contains("not built"));
+        assert!(o.describe().contains("the build held at 0.7"));
+        assert_eq!(set(&[(KNOB_BUILD, "7")]).build, Some(1.0));
+        assert_eq!(set(&[(KNOB_BUILD, "x")]).build, None);
         // Unreadable: the default. 0: off.
         assert_eq!(set(&[(KNOB, "x"), (KNOB_TAIL, "nan")]), d);
         let off = set(&[(KNOB, "0")]);
