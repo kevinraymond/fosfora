@@ -267,7 +267,10 @@ impl LiveAudio {
             },
             beat_fired,
             downbeat_fired: f.downbeat > 0.5,
-            drop_fired: false,
+            // The analysis marks the drop in the features. The flash limit
+            // reads this flag and writes the features' slot from what it
+            // lets through, so a flag left false silenced every drop.
+            drop_fired: f.drop > 0.5,
             // The hop is rebuilt from the system's accessors, which expose no beat
             // activation; only the desktop hop sidecar reads it.
             beat_activation: 0.0,

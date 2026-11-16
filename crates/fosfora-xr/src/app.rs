@@ -4674,7 +4674,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     loudness_s: f.loudness_s,
                     loudness_m: f.loudness_m,
                     buildup: f.buildup,
-                    drop: f.drop > 0.5,
+                    // The drop the flash limit let through, not the
+                    // features' slot: the limiter's follower may hold
+                    // that slot low through a fall.
+                    drop: hop.drop_fired,
                     playing: music.analysis.is_some() || live_audio.is_some(),
                     label_busy: immerse_label_busy,
                     position_s: music.playback.as_ref().map_or(0.0, |p| p.position_secs()),
