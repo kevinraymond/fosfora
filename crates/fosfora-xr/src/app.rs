@@ -517,6 +517,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       for the A/B; default 1; live)
     //   adb shell setprop debug.fosfora.depthlightpoints 0|1     (depth light: 0 draws no points, the mesh still drawn in the light's passes and order,
     //       to cost the points apart from the veil; default 1; live)
+    //   adb shell setprop debug.fosfora.sonar 0|1|2              (board #5511, sonar.rs: on each downbeat a shell of light leaves the wearer and travels out, and
+    //       what the depth light draws shows a bright line where the shell crosses it, with a short tail behind; standing lines of equal
+    //       distance come up while the song builds and fade on the drop; 0 off, the depth light as it was; 1 the depth light's things;
+    //       2 is for the scanned room too, which is not built, and draws as 1; default 1; needs the depth light; live: polled once a second)
+    //   adb shell setprop debug.fosfora.sonarspeed 1             (sonar: a factor on a sweep's speed, 0.25..4; 1 = 4 m in a bar at the song's tempo, 1 to 3 m/s; live)
+    //   adb shell setprop debug.fosfora.sonarwidth 1             (sonar: a factor on the lines' width, 0.25..4; 1 = 2 cm each side near, wider with the depth map's
+    //       noise far; live)
+    //   adb shell setprop debug.fosfora.sonargain 1              (sonar: brightness multiplier, 0..4; 1 = a line's peak alpha 0.25 with the room plain, 0.9 black; live)
+    //   adb shell setprop debug.fosfora.sonartail 0.35           (sonar: the tail behind a line, s, 0..2; live)
+    //   adb shell setprop debug.fosfora.sonarcontours 1          (sonar: the standing lines' strength, 0..1; 0 never shows them; live)
+    //   adb shell setprop debug.fosfora.sonartest <s>            (sonar: a sweep every that many seconds whatever the music does, never under 0.7 s, for
+    //       unworn captures; unset or 0 off; live)
     //   adb shell setprop debug.fosfora.edgebars 0|1|2|3         (board #5420, edge_bars.rs: the room's outline drawn as the spectrum, bars along the edges of
     //       every plane and box drawn as an occluder (hidden walls and the stage floor left out), in the surface's color, while music
     //       plays; unset each kind of surface in its theme's mode (board #5431, themes.rs); 1 the bars lie on each face and grow in from its
@@ -1038,6 +1050,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     info!("{}", depth_light.line(depth_light_blocked));
     let mut depth_drive = crate::depth_light::Drive::default();
     let mut depth_light_colors: Option<Option<crate::themes::Theme>> = None;
+    // Board #5511: the sweep (`sonar.rs`), lines of light from the wearer
+    // on the downbeat over what the depth light draws; the knobs are
+    // polled once a second below.
+    let mut sonar_opts = crate::sonar::SonarOptions::from_knobs(debug_prop);
+    info!("{}", sonar_opts.line());
+    let mut sonar = crate::sonar::Sonar::default();
     // Board #5420: the edge bars (`edge_bars.rs`), the room's outline drawn
     // as the spectrum; the knobs are polled once a second below.
     let mut edge_bars = crate::edge_bars::EdgeBarsOptions::from_knobs(debug_prop);
@@ -4927,12 +4945,35 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         crate::flash::follower::DEPTH_MUSIC,
                         depth_drive.music(),
                     ));
-                    gfx.set_depth_light(Some(crate::depth_light::frame(
+                    // Board #5511: the sweep. It starts on the downbeat and
+                    // the drop the flash limit let through and reads the
+                    // build as the limit hands it on; quiet is the
+                    // immersion's quiet, or the show waiting for the wearer.
+                    let real_audio = music.analysis.is_some() || live_audio.is_some();
+                    let started = sonar.step(
+                        &sonar_opts,
+                        crate::sonar::Input {
+                            dt,
+                            downbeat: hop.downbeat_fired,
+                            drop: hop.drop_fired,
+                            beat_period_s: f.beat_period_secs(),
+                            buildup: f.buildup,
+                            quiet: wait.waiting()
+                                || (real_audio && f.loudness_m < crate::immerse::QUIET_LOUDNESS),
+                            head,
+                            motion,
+                        },
+                    );
+                    if let Some(cause) = started {
+                        debug!("sonar: a sweep leaves ({cause:?})");
+                    }
+                    gfx.set_depth_light(Some(&crate::depth_light::frame(
                         &depth_light,
                         &shown_drive,
                         light_theme,
                         audio.key_tint,
                         immerse_level,
+                        &sonar.rows(&sonar_opts, immerse_level),
                     )));
                     if depth_light_colors != Some(light_theme) {
                         info!("{}", crate::depth_light::colors_line(light_theme));
@@ -4941,6 +4982,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 } else {
                     gfx.set_depth_light(None);
                     depth_light_colors = None;
+                    sonar.clear();
                 }
                 // Board #5436: the sky's faces drop the rim fade on every
                 // edge another of them continues (a corner, a wall under
@@ -5504,6 +5546,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             if now != depth_light {
                 info!("{}", now.change_line(&depth_light, depth_light_blocked));
                 depth_light = now;
+            }
+            // Board #5511: the sweep's knobs, live.
+            let now = crate::sonar::SonarOptions::from_knobs(system_prop);
+            if now != sonar_opts {
+                info!("{}", now.change_line(&sonar_opts));
+                sonar_opts = now;
             }
             // Board #5470: the fireflies' knobs, live.
             let now = crate::fireflies::Knobs::from_knobs(system_prop);

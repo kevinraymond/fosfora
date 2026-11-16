@@ -931,6 +931,10 @@ mod runtime {
         /// when it did not validate.
         light_pipeline: Option<wgpu::RenderPipeline>,
         veil_pipeline: Option<wgpu::RenderPipeline>,
+        /// Board #5511: the mesh with the drop and the depth light under
+        /// the sweep (`fs_mesh_light_sonar`), in the light's place on the
+        /// frames the sweep shows.
+        sonar_pipeline: Option<wgpu::RenderPipeline>,
         explain_pipeline: wgpu::ComputePipeline,
         explain_layout: wgpu::BindGroupLayout,
         keep_pipeline: wgpu::ComputePipeline,
@@ -1174,8 +1178,8 @@ mod runtime {
                     write_mask: wgpu::ColorWrites::ALL,
                 },
             );
-            let [light_pipeline, veil_pipeline] = if show {
-                [None, None]
+            let [light_pipeline, veil_pipeline, sonar_pipeline] = if show {
+                [None, None, None]
             } else {
                 [
                     (
@@ -1185,6 +1189,10 @@ mod runtime {
                     (
                         ["vs_mesh_geom", "fs_mesh_veil"],
                         "xr-env-depth-mesh-geom-veil",
+                    ),
+                    (
+                        ["vs_mesh_geom_light", "fs_mesh_light_sonar"],
+                        "xr-env-depth-mesh-geom-light-sonar",
                     ),
                 ]
                 .map(|(stages, label)| {
@@ -1324,6 +1332,7 @@ mod runtime {
                 tint_pipeline,
                 light_pipeline,
                 veil_pipeline,
+                sonar_pipeline,
                 explain_pipeline,
                 explain_layout,
                 keep_pipeline,
@@ -1471,12 +1480,14 @@ mod runtime {
         /// from swapchain image `index`, `None` where the occluder's own
         /// stay: the eye pass's tint with `geomfirstshow` (the drop in it
         /// on with the test), else the drop with each target's mesh draw
-        /// `kinds` (board #5439: depth alone, the veil, or the light) where
-        /// its test runs.
+        /// `kinds` (board #5439: depth alone, the veil, or the light; the
+        /// light under the sweep on the frames it shows, `swept`, board
+        /// #5511) where its test runs.
         pub fn draws(
             &self,
             index: u32,
             kinds: [crate::depth_light::MeshDraw; 2],
+            swept: bool,
         ) -> [Option<(&wgpu::RenderPipeline, &[wgpu::BindGroup; 2])>; 2] {
             use crate::depth_light::MeshDraw;
             let Some(groups) = self.draw_groups.get(index as usize) else {
@@ -1485,7 +1496,11 @@ mod runtime {
             let pipeline = |kind: MeshDraw| match kind {
                 MeshDraw::Depth => Some(&self.geom_pipeline),
                 MeshDraw::Veil => self.veil_pipeline.as_ref(),
-                MeshDraw::Light => self.light_pipeline.as_ref(),
+                MeshDraw::Light => self
+                    .sonar_pipeline
+                    .as_ref()
+                    .filter(|_| swept)
+                    .or(self.light_pipeline.as_ref()),
             };
             let draw = |t: usize| {
                 (self.drop_vertices(t) > 0).then(|| {
@@ -2132,6 +2147,7 @@ mod tests {
             "fs_mesh_tint",
             "vs_mesh_geom_light",
             "fs_mesh_light",
+            "fs_mesh_light_sonar",
             "fs_mesh_veil",
         ] {
             assert!(

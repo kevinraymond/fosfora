@@ -605,6 +605,40 @@ struct EnvEye {
     // x, y a point's radius as factors of the base, z where its soft edge
     // starts (a share of the radius), w the twinkle's depth
     light_size: vec4<f32>,
+    // The sweep (sonar.rs), read by fs_mesh_light_sonar alone. x the
+    // line's peak alpha (0: no sweep and no standing line this frame; the
+    // mesh then draws with fs_mesh_light and nothing from here on is
+    // read), y the tail's glow as a share of the line's light, z how far a
+    // point under the line swells (a share of its radius), w how far the
+    // crest tints toward the top's color
+    sonar: vec4<f32>,
+    // x, y how squarely a triangle faces the eye (the cosine, squared)
+    // where the sweep's solid light starts and where it is all there; z, w
+    // the same for what the vertex keeps
+    sonar_fade: vec4<f32>,
+    // The three sweeps, each two rows. `at`: xyz where it began (world),
+    // w the shell's radius now (m). `shape`: x its strength at that radius
+    // (0: none), y 1 over the line's half-width (1/m), z 1 over the tail's
+    // length (1/m)
+    sweep0_at: vec4<f32>,
+    sweep0_shape: vec4<f32>,
+    sweep1_at: vec4<f32>,
+    sweep1_shape: vec4<f32>,
+    sweep2_at: vec4<f32>,
+    sweep2_shape: vec4<f32>,
+    // xyz where the standing lines are centered (world), w their drift
+    // outward (m)
+    contour: vec4<f32>,
+    // x their strength (0: none), y lines per meter at the finest spacing,
+    // z, w the strength of the second and the third set (every fourth
+    // line is the first, the second halfway between, the third the rest)
+    contour_lines: vec4<f32>,
+    // x a line's half-width near (m), y its growth per squared meter of
+    // distance, z, w the distance where the lines start and finish fading
+    contour_width: vec4<f32>,
+    // x where the third set starts fading with distance (m), y 1 over the
+    // span it fades over; z, w the second set's
+    contour_far: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> env: EnvEye;
 @group(0) @binding(1) var depth_map: texture_depth_2d_array;
@@ -941,6 +975,60 @@ fn plane_points(g: vec2<f32>, k: u32, o: i32, radius_scale: f32) -> f32 {
     return select(0.0, core * twinkle, s.a < env.light_point.y && radius > 1e-4);
 }
 
+// One sweep's light at world point p: x its crest, y its tail's glow. The
+// crest sits at the sweep's radius from where it began, one half-width to
+// each side, eased; the tail runs behind it, 1 at the shell and falling as
+// a square to 0 at the tail's length. Nothing at a strength of 0.
+fn sweep_light(at: vec4<f32>, shape: vec4<f32>, p: vec3<f32>) -> vec2<f32> {
+    if shape.x <= 0.0 {
+        return vec2<f32>(0.0);
+    }
+    let behind = at.w - length(p - at.xyz);
+    let core = 1.0 - smoothstep(0.0, 1.0, abs(behind * shape.y));
+    let t = clamp(1.0 - behind * shape.z, 0.0, 1.0);
+    return shape.x * vec2<f32>(core, select(0.0, t * t, behind >= 0.0));
+}
+
+// The sweep's light at world point p (sonar::shade is the CPU mirror): x
+// the lines' light, the brightest of the live sweeps' crests and the
+// standing lines, y the tails' glow, each 0..1. The standing lines are
+// lines of equal distance from their center, drifting outward: every
+// fourth is the first set, the one halfway between two of those the
+// second, the rest the third, the finer sets only near; they widen with
+// the squared distance, as the depth map's noise does, and fade with it.
+fn sonar_light(p: vec3<f32>) -> vec2<f32> {
+    let swept = max(
+        max(
+            sweep_light(env.sweep0_at, env.sweep0_shape, p),
+            sweep_light(env.sweep1_at, env.sweep1_shape, p)
+        ),
+        sweep_light(env.sweep2_at, env.sweep2_shape, p)
+    );
+    var line = swept.x;
+    let glow = swept.y;
+    if env.contour_lines.x > 0.0 {
+        let d = length(p - env.contour.xyz);
+        let x = (d - env.contour.w) * env.contour_lines.y;
+        let n = floor(x + 0.5);
+        let m = n - 4.0 * floor(n * 0.25);
+        let near = vec2<f32>(1.0) - clamp(
+            (vec2<f32>(d) - env.contour_far.xz) * env.contour_far.yw,
+            vec2<f32>(0.0),
+            vec2<f32>(1.0)
+        );
+        let w = select(
+            select(env.contour_lines.w * near.x, env.contour_lines.z * near.y, m > 1.5 && m < 2.5),
+            1.0,
+            m < 0.5
+        );
+        let half = max(env.contour_width.x, env.contour_width.y * d * d);
+        let core = 1.0 - smoothstep(0.0, 1.0, abs((x - n) / (env.contour_lines.y * half)));
+        let fade = 1.0 - smoothstep(env.contour_width.z, env.contour_width.w, d);
+        line = max(line, env.contour_lines.x * w * core * fade);
+    }
+    return vec2<f32>(line, glow);
+}
+
 // The depth light (depth_light::fragment is the CPU mirror): points of
 // light on the surface, fixed in the room, read from a tile of soft points
 // made once. The tile lies in each of the world's three axis planes,
@@ -1010,6 +1098,90 @@ fn fs_mesh_light(in: LightOut) -> @location(0) vec4<f32> {
     let tint = clamp(up + env.light_top.w * crest, 0.0, 1.0);
     let a = clamp(weight * band * points, 0.0, 1.0);
     return vec4<f32>(mix(env.light_side.rgb, env.light_top.rgb, tint) * a, env.light_fade.w);
+}
+
+// The depth light under the sweep (sonar.rs; depth_light::fragment is the
+// CPU mirror), drawn in place of fs_mesh_light while a sweep or a standing
+// line shows (env.sonar.x not 0): fs_mesh_light's points, wave and veil,
+// and over them the sweep. A point under a line or a tail swells, as far
+// as half a cell lets the largest, and brightens to the line's peak
+// whatever the distance dimmed it to; the line and its tail's glow are
+// drawn solid under the points, the crest tinted toward the top's color.
+// The solid light keeps off a mass's edge and off a triangle seen edge-on
+// (the fringe that leans back at a step between two depths), where a line
+// would trace the mesh's staircase instead of the thing: it fades with
+// what the vertex keeps and with how squarely the triangle faces the eye.
+// fs_mesh_light itself is as it was before the sweep, so with the sweep
+// off the frame is too.
+@fragment
+fn fs_mesh_light_sonar(in: LightOut) -> @location(0) vec4<f32> {
+    let p = in.world.xyz;
+    // Before any branch: how far the world moves across a pixel, and the
+    // triangle's own normal.
+    let fw = fwidth(p);
+    let face = cross(dpdx(p), dpdy(p));
+    let keep = in.world.w;
+    let weight = env.light.z * in.normal.w;
+    var sweep = vec2<f32>(0.0);
+    if keep > 0.0 {
+        sweep = sonar_light(p);
+    }
+    let under = max(sweep.x, sweep.y);
+    let to_eye = env.eye.xyz - p;
+    let toward = dot(face, to_eye);
+    let facing = toward * toward / max(dot(face, face) * dot(to_eye, to_eye), 1e-30);
+    let flat = smoothstep(env.sonar_fade.x, env.sonar_fade.y, facing)
+        * smoothstep(env.sonar_fade.z, env.sonar_fade.w, keep);
+    var points = 0.0;
+    var up = 0.0;
+    if keep > 0.0 && weight > 0.0 {
+        let nn = in.normal.xyz;
+        let n = select(vec3<f32>(0.0, 0.0, 1.0), normalize(nn), dot(nn, nn) > 1e-12);
+        up = clamp(n.y, 0.0, 1.0);
+        let n2 = n * n;
+        let tri = n2 * n2 / dot(n2, n2);
+        let l = clamp(log2(max(length(p - env.eye.xyz), 1e-3)), OCTAVE_MIN, OCTAVE_MAX);
+        let li = floor(l);
+        let next = smoothstep(env.light_cell.y, 1.0, l - li);
+        let radius_scale = min(
+            env.light_point.x * env.light_point.w * sqrt(keep) * (1.0 + env.sonar.z * under),
+            env.light_point.z / env.light_size.y
+        );
+        var sum = 0.0;
+        var used = 0.0;
+        for (var j = 0; j < 2; j++) {
+            let wo = select(1.0 - next, next, j == 1);
+            if wo <= 0.0 {
+                continue;
+            }
+            let o = i32(li) + j;
+            let cell = ldexp(env.light_cell.x, o);
+            for (var k = 0u; k < 3u; k++) {
+                let wk = tri[k] - PLANE_MIN;
+                if wk <= 0.0 {
+                    continue;
+                }
+                let f = light_plane(fw, k);
+                let aa = 1.0 - smoothstep(env.light_cell.z, env.light_cell.w, max(f.x, f.y) / cell);
+                if aa > 0.0 {
+                    sum += wo * wk * aa * plane_points(light_plane(p, k) / cell, k, o, radius_scale);
+                }
+                used += wo * wk;
+            }
+        }
+        points = sum / max(used, 1e-6);
+    }
+    let wave = 1.0 - smoothstep(env.light_wave.x, env.light_wave.y, fw.y * env.light.x);
+    let c = light_wave(p.y * env.light.x - env.light.y);
+    let crest = mix(env.light_wave.z, c * c, wave);
+    let band = env.light_side.w + (1.0 - env.light_side.w) * crest * env.light.w;
+    let tint = clamp(up + env.light_top.w * crest, 0.0, 1.0);
+    let lifted = clamp(max(weight * band, env.sonar.x * under) * points, 0.0, 1.0);
+    let crest_tint = env.sonar.w * sweep.x;
+    let solid = clamp(env.sonar.x * flat * max(sweep.x, env.sonar.y * sweep.y), 0.0, 1.0);
+    let rgb = mix(env.light_side.rgb, env.light_top.rgb, clamp(tint + crest_tint, 0.0, 1.0)) * lifted
+        + mix(env.light_side.rgb, env.light_top.rgb, clamp(crest_tint, 0.0, 1.0)) * solid * (1.0 - lifted);
+    return vec4<f32>(rgb, env.light_fade.w);
 }
 
 // The veil alone, for the faces pass: erases the veil's share of the
@@ -1842,6 +2014,11 @@ mod runtime {
         /// validate.
         light_pipeline: Option<wgpu::RenderPipeline>,
         veil_pipeline: Option<wgpu::RenderPipeline>,
+        /// Board #5511: the mesh drawn with the depth light under the
+        /// sweep (`fs_mesh_light_sonar`, `sonar.rs`), in the light's place
+        /// on the frames a sweep or a standing line shows; `None` as the
+        /// light's is, and then the light draws without the sweep.
+        sonar_pipeline: Option<wgpu::RenderPipeline>,
         /// The occluder mesh at each distinct step in use, none for the
         /// full-screen pass.
         meshes: Vec<Mesh>,
@@ -2003,7 +2180,7 @@ mod runtime {
                     }
                 );
             }
-            let (pipeline, light_pipeline, veil_pipeline, layout) =
+            let (pipeline, [light_pipeline, veil_pipeline, sonar_pipeline], layout) =
                 build_pipeline(&gfx.device, opts.show, mesh_steps[0] > 0);
             // One index buffer per distinct step: the eye's and the faces'
             // (the same at step 8).
@@ -2175,6 +2352,7 @@ mod runtime {
                 pipeline,
                 light_pipeline,
                 veil_pipeline,
+                sonar_pipeline,
                 meshes,
                 mesh_steps,
                 provider,
@@ -2372,6 +2550,9 @@ mod runtime {
                 faces_extents.is_some(),
             );
             let faces_kind = draws.faces.unwrap_or(MeshDraw::Depth);
+            // Board #5511: on the frames the sweep shows, the light's draw
+            // takes the sweep's fragment.
+            let swept = lit && light.is_some_and(|f| crate::depth_light::swept(&f.rows));
             let targets = [
                 (OccluderTarget::Eye, Some(extents), draws.eye),
                 (OccluderTarget::Faces, faces_extents, faces_kind),
@@ -2408,12 +2589,16 @@ mod runtime {
             }
             let own = &self.bind_groups[frame.index as usize];
             let geom = self.geom.as_ref().map_or([None, None], |g| {
-                g.draws(frame.index, [draws.eye, faces_kind])
+                g.draws(frame.index, [draws.eye, faces_kind], swept)
             });
             let pipeline = |kind: MeshDraw| match kind {
                 MeshDraw::Depth => Some(&self.pipeline),
                 MeshDraw::Veil => self.veil_pipeline.as_ref(),
-                MeshDraw::Light => self.light_pipeline.as_ref(),
+                MeshDraw::Light => self
+                    .sonar_pipeline
+                    .as_ref()
+                    .filter(|_| swept)
+                    .or(self.light_pipeline.as_ref()),
             };
             let targets = [(0, draws.eye), (1, faces_kind)].map(|(t, kind)| {
                 geom[t].unwrap_or((pipeline(kind).unwrap_or(&self.pipeline), &own[t]))
@@ -3528,16 +3713,16 @@ mod runtime {
     /// (`show` true: the gray written over the view), off the same shader,
     /// as the full-screen pass (`mesh` false: `frag_depth` with compare
     /// `Always`) or the mesh (rasterized depth with compare `LessEqual`);
-    /// with the mesh and not the diagnostic, the depth light's and its
-    /// veil's too ([`light_pipeline`]).
+    /// with the mesh and not the diagnostic, the depth light's, its veil's
+    /// and the light's under the sweep too, in that order
+    /// ([`light_pipeline`]).
     fn build_pipeline(
         device: &wgpu::Device,
         show: bool,
         mesh: bool,
     ) -> (
         wgpu::RenderPipeline,
-        Option<wgpu::RenderPipeline>,
-        Option<wgpu::RenderPipeline>,
+        [Option<wgpu::RenderPipeline>; 3],
         wgpu::BindGroupLayout,
     ) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -3635,27 +3820,24 @@ mod runtime {
         });
         // Board #5439: the depth light's and its veil's, on the mesh alone
         // and not under the gray diagnostic.
-        let (light, veil) = if mesh && !show {
-            (
-                light_pipeline(
-                    device,
-                    &pipeline_layout,
-                    &shader,
+        // Board #5511: and the light's under the sweep.
+        let lights = if mesh && !show {
+            [
+                (
                     ["vs_mesh_light", "fs_mesh_light"],
                     "xr-env-depth-mesh-light",
                 ),
-                light_pipeline(
-                    device,
-                    &pipeline_layout,
-                    &shader,
-                    ["vs_mesh", "fs_mesh_veil"],
-                    "xr-env-depth-mesh-veil",
+                (["vs_mesh", "fs_mesh_veil"], "xr-env-depth-mesh-veil"),
+                (
+                    ["vs_mesh_light", "fs_mesh_light_sonar"],
+                    "xr-env-depth-mesh-light-sonar",
                 ),
-            )
+            ]
+            .map(|(stages, label)| light_pipeline(device, &pipeline_layout, &shader, stages, label))
         } else {
-            (None, None)
+            [None, None, None]
         };
-        (pipeline, light, veil, layout)
+        (pipeline, lights, layout)
     }
 
     /// Board #5439: the blend of the depth light's mesh
@@ -3679,7 +3861,8 @@ mod runtime {
     /// Board #5439: the occluder mesh drawn with the depth light or its
     /// veil (`depth_light.rs`), from `shader`'s vertex and fragment stages
     /// `[vertex, fragment]` (`vs_mesh_light` or `vs_mesh`, or geometry
-    /// first's with the drop; `fs_mesh_light` or `fs_mesh_veil`): the
+    /// first's with the drop; `fs_mesh_light`, `fs_mesh_veil` or, under the
+    /// sweep, `fs_mesh_light_sonar`): the
     /// mesh's depth state (`LessEqual`, depth written, culling off) and
     /// [`LIGHT_BLEND`]. Built inside an error scope: one that does not
     /// validate is logged and `None`, so the pass keeps the depth-only mesh
@@ -4136,6 +4319,7 @@ mod tests {
             "fs_mesh_show",
             "vs_mesh_light",
             "fs_mesh_light",
+            "fs_mesh_light_sonar",
             "fs_mesh_veil",
         ] {
             assert!(
