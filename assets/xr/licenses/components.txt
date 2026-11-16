@@ -1,0 +1,45 @@
+The app and what it ships with
+------------------------------
+
+Fosfora
+    The app itself. MIT or Apache-2.0, at your option.
+    Copyright (c) 2025-2026 Kevin Raymond
+    Source: https://github.com/kevinraymond/fosfora
+
+whisper.cpp 1.8.3 (speech to text, inside the app's library)
+    MIT.
+    Copyright (c) 2023-2024 The ggml authors
+    Source: https://github.com/ggml-org/whisper.cpp, built from the copy
+    in the whisper-rs-sys 0.15.0 crate.
+
+Whisper base.en weights (ggml-base.en.bin)
+    MIT. OpenAI's Whisper model, converted to ggml by the whisper.cpp
+    project.
+    Copyright (c) 2022 OpenAI
+    Source: https://huggingface.co/ggerganov/whisper.cpp
+
+The voice model (s1-17m-int8.onnx, its tokenizer and spec)
+    Apache-2.0. Fosfora's own 17M decision model, trained from
+    cross-encoder/ettin-reranker-17m-v1 (Apache-2.0), whose tokenizer
+    it uses.
+    Source: https://huggingface.co/kjraym/fosfora-voice-s1-17m
+
+ONNX Runtime 1.28.0 (libonnxruntime.so, runs the voice model)
+    MIT.
+    Copyright (c) Microsoft Corporation
+    Source: the com.microsoft.onnxruntime:onnxruntime-android AAR on Maven
+    Central, https://github.com/microsoft/onnxruntime
+
+OpenXR loader 1.1.63 (libopenxr_loader.so)
+    Apache-2.0.
+    Copyright 2017-2026 The Khronos Group Inc.
+    Source: the org.khronos.openxr:openxr_loader_for_android AAR on Maven
+    Central, https://github.com/KhronosGroup/OpenXR-SDK
+
+LLVM libc++ (libc++_shared.so, the C++ runtime whisper.cpp uses)
+    Apache-2.0 WITH LLVM-exception, from the Android NDK.
+    Source: https://github.com/llvm/llvm-project
+
+"Ember Glow" by oglsdl (audio/ember_glow_excerpt.ogg, seconds 30 to 75)
+    CC0 1.0, a public domain dedication.
+    Source: https://opengameart.org/content/ember-glow

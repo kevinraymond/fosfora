@@ -1427,6 +1427,35 @@ Unworn: `debug.fosfora.say 'next effect'` and `say 'switch to flock'` log
 the reply "The effects are gone". `say 'what can I say'` logs a card with
 no effect on it.
 
+## Credits (board #4198)
+
+"Credits", "show the credits", "licenses", "license", "about", "about the
+app", "about this app" and "about Fosfora" show the credits card
+(`intent::CREDITS`, `Intent::Credits`) on the card "what can I say" uses:
+at the same place, for `CARD_S`, until the next window opens or it times
+out, giving way to the editor's label as the help card does. Six lines:
+
+```
+Fosfora: MIT or Apache 2.0
+whisper.cpp, Whisper
+Voice model: from Ettin
+ONNX Runtime, OpenXR
+Music: Ember Glow, oglsdl
+Licenses: the NOTICE file
+```
+
+No line is wider than the help card's widest example ("music play and
+next theme"), so the card reads as large as the help. The licenses in
+full are the APK's `NOTICE` ([RELEASE.md](RELEASE.md), "The NOTICE"). The help lists "credits" as the last of the menu's phrases: the
+pool pages through every example in turn, so an entry at its end drops
+none and moves none of the lines before it. The agent's actions have no
+credits, and neither does the on-device model's list.
+
+Tests (`intent.rs`): `credits_show_on_the_card_and_the_help_lists_it_last`.
+
+Unworn: `debug.fosfora.say 'credits'` logs `Credits` with the six lines as
+the label.
+
 ## Looks that are not offered (board #5462)
 
 Four surface looks are not offered: embers and sparks, whose particles

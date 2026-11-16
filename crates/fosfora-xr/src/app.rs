@@ -4061,10 +4061,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     surface_labels.miss();
                 }
                 // Board #5453: the card, which stays until the next window
-                // or `intent::CARD_S`, giving way to the editor's label.
+                // or `intent::CARD_S`, giving way to the editor's label;
+                // board #4198: the credits are on it too.
                 voice_card = clauses
                     .iter()
-                    .any(|c| c.outcome == Ok(crate::intent::Intent::Help))
+                    .any(|c| {
+                        matches!(
+                            c.outcome,
+                            Ok(crate::intent::Intent::Help | crate::intent::Intent::Credits)
+                        )
+                    })
                     .then(|| response.label.clone());
                 voice_label.show_for(response.label, voice_at.0, voice_at.1, response.seconds);
             }

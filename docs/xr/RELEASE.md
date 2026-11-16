@@ -62,7 +62,7 @@ so CI can stamp a build without a commit.
 ## Build and verify
 
 ```sh
-scripts/xr/run.sh release          # cargo ndk --release + the voice models + gradlew assembleRelease
+scripts/xr/run.sh release          # cargo ndk --release + the voice models + the NOTICE check + gradlew assembleRelease
 scripts/xr/run.sh verify-release   # apksigner, zipalign and aapt checks
 ```
 
@@ -96,6 +96,58 @@ signature differs from the debug key's, so Android refuses it over an
 installed debug build (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`):
 `scripts/xr/run.sh uninstall` first, which deletes the app's data on the
 headset, and the same going back to debug.
+
+## The NOTICE (board #4198)
+
+Every APK, debug and release, carries a `NOTICE`: what the app ships and
+the license of each part. It is `assets/xr/NOTICE` in the repository,
+which `scripts/xr/notice.py` makes and which is committed. The Android
+build only copies it (`stageXrAssets` in `android/app/build.gradle.kts`),
+so building it needs no network. It sits at the root of the staged
+assets, beside `xr_manifest.txt`: `assets/assets/NOTICE` in the APK
+(`unzip -l app-debug.apk | grep -i notice`). Like the other staged assets
+it is listed in the manifest and unpacked to `<internal data>/assets/NOTICE`
+at first run.
+
+What it holds, in order:
+
+- The parts besides the Rust crates, from
+  `assets/xr/licenses/components.txt` (by hand): Fosfora, whisper.cpp, the
+  Whisper base.en weights, the voice model and Ettin, ONNX Runtime, the
+  OpenXR loader, the NDK's libc++ and the bundled "Ember Glow" clip, each
+  with its license, its copyright line where its license asks for one,
+  and its source. A new bundled file or library gets an entry there.
+- The Rust crates linked into `libfosfora_xr.so` for the headset, with
+  each crate's SPDX license from its manifest. The list is `cargo tree -p
+  fosfora-xr --target aarch64-linux-android -e normal,no-proc-macro`: the
+  features `cargo ndk` builds the crate with, without build scripts, proc
+  macros and dev dependencies, none of which is linked.
+- The copyright lines in the license files of every crate that may be
+  used under MIT.
+- The license files, verbatim, of the crates whose terms MIT or
+  Apache-2.0 alone do not cover (MPL-2.0, ISC, BSD-3-Clause, Zlib,
+  CDLA-Permissive-2.0, Unicode-3.0, and the OFL and Ubuntu font licenses
+  of egui's fonts), each distinct text once, and any crate's NOTICE file.
+- The MIT text and the Apache License 2.0, once each.
+
+```sh
+scripts/xr/notice.py           # write assets/xr/NOTICE
+scripts/xr/notice.py --check   # exit 1 when it is stale
+```
+
+Both cargo calls run `--locked --offline` on the sources cargo already
+has, so run it after a build. `run.sh build`, `run.sh release` and
+`run.sh all` run the check after the cargo build and stop when the file is
+stale; regenerate it and commit it with the dependency change. The desktop
+test `release::tests::the_notice_lists_crates_cargo_lock_has_and_every_part`
+catches a listed crate bumped or dropped in `Cargo.lock` in `cargo test`.
+It cannot see a crate added to the headset's library, which only cargo's
+resolver knows; the check in `run.sh` does.
+
+The wearer reads a short version on the voice card by saying "credits"
+([VOICE_DESIGN.md](VOICE_DESIGN.md), "Credits"). The hand menu has no
+Credits cell: every cell and half is taken, and a new one would resize or
+move an existing one.
 
 ## What the release build shows
 

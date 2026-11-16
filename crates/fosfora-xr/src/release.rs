@@ -222,6 +222,68 @@ mod tests {
     use super::*;
     use crate::intent::Intent;
 
+    /// Board #4198: the APK's NOTICE (`scripts/xr/notice.py`) names every
+    /// crate it lists at a version Cargo.lock has, so a crate bumped or
+    /// dropped since it was made fails here. A crate added since is caught
+    /// by `notice.py --check`, which `run.sh build` runs: only cargo knows
+    /// which crates the headset's library links. It also names every part
+    /// the APK ships besides the crates.
+    #[test]
+    fn the_notice_lists_crates_cargo_lock_has_and_every_part() {
+        const NOTICE: &str = include_str!("../../../assets/xr/NOTICE");
+        const LOCK: &str = include_str!("../../../Cargo.lock");
+        // Cargo.lock's packages, as "name version".
+        let mut locked = std::collections::HashSet::new();
+        let mut name = None;
+        for line in LOCK.lines() {
+            if let Some(n) = line.strip_prefix("name = ") {
+                name = Some(n.trim_matches('"'));
+            } else if let (Some(v), Some(n)) = (line.strip_prefix("version = "), name.take()) {
+                locked.insert(format!("{n} {}", v.trim_matches('"')));
+            }
+        }
+        assert!(locked.len() > 300, "{}", locked.len());
+        // The crate table, a row per crate, "name version  license", after
+        // the section's words and up to the next section.
+        let (head, rest) = NOTICE
+            .split_once("Rust crates in the app's library (")
+            .expect("the crates' section");
+        let (count, rest) = rest.split_once(')').expect("its count");
+        let count: usize = count.parse().expect("a count");
+        let (_, rest) = rest
+            .split_once("https://crates.io/crates/<name>/<version>.\n\n")
+            .expect("the table");
+        let table = rest.split("\n\n").next().expect("the rows");
+        let rows: Vec<&str> = table.lines().collect();
+        assert_eq!(rows.len(), count);
+        for row in &rows {
+            let mut words = row.split_whitespace();
+            let (n, v) = (words.next().unwrap(), words.next().unwrap());
+            assert!(
+                locked.contains(&format!("{n} {v}")),
+                "{n} {v} is not in Cargo.lock: run scripts/xr/notice.py"
+            );
+            assert!(words.next().is_some(), "{row}: no license");
+        }
+        for part in [
+            "Fosfora",
+            "whisper.cpp",
+            "Whisper base.en",
+            "voice model",
+            "ONNX Runtime",
+            "OpenXR loader",
+            "libc++",
+            "Ember Glow",
+        ] {
+            assert!(head.contains(part), "{part}");
+        }
+        for text in ["The MIT license", "The Apache License 2.0"] {
+            assert_eq!(NOTICE.matches(text).count(), 1, "{text}");
+        }
+        assert!(NOTICE.contains("Version 2.0, January 2004"));
+        assert!(NOTICE.contains("Permission is hereby granted, free of charge"));
+    }
+
     #[test]
     fn the_debuggable_flag_names_the_build() {
         assert_eq!(Build::from_flags(0), Build::Release);

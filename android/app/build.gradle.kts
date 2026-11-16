@@ -152,6 +152,13 @@ val stageXrAssets by tasks.registering(Sync::class) {
         exclude("flux_xr_sim.wgsl", "murmur_xr_sim.wgsl")
         into("xr/shaders")
     }
+    // The app's notices and licenses (board #4198), NOTICE at the staged
+    // tree's root (assets/assets/NOTICE in the APK): made by
+    // scripts/xr/notice.py from the repository's files and committed, so
+    // the build only copies it; run.sh checks it is current first.
+    from(rootProject.file("../assets/xr")) {
+        include("NOTICE")
+    }
     // The S6 test track (CC0; assets/xr/audio/LICENSE.md).
     from(rootProject.file("../assets/xr/audio")) {
         include("*.ogg")

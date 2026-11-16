@@ -268,6 +268,10 @@ pub enum Intent {
     /// The pinch that begins the show (board #5452, `first_run.rs`):
     /// "begin" or "start" while the show waits for the wearer.
     Begin,
+    /// "Credits" (board #4198): the short credits card ([`CREDITS`]) on the
+    /// card "what can I say" uses, staying as long. The licenses in full
+    /// are the APK's `NOTICE` (`docs/xr/RELEASE.md`).
+    Credits,
 }
 
 /// The hand menu's Agent control by voice (board #5453): its stops on the
@@ -494,6 +498,31 @@ const BEGIN: [&str; 6] = [
     "start show",
     "lets begin",
     "lets start",
+];
+/// "Credits" (board #4198), as [`normalize`] leaves them ("show the
+/// credits" is "show credits").
+const CREDITS_SAID: [&str; 9] = [
+    "credits",
+    "show credits",
+    "licenses",
+    "license",
+    "show licenses",
+    "about",
+    "about app",
+    "about this app",
+    "about fosfora",
+];
+/// The credits card (board #4198): who made what the app ships with, and
+/// where the licenses are, a line each. At most `label::MAX_LINES`, and
+/// no line wider than the help card's widest example, so the card reads
+/// as large as the help does.
+pub const CREDITS: [&str; 6] = [
+    "Fosfora: MIT or Apache 2.0",
+    "whisper.cpp, Whisper",
+    "Voice model: from Ettin",
+    "ONNX Runtime, OpenXR",
+    "Music: Ember Glow, oglsdl",
+    "Licenses: the NOTICE file",
 ];
 /// "What can I say" (V4).
 const HELP: [&str; 6] = [
@@ -947,6 +976,9 @@ fn fill(slot: Slot, target_words: &[&str], vocab: &Vocabulary<'_>) -> Result<Int
 fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
     if any(ts, &HELP) {
         return Some(Intent::Help);
+    }
+    if any(ts, &CREDITS_SAID) {
+        return Some(Intent::Credits);
     }
     if any(ts, &BEGIN) {
         return Some(Intent::Begin);
@@ -1533,6 +1565,8 @@ fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
         "theme aurora",
         "close the menu",
         "menu",
+        // Board #4198: last, so every line before keeps its place.
+        "credits",
     ]
     .map(str::to_owned)
     .to_vec();
@@ -1690,6 +1724,11 @@ pub fn respond(
             Ok(Intent::Help) => {
                 extra.extend(examples(vocab, *help_page));
                 *help_page = help_page.wrapping_add(1);
+                helped = true;
+            }
+            // Board #4198: the credits on the same card, as long.
+            Ok(Intent::Credits) => {
+                extra.extend(CREDITS.map(str::to_owned));
                 helped = true;
             }
             Ok(intent) => {
@@ -1968,6 +2007,7 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         ),
         Intent::Describe(target) => target_name(target, vocab),
         Intent::Help => "what can I say".to_owned(),
+        Intent::Credits => CREDITS.join("\n"),
         Intent::Edges(choice) => edges_reply(choice),
         // What the control comes to is the app's ([`agent_step`]).
         Intent::Agent(AgentAsk::On) => "agent on".to_owned(),
@@ -2872,6 +2912,61 @@ mod tests {
         for said in ["edges off", "agent off", "voice off"] {
             assert!(seen.iter().any(|s| s == said), "{said}");
         }
+    }
+
+    /// Board #4198: "credits" shows the credits card on the help's card,
+    /// as long, six lines or fewer, each as short as an example; the help
+    /// lists it last, so every line it had keeps its place.
+    #[test]
+    fn credits_show_on_the_card_and_the_help_lists_it_last() {
+        let dir =
+            std::env::temp_dir().join(format!("fosfora-intent-credits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (e, boxes) = (effects(), room());
+        let id = room_id(boxes.iter().map(|b| b.uuid));
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        let v = vocab(&e, &boxes, Some(0));
+        for said in [
+            "Credits.",
+            "Show the credits",
+            "licenses",
+            "License.",
+            "About.",
+            "About the app",
+            "about this app",
+            "About Fosfora",
+        ] {
+            assert_eq!(parse(said, &v), Ok(Intent::Credits), "{said}");
+        }
+        let mut page = 0;
+        let (r, line) = respond_on("Credits.", &v, &mut lanes, &boxes, false, &mut page);
+        assert_eq!(r.label, CREDITS.join("\n"));
+        assert_close!(r.seconds, CARD_S);
+        assert_eq!(r.agent, None);
+        assert_eq!(page, 0, "the help's page stays");
+        assert!(line.contains("Credits"), "{line}");
+        // Six lines or fewer, none wrapped, each fitting the card.
+        assert!(CREDITS.len() <= crate::label::MAX_LINES);
+        let laid = crate::label::layout(&r.label);
+        assert_eq!(laid.lines, CREDITS.map(str::to_owned));
+        assert!(laid.px >= crate::label::MIN_FONT_PX, "{}", laid.px);
+        for l in CREDITS {
+            assert!(l.chars().count() <= MAX_EXAMPLE_CHARS, "{l}");
+        }
+        // No wider than the widest line the help's card shows for this
+        // room, so it reads at least as large as the help at its widest.
+        let em = crate::text_width::em;
+        let widest_help = shown_pool(&v).iter().map(|l| em(l)).fold(0.0, f32::max);
+        let widest = CREDITS.iter().map(|l| em(l)).fold(0.0, f32::max);
+        assert!(widest <= widest_help, "{widest} vs {widest_help}");
+        // The help lists it, last of the menu's phrases: the pool is the
+        // one it was with "credits" added, nothing dropped.
+        let pool = shown_pool(&v);
+        assert!(pool.iter().any(|p| p == "credits"), "{pool:?}");
+        let seen: Vec<String> = (0..pool.len()).flat_map(|p| examples(&v, p)).collect();
+        assert!(seen.iter().any(|s| s == "credits"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Board #5453: the card stays until the next window or 30 s; a list
@@ -4040,6 +4135,7 @@ mod tests {
             Intent::Theme(_) => unreachable!("the agent's actions have no theme"),
             Intent::Menu(_) => unreachable!("the agent's actions have no menu"),
             Intent::Begin => unreachable!("the agent's actions have no begin"),
+            Intent::Credits => unreachable!("the agent's actions have no credits"),
             Intent::Edges(_) | Intent::Agent(_) | Intent::Voice(_) => {
                 unreachable!("the agent's actions have no edges, agent or voice")
             }

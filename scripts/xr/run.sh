@@ -7,13 +7,15 @@
 #                      release|verify-release|install-release] [--debug]
 #
 #   all             build + install + launch + log (default)
-#   build           cargo ndk (release unless --debug) + the voice models + gradle assembleDebug
+#   build           cargo ndk (release unless --debug) + the voice models + the NOTICE check
+#                   + gradle assembleDebug
 #   lint            cargo clippy for the Android target with -D warnings
 #   install         adb install -r the debug APK
 #   launch          adb shell am start the NativeActivity
 #   stop            force-stop the app
 #   log             adb logcat filtered to this app, the runtime and crashes
-#   release         cargo ndk --release + the voice models + gradle assembleRelease,
+#   release         cargo ndk --release + the voice models + the NOTICE check
+#                   + gradle assembleRelease,
 #                   signed with the release key (XR_RELEASE_KEYSTORE, below)
 #   verify-release  apksigner, zipalign and aapt checks on the release APK: fails
 #                   on an unsigned, misaligned or debuggable APK
@@ -100,6 +102,15 @@ cargo_build() {
 
 fetch_model() {
     scripts/xr/fetch-model.sh
+}
+
+# Board #4198: the APK's assets/assets/NOTICE is assets/xr/NOTICE, which
+# scripts/xr/notice.py makes from Cargo.lock and the crate sources. After
+# the cargo build, so every crate's source is there; it fails when the
+# committed file is stale (docs/xr/RELEASE.md, "The NOTICE").
+notice_check() {
+    echo "== NOTICE"
+    scripts/xr/notice.py --check
 }
 
 gradle_build() {
@@ -230,15 +241,15 @@ do_log() {
 }
 
 case "$cmd" in
-    all)       cargo_build; fetch_model; gradle_build; do_install; do_launch; do_log ;;
-    build)     cargo_build; fetch_model; gradle_build ;;
+    all)       cargo_build; fetch_model; notice_check; gradle_build; do_install; do_launch; do_log ;;
+    build)     cargo_build; fetch_model; notice_check; gradle_build ;;
     lint)      do_lint ;;
     install)   do_install ;;
     launch)    do_launch ;;
     stop)      do_stop ;;
     log)       do_log ;;
     uninstall) adb uninstall "$PACKAGE" ;;
-    release)   require_release_key; cargo_build; fetch_model; gradle_release ;;
+    release)   require_release_key; cargo_build; fetch_model; notice_check; gradle_release ;;
     verify-release)  do_verify_release ;;
     install-release) do_install_release ;;
     *) echo "unknown command: $cmd" >&2; exit 2 ;;

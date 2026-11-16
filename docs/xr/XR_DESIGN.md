@@ -2092,6 +2092,11 @@ staged as `xr/models/ggml-base.en.bin` and stored uncompressed in the APK.
 The install streams every file in chunks, so the model never sits whole in
 memory; like every asset it is copied again only when the stamp changes.
 
+*The NOTICE (board #4198):* `assets/xr/NOTICE`, every part the APK ships
+and its license, made by `scripts/xr/notice.py` and committed, is staged as
+`NOTICE` beside `xr_manifest.txt`, `assets/assets/NOTICE` in the APK
+([RELEASE.md](RELEASE.md), "The NOTICE").
+
 *The decision model (board #3751, V5):* `s1-17m-int8.onnx` (29 MB, ours,
 Apache-2.0), `s1-17m-tokenizer.json` and `s1-17m-tokenizer_config.json`
 (Apache-2.0) are listed with their SHA-256s in `assets/xr/models/MODELS.txt`,
