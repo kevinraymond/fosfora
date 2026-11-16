@@ -28,7 +28,11 @@ pub const CLIP: &str = "ember_glow_excerpt.ogg";
 /// title is the file name's, by the rule for the wearer's files
 /// (`playlist::title`). A new track is a new name here and its file in
 /// `assets/xr/audio/`.
-pub const BUNDLED: &[&str] = &["Let_the_Night_Come_In.ogg", "Slow_Blue.ogg"];
+pub const BUNDLED: &[&str] = &[
+    "Let_the_Night_Come_In.ogg",
+    "Slow_Blue.ogg",
+    "Second_Wind.ogg",
+];
 
 /// What the analysis runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
