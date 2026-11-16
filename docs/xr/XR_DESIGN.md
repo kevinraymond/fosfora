@@ -274,7 +274,7 @@ renderer takes; `recording_ring.peek_latest` feeds the waveform texture.
   none) runs the Quest's voice processing, which gates music. The XR crate
   opens the microphones itself through `ndk::audio` with an explicit preset
   and feeds `AudioSystem::from_ring`; see `MEASURED.md` for which preset.
-- **File playback.** The bundled CC0 track (`assets/xr/audio/`, staged into
+- **File playback.** The CC0 test clip (`assets/xr/audio/`, staged into
   the APK) is decoded with the core's `decode` feature (symphonia) and looped
   through a cpal output stream at the device rate, with linear resampling in
   the callback. Every played frame is also pushed into a ring the core's
@@ -306,9 +306,37 @@ renderer takes; `recording_ring.peek_latest` feeds the waveform texture.
 ### Your music (board #5385)
 
 *As built (`playlist.rs`, `player.rs`, `playback.rs`).* The Music row plays
-the wearer's own files. The bundled clip plays only while the music folders
-are empty.
+the wearer's own files. While the music folders are empty it plays the
+tracks the app ships with (board #5528).
 
+- **With no music of your own.** The app ships full tracks, each with a
+  build, a drop and a breakdown: "Let the Night Come In", "Slow Blue" and
+  "Second Wind" (`assets/xr/audio/`, CC0, staged into the APK). While both
+  folders hold no track the app can read, they are the playlist. Their
+  order is one list in the code (`music::BUNDLED`), the first track first,
+  not the folder's order or the alphabet's. They go through the same
+  playlist and player as the wearer's files, so everything below holds for
+  them: the title from the file name, `<` and `>`, the voice, playing
+  through, the saved track, the decode on the music thread.
+- **Your music wins.** When a scan finds a track in either folder (at
+  launch, when the permission arrives, on "scan my music"), the playlist is
+  the wearer's tracks only, and no bundled track is in it. When the folders
+  are empty again the bundled ones return. At either change the first track
+  of the new playlist takes over: at once while the music plays, and at the
+  next play when it is stopped. A scan that leaves the playlist in the same
+  hands leaves the playing track alone, and keeps the row on its track when
+  that file is still there.
+- **`debug.fosfora.bundled 1`.** The playlist is the bundled tracks whatever
+  the folders hold, so they can be reached on a headset that has music.
+  Read at launch. It saves no track: each launch starts on the first
+  bundled track, and the wearer's saved track is still there without it.
+- **The test clip.** `ember_glow_excerpt.ogg` (45 s, 140 BPM) stays in the
+  APK for the measurement sources, `debug.fosfora.audio file` and `loop`,
+  and for the numbers in `MEASURED.md` made with them. It is never in the
+  playlist. The row falls back to it, looped, only when no track plays at
+  all, which takes every bundled file missing or not decoding. A bundled
+  file missing from the assets is logged at launch and left out of the
+  list. One that does not decode is skipped like any other track.
 - **The two folders.** The shared `Music/` folder
   (`/storage/emulated/0/Music`) and the app's own folder
   (`Android/data/dev.fosfora.xr/files/Music`). The app asks Android for both
@@ -347,7 +375,7 @@ are empty.
   and "music off".
 - **Play through.** With two tracks or more, the next one decodes 30 s
   before the playing one ends, and the playback swaps it in where the last
-  one ends. One track, or the bundled clip, loops. The stream, its tap and
+  one ends. One track, or the test clip, loops. The stream, its tap and
   the analysis on the tap carry on across a swap.
 - **The limits.** A track is decoded whole on the music thread, about 23 MB a
   minute (48 kHz stereo f32; a 5-minute track measured 115.2 MB on the
@@ -364,10 +392,16 @@ are empty.
   `debug.fosfora.file`, when set, plays at launch in place of the saved track,
   so the measurement scripts get the same clip whatever the folders hold.
 - **The log.** At launch, `music: 14 tracks (12 in Music, 2 in the app
-  folder) · resuming "<title>"`, or `music: no tracks found, playing the
-  bundled clip (put files in Music/)`. Then one line per track start with its
-  length and decode time: `music: playing "<title>" · 3:42 · decoded in
-  1.8 s`.
+  folder) · resuming "<title>"`. With empty folders, `music: no tracks in
+  the music folders · bundled: "Let the Night Come In", "Slow Blue",
+  "Second Wind" · playing "Let the Night Come In"`. With the knob the line
+  starts `music: debug.fosfora.bundled 1 over 14 tracks (...)`. With no
+  track at all, `music: no tracks found and no bundled track, playing the
+  test clip (put files in Music/)`. A scan that changes the playlist's
+  hands logs `music: the playlist is now the tracks in the music folders`,
+  or `... the bundled tracks: the music folders are empty`. Then one line
+  per track start with its length and decode time: `music: playing
+  "<title>" · 3:42 · decoded in 1.8 s`.
 
 ### Interface sounds (board #5460)
 
@@ -1662,7 +1696,7 @@ What a wearer can meet, in the order of a first launch:
 | The scan's label has gone | Pinch to begin | 1 m ahead, at the center of the view | until the wearer begins, 60 s at most |
 | The music first plays, no label up | Sit back and relax | 1.2 m ahead, level | 4 s, then the show |
 | No hand tracked since the launch, 4 s after the scan's label | Put the controllers down. Fosfora uses your hands. | under the begin card while the show waits, else 1.2 m ahead, level | until a hand is tracked; alone, 10 s at most |
-| Music `<` or `>` with no songs | No songs on the headset. Put them in its Music folder. | 1 m out, 20 degrees above the view | 4.8 s |
+| Music `<` or `>` with no songs, the bundled tracks missing too | No songs on the headset. Put them in its Music folder. | 1 m out, 20 degrees above the view | 4.8 s |
 | The same, music permission missing | Can't read the Music folder. Allow music files in Settings. | same | 4.5 s |
 | Room editor: a tap, a hold, a menu step | desk: sparks, all tables: none | at the surface | its reading time |
 | Room editor: a first hold | desk: hold again for all tables -> curls | at the surface | the arm's 2.5 s |
@@ -1726,7 +1760,13 @@ label, placed once at the press 1 m from the head along the view raised
 20 degrees (`label::menu_reply_at`), so it sits over the menu the wearer
 is looking at rather than behind it. The words name the permission when
 the shared Music folder is there but unread for want of it
-(`music::no_songs`); a spoken "next song" replies the same words.
+(`music::no_songs`); a spoken "next song" replies the same words. Board
+#5528: with the bundled tracks there is always a song to step to, so a
+wearer with no music of their own steps through those and never sees
+these words. They show only when no bundled track plays either. Nothing
+in the app then tells that wearer where their own music goes, or that
+the Music folder is unread for want of the permission; "Putting files
+there" above is where it is written down.
 
 **The menu's words.** The Edges control reads "Edges: theme" in a cell
 of its own and "Edges" over the state in half a cell (the developer
@@ -2018,7 +2058,8 @@ Board #5385 adds a third, the shared `Music/` folder's storage permission
 with the others whatever the audio source, and its log line reads like
 theirs. A grant within the 120 s logs `permission READ_EXTERNAL_STORAGE
 granted after N s: scanning Music/` and adds that folder's tracks without a
-relaunch. Denied, the app's own music folder still plays.
+relaunch. Denied, the app's own music folder still plays, and the bundled
+tracks while that folder is empty.
 
 Device check (the reviewer's recipe):
 
