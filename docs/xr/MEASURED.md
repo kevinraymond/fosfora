@@ -3713,3 +3713,12 @@ something changes. `debug.fosfora.say 'credits'` shows the credits card;
 curls`; `'astrolabe on the ceiling'` logs `miss NotAvailable(Astrolabe)`
 and `Astrolabe is not available`; `'something like a campfire on the
 desk'` comes back from the on-device model in 508 ms as curls on a table.
+
+## A drop reaches the room again (board #5514)
+
+Quest 3, v209, unworn, seated, the saved room replayed, Immersion full
+(`debug.fosfora.immerse 1`), songs from the headset's Music folder, the
+fix of ec0e2fc. In 8.5 minutes of music the log shows five drops, each
+`immersion: drop, to 1 for 8.0 s`. The worn sittings of Nov 14 and 15, on
+builds with the flash limit and without the fix, show none; sessions of
+Nov 12 and 13, before the flash limit, show them.
