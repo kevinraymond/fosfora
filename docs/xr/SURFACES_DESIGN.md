@@ -1432,8 +1432,8 @@ and Mirror's edge modes are in their cells.
 | frame | pulse, own (amber), bass, 1 | pulse, teal, bass, 0.6 | rings, rose, bass, 1 | none, teal, rms, 1, edges in | none, blue, rms, 1, edges in |
 | other | curls, own (green), rms, 1 | curls, teal, rms, 1 | pulse, rose, bass, 1 | none, teal, rms, 1, edges in | none, blue, rms, 1, edges in |
 
-Classic is today's defaults (`default_for`), each kind's own color, so
-applying it gives exactly a fresh room. It is the only theme with the
+Classic is the built-in defaults (`default_for`), each kind's own color,
+so applying it gives exactly a room with no file. It is the only theme with the
 wall spectrum, since the edge bars carry the spectrum on every edge in
 every theme. Drift is the calm one. The other three color by one rule:
 the room's planes (walls, floor, ceiling) take one color and what stands
@@ -1472,8 +1472,8 @@ the ceiling, blue on the rest, the floor's rings included.
 
 **The edges per kind.** The edge bars draw each shape in its kind's mode
 under the room's saved theme (`themes::edge_mode`), edited since or not: a
-hand edit changes behaviors and colors, not the theme's edges. A room with
-no theme saved, fresh or custom, draws every kind on the face. The mode
+hand edit changes behaviors and colors, not the theme's edges. A custom
+room, with no theme, draws every kind on the face. The mode
 comes from the saved name alone, so nothing new is written to the room
 file. A build without Mirror reads a room saved on it as one naming an
 unknown theme: no theme, Mirror's looks kept, every kind on the face. A
@@ -1503,7 +1503,7 @@ carries a strength and params besides its behavior. A hidden wall is a
 wall: it gets the walls' look and is still not drawn. An unlabeled anchor
 has no look and is left as it is, as All: none leaves it. A look whose
 color is the kind's own and whose band is the behavior's own writes no
-params, so Classic leaves the room exactly as a fresh one, and a behavior
+params, so Classic leaves the room exactly as one with no file, and a behavior
 changed by hand afterwards runs its own band as it would without the
 theme.
 
@@ -1519,17 +1519,31 @@ a flag. A room whose kind defaults and entries all run the saved theme's
 looks shows the theme. Once something was edited by hand it shows the
 theme as edited ("Drift*"), and the edit and the saved name both stay.
 Undoing the edit unmarks it, and a reload shows the same. A room saved
-before themes has no theme: it shows Classic when it runs Classic (no
-entries and the built-in defaults, or entries that equal them) and custom
-otherwise, and nothing changes until the wearer picks. This is the
-brief's rule of custom with entries and Classic without, except that a
-room whose entries equal the defaults shows Classic, and one with no
-entries but changed kind defaults shows custom. Older files (version 1,
+before themes has no theme: it is fresh when it runs the built-in
+defaults (no entries, or entries that equal them) and starts on Aurora
+(below), and it shows custom otherwise, and nothing changes until the
+wearer picks. One with no entries but changed kind defaults shows custom. Older files (version 1,
 and version 2 from before themes) read as before. A file written now also
 reads in the build before themes, whose reader ignores fields it does not
 know: the kind defaults and the entries, with their params, read as
 written, so every scanned surface keeps its look, and only the name and
 the kind looks are lost until that build saves the room.
+
+**A fresh room starts on Aurora** (boards #5448, #5447). A room with no
+theme saved and nothing edited by hand runs Aurora from its first frame
+with surfaces: a new install, a newly scanned room, a room saved before
+themes that runs the built-in defaults, and a room just cleared with
+`debug.fosfora.surface clear`. Aurora is applied as the Theme control
+applies it, every kind default and every surface, but nothing is written.
+The first change the wearer makes writes the room's file as if they had
+picked Aurora and then made that change, so the file then names
+`"theme": "aurora"`. A theme picked by the menu, the swipe, by voice or by
+the knob is saved by name, Classic too (`"theme": "classic"`), so a picked
+Classic stays and is never taken for a room nobody touched. A room whose
+surfaces were edited by hand before themes stays custom. Without a room
+(no anchors) and for a room file that does not read, the built-in
+defaults run as before. Immersion and the rest of a first launch do not
+change.
 
 **The control.** "Theme" over the theme's name ("Drift", "Drift*",
 "custom") in the right half of the music row's right cell, with Voice in
@@ -1582,8 +1596,11 @@ or one launch per theme with `scripts/xr/gpu-stages.sh --with
 `rooms/` first: the room ends on the last theme.
 
 **Logs.** Loading a room: `room <id>: theme drift`, `theme drift, edited
-since`, `no theme saved: classic (the defaults)` or `no theme saved:
-custom (4 entries)`. Applying one: `room <id>: theme drift (the menu):
+since`, `no theme saved: starts on aurora, saved once something changes`
+or `no theme saved: custom (4 entries)`; without a room, `no theme saved:
+classic (the defaults)`. The fresh room's Aurora logs as an applied theme
+with the source `a fresh room` and ends `not saved until something
+changes`. Applying one: `room <id>: theme drift (the menu):
 every kind default and every surface (18 in the room, 1 of them live
 planes on their kind's default, 17 entries) -> table streamlines@1.00 teal
 rms · floor rings@1.00 blue bass · …, saved rooms/<id>.json`, the source

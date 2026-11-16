@@ -13,7 +13,7 @@
 //! draw each shape in its kind's ([`edge_mode`]) unless the Edges control
 //! or `debug.fosfora.edgebars` forces one on every kind. The mode comes from
 //! the saved theme's name, edited or not, so nothing new is written to the
-//! room file; a room with no theme saved has every kind on the face.
+//! room file; a room with no theme has every kind on the face.
 //!
 //! Plain data, so it builds and tests on the desktop: the table, lookup by
 //! name, the cycle, what a room file shows, and the launch rule of the
@@ -27,10 +27,13 @@
 //! against its wall. Classic, Drift and Tide keep the edge bars on the
 //! face for every kind.
 //!
-//! - **Classic**: today's defaults ([`SurfaceBehavior::default_for`]),
+//! - **Classic**: the built-in defaults ([`SurfaceBehavior::default_for`]),
 //!   each kind's own color, the behavior's band, full strength. Applying it
-//!   gives exactly a fresh room. Only Classic runs the wall spectrum: the
-//!   edge bars carry the spectrum on every edge in every theme.
+//!   gives exactly a room with no file. Only Classic runs the wall spectrum:
+//!   the edge bars carry the spectrum on every edge in every theme. A fresh
+//!   room on the headset starts on Aurora instead (board #5447,
+//!   `lanes::RoomLanes::with_fresh_theme`), so Classic is a theme picked
+//!   and saved by name like the others.
 //! - **Drift**, the calm one: tables streamlines, the floor rings, walls
 //!   streamlines, the ceiling rings, frames the pulse, other surfaces the
 //!   curls. The planes blue, the rest teal. The frames' pulse, the one look
@@ -302,8 +305,9 @@ impl Theme {
 
 /// How the edge bars draw the edges of a surface of `kind` in a room whose
 /// saved theme is `theme` (board #5431): the theme's mode for the kind,
-/// edited since or not; on the face with no theme saved (a fresh room, or
-/// custom).
+/// edited since or not; on the face with no theme (custom, or the built-in
+/// defaults without a room). A fresh room runs Aurora before anything is
+/// saved (board #5447), so it has one.
 pub fn edge_mode(theme: Option<Theme>, kind: u32) -> Mode {
     theme.map_or(Mode::Face, |t| t.edges(kind))
 }
@@ -312,7 +316,10 @@ pub fn edge_mode(theme: Option<Theme>, kind: u32) -> Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shown {
     /// The room runs this theme: the one saved with it, or Classic for a
-    /// room with none saved that runs the defaults (a fresh room).
+    /// file with none that runs the built-in defaults. On the headset such
+    /// a room is fresh and runs Aurora first (board #5447,
+    /// `lanes::RoomLanes::with_fresh_theme`), so this shows Classic only
+    /// without a room or a fresh theme.
     Theme(Theme),
     /// This theme was applied and something was edited by hand since: the
     /// edit stays, and so does the saved name.
@@ -491,7 +498,7 @@ mod tests {
             // Nothing a fresh room lacks: no params.
             assert_eq!(look.params(), None);
         }
-        // A fresh room runs Classic.
+        // The built-in defaults (a room file nobody wrote) run Classic.
         assert!(Theme::Classic.runs_in(&RoomFile::default()));
         for theme in [Theme::Drift, Theme::Tide, Theme::Aurora, Theme::Mirror] {
             assert!(!theme.runs_in(&RoomFile::default()), "{theme:?}");

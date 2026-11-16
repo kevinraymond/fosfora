@@ -49,6 +49,12 @@
 //! "theme drift" and the `debug.fosfora.theme` knob
 //! ([`RoomLanes::poll_theme_knob`]) all call it. [`RoomLanes::theme`] is
 //! what the control shows. Loading a room logs its theme.
+//!
+//! A room with no theme saved and nothing edited by hand starts on the
+//! fresh theme, Aurora on the headset (boards #5448, #5447,
+//! [`RoomLanes::with_fresh_theme`]): applied as the Theme control applies
+//! it, but not saved. The room's file is written the first time something
+//! changes, and then holds the theme as if the wearer had picked it.
 
 use std::path::PathBuf;
 
@@ -387,11 +393,13 @@ pub struct RoomLanes {
     applied: Option<String>,
     /// The `debug.fosfora.theme` knob (board #5415).
     theme_knob: crate::themes::Knob,
-    /// The theme a room with no file starts on ([`Self::with_fresh_theme`]);
-    /// `None` keeps the built-in defaults (Classic).
+    /// The theme a room with no theme saved and nothing edited by hand
+    /// starts on ([`Self::with_fresh_theme`]); `None` keeps the built-in
+    /// defaults (Classic).
     fresh_theme: Option<Theme>,
-    /// The room's file was missing at load and the fresh theme is still to
-    /// apply, on the first update whose boxes are the room's.
+    /// The room is fresh (its file missing at load, or saved with no theme
+    /// and nothing edited by hand, or just cleared) and the fresh theme is
+    /// still to apply, on the first update whose boxes are the room's.
     fresh_pending: bool,
 }
 
@@ -413,11 +421,16 @@ impl RoomLanes {
         }
     }
 
-    /// Start a room with no saved file on `theme` (board #5448): the first
-    /// update with the room's own boxes applies it as the menu would and saves it, so the
-    /// room has a file from then on. A room with a file, even one without
-    /// a theme, is left as it is. Someone who installs the app first sees
-    /// the look it was made for, not Classic.
+    /// Start a fresh room on `theme` (boards #5448, #5447). A room is fresh
+    /// when it has no file, or a file with no theme saved whose surfaces
+    /// all run the built-in defaults (nothing edited by hand). The first
+    /// update with the room's own boxes applies the theme as the Theme
+    /// control would, every kind default and every surface, but writes
+    /// nothing: the file is written the first time something changes, and
+    /// then it holds the theme as if the wearer had picked it. A room with
+    /// a theme saved, Classic included, or with surfaces edited by hand and
+    /// no theme (custom), is left as it is. Someone who installs the app
+    /// first sees the look it was made for, not Classic.
     #[must_use]
     pub fn with_fresh_theme(mut self, theme: Theme) -> Self {
         self.fresh_theme = Some(theme);
@@ -441,7 +454,14 @@ impl RoomLanes {
         {
             self.fresh_pending = false;
             if let Some(theme) = self.fresh_theme {
-                self.apply_theme(theme, boxes, "a fresh room");
+                // Board #5447: in memory only, so a room nobody changed
+                // keeps no theme on disk.
+                let line = self.set_theme(theme, boxes, "a fresh room");
+                info!(
+                    "room {}: {line}, not saved until something changes",
+                    room_label(self.room)
+                );
+                self.revision += 1;
             }
         }
         let key = self.key_of(boxes);
@@ -497,7 +517,18 @@ impl RoomLanes {
             Knob::Clear => {
                 self.file.clear();
                 let saved = self.save();
-                info!("room {}: cleared{saved}", room_label(self.room));
+                // Board #5447: a cleared room is a fresh one, saved with no
+                // theme, so it starts on the fresh theme again, now and at
+                // the next launch, until something changes.
+                self.fresh_pending = self.room.is_some() && self.fresh_theme.is_some();
+                let fresh = match self.fresh_theme.filter(|_| self.fresh_pending) {
+                    Some(t) => format!(
+                        ", a fresh room again: on {} until something changes",
+                        t.name()
+                    ),
+                    None => String::new(),
+                };
+                info!("room {}: cleared{saved}{fresh}", room_label(self.room));
                 self.revision += 1;
                 return Ok(());
             }
@@ -696,9 +727,10 @@ impl RoomLanes {
         Shown::of(&self.file)
     }
 
-    /// The theme saved with the room, edited since or not; `None` with none
-    /// saved. The edge bars draw each kind in its mode (board #5431,
-    /// `themes::edge_mode`), so nothing else is saved for them.
+    /// The theme saved with the room, edited since or not, or the fresh
+    /// theme a fresh room runs before anything is saved (board #5447);
+    /// `None` with neither. The edge bars draw each kind in its mode (board
+    /// #5431, `themes::edge_mode`), so nothing else is saved for them.
     pub fn saved_theme(&self) -> Option<Theme> {
         self.file.theme
     }
@@ -715,6 +747,13 @@ impl RoomLanes {
     /// names `source` (the menu, voice, the knob). An edit afterwards stays
     /// and marks the theme edited ([`Self::theme`]).
     pub fn apply_theme(&mut self, theme: Theme, boxes: &[LaneBox<'_>], source: &str) {
+        let line = self.set_theme(theme, boxes, source);
+        self.commit(&[line]);
+    }
+
+    /// [`Self::apply_theme`] in the file alone, without the save, the log
+    /// and the revision; the log line it makes (without the save suffix).
+    fn set_theme(&mut self, theme: Theme, boxes: &[LaneBox<'_>], source: &str) -> String {
         for (kind, look) in theme.looks() {
             let room = boxes
                 .iter()
@@ -731,13 +770,12 @@ impl RoomLanes {
             .filter(|e| theme.look(e.kind).is_some())
             .count();
         let live = boxes.iter().filter(|b| is_live(b)).count();
-        let lines = [format!(
+        format!(
             "theme {} ({source}): every kind default and every surface ({} in the room, {live} of them live planes on their kind's default, {entries} entries) -> {}",
             theme.name(),
             boxes.len(),
             theme.summary()
-        )];
-        self.commit(&lines);
+        )
     }
 
     /// The hand menu's Theme control (and the voice's "next theme"): the
@@ -795,8 +833,9 @@ impl RoomLanes {
     }
 
     /// The room's theme for the log: "theme drift", "theme drift, edited
-    /// since", "no theme saved: classic (the defaults)", "no theme saved:
-    /// custom (4 entries)".
+    /// since", "no theme saved: starts on aurora" (a fresh room, board
+    /// #5447), "no theme saved: classic (the defaults)" (no fresh theme),
+    /// "no theme saved: custom (4 entries)".
     fn theme_line(&self) -> String {
         match (self.file.theme, self.theme()) {
             (Some(t), Shown::Theme(_)) => format!("theme {}", t.name()),
@@ -805,7 +844,13 @@ impl RoomLanes {
                 "no theme saved: custom ({} entries)",
                 self.file.anchors.len()
             ),
-            (None, _) => "no theme saved: classic (the defaults)".to_owned(),
+            (None, _) => match self.fresh_theme.filter(|_| self.fresh_pending) {
+                Some(t) => format!(
+                    "no theme saved: starts on {}, saved once something changes",
+                    t.name()
+                ),
+                None => "no theme saved: classic (the defaults)".to_owned(),
+            },
         }
     }
 
@@ -947,6 +992,12 @@ impl RoomLanes {
                     "room {id}: loaded rooms/{id}.json ({} anchors assigned)",
                     file.anchors.len()
                 );
+                // Board #5447: no theme saved and nothing edited by hand
+                // (every surface on the built-in defaults) is a fresh room
+                // too. A saved Classic names its theme, so it stays.
+                self.fresh_pending = self.fresh_theme.is_some()
+                    && file.theme.is_none()
+                    && Theme::Classic.runs_in(&file);
                 self.file = file;
             }
             Loaded::Failed(e) => warn!(
@@ -2073,7 +2124,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_gives_exactly_a_fresh_room() {
+    fn classic_gives_exactly_the_built_in_defaults() {
         let (dir, _, _, _) = fresh("theme-classic");
         let boxes = themed_room();
         let id = room_of(&boxes);
@@ -2086,7 +2137,7 @@ mod tests {
         assert!(lanes.update(id, &boxes));
         assert_close!(lanes.rows()[..], fresh_rows[..]);
         assert_eq!(lanes.behaviors, fresh_behaviors);
-        // And as a fresh room goes on: the kind defaults are the built-ins
+        // And as a room with no file goes on: the kind defaults are the built-ins
         // with no look, so a behavior set by hand afterwards runs its own
         // band, as it would have without the theme.
         for (kind, _) in crate::surfaces::KIND_NAMES {
@@ -2140,7 +2191,8 @@ mod tests {
         on_theme(&again, &boxes, Theme::Aurora);
         again.all_none(&boxes);
         assert_eq!(again.theme(), Shown::Edited(Theme::Aurora));
-        // The knob's clear: the fresh room, Classic, no theme saved.
+        // The knob's clear without a fresh theme: the built-in defaults,
+        // Classic, no theme saved.
         assert!(again.poll_knob(Some("clear"), false, &boxes));
         assert_eq!(again.file.theme, None);
         assert_eq!(again.theme(), Shown::Theme(Theme::Classic));
@@ -2192,7 +2244,8 @@ mod tests {
         older.update(id, &boxes);
         assert_eq!(older.theme(), Shown::Custom);
         assert_eq!(older.behavior(1), B::None);
-        // No file at all: a fresh room, Classic.
+        // No file at all and no fresh theme: the built-in defaults,
+        // Classic.
         let (dir2, boxes2, id2, none) = fresh("theme-none");
         assert_eq!(none.theme(), Shown::Theme(Theme::Classic));
         assert!(!room_path(&dir2, id2.unwrap()).exists());
@@ -2229,13 +2282,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn a_room_with_no_file_starts_on_the_fresh_theme_and_a_saved_room_is_left_alone() {
-        let dir = std::env::temp_dir().join(format!("fosfora-lanes-fresh-{}", std::process::id()));
+    /// A config dir of its own for a fresh-room test, and the room's boxes,
+    /// id and file path.
+    fn fresh_dir(what: &str) -> (PathBuf, Vec<LaneBox<'static>>, Option<u64>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("fosfora-lanes-{what}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let boxes = room();
         let id = room_of(&boxes);
         let path = room_path(&dir, id.unwrap());
+        (dir, boxes, id, path)
+    }
+
+    /// A launch as the headset makes one: the fresh theme Aurora, and the
+    /// room's boxes in.
+    fn launch(dir: &std::path::Path, id: Option<u64>, boxes: &[LaneBox<'_>]) -> RoomLanes {
+        let mut lanes = RoomLanes::new(dir.to_path_buf()).with_fresh_theme(Theme::Aurora);
+        lanes.update(id, boxes);
+        lanes
+    }
+
+    #[test]
+    fn a_fresh_room_runs_aurora_and_writes_nothing_until_something_changes() {
+        let (dir, boxes, id, path) = fresh_dir("fresh");
         // No anchors yet: nothing applied, nothing written.
         let mut lanes = RoomLanes::new(dir.clone()).with_fresh_theme(Theme::Aurora);
         lanes.update(None, &[]);
@@ -2244,37 +2312,180 @@ mod tests {
         // The room's id a frame before its surfaces: wait.
         lanes.update(id, &boxes[..1]);
         assert_eq!(lanes.saved_theme(), None);
-        assert!(!path.exists());
-        // The room arrives with no file: Aurora on every surface, saved.
-        lanes.update(id, &boxes);
-        let saved = RoomFile::load(&path);
-        assert!(matches!(&saved, Loaded::File(f, _) if f.anchors.len() == boxes.len()));
+        // The room arrives with no file: Aurora on every surface and in
+        // the rows the sim and the pass read, the control showing it, and
+        // nothing written.
+        assert!(lanes.update(id, &boxes));
         assert_eq!(lanes.theme(), Shown::Theme(Theme::Aurora));
+        assert_eq!(lanes.saved_theme(), Some(Theme::Aurora));
         on_theme(&lanes, &boxes, Theme::Aurora);
-        assert!(path.exists());
-        // A relaunch reads it back and applies nothing.
-        let mut again = RoomLanes::new(dir.clone()).with_fresh_theme(Theme::Aurora);
-        again.update(id, &boxes);
+        for (k, b) in boxes.iter().enumerate() {
+            let look = Theme::Aurora.look(b.kind).unwrap();
+            assert_close!(
+                lanes.rows()[k],
+                lane_row(look.behavior, look.strength, look.resolved_params())
+            );
+        }
+        assert!(!path.exists());
+        assert!(!lanes.update(id, &boxes));
+        assert!(!path.exists());
+        // A relaunch: still no file, Aurora again.
+        let again = launch(&dir, id, &boxes);
         assert_eq!(again.theme(), Shown::Theme(Theme::Aurora));
-        // The wearer goes to Classic: a relaunch keeps Classic.
-        again.apply_theme(Theme::Classic, &boxes, "test");
-        let mut third = RoomLanes::new(dir.clone()).with_fresh_theme(Theme::Aurora);
-        third.update(id, &boxes);
-        assert_eq!(third.theme(), Shown::Theme(Theme::Classic));
-        // A file from before themes, with no theme in it, is left alone.
-        assert!(third.poll_knob(Some("clear"), false, &boxes));
-        assert_eq!(third.saved_theme(), None);
-        let mut fourth = RoomLanes::new(dir.clone()).with_fresh_theme(Theme::Aurora);
-        fourth.update(id, &boxes);
-        assert_eq!(fourth.saved_theme(), None);
-        assert_eq!(fourth.theme(), Shown::Theme(Theme::Classic));
+        assert!(!path.exists());
+        // The first change writes the room as if the wearer had picked
+        // Aurora from the control and then made that change.
+        assert!(lanes.set_params(0, &boxes, color(4)));
+        assert_eq!(lanes.theme(), Shown::Edited(Theme::Aurora));
+        let written = std::fs::read_to_string(&path).expect("saved on the change");
+        let (picked_dir, ..) = fresh_dir("fresh-picked");
+        let mut picked = RoomLanes::new(picked_dir.clone());
+        picked.update(id, &boxes);
+        picked.apply_theme(Theme::Aurora, &boxes, "test");
+        assert!(picked.set_params(0, &boxes, color(4)));
+        let by_hand = std::fs::read_to_string(room_path(&picked_dir, id.unwrap())).unwrap();
+        assert_eq!(written, by_hand);
+        // A relaunch reads it back, the theme named and the edit kept.
+        let third = launch(&dir, id, &boxes);
+        assert_eq!(third.theme(), Shown::Edited(Theme::Aurora));
+        assert_eq!(third.params_of(0, &boxes).0, 4);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
         // Without a fresh theme a room with no file keeps the built-in
-        // defaults and writes nothing.
+        // defaults (Classic) and writes nothing.
         std::fs::remove_file(&path).unwrap();
         let mut plain = RoomLanes::new(dir.clone());
         plain.update(id, &boxes);
         assert_eq!(plain.saved_theme(), None);
+        assert_eq!(plain.theme(), Shown::Theme(Theme::Classic));
         assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&picked_dir);
+    }
+
+    #[test]
+    fn a_saved_classic_stays_classic_by_the_control_the_swipe_and_the_knob() {
+        let (dir, boxes, id, path) = fresh_dir("fresh-classic");
+        // The control's press from Aurora: Mirror, then Classic.
+        let mut lanes = launch(&dir, id, &boxes);
+        assert_eq!(lanes.next_theme(&boxes, "test"), Theme::Mirror);
+        assert_eq!(lanes.next_theme(&boxes, "test"), Theme::Classic);
+        // Saved by name, so "Classic was picked" is not "nothing was".
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["theme"], "classic");
+        let again = launch(&dir, id, &boxes);
+        assert_eq!(again.theme(), Shown::Theme(Theme::Classic));
+        assert_eq!(again.saved_theme(), Some(Theme::Classic));
+        on_theme(&again, &boxes, Theme::Classic);
+        // The swipe back from Drift is Classic too.
+        let mut swiped = launch(&dir, id, &boxes);
+        swiped.apply_theme(Theme::Drift, &boxes, "test");
+        assert_eq!(swiped.step_theme(&boxes, "test", -1), Theme::Classic);
+        assert_eq!(
+            launch(&dir, id, &boxes).theme(),
+            Shown::Theme(Theme::Classic)
+        );
+        // The knob, at launch on a fresh room: its own theme applies
+        // nothing and writes nothing; Classic applies and is kept.
+        std::fs::remove_file(&path).unwrap();
+        let mut knob = launch(&dir, id, &boxes);
+        assert!(!knob.poll_theme_knob(Some("aurora"), false, &boxes));
+        assert!(!path.exists());
+        assert!(!knob.poll_theme_knob(Some(""), false, &boxes));
+        assert!(knob.poll_theme_knob(Some("classic"), false, &boxes));
+        assert_eq!(
+            launch(&dir, id, &boxes).theme(),
+            Shown::Theme(Theme::Classic)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hand_edited_room_without_a_theme_stays_custom_and_an_old_file_loads_as_before() {
+        let (dir, boxes, id, path) = fresh_dir("fresh-old");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Saved before themes, with a hand assignment: custom, untouched.
+        let edited = format!(
+            r#"{{ "version": 2,
+                "kind_defaults": {{ "table": "streamlines", "floor": "rings", "wall": "spectrum",
+                                    "ceiling": "none", "frame": "pulse", "other": "curls" }},
+                "anchors": [ {{ "uuid": "{}", "kind": "table", "behavior": "curls",
+                               "strength": 1.0 }} ] }}"#,
+            uuid_hex(&uuid(1))
+        );
+        std::fs::write(&path, &edited).unwrap();
+        let mut lanes = launch(&dir, id, &boxes);
+        assert_eq!(lanes.theme(), Shown::Custom);
+        assert_eq!(lanes.saved_theme(), None);
+        assert_eq!(lanes.behavior(0), B::Curls);
+        assert_eq!(lanes.behavior(1), B::Spectrum);
+        assert!(!lanes.update(id, &boxes));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+        // A kind default changed by hand is custom too.
+        let kind = r#"{ "version": 2, "kind_defaults": { "wall": "pulse" }, "anchors": [] }"#;
+        std::fs::write(&path, kind).unwrap();
+        let lanes = launch(&dir, id, &boxes);
+        assert_eq!(lanes.theme(), Shown::Custom);
+        assert_eq!(lanes.behavior(1), B::Pulse);
+        // A version 1 file reads as before, its entries custom.
+        let v1 = format!(
+            r#"{{ "version": 1, "anchors": [ {{ "uuid": "{}", "kind": "wall",
+                 "behavior": "none" }} ] }}"#,
+            uuid_hex(&uuid(2))
+        );
+        std::fs::write(&path, &v1).unwrap();
+        let older = launch(&dir, id, &boxes);
+        assert_eq!(older.theme(), Shown::Custom);
+        assert_eq!(older.behavior(1), B::None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), v1);
+        // A theme saved, edited since: loads as it did, named and edited.
+        let mut drift = RoomLanes::new(dir.clone());
+        drift.update(id, &boxes);
+        drift.apply_theme(Theme::Drift, &boxes, "test");
+        assert!(drift.set_params(4, &boxes, strength(0.5)));
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let back = launch(&dir, id, &boxes);
+        assert_eq!(back.theme(), Shown::Edited(Theme::Drift));
+        assert_eq!(back.file.to_json(), drift.file.to_json());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        // Saved before themes with nothing edited: a fresh room, Aurora,
+        // and the file on disk as it was.
+        let bare = r#"{ "version": 2, "kind_defaults": {}, "anchors": [] }"#;
+        std::fs::write(&path, bare).unwrap();
+        let fresh_file = launch(&dir, id, &boxes);
+        assert_eq!(fresh_file.theme(), Shown::Theme(Theme::Aurora));
+        on_theme(&fresh_file, &boxes, Theme::Aurora);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), bare);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_surface_knobs_clear_makes_a_fresh_room_again() {
+        let (dir, boxes, id, path) = fresh_dir("fresh-clear");
+        let mut lanes = launch(&dir, id, &boxes);
+        lanes.apply_theme(Theme::Drift, &boxes, "test");
+        assert!(lanes.poll_knob(Some("clear"), false, &boxes));
+        // Saved with no theme and no entries: nothing chosen.
+        let cleared = std::fs::read_to_string(&path).unwrap();
+        let (file, _) = RoomFile::from_json(&cleared).unwrap();
+        assert_eq!(file, RoomFile::default());
+        // The next update runs Aurora, writing nothing; so does a relaunch.
+        assert!(lanes.update(id, &boxes));
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Aurora));
+        on_theme(&lanes, &boxes, Theme::Aurora);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), cleared);
+        assert_eq!(
+            launch(&dir, id, &boxes).theme(),
+            Shown::Theme(Theme::Aurora)
+        );
+        // Without a fresh theme the clear is the built-in defaults, as
+        // before.
+        let mut plain = RoomLanes::new(dir.clone());
+        plain.update(id, &boxes);
+        assert!(plain.poll_knob(Some("clear"), false, &boxes));
+        plain.update(id, &boxes);
+        assert_eq!(plain.theme(), Shown::Theme(Theme::Classic));
+        assert_eq!(plain.saved_theme(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

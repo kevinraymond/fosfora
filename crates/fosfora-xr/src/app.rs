@@ -432,13 +432,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       nothing since board #5470: they were the cloud's particles), strength 0..1 (default 1); board #3488:
     //       an optional ":<color>[:<band>]" after the behavior, color 0..8 (0 the kind's own, 1 blue, 2 violet, 3 warm white, 4 amber,
     //       5 green, 6 teal, 7 rose, 8 the key's tint), band 0..3 (rms, bass, mid, high), e.g. "table=curls:5:2@0.8"; "clear" drops
-    //       every assignment; live: polled once a
-    //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
+    //       every assignment and the theme, so the room is fresh again and runs Aurora, saved only once something changes
+    //       (board #5447); live: polled once a second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
     //   adb shell setprop debug.fosfora.theme drift                (board #5415, themes.rs: classic, drift, tide, aurora or mirror, the whole room's
     //       look as the hand menu's Theme control sets it, every surface and kind default, hand assignments included; writes the saved
     //       room as the control does; live: polled once a second, applied once when the value changes, after the room's anchors are in;
-    //       at launch a value naming the room's own theme (edited since or not) applies nothing; to apply the same theme again set it
-    //       to "" first; an unknown name applies nothing and is logged)
+    //       at launch a value naming the room's own theme (edited since or not, or the Aurora a fresh room runs) applies nothing; to
+    //       apply the same theme again set it to "" first, which applies nothing itself; an unknown name applies nothing and is logged)
     //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
     //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (board #3488,
     //       the default first after none: table none, streamlines, curls, pulse; floor none, rings, streamlines, curls; wall none,
