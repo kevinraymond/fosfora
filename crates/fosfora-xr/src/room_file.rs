@@ -902,6 +902,46 @@ mod tests {
         assert!(!saved.contains("effect"), "{saved}");
     }
 
+    /// Board #5462: astrolabe and fenestra are held back, not removed. A
+    /// room saved with one loads with it, nothing skipped, and saves it
+    /// back; the surface shows nothing and the editor's next step leaves
+    /// it.
+    #[test]
+    fn a_room_that_names_a_held_back_look_still_loads() {
+        use SurfaceBehavior as B;
+        let text = format!(
+            r#"{{ "version": 2,
+                "kind_defaults": {{ "ceiling": "astrolabe", "frame": "fenestra" }},
+                "anchors": [
+                  {{ "uuid": "{}", "kind": "floor", "behavior": "astrolabe", "strength": 0.5,
+                     "params": [2.0, 1.0] }},
+                  {{ "uuid": "{}", "kind": "wall", "behavior": "fenestra" }}
+                ] }}"#,
+            uuid_hex(&uuid(1)),
+            uuid_hex(&uuid(2))
+        );
+        let (file, skipped) = RoomFile::from_json(&text).expect("reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(
+            file.resolve(&uuid(1), KIND_FLOOR),
+            (B::Astrolabe, 0.5, [2.0, 1.0])
+        );
+        assert_eq!(file.resolve(&uuid(2), KIND_WALL).0, B::Fenestra);
+        assert_eq!(
+            file.kind_default(crate::surfaces::KIND_CEILING),
+            B::Astrolabe
+        );
+        assert_eq!(file.kind_default(crate::surfaces::KIND_FRAME), B::Fenestra);
+        for (id, kind) in [(1, KIND_FLOOR), (2, KIND_WALL)] {
+            let was = file.resolve(&uuid(id), kind).0;
+            assert!(!was.offered() && was.held_back(), "{was:?}");
+            assert!(was.next_for(kind).offered(), "{was:?}");
+        }
+        let (again, skipped) = RoomFile::from_json(&file.to_json()).expect("its save reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(again, file);
+    }
+
     #[test]
     fn unknown_names_are_left_unset_and_bad_files_refused() {
         use SurfaceBehavior as B;

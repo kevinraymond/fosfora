@@ -411,7 +411,8 @@ color", "color" after a name allowed. `{band}` and `{strength}`: below.
 | NoSurface | "in amber" with nothing pointed | Point at a surface, or name one |
 | UnknownSurface | "the shelf in blue" | No surface called "shelf" |
 | UnknownBehavior | "fire on the desk" | No behavior called "fire" |
-| NotOnThisKind | "embers on wall 2" | embers doesn't run on a wall |
+| NotOnThisKind | "prism on wall 2" | prism doesn't run on a wall |
+| NotAvailable (board #5462) | "astrolabe on the ceiling" | Astrolabe is not available |
 | Ambiguous | "table in amber", two tables, neither pointed | Which one: table 1 or table 2? |
 
 A target longer than three words is no name, so a long sentence that
@@ -461,7 +462,8 @@ Cloud toggle, the hand menu's row for it reading "Particles"; the
 pitcher is reached as "pitcher on/off". The debug panel's toggle is not
 reachable by voice. A kind's reply reads "all walls", the hold's words.
 The rings do run on a wall (the wall's catalogue has them), so the
-refused example is embers on a wall.
+refused example was embers on a wall. Since board #5462 embers get a
+stand-in, and the example is the prism on a wall.
 
 **Not yet.** The agent (V3): a sentence the grammar misses says so and
 goes nowhere else. Numbers as digits: "table fourteen" does not name
@@ -672,11 +674,11 @@ intents:
 
 | Sentence | A sensible reply's actions |
 |---|---|
-| Something like a campfire on table 14. | behavior table 14 embers; color table 14 amber |
+| Something like a campfire on table 14. | behavior table 14 embers; color table 14 amber (the curls stand in for embers, board #5462) |
 | Make the walls calmer. | behavior wall aurora; strength wall down |
 | Less going on. | cloud off; behavior wall none |
 | Make the room feel like the ocean. | behavior floor rings; color floor teal; behavior wall aurora; color wall blue |
-| Give the ceiling a starry night. | behavior ceiling astrolabe; color ceiling violet |
+| Give the ceiling a starry night. | behavior ceiling aurora; color ceiling violet (astrolabe is held back, board #5462) |
 
 **Where it differs from the brief.** The schema's kinds add `pitcher`, so
 every grammar intent is reachable (`cloud` and `particles` are both the
@@ -768,7 +770,7 @@ and "table in amber").
 | Said | Label |
 |---|---|
 | Amber on table 14 and the walls on the bass. | table 14: amber · all walls: bass |
-| Embers on the desk and flibber jabber. | desk: embers · Didn't catch that: "flibber jabber." / Try "what can I say" |
+| Embers on the desk and flibber jabber. | desk: curls · Didn't catch that: "flibber jabber." / Try "what can I say" |
 
 The log lists every intent: `voice: heard "…" → [Color { … }, Band { … }]
 · label "…"`; a one-clause sentence keeps V2's line exactly. A label of
@@ -781,7 +783,8 @@ were applied, so the model sees the room after them. When every clause
 goes, or the sentence had too many, the whole sentence goes, exactly as
 V3 sent it ("Make the room feel like the ocean." is unchanged); else only
 the clauses that go, joined with " and " ("Embers on the desk and make it
-cozy." applies the embers and asks the agent "make it cozy."). The
+cozy." applies the curls that stand in for embers and asks the agent
+"make it cozy."). The
 grammar's other misses stay its answers.
 
 **Number words.** The normalizer turns `one` to `twenty`, `thirty`,
@@ -1384,7 +1387,7 @@ catch that".
 | "next effect", "next", "next one" | the next effect | The effects are gone |
 | "previous effect", "last effect", "previous", "previous one" | the one before | The effects are gone |
 | "flux cloud", "embers", "flock", alone or after "switch to", "show", "go to", "change to" | that effect | The effects are gone |
-| "embers on the desk", "sparks on the floor", "every table embers" | the surface on embers or sparks | a miss, with the nearest example as its hint |
+| "embers on the desk", "sparks on the floor", "every table embers" | the surface on embers or sparks | a stand-in that shows, since board #5462 (below) |
 | "recenter", "recenter the cloud" | "cloud recentered" | "recentered" |
 | "particles off", "cloud off" | hid the cloud | hides the fireflies and the hand particles |
 | "next theme" | the next theme | the same, and the thumb swipe now takes this step too |
@@ -1423,6 +1426,73 @@ Tests (`intent.rs`): `the_effect_phrases_answer_that_the_effects_are_gone`,
 Unworn: `debug.fosfora.say 'next effect'` and `say 'switch to flock'` log
 the reply "The effects are gone". `say 'what can I say'` logs a card with
 no effect on it.
+
+## Looks that are not offered (board #5462)
+
+Four surface looks are not offered: embers and sparks, whose particles
+went with the cloud effects (board #5470), and astrolabe and fenestra,
+held back because on one song each they reached 3.5 flashes a second in
+one region, over the limit of 3 (`SURFACES_DESIGN.md`, the flash limit).
+`SurfaceBehavior::OFFERED` is the twelve that are left, and the voice
+path's vocabulary, its help, the room the agent is shown and the room
+editor's cycle all come from it. The catalogue keeps all sixteen, since
+the on-device model's spec lists each kind's catalogue in order and is not
+changed, and a saved room that names one still loads and shows nothing.
+
+What the voice does when a sentence or a model's reply names one, wherever
+a behavior is checked before it is applied (`intent::fill`, which the
+grammar and `Intent::from_json` share):
+
+| Named | What the surface gets | Label |
+|---|---|---|
+| embers | the curls, or the kind's first look after none when its list has no curls (a wall: the spectrum) | "desk: curls" |
+| sparks | the pulse, or the kind's first look after none (a floor: the rings) | "table 1: pulse" |
+| astrolabe, fenestra | nothing; the action is skipped as an unknown behavior is | Astrolabe is not available |
+
+- **The grammar** hears the four names although they are not in its
+  vocabulary, so "embers on the desk" gets the curls, the same as the
+  model's answer for "something like a campfire on the desk". It used to
+  miss as an unknown behavior, which with the agent off read "No behavior
+  called "embers"", and with it on gave the same sentence to the model,
+  whose answer then decided. Now the look does not depend on whether the
+  agent is on, and the reply names what the surface got.
+- **The agent's reply.** Its other actions, a color or a strength, still
+  apply. When an action got a stand-in, the label shows what was applied
+  ("desk: curls; desk: amber; desk: half strength") in place of the
+  model's own sentence, which would name embers (`agent::reply_label`). A
+  reply naming astrolabe alone reads "Astrolabe is not available"; with
+  other actions, what applied, "skipped 1", and that sentence under it.
+- **Not to the agent.** NotAvailable is an answer, not forwarded
+  (`agent::forwards`).
+- **The network agent's instruction** no longer describes astrolabe and
+  fenestra, and each kind's list in the room it is shown leaves them out.
+- **No voice path writes one.** `intent::apply` refuses an intent naming
+  any of the four, however it was built, with the "not available"
+  sentence. The `debug.fosfora.surface` knob still takes every behavior on
+  every kind, so a surface can be put on one to check it shows nothing.
+- **A saved surface on one** shows nothing (`app.rs` draws no face on a
+  look not offered) and the lanes log the surfaces on one once:
+  `room <id>: on a look not offered, showing nothing: #3 FLOOR <uuid8>
+  astrolabe | …`, and again only when that set changes.
+
+Tests (`intent.rs`): `a_held_back_look_changes_nothing_and_says_so`,
+`the_effect_phrases_answer_that_the_effects_are_gone`,
+`the_help_lists_nothing_that_is_gone`, `the_misses`. `agent.rs`:
+`the_campfire_reply_puts_curls_on_the_desk_in_amber_at_half`,
+`a_reply_naming_a_held_back_look_changes_nothing_and_says_so`,
+`the_instruction_names_every_kind_and_behavior`,
+`the_room_names_no_effect_and_no_particle_behavior`. `surfaces.rs`:
+`the_four_not_offered_and_their_stand_ins`,
+`each_kind_cycles_through_what_renders_on_it_and_wraps`. `lanes.rs`:
+`a_saved_surface_on_a_look_not_offered_loads_and_is_named_once`.
+`room_file.rs`: `a_room_that_names_a_held_back_look_still_loads`.
+`local.rs`: `the_spec_ids_map_onto_intents`.
+
+Unworn: `debug.fosfora.say 'embers on the desk'` logs `Behavior { …,
+behavior: Curls }` and the label "desk: curls"; `say 'astrolabe on the
+ceiling'` logs `miss NotAvailable(Astrolabe)` and "Astrolabe is not
+available". `debug.fosfora.surface 'ceiling=astrolabe'` leaves the ceiling
+dark and logs the line above.
 
 ## Open questions for Kevin
 

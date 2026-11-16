@@ -1019,7 +1019,7 @@ impl RoomVocabulary {
     pub fn vocabulary(&self) -> Vocabulary<'_> {
         Vocabulary {
             effects: &self.effects,
-            behaviors: &SurfaceBehavior::ALL,
+            behaviors: &SurfaceBehavior::OFFERED,
             surfaces: self.surfaces.clone(),
             pointed: self.pointed,
             tracks: crate::intent::Tracks::default(),
@@ -2161,11 +2161,12 @@ mod tests {
                     behavior: SurfaceBehavior::Streamlines,
                 },
             ),
+            // Board #5462: the spec still lists embers; the curls stand in.
             (
                 ("behavior", "pointed", "embers"),
                 Intent::Behavior {
                     target: pointed,
-                    behavior: SurfaceBehavior::Embers,
+                    behavior: SurfaceBehavior::Curls,
                 },
             ),
             (
@@ -2274,18 +2275,28 @@ mod tests {
             })
             .collect();
         assert_eq!(bands, [BAND_RMS, BAND_BASS, BAND_MID, BAND_HIGH]);
+        // The spec's lists keep the four looks not offered (board #5462):
+        // embers and sparks map onto their stand-ins, and astrolabe and
+        // fenestra are answered as not available.
         for surface in &r.surfaces {
             for b in &s
                 .value_decision("behavior", Some(&surface.name), &r)
                 .unwrap()
                 .candidates
             {
-                assert!(
-                    intent("behavior", &surface.name, &b.id).is_ok(),
-                    "{} {}",
-                    surface.name,
-                    b.id
-                );
+                match intent("behavior", &surface.name, &b.id) {
+                    Ok(Intent::Behavior { behavior, .. }) => {
+                        assert!(behavior.offered(), "{} {}", surface.name, b.id);
+                    }
+                    Ok(other) => panic!("{} {}: {other:?}", surface.name, b.id),
+                    Err(m) => assert!(
+                        matches!(m.reason, Reason::NotAvailable(x) if x.held_back()),
+                        "{} {}: {:?}",
+                        surface.name,
+                        b.id,
+                        m.reason
+                    ),
+                }
             }
         }
     }

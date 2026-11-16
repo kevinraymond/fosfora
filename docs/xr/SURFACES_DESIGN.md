@@ -1774,6 +1774,17 @@ one region on one song: astrolabe on the ceiling and fenestra on a wall.
 Both build their picture on the bar's clock and the buildup, which cross
 the look's own thresholds where the limiter does not turn.
 
+**Held back** (board #5462). Until those two are bounded they are not
+offered: `SurfaceBehavior::held_back`, and `OFFERED` without them. The
+room editor's cycle steps past them as it steps past embers and sparks,
+the voice answers "Astrolabe is not available" (`VOICE_DESIGN.md`,
+"Looks that are not offered"), and the agent's lists leave them out. They
+stay in the catalogue, the knob and the flash checks above. A saved
+surface on one shows nothing and the lanes log it once, as a surface left
+on embers does. The floor's cycle is now the rings, the streamlines, the
+curls, tessera, prism, aurora; the wall's ends at aurora and bezel; the
+ceiling's at aurora; the frame's at bezel and reticle.
+
 **Tests.** In `cargo test` (`flash.rs`, no GPU), the count:
 `a_square_wave_flashes_at_its_rate_and_three_a_second_pass`,
 `small_and_bright_changes_are_not_flashes`,

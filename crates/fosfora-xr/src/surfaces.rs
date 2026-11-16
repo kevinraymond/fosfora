@@ -144,13 +144,15 @@ impl SurfaceBehavior {
         Self::Tessera,
     ];
 
-    /// The behaviors a wearer can give a surface (board #5470): every one
-    /// but embers and sparks, which spawned particles of the surface-born
-    /// cloud effect. That effect is gone, so a surface on either shows
-    /// nothing. The room editor's cycle steps past them
-    /// ([`Self::next_for`]), and the voice path's vocabulary and its help
-    /// are built from this list. A room file that names one still loads.
-    pub const OFFERED: [Self; 14] = [
+    /// The behaviors a wearer can give a surface (boards #5470, #5462):
+    /// every one but four. Embers and sparks spawned particles of the
+    /// surface-born cloud effect, which is gone. Astrolabe and fenestra are
+    /// held back until they are bounded ([`Self::held_back`]). A surface on
+    /// any of the four shows nothing. The room editor's cycle steps past
+    /// them ([`Self::next_for`]), and the voice path's vocabulary, its help
+    /// and the agent's lists are built from this list. A room file that
+    /// names one still loads.
+    pub const OFFERED: [Self; 12] = [
         Self::None,
         Self::Spectrum,
         Self::Rings,
@@ -160,9 +162,7 @@ impl SurfaceBehavior {
         Self::Aurora,
         Self::Prism,
         Self::Shards,
-        Self::Astrolabe,
         Self::Bezel,
-        Self::Fenestra,
         Self::Reticle,
         Self::Tessera,
     ];
@@ -326,8 +326,8 @@ impl SurfaceBehavior {
 
     /// The step after this one in `kind`'s [`Self::catalogue`], wrapping,
     /// past the entries no longer offered ([`Self::OFFERED`]): the list
-    /// keeps embers and sparks, which the on-device voice model's spec
-    /// names, and the cycle skips them. Off the catalogue (the knob put
+    /// keeps embers, sparks, astrolabe and fenestra, which the on-device
+    /// voice model's spec names, and the cycle skips them. Off the catalogue (the knob put
     /// the spectrum on a table), the first entry after `none`, or `none`
     /// when the catalogue is only `none`.
     #[must_use]
@@ -344,9 +344,44 @@ impl SurfaceBehavior {
     }
 
     /// Whether a wearer can still give a surface this behavior
-    /// ([`Self::OFFERED`]).
+    /// ([`Self::OFFERED`]). The app draws nothing on a surface running one
+    /// that is not.
     pub fn offered(self) -> bool {
-        !self.emits()
+        !self.emits() && !self.held_back()
+    }
+
+    /// Whether this look is held back (board #5462). Astrolabe and fenestra
+    /// are in no theme, and on one song each they reached 3.5 flashes a
+    /// second in one region, over the app's limit of 3 (`flash.rs`). Until
+    /// they are bounded they are not offered, and a surface a saved room
+    /// left on one shows nothing.
+    pub fn held_back(self) -> bool {
+        matches!(self, Self::Astrolabe | Self::Fenestra)
+    }
+
+    /// The look a surface of `kind` gets when the voice asks for this one
+    /// and it is gone (board #5470): the curls for embers, the pulse for
+    /// sparks, or the kind's first offered look after none when that one
+    /// is not on the kind's list ([`Self::catalogue`]). `None` for every
+    /// other look: an offered one needs no stand-in, and a held-back one
+    /// gets none ([`Self::held_back`]), since nothing on the list looks
+    /// like it.
+    pub fn stand_in(self, kind: u32) -> Option<Self> {
+        let want = match self {
+            Self::Embers => Self::Curls,
+            Self::Sparks => Self::Pulse,
+            _ => return None,
+        };
+        let list = Self::catalogue(kind);
+        if list.contains(&want) {
+            return Some(want);
+        }
+        Some(
+            list.iter()
+                .copied()
+                .find(|b| *b != Self::None && b.offered())
+                .unwrap_or(Self::None),
+        )
     }
 
     /// Whether the surface-born sim spawned particles on a surface running
@@ -1586,8 +1621,8 @@ mod tests {
     fn each_kind_cycles_through_what_renders_on_it_and_wraps() {
         use SurfaceBehavior as B;
         // Every step of each kind's order, from none round to none, past
-        // embers and sparks: they stay on the lists and the cycle skips
-        // them (board #5470).
+        // embers, sparks, astrolabe and fenestra: they stay on the lists
+        // and the cycle skips them (boards #5470, #5462).
         let other: &[B] = &[
             B::None,
             B::Curls,
@@ -1676,7 +1711,7 @@ mod tests {
                 seen.push(b);
             }
             assert_eq!(seen, expected, "kind {kind}");
-            assert!(seen.iter().all(|b| !b.emits()), "kind {kind}: {seen:?}");
+            assert!(seen.iter().all(|b| b.offered()), "kind {kind}: {seen:?}");
             // Each behavior once.
             for (i, x) in order.iter().enumerate() {
                 assert!(!order[i + 1..].contains(x), "kind {kind}: {x:?} twice");
@@ -1688,7 +1723,7 @@ mod tests {
         assert_eq!(B::Pulse.next_for(KIND_FRAME), B::Rings);
         assert_eq!(B::Curls.next_for(KIND_OTHER), B::Streamlines);
         let mut floor = vec![B::default_for(KIND_FLOOR)];
-        for _ in 0..8 {
+        for _ in 0..7 {
             floor.push(floor.last().unwrap().next_for(KIND_FLOOR));
         }
         assert_eq!(
@@ -1699,12 +1734,16 @@ mod tests {
                 B::Curls,
                 B::Tessera,
                 B::Prism,
-                B::Astrolabe,
                 B::Aurora,
                 B::None,
                 B::Rings
             ]
         );
+        // The wall's and the frame's cycles without fenestra, the
+        // ceiling's without astrolabe (board #5462).
+        assert_eq!(B::Aurora.next_for(KIND_WALL), B::Bezel);
+        assert_eq!(B::Reticle.next_for(KIND_FRAME), B::None);
+        assert_eq!(B::Aurora.next_for(KIND_CEILING), B::None);
     }
 
     #[test]
@@ -1799,7 +1838,13 @@ mod tests {
         assert_eq!(B::Pulse.next_for(KIND_TABLE), B::Shards);
         assert_eq!(B::Sparks.next_for(KIND_FLOOR), B::Tessera);
         assert_eq!(B::Embers.next_for(KIND_OTHER), B::Shards);
-        // What is offered is everything but those two.
+        // A surface a saved room left on astrolabe or fenestra steps on
+        // the same way (board #5462).
+        assert_eq!(B::Astrolabe.next_for(KIND_FLOOR), B::Aurora);
+        assert_eq!(B::Astrolabe.next_for(KIND_CEILING), B::None);
+        assert_eq!(B::Fenestra.next_for(KIND_WALL), B::Bezel);
+        assert_eq!(B::Fenestra.next_for(KIND_FRAME), B::None);
+        // What is offered is everything but those four.
         assert_eq!(
             B::ALL
                 .into_iter()
@@ -1807,10 +1852,64 @@ mod tests {
                 .collect::<Vec<_>>(),
             B::OFFERED
         );
-        assert!(!B::OFFERED.contains(&B::Embers) && !B::OFFERED.contains(&B::Sparks));
+        for gone in [B::Embers, B::Sparks, B::Astrolabe, B::Fenestra] {
+            assert!(!B::OFFERED.contains(&gone), "{gone:?}");
+            assert!(!gone.offered(), "{gone:?}");
+        }
         // A ceiling on none goes to the rings, a frame to the pulse.
         assert_eq!(B::None.next_for(KIND_CEILING), B::Rings);
         assert_eq!(B::None.next_for(KIND_FRAME), B::Pulse);
+    }
+
+    /// Board #5462: astrolabe and fenestra are held back, embers and
+    /// sparks gone; the voice gives the two gone ones a stand-in that
+    /// shows, on the kind's list, and the held-back ones none.
+    #[test]
+    fn the_four_not_offered_and_their_stand_ins() {
+        use SurfaceBehavior as B;
+        assert!(B::Astrolabe.held_back() && B::Fenestra.held_back());
+        for b in B::ALL {
+            assert_eq!(
+                b.held_back(),
+                matches!(b, B::Astrolabe | B::Fenestra),
+                "{b:?}"
+            );
+            // Still drawn by the pass, so the flash checks still run them.
+            if b.held_back() {
+                assert!(b.draws_on_face() && b.port().is_some(), "{b:?}");
+            }
+        }
+        // Embers the curls, sparks the pulse, where the kind has them.
+        assert_eq!(B::Embers.stand_in(KIND_TABLE), Some(B::Curls));
+        assert_eq!(B::Sparks.stand_in(KIND_TABLE), Some(B::Pulse));
+        assert_eq!(B::Embers.stand_in(KIND_OTHER), Some(B::Curls));
+        assert_eq!(B::Embers.stand_in(KIND_NONE), Some(B::Curls));
+        assert_eq!(B::Embers.stand_in(KIND_FLOOR), Some(B::Curls));
+        assert_eq!(B::Sparks.stand_in(KIND_CEILING), Some(B::Pulse));
+        // Else the kind's first offered look after none.
+        assert_eq!(B::Embers.stand_in(KIND_WALL), Some(B::Spectrum));
+        assert_eq!(B::Sparks.stand_in(KIND_FLOOR), Some(B::Rings));
+        assert_eq!(B::Embers.stand_in(KIND_CEILING), Some(B::Rings));
+        assert_eq!(B::Embers.stand_in(KIND_FRAME), Some(B::Pulse));
+        for kind in [
+            KIND_NONE,
+            KIND_TABLE,
+            KIND_FLOOR,
+            KIND_WALL,
+            KIND_CEILING,
+            KIND_FRAME,
+            KIND_OTHER,
+        ] {
+            for b in [B::Embers, B::Sparks] {
+                let s = b.stand_in(kind).expect("a stand-in");
+                assert!(s.offered() && s != B::None, "{b:?} on {kind}: {s:?}");
+                assert!(B::catalogue(kind).contains(&s), "{b:?} on {kind}: {s:?}");
+            }
+            // None for the held-back ones and for what is offered.
+            for b in B::ALL.into_iter().filter(|b| !b.emits()) {
+                assert_eq!(b.stand_in(kind), None, "{b:?} on {kind}");
+            }
+        }
     }
 
     #[test]

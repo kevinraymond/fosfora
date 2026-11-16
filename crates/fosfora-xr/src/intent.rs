@@ -291,6 +291,10 @@ pub enum Reason {
     UnknownSurface(String),
     /// A behavior name the catalogue does not have ("fire on the desk").
     UnknownBehavior(String),
+    /// A look held back until it is bounded (board #5462,
+    /// `SurfaceBehavior::held_back`): astrolabe and fenestra. Nothing
+    /// changes, and the label says it is not available.
+    NotAvailable(SurfaceBehavior),
     /// The behavior does not render on the surface's kind
     /// (`SurfaceBehavior::catalogue`).
     NotOnThisKind {
@@ -784,14 +788,18 @@ fn surface_word(w: &str, vocab: &Vocabulary<'_>) -> bool {
 }
 
 /// The behavior slot: one word, a behavior's name in the vocabulary (a
-/// trailing "s" forgiven: "streamline", "curl"), or none's words.
+/// trailing "s" forgiven: "streamline", "curl"), or none's words. A look
+/// that is no longer offered (board #5462: embers, sparks, astrolabe,
+/// fenestra) is heard too, so [`fill`] can give it its stand-in or say it
+/// is not available, where it would otherwise miss as unknown.
 fn behavior(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<SurfaceBehavior> {
     let &[w] = ts else { return None };
     if NONE_WORDS.contains(&w) {
         return Some(SurfaceBehavior::None);
     }
-    let known =
-        |name: &str| SurfaceBehavior::from_name(name).filter(|b| vocab.behaviors.contains(b));
+    let known = |name: &str| {
+        SurfaceBehavior::from_name(name).filter(|b| vocab.behaviors.contains(b) || !b.offered())
+    };
     known(w).or_else(|| known(&format!("{w}s")))
 }
 
@@ -889,17 +897,30 @@ fn kind_of(target: Target, vocab: &Vocabulary<'_>) -> Option<u32> {
 /// `slot` on what `target_words` names: the intent, or why not. A
 /// behavior is checked against the kind's catalogue, also for a shared
 /// name whose surfaces are all of one kind (there the kind is the answer,
-/// not the question which one).
+/// not the question which one). Board #5462: a look held back is
+/// [`Reason::NotAvailable`] whatever the target, and embers or sparks,
+/// whose particles are gone, become the kind's stand-in
+/// (`SurfaceBehavior::stand_in`), so the intent and its reply name the
+/// look the surface gets.
 fn fill(slot: Slot, target_words: &[&str], vocab: &Vocabulary<'_>) -> Result<Intent, Reason> {
+    if let Slot::Behavior(b) = slot
+        && b.held_back()
+    {
+        return Err(Reason::NotAvailable(b));
+    }
     let check = |kind: Option<u32>| match (slot, kind) {
+        (Slot::Behavior(b), kind) if !b.offered() => Ok(Slot::Behavior(
+            b.stand_in(kind.unwrap_or(crate::surfaces::KIND_NONE))
+                .unwrap_or(SurfaceBehavior::None),
+        )),
         (Slot::Behavior(b), Some(kind)) if !SurfaceBehavior::catalogue(kind).contains(&b) => {
             Err(Reason::NotOnThisKind { behavior: b, kind })
         }
-        _ => Ok(()),
+        _ => Ok(slot),
     };
     match aim(target_words, vocab) {
         Aim::Hit(target) => {
-            check(kind_of(target, vocab))?;
+            let slot = check(kind_of(target, vocab))?;
             Ok(slot.on(target))
         }
         Aim::Several(ks) => {
@@ -1798,7 +1819,9 @@ impl Intent {
     /// the same surface names. A surface the room does not have is the
     /// grammar's [`Reason::UnknownSurface`], a behavior the catalogue lacks
     /// its [`Reason::UnknownBehavior`], one the kind does not run its
-    /// [`Reason::NotOnThisKind`]; an unknown kind, effect, color, band or
+    /// [`Reason::NotOnThisKind`], one held back its
+    /// [`Reason::NotAvailable`]; embers and sparks become their stand-ins,
+    /// as in a sentence (board #5462); an unknown kind, effect, color, band or
     /// strength, or a toggle that is neither on nor off, is
     /// [`Reason::NoMatch`]. The miss's `heard` is the action as text
     /// ("color desk orchid").
@@ -2074,6 +2097,35 @@ fn a_kind(kind: u32) -> String {
     }
 }
 
+/// The label for a look held back (board #5462, [`Reason::NotAvailable`]):
+/// one short sentence, "Astrolabe is not available".
+pub fn not_available(behavior: SurfaceBehavior) -> String {
+    let name = behavior.name();
+    let mut first = name.chars();
+    match first.next() {
+        Some(c) => format!("{}{} is not available", c.to_uppercase(), first.as_str()),
+        None => "Not available".to_owned(),
+    }
+}
+
+/// Whether an agent's action asks for a look whose particles are gone
+/// (embers, sparks) and so gets its stand-in (board #5462,
+/// `SurfaceBehavior::stand_in`): the model's own sentence then names a
+/// look the surface does not get, and the label shows what was applied
+/// instead (`agent::reply_label`).
+pub fn stands_in(action: &AgentAction) -> bool {
+    let value = normalize(&action.value);
+    let vs: Vec<&str> = value.iter().map(String::as_str).collect();
+    action.kind.trim() == "behavior"
+        && match vs.as_slice() {
+            &[w] => [w.to_owned(), format!("{w}s")]
+                .iter()
+                .filter_map(|n| SurfaceBehavior::from_name(n))
+                .any(|b| b.stand_in(crate::surfaces::KIND_NONE).is_some()),
+            _ => false,
+        }
+}
+
 /// The label for a miss: "Didn't catch that" with the sentence, or what
 /// was missing.
 pub fn miss_text(miss: &Miss) -> String {
@@ -2082,6 +2134,7 @@ pub fn miss_text(miss: &Miss) -> String {
         Reason::NoSurface => "Point at a surface, or name one".to_owned(),
         Reason::UnknownSurface(name) => format!("No surface called \"{name}\""),
         Reason::UnknownBehavior(name) => format!("No behavior called \"{name}\""),
+        Reason::NotAvailable(behavior) => not_available(*behavior),
         Reason::NotOnThisKind { behavior, kind } => {
             format!("{} doesn't run on {}", behavior.name(), a_kind(*kind))
         }
@@ -2165,6 +2218,11 @@ pub fn apply(
         }));
     }
     match *intent {
+        // Board #5462: the grammar never builds one ([`fill`]); a look
+        // that is not offered is written by no voice path.
+        Intent::Behavior { behavior, .. } if !behavior.offered() => {
+            return Some(not_available(behavior));
+        }
         Intent::Behavior {
             target: Target::Kind(kind),
             behavior,
@@ -2400,7 +2458,8 @@ mod tests {
         ]
     }
 
-    /// The fixture's vocabulary, the desk pointed at or `pointed`.
+    /// The fixture's vocabulary, the desk pointed at or `pointed`: the
+    /// behaviors the app offers, as `app.rs` gives them.
     fn vocab<'a>(
         effects: &'a [String],
         boxes: &[LaneBox<'_>],
@@ -2408,7 +2467,7 @@ mod tests {
     ) -> Vocabulary<'a> {
         Vocabulary {
             effects,
-            behaviors: &SurfaceBehavior::ALL,
+            behaviors: &SurfaceBehavior::OFFERED,
             surfaces: surfaces(boxes),
             pointed,
             tracks: Tracks::default(),
@@ -3268,7 +3327,9 @@ mod tests {
                 ),
                 ("the desk curls", on(Target::Surface(0), B::Curls)),
                 ("Put curls on the lamp.", on(Target::Surface(7), B::Curls)),
-                ("Embers on the desk.", on(Target::Surface(0), B::Embers)),
+                // Board #5462: embers' particles are gone; the curls stand
+                // in, and sparks' the pulse.
+                ("Embers on the desk.", on(Target::Surface(0), B::Curls)),
                 ("Aurora on the ceiling", on(Target::Surface(6), B::Aurora)),
                 (
                     "Every table streamlines.",
@@ -3284,7 +3345,7 @@ mod tests {
                 ("the desk off", on(Target::Surface(0), B::None)),
                 ("Pulse.", on(Target::Pointed, B::Pulse)),
                 ("streamline on this", on(Target::Pointed, B::Streamlines)),
-                ("that sparks", on(Target::Pointed, B::Sparks)),
+                ("that sparks", on(Target::Pointed, B::Pulse)),
                 ("ripple on the floor", on(Target::Surface(5), B::Rings)),
             ],
         );
@@ -3404,7 +3465,7 @@ mod tests {
         for sentence in [
             "flibber jabber",
             "in amber",
-            "embers on wall 3",
+            "astrolabe on wall 3",
             "fire on the desk",
         ] {
             assert!(!reason(sentence).names_surfaces(), "{sentence}");
@@ -3582,7 +3643,7 @@ mod tests {
                 ),
                 ("Nothing on the roof.", on(Target::Surface(6), B::None)),
                 ("the roof pulse", on(Target::Surface(6), B::Pulse)),
-                ("every desk sparks", on(Target::Kind(KIND_TABLE), B::Sparks)),
+                ("every desk sparks", on(Target::Kind(KIND_TABLE), B::Pulse)),
                 ("Nothing on the lamp.", on(Target::Surface(7), B::None)),
                 ("none on the floor", on(Target::Surface(5), B::None)),
                 ("windows pulse", on(Target::Kind(KIND_FRAME), B::Pulse)),
@@ -3642,14 +3703,20 @@ mod tests {
                     "Switch to the next effect and fade the colors to purple.",
                     Reason::NoMatch,
                 ),
-                // Embers fall off volumes: a wall's catalogue lacks them,
-                // whichever wall was meant.
+                // A wall's catalogue lacks the prism, whichever wall was
+                // meant.
                 (
-                    "Embers on the wall.",
+                    "Prism on the wall.",
                     Reason::NotOnThisKind {
-                        behavior: B::Embers,
+                        behavior: B::Prism,
                         kind: KIND_WALL,
                     },
+                ),
+                // Held back (board #5462), whatever the target.
+                ("Fenestra on the wall.", Reason::NotAvailable(B::Fenestra)),
+                (
+                    "astrolabe on the ceiling",
+                    Reason::NotAvailable(B::Astrolabe),
                 ),
                 (
                     "spectrum on the desk",
@@ -3659,9 +3726,9 @@ mod tests {
                     },
                 ),
                 (
-                    "every ceiling sparks",
+                    "every ceiling curls",
                     Reason::NotOnThisKind {
-                        behavior: B::Sparks,
+                        behavior: B::Curls,
                         kind: KIND_CEILING,
                     },
                 ),
@@ -3787,10 +3854,18 @@ mod tests {
             ),
             (
                 Reason::NotOnThisKind {
-                    behavior: B::Embers,
+                    behavior: B::Prism,
                     kind: KIND_WALL,
                 },
-                "embers doesn't run on a wall",
+                "prism doesn't run on a wall",
+            ),
+            (
+                Reason::NotAvailable(B::Astrolabe),
+                "Astrolabe is not available",
+            ),
+            (
+                Reason::NotAvailable(B::Fenestra),
+                "Fenestra is not available",
             ),
             (
                 Reason::NotOnThisKind {
@@ -4107,7 +4182,7 @@ mod tests {
             "Wall 5 on the bass.",
             "Rings on the floor.",
             "What is table 14?",
-            "Embers on wall 2.",
+            "Prism on wall 2.",
             "The shelf in blue.",
         ] {
             let outcome = parse(sentence, &v);
@@ -4128,7 +4203,7 @@ mod tests {
             "voice: heard \"Wall 5 on the bass.\" → Band { target: Surface(5), band: 1 } · label \"wall 5: bass\"",
             "voice: heard \"Rings on the floor.\" → Behavior { target: Kind(2), behavior: Rings } · label \"all floors: rings\"",
             "voice: heard \"What is table 14?\" → Describe(Surface(14)) · label \"table 14: streamlines · amber · rms · 1.0\"",
-            "voice: heard \"Embers on wall 2.\" → miss NotOnThisKind { behavior: Embers, kind: 3 } · label \"embers doesn't run on a wall\"",
+            "voice: heard \"Prism on wall 2.\" → miss NotOnThisKind { behavior: Prism, kind: 3 } · label \"prism doesn't run on a wall\"",
             "voice: heard \"The shelf in blue.\" → miss UnknownSurface(\"shelf\") · label \"No surface called \"shelf\"\"",
         ];
         assert_eq!(lines, want);
@@ -4222,7 +4297,7 @@ mod tests {
         );
         let clauses = parse_clauses("rock and roll then embers on the desk", &v);
         assert_eq!(clauses[0].outcome, Ok(Intent::Effect(1)));
-        assert_eq!(clauses[1].outcome, Ok(on(Target::Surface(0), B::Embers)));
+        assert_eq!(clauses[1].outcome, Ok(on(Target::Surface(0), B::Curls)));
     }
 
     #[test]
@@ -4261,7 +4336,7 @@ mod tests {
         // A clause that misses does not stop the others.
         assert_eq!(
             outcomes("Embers on the desk and flibber jabber."),
-            [Ok(on(Target::Surface(0), B::Embers)), Err(Reason::NoMatch)]
+            [Ok(on(Target::Surface(0), B::Curls)), Err(Reason::NoMatch)]
         );
         // Four is too many: one miss for the sentence.
         let four = parse_clauses(
@@ -4385,18 +4460,18 @@ mod tests {
         let (r, line) = say("Embers on the desk and flibber jabber.", false, &mut page);
         assert_eq!(
             r.label,
-            "desk: embers \u{b7} Didn't catch that: \"flibber jabber.\"\nTry \"what can I say\""
+            "desk: curls \u{b7} Didn't catch that: \"flibber jabber.\"\nTry \"what can I say\""
         );
         assert_close!(r.seconds, MISS_S);
         assert!(
             line.ends_with(
-                "label \"desk: embers \u{b7} Didn't catch that: \"flibber jabber.\" | Try \"what can I say\"\""
+                "label \"desk: curls \u{b7} Didn't catch that: \"flibber jabber.\" | Try \"what can I say\"\""
             ),
             "{line}"
         );
         // The agent on: the clause that misses goes to it, alone.
         let (r, _) = say("Embers on the desk and make it cozy.", true, &mut page);
-        assert_eq!(r.label, "desk: embers \u{b7} Thinking\u{2026}");
+        assert_eq!(r.label, "desk: curls \u{b7} Thinking\u{2026}");
         assert_eq!(r.agent.as_deref(), Some("make it cozy."));
         assert_close!(r.seconds, crate::agent::THINKING_S);
         // Every clause misses, or too many: the whole sentence goes.
@@ -4431,7 +4506,7 @@ mod tests {
         assert_eq!(page, before + 1);
         assert_eq!(lanes.params_of(0, &boxes).0, 4);
         assert_eq!(lanes.params_of(3, &boxes).1, 1);
-        assert_eq!(lanes.effective(0, &boxes).map(|(b, _)| b), Some(B::Embers));
+        assert_eq!(lanes.effective(0, &boxes).map(|(b, _)| b), Some(B::Curls));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4489,8 +4564,8 @@ mod tests {
                 CARD_S,
             ),
             (
-                "voice: heard \"Help.\" \u{2192} Help \u{b7} label \"every wall rings | music play and next theme | wall 2 on the bass | every floor sparks | edit the room\"",
-                "every wall rings\nmusic play and next theme\nwall 2 on the bass\nevery floor sparks\nedit the room",
+                "voice: heard \"Help.\" \u{2192} Help \u{b7} label \"every wall rings | music play and next theme | wall 2 on the bass | every floor tessera | edit the room\"",
+                "every wall rings\nmusic play and next theme\nwall 2 on the bass\nevery floor tessera\nedit the room",
                 CARD_S,
             ),
             (
@@ -4585,21 +4660,105 @@ mod tests {
             .map(|k| lanes.effective(k, &boxes))
             .collect();
         assert_eq!(before, after);
-        // Embers and sparks painted a surface with the cloud's particles:
-        // they are no longer behaviors to ask for.
-        for said in [
-            "Embers on the desk.",
-            "sparks on the floor",
-            "every table embers",
+        // Embers and sparks painted a surface with the cloud's particles,
+        // which are gone (board #5462): each gets its stand-in, on the
+        // kind's list, and the reply names that look.
+        for (said, target, look, label) in [
+            (
+                "Embers on the desk.",
+                Target::Surface(0),
+                B::Curls,
+                "desk: curls",
+            ),
+            (
+                "sparks on the floor",
+                Target::Surface(5),
+                B::Rings,
+                "floor: rings",
+            ),
+            (
+                "every table embers",
+                Target::Kind(KIND_TABLE),
+                B::Curls,
+                "all tables: curls",
+            ),
+            ("this spark", Target::Pointed, B::Pulse, "desk: pulse"),
         ] {
-            assert!(parse(said, &v).is_err(), "{said}: {:?}", parse(said, &v));
+            let intent = parse(said, &v).unwrap_or_else(|m| panic!("{said}: {m:?}"));
+            assert_eq!(intent, on(target, look), "{said}");
+            assert_eq!(
+                apply(&intent, &v, &mut lanes, &boxes).as_deref(),
+                Some(label),
+                "{said}"
+            );
+        }
+        assert_eq!(lanes.effective(0, &boxes).map(|(b, _)| b), Some(B::Pulse));
+        assert_eq!(lanes.effective(1, &boxes).map(|(b, _)| b), Some(B::Curls));
+        assert_eq!(lanes.effective(5, &boxes).map(|(b, _)| b), Some(B::Rings));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Board #5462: astrolabe and fenestra are held back. A sentence or an
+    /// agent's action naming one changes nothing and says so in one short
+    /// sentence; the reply's other actions still apply. No path the voice
+    /// takes writes one of the four looks that are not offered.
+    #[test]
+    fn a_held_back_look_changes_nothing_and_says_so() {
+        let dir = std::env::temp_dir().join(format!("fosfora-intent-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (e, boxes) = (cut_effects(), room());
+        let v = app_vocab(&e, &boxes);
+        let id = room_id(boxes.iter().map(|b| b.uuid));
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        let before: Vec<_> = (0..boxes.len())
+            .map(|k| lanes.effective(k, &boxes))
+            .collect();
+        for (said, look) in [
+            ("Astrolabe on the ceiling.", B::Astrolabe),
+            ("fenestra on wall 3", B::Fenestra),
+            ("every wall fenestra", B::Fenestra),
+            ("this astrolabe", B::Astrolabe),
+        ] {
+            let m = parse(said, &v).unwrap_err();
+            assert_eq!(m.reason, Reason::NotAvailable(look), "{said}");
+            // An answer, not a sentence for the agent.
+            assert!(!crate::agent::forwards(&m.reason), "{said}");
+            let text = miss_text(&m);
+            assert_eq!(crate::label::layout(&text).lines.len(), 1, "{text}");
+            assert!(text.chars().count() < MAX_EXAMPLE_CHARS, "{text}");
+        }
+        // The agent's action, the on-device model's too.
+        let act = |kind: &str, target: &str, value: &str| AgentAction {
+            kind: kind.to_owned(),
+            target: target.to_owned(),
+            value: value.to_owned(),
+        };
+        for value in ["astrolabe", "Fenestra"] {
+            let m = Intent::from_json(&act("behavior", "ceiling", value), &v).unwrap_err();
+            assert!(matches!(m.reason, Reason::NotAvailable(_)), "{value}");
+        }
+        // An intent naming one, however it was built, writes nothing.
+        for look in [B::Astrolabe, B::Fenestra, B::Embers, B::Sparks] {
+            for target in [Target::Surface(6), Target::Kind(KIND_WALL), Target::Pointed] {
+                let reply = apply(&on(target, look), &v, &mut lanes, &boxes);
+                assert_eq!(reply, Some(not_available(look)), "{look:?}");
+            }
+        }
+        let after: Vec<_> = (0..boxes.len())
+            .map(|k| lanes.effective(k, &boxes))
+            .collect();
+        assert_eq!(before, after);
+        // Not in the vocabulary's lists either.
+        for gone in [B::Embers, B::Sparks, B::Astrolabe, B::Fenestra] {
+            assert!(!v.behaviors.contains(&gone), "{gone:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The help card lists nothing that no longer works: no example steps
-    /// or names an effect or paints embers or sparks, and each one the
-    /// grammar hears does something.
+    /// or names an effect or paints embers, sparks, astrolabe or fenestra
+    /// (board #5462), and each one the grammar hears does something.
     #[test]
     fn the_help_lists_nothing_that_is_gone() {
         let e = cut_effects();
@@ -4610,7 +4769,16 @@ mod tests {
             assert_eq!(all, pool(&v), "every example parses");
             for example in &all {
                 let low = example.to_lowercase();
-                for dead in ["effect", "embers", "sparks", "cloud", "flock", "flux"] {
+                for dead in [
+                    "effect",
+                    "embers",
+                    "sparks",
+                    "astrolabe",
+                    "fenestra",
+                    "cloud",
+                    "flock",
+                    "flux",
+                ] {
                     assert!(!low.contains(dead), "\"{example}\" names {dead}");
                 }
                 for c in parse_clauses(example, &v) {
@@ -4632,9 +4800,21 @@ mod tests {
             // first example.
             assert_eq!(all[0], "next theme");
             // A miss is never sent to a phrase that is gone.
-            for said in ["Switch over to the flock now.", "Make it glow like embers."] {
+            for said in [
+                "Switch over to the flock now.",
+                "Make it glow like embers.",
+                "Give it an astrolabe dial.",
+            ] {
                 let hinted = hint(said, &v).to_lowercase();
-                for dead in ["effect", "embers", "sparks", "flock", "flux"] {
+                for dead in [
+                    "effect",
+                    "embers",
+                    "sparks",
+                    "astrolabe",
+                    "fenestra",
+                    "flock",
+                    "flux",
+                ] {
                     assert!(!hinted.contains(dead), "{said}: {hinted}");
                 }
             }

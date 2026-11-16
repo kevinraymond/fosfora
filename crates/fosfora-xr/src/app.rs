@@ -4221,17 +4221,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             understood = missed.is_empty();
                             // Board #5470: an action that asks for an
                             // effect did nothing, whatever the model says
-                            // it did, so the label is the grammar's answer.
-                            let say = if outcomes
-                                .iter()
-                                .flatten()
-                                .any(crate::intent::asks_for_effect)
-                            {
-                                ""
-                            } else {
-                                reply.say.as_str()
-                            };
-                            crate::agent::label(say, &applied, &missed)
+                            // it did, so the label is the grammar's answer;
+                            // board #5462: one that asks for embers or
+                            // sparks got a stand-in, which the label names.
+                            crate::agent::reply_label(&reply, &outcomes, &applied, &missed)
                         }
                         Err(e) => {
                             debug!(
@@ -4807,8 +4800,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         _ => (0, behavior.default_band()),
                     };
                     let spectrum = behavior == SurfaceBehavior::Spectrum;
+                    // Board #5462: a look not offered (astrolabe and
+                    // fenestra, held back) shows nothing, as embers and
+                    // sparks do; the lanes log the surfaces on one.
                     if spectrum != (spectrum_box == Some(k))
                         || (!spectrum && !behavior.draws_on_face())
+                        || !behavior.offered()
                         || b.hidden
                         || (k == stage_k && scene_floor)
                         || (behavior == SurfaceBehavior::Rings && ripple.is_none())

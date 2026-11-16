@@ -96,7 +96,7 @@ pub const ACTION_KINDS: [&str; 13] = [
 
 /// The system instruction, shared by both providers and fixed, so the
 /// Anthropic API can cache it: one paragraph.
-pub const INSTRUCTION: &str = "You are the assistant of a mixed-reality room in which music drives light on the room's real surfaces. You get the room as JSON (every surface with its name, its kind, its size in meters and what it runs now: behavior, color, band and strength; the name of the surface the wearer points at, or null; the behaviors each kind can run; the color names; the band names), then one sentence the wearer said. Answer only with one JSON object and nothing before or after it: {\"actions\": [...], \"say\": \"...\"}. Each action is {\"kind\": ..., \"target\": ..., \"value\": ...}, three strings. The kinds: edit_room, cloud (the fireflies around the wearer and the particles a hand throws, also called particles), pitcher (the particle pitcher) and music turn on or off by value \"on\" or \"off\"; rescan scans the room again; recenter brings the fireflies back around the wearer; all_none sets every surface to none; behavior sets what a surface runs to value, a behavior from the list of the target's own kind, or none; color sets its color to value, a color name (own is the kind's own color, key follows the music's key); band sets which part of the music drives it to value, a band name (rms is the overall level, bass, mid and high the three bands); strength sets its brightness by value up, down, half, full or off; describe shows what the target runs. The behaviors look like this: spectrum draws the music's spectrum as bars across a wall; rings are rings of light spreading on the beat; streamlines are lines of light flowing across the face; curls are tight swirling curls with a faint fill; pulse is a whole-face glow that jumps on the downbeat and breathes with the bar; aurora is flowing curtains of light; prism is a kaleidoscope turning about the center; shards are cells with glowing edges; astrolabe is a dial assembling ring by ring; bezel is chrome hugging the face's edges; fenestra is panels snapping into place across the bar; reticle is crosshairs taking a new target every bar; tessera is a grid of tiles revealing in waves; none is nothing. The target is a surface's name exactly as the room gives it, a kind word (table, floor, wall, ceiling, frame, other) for every surface of that kind, \"pointed\" for the surface the wearer points at, or \"\" for the kinds that take no target; value is \"\" for the kinds that take none. Use the pointed surface when the sentence says this, that or here, or names no surface. List the actions in the order to apply them, as few as do what was asked. say is one short sentence for the wearer's label, at most 60 characters, saying what you did. When the sentence asks for something these actions cannot express, return no actions and say so in say. Never invent a surface, behavior, color or band: use only the names the room gives.";
+pub const INSTRUCTION: &str = "You are the assistant of a mixed-reality room in which music drives light on the room's real surfaces. You get the room as JSON (every surface with its name, its kind, its size in meters and what it runs now: behavior, color, band and strength; the name of the surface the wearer points at, or null; the behaviors each kind can run; the color names; the band names), then one sentence the wearer said. Answer only with one JSON object and nothing before or after it: {\"actions\": [...], \"say\": \"...\"}. Each action is {\"kind\": ..., \"target\": ..., \"value\": ...}, three strings. The kinds: edit_room, cloud (the fireflies around the wearer and the particles a hand throws, also called particles), pitcher (the particle pitcher) and music turn on or off by value \"on\" or \"off\"; rescan scans the room again; recenter brings the fireflies back around the wearer; all_none sets every surface to none; behavior sets what a surface runs to value, a behavior from the list of the target's own kind, or none; color sets its color to value, a color name (own is the kind's own color, key follows the music's key); band sets which part of the music drives it to value, a band name (rms is the overall level, bass, mid and high the three bands); strength sets its brightness by value up, down, half, full or off; describe shows what the target runs. The behaviors look like this: spectrum draws the music's spectrum as bars across a wall; rings are rings of light spreading on the beat; streamlines are lines of light flowing across the face; curls are tight swirling curls with a faint fill; pulse is a whole-face glow that jumps on the downbeat and breathes with the bar; aurora is flowing curtains of light; prism is a kaleidoscope turning about the center; shards are cells with glowing edges; bezel is chrome hugging the face's edges; reticle is crosshairs taking a new target every bar; tessera is a grid of tiles revealing in waves; none is nothing. The target is a surface's name exactly as the room gives it, a kind word (table, floor, wall, ceiling, frame, other) for every surface of that kind, \"pointed\" for the surface the wearer points at, or \"\" for the kinds that take no target; value is \"\" for the kinds that take none. Use the pointed surface when the sentence says this, that or here, or names no surface. List the actions in the order to apply them, as few as do what was asked. say is one short sentence for the wearer's label, at most 60 characters, saying what you did. When the sentence asks for something these actions cannot express, return no actions and say so in say. Never invent a surface, behavior, color or band: use only the names the room gives.";
 
 /// Which API a config talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1209,9 +1209,41 @@ pub fn label(say: &str, applied: &[String], missed: &[Miss]) -> (String, f32) {
         ([], []) => AgentError::Parse(String::new()).label().to_owned(),
         (_, []) => applied.join("; "),
         ([], [first, ..]) => crate::intent::miss_text(first),
-        (_, _) => format!("{}; skipped {}", applied.join("; "), missed.len()),
+        (_, _) => {
+            let mut text = format!("{}; skipped {}", applied.join("; "), missed.len());
+            // Board #5462: a look held back says so, under what applied.
+            if let Some(m) = missed
+                .iter()
+                .find(|m| matches!(m.reason, Reason::NotAvailable(_)))
+            {
+                text.push('\n');
+                text.push_str(&crate::intent::miss_text(m));
+            }
+            text
+        }
     };
     (text, LABEL_S)
+}
+
+/// The label for `reply`, whose actions came to `outcomes`, `applied` the
+/// labels of those applied and `missed` those dropped: [`label`], without
+/// the model's `say` when it would name what did not happen. An action
+/// asking for an effect did nothing, whatever the model says (board
+/// #5470). One asking for embers or sparks got their stand-in (board
+/// #5462, `intent::stands_in`), so the label names the look applied
+/// ("desk: curls"), not the one the model named.
+pub fn reply_label(
+    reply: &Reply,
+    outcomes: &[Result<Intent, Miss>],
+    applied: &[String],
+    missed: &[Miss],
+) -> (String, f32) {
+    let quiet = outcomes
+        .iter()
+        .flatten()
+        .any(crate::intent::asks_for_effect)
+        || reply.actions.iter().any(crate::intent::stands_in);
+    label(if quiet { "" } else { &reply.say }, applied, missed)
 }
 
 /// The reply's log line: `voice agent: heard "<sentence>" → [<intent or
@@ -1313,7 +1345,7 @@ mod tests {
     ) -> Vocabulary<'a> {
         Vocabulary {
             effects,
-            behaviors: &SurfaceBehavior::ALL,
+            behaviors: &SurfaceBehavior::OFFERED,
             surfaces: surfaces(boxes),
             pointed,
             tracks: crate::intent::Tracks::default(),
@@ -1338,7 +1370,7 @@ mod tests {
     }
 
     /// The fixture room's JSON, as the user message carries it.
-    const ROOM_JSON: &str = r#"{"effect":"Embers","effects":["Flux Cloud","Embers","Flock"],"surfaces":[{"name":"desk","kind":"table","size_m":[1.2,0.6],"behavior":"streamlines","color":"own","band":"rms","strength":1.0},{"name":"table 1","kind":"table","size_m":[0.8,0.8],"behavior":"streamlines","color":"own","band":"rms","strength":1.0},{"name":"table 2","kind":"table","size_m":[1.6,0.9],"behavior":"streamlines","color":"own","band":"rms","strength":1.0},{"name":"wall 3","kind":"wall","size_m":[4.12,2.5],"behavior":"spectrum","color":"own","band":"rms","strength":1.0},{"name":"wall 4","kind":"wall","size_m":[3.0,2.5],"behavior":"spectrum","color":"own","band":"rms","strength":1.0},{"name":"floor","kind":"floor","size_m":[4.0,3.5],"behavior":"rings","color":"own","band":"bass","strength":1.0},{"name":"ceiling","kind":"ceiling","size_m":[4.0,3.5],"behavior":"none","color":"own","band":"rms","strength":1.0},{"name":"lamp","kind":"other","size_m":[0.3,0.3],"behavior":"curls","color":"own","band":"rms","strength":1.0}],"pointed":"desk","behaviors":{"ceiling":["none","rings","pulse","streamlines","aurora","astrolabe"],"floor":["none","rings","streamlines","curls","sparks","tessera","prism","astrolabe","aurora"],"other":["none","curls","streamlines","pulse","embers","shards","reticle","tessera"],"table":["none","streamlines","curls","pulse","embers","sparks","shards","prism"],"wall":["none","spectrum","streamlines","rings","pulse","aurora","fenestra","bezel"]},"colors":["own","blue","violet","warm white","amber","green","teal","rose","key"],"bands":["rms","bass","mid","high"]}"#;
+    const ROOM_JSON: &str = r#"{"effect":"Embers","effects":["Flux Cloud","Embers","Flock"],"surfaces":[{"name":"desk","kind":"table","size_m":[1.2,0.6],"behavior":"streamlines","color":"own","band":"rms","strength":1.0},{"name":"table 1","kind":"table","size_m":[0.8,0.8],"behavior":"streamlines","color":"own","band":"rms","strength":1.0},{"name":"table 2","kind":"table","size_m":[1.6,0.9],"behavior":"streamlines","color":"own","band":"rms","strength":1.0},{"name":"wall 3","kind":"wall","size_m":[4.12,2.5],"behavior":"spectrum","color":"own","band":"rms","strength":1.0},{"name":"wall 4","kind":"wall","size_m":[3.0,2.5],"behavior":"spectrum","color":"own","band":"rms","strength":1.0},{"name":"floor","kind":"floor","size_m":[4.0,3.5],"behavior":"rings","color":"own","band":"bass","strength":1.0},{"name":"ceiling","kind":"ceiling","size_m":[4.0,3.5],"behavior":"none","color":"own","band":"rms","strength":1.0},{"name":"lamp","kind":"other","size_m":[0.3,0.3],"behavior":"curls","color":"own","band":"rms","strength":1.0}],"pointed":"desk","behaviors":{"ceiling":["none","rings","pulse","streamlines","aurora"],"floor":["none","rings","streamlines","curls","tessera","prism","aurora"],"other":["none","curls","streamlines","pulse","shards","reticle","tessera"],"table":["none","streamlines","curls","pulse","shards","prism"],"wall":["none","spectrum","streamlines","rings","pulse","aurora","bezel"]},"colors":["own","blue","violet","warm white","amber","green","teal","rose","key"],"bands":["rms","bass","mid","high"]}"#;
 
     /// The room as the app describes it since board #5470: no effect to
     /// name, and no behavior that painted a surface with the cloud's
@@ -1359,10 +1391,19 @@ mod tests {
         assert_eq!(room.effect, None);
         assert!(room.effects.is_empty());
         let json = serde_json::to_string(&room).unwrap();
-        for gone in ["effect", "embers", "sparks", "Flux", "Flock"] {
+        for gone in [
+            "effect",
+            "embers",
+            "sparks",
+            "astrolabe",
+            "fenestra",
+            "Flux",
+            "Flock",
+        ] {
             assert!(!json.contains(gone), "{gone} in {json}");
         }
-        // The lists are each kind's own, in order, without the two.
+        // The lists are each kind's own, in order, without the four not
+        // offered (boards #5470, #5462).
         assert_eq!(
             room.behaviors["table"],
             ["none", "streamlines", "curls", "pulse", "shards", "prism"]
@@ -1376,8 +1417,19 @@ mod tests {
                 "curls",
                 "tessera",
                 "prism",
-                "astrolabe",
                 "aurora"
+            ]
+        );
+        assert_eq!(
+            room.behaviors["wall"],
+            [
+                "none",
+                "spectrum",
+                "streamlines",
+                "rings",
+                "pulse",
+                "aurora",
+                "bezel"
             ]
         );
         // The rest of the room is the fixture's.
@@ -1700,8 +1752,16 @@ mod tests {
         }
         assert!(!INSTRUCTION.contains('\n'));
         // Board #5470: nothing of the three cloud effects, nor of the two
-        // behaviors that painted a surface with their particles.
-        for gone in ["effect", "embers", "sparks", "particle cloud"] {
+        // behaviors that painted a surface with their particles; board
+        // #5462: nor of the two looks held back.
+        for gone in [
+            "effect",
+            "embers",
+            "sparks",
+            "particle cloud",
+            "astrolabe",
+            "fenestra",
+        ] {
             assert!(!INSTRUCTION.contains(gone), "{gone}");
             assert!(!ACTION_KINDS.iter().any(|k| k.contains(gone)), "{gone}");
         }
@@ -1947,11 +2007,12 @@ mod tests {
             (act("rescan", "", ""), Intent::Rescan),
             (act("recenter", "", ""), Intent::Recenter),
             (act("all_none", "", ""), Intent::AllNone),
+            // Board #5462: embers' particles are gone; the curls stand in.
             (
                 act("behavior", "desk", "embers"),
                 Intent::Behavior {
                     target: Target::Surface(0),
-                    behavior: B::Embers,
+                    behavior: B::Curls,
                 },
             ),
             (
@@ -2099,18 +2160,27 @@ mod tests {
             Reason::UnknownBehavior("fire".into())
         );
         assert_eq!(
-            reason(act("behavior", "wall 3", "embers")),
+            reason(act("behavior", "wall 3", "prism")),
             Reason::NotOnThisKind {
-                behavior: B::Embers,
+                behavior: B::Prism,
                 kind: KIND_WALL
             }
         );
         assert_eq!(
-            reason(act("behavior", "ceiling", "sparks")),
+            reason(act("behavior", "ceiling", "curls")),
             Reason::NotOnThisKind {
-                behavior: B::Sparks,
+                behavior: B::Curls,
                 kind: KIND_CEILING
             }
+        );
+        // Board #5462: a look held back is not available, on any surface.
+        assert_eq!(
+            reason(act("behavior", "ceiling", "astrolabe")),
+            Reason::NotAvailable(B::Astrolabe)
+        );
+        assert_eq!(
+            reason(act("behavior", "shelf", "fenestra")),
+            Reason::NotAvailable(B::Fenestra)
         );
         assert_eq!(reason(act("dance", "desk", "")), Reason::NoMatch);
         assert_eq!(reason(act("color", "desk", "orchid")), Reason::NoMatch);
@@ -2171,8 +2241,9 @@ mod tests {
                 Err(m) => missed.push(m.clone()),
             }
         }
-        assert_eq!(applied, ["desk: embers", "desk: half strength"]);
-        assert_eq!(lanes.effective(0, &boxes).map(|(b, _)| b), Some(B::Embers));
+        // Board #5462: the curls stand in for embers, and say so.
+        assert_eq!(applied, ["desk: curls", "desk: half strength"]);
+        assert_eq!(lanes.effective(0, &boxes).map(|(b, _)| b), Some(B::Curls));
         assert_close!(lanes.params_of(0, &boxes).2, 0.5);
         assert_eq!(lanes.params_of(0, &boxes).0, 0, "the color stays");
         assert_eq!(
@@ -2181,15 +2252,148 @@ mod tests {
         );
         assert_eq!(
             heard_line(SENTENCE, &outcomes, &reply.say),
-            "voice agent: heard \"Something like a campfire on the desk.\" \u{2192} [Behavior { target: Surface(0), behavior: Embers }, miss NoMatch, Strength { target: Surface(0), strength: Half }] \u{b7} say \"A campfire on the desk\""
+            "voice agent: heard \"Something like a campfire on the desk.\" \u{2192} [Behavior { target: Surface(0), behavior: Curls }, miss NoMatch, Strength { target: Surface(0), strength: Half }] \u{b7} say \"A campfire on the desk\""
         );
         assert_eq!(
             label(&reply.say, &applied, &missed),
             (
-                "desk: embers; desk: half strength; skipped 1".to_owned(),
+                "desk: curls; desk: half strength; skipped 1".to_owned(),
                 LABEL_S
             )
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The replies to the campfire and to a starry ceiling, `actions` and
+    /// `say`, as the app maps and applies them: the intents, the labels of
+    /// those applied, the misses, and the label the wearer reads.
+    fn applied_reply(
+        lanes: &mut RoomLanes,
+        boxes: &[LaneBox<'_>],
+        actions: Vec<AgentAction>,
+        say: &str,
+    ) -> (Vec<String>, Vec<Miss>, String) {
+        let e = effects();
+        let v = vocab(&e, boxes, Some(0));
+        let reply = Reply {
+            actions,
+            say: say.to_owned(),
+            ..Reply::default()
+        };
+        let outcomes: Vec<Result<Intent, Miss>> = reply
+            .actions
+            .iter()
+            .map(|a| Intent::from_json(a, &v))
+            .collect();
+        let mut applied = Vec::new();
+        let mut missed = Vec::new();
+        for o in &outcomes {
+            match o {
+                Ok(intent) => {
+                    applied.push(crate::intent::apply(intent, &v, lanes, boxes).unwrap());
+                }
+                Err(m) => missed.push(m.clone()),
+            }
+        }
+        let text = reply_label(&reply, &outcomes, &applied, &missed).0;
+        (applied, missed, text)
+    }
+
+    /// Board #5462: the on-device model answers "something like a campfire
+    /// on the desk" with embers, amber and half strength. Embers' particles
+    /// are gone, so the curls stand in: the desk gets curls in amber at
+    /// half strength, and the label names the curls, never embers.
+    #[test]
+    fn the_campfire_reply_puts_curls_on_the_desk_in_amber_at_half() {
+        let boxes = room();
+        let (mut lanes, dir) = lanes("campfire", &boxes);
+        let (applied, missed, text) = applied_reply(
+            &mut lanes,
+            &boxes,
+            vec![
+                act("behavior", "desk", "embers"),
+                act("color", "desk", "amber"),
+                act("strength", "desk", "half"),
+            ],
+            "A campfire on the desk",
+        );
+        assert!(missed.is_empty(), "{missed:?}");
+        assert_eq!(
+            applied,
+            ["desk: curls", "desk: amber", "desk: half strength"]
+        );
+        assert_eq!(lanes.effective(0, &boxes).map(|(b, _)| b), Some(B::Curls));
+        let (color, _, strength) = lanes.params_of(0, &boxes);
+        assert_eq!(color, 4, "amber");
+        assert_close!(strength, 0.5);
+        // The model's sentence would name a look the desk did not get.
+        assert_eq!(text, "desk: curls; desk: amber; desk: half strength");
+        assert!(!text.to_lowercase().contains("ember"), "{text}");
+        // Sparks the same way, the pulse on a table; on a wall, whose list
+        // has neither, its first look.
+        let (applied, _, text) = applied_reply(
+            &mut lanes,
+            &boxes,
+            vec![
+                act("behavior", "table 1", "sparks"),
+                act("behavior", "wall 3", "embers"),
+            ],
+            "Sparks and embers",
+        );
+        assert_eq!(applied, ["table 1: pulse", "wall 3: spectrum"]);
+        assert_eq!(text, "table 1: pulse; wall 3: spectrum");
+        // A reply that names none of the four keeps the model's sentence.
+        let (_, _, text) = applied_reply(
+            &mut lanes,
+            &boxes,
+            vec![act("behavior", "desk", "curls")],
+            "Curls on the desk",
+        );
+        assert_eq!(text, "Curls on the desk");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Board #5462: a reply naming astrolabe or fenestra changes nothing
+    /// with that action and says so in one short sentence; its other
+    /// actions still apply.
+    #[test]
+    fn a_reply_naming_a_held_back_look_changes_nothing_and_says_so() {
+        let boxes = room();
+        let (mut lanes, dir) = lanes("held-back", &boxes);
+        let before: Vec<_> = (0..boxes.len())
+            .map(|k| (lanes.effective(k, &boxes), lanes.params_of(k, &boxes)))
+            .collect();
+        let (applied, missed, text) = applied_reply(
+            &mut lanes,
+            &boxes,
+            vec![act("behavior", "ceiling", "astrolabe")],
+            "A starry ceiling",
+        );
+        assert!(applied.is_empty());
+        assert_eq!(missed.len(), 1);
+        assert_eq!(missed[0].reason, Reason::NotAvailable(B::Astrolabe));
+        assert_eq!(text, "Astrolabe is not available");
+        let after: Vec<_> = (0..boxes.len())
+            .map(|k| (lanes.effective(k, &boxes), lanes.params_of(k, &boxes)))
+            .collect();
+        assert_eq!(before, after);
+        // With a color besides: the color applies, the label says both.
+        let (applied, _, text) = applied_reply(
+            &mut lanes,
+            &boxes,
+            vec![
+                act("behavior", "wall 3", "fenestra"),
+                act("color", "wall 3", "violet"),
+            ],
+            "Panels on the wall, in violet",
+        );
+        assert_eq!(applied, ["wall 3: violet"]);
+        assert_eq!(text, "wall 3: violet; skipped 1\nFenestra is not available");
+        assert_eq!(
+            lanes.effective(3, &boxes).map(|(b, _)| b),
+            Some(B::Spectrum)
+        );
+        assert_eq!(lanes.params_of(3, &boxes).0, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2203,11 +2407,12 @@ mod tests {
             (Reason::UnknownSurface("shelf".into()), false),
             (
                 Reason::NotOnThisKind {
-                    behavior: B::Embers,
+                    behavior: B::Prism,
                     kind: KIND_WALL,
                 },
                 false,
             ),
+            (Reason::NotAvailable(B::Astrolabe), false),
             (
                 Reason::Ambiguous(vec!["table 1".into(), "table 2".into()]),
                 false,
@@ -2223,7 +2428,8 @@ mod tests {
             ("Fire on the desk.", true),
             ("Make the walls calmer.", true),
             ("The shelf in blue.", false),
-            ("Embers on wall 3.", false),
+            ("Prism on wall 3.", false),
+            ("Fenestra on wall 3.", false),
             ("Table in amber.", false),
             ("In amber.", false),
         ] {
@@ -2307,9 +2513,10 @@ mod tests {
                     act("color", "table 14", "amber"),
                 ],
                 vec![
+                    // Board #5462: the curls stand in for embers.
                     Intent::Behavior {
                         target: Target::Surface(14),
-                        behavior: B::Embers,
+                        behavior: B::Curls,
                     },
                     Intent::Color {
                         target: Target::Surface(14),
@@ -2374,14 +2581,15 @@ mod tests {
             ),
             (
                 "Give the ceiling a starry night.",
+                // Astrolabe is held back (board #5462): the aurora.
                 vec![
-                    act("behavior", "ceiling", "astrolabe"),
+                    act("behavior", "ceiling", "aurora"),
                     act("color", "ceiling", "violet"),
                 ],
                 vec![
                     Intent::Behavior {
                         target: Target::Surface(10),
-                        behavior: B::Astrolabe,
+                        behavior: B::Aurora,
                     },
                     Intent::Color {
                         target: Target::Surface(10),

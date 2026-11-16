@@ -401,6 +401,9 @@ pub struct RoomLanes {
     /// and nothing edited by hand, or just cleared) and the fresh theme is
     /// still to apply, on the first update whose boxes are the room's.
     fresh_pending: bool,
+    /// The surfaces on a look that is not offered when the log last named
+    /// them (board #5462), by UUID, so the line is said once.
+    not_offered: Vec<([u8; 16], SurfaceBehavior)>,
 }
 
 impl RoomLanes {
@@ -418,6 +421,7 @@ impl RoomLanes {
             theme_knob: crate::themes::Knob::default(),
             fresh_theme: None,
             fresh_pending: false,
+            not_offered: Vec::new(),
         }
     }
 
@@ -471,7 +475,47 @@ impl RoomLanes {
         self.key = Some(key);
         (self.rows, self.behaviors) = lane_rows(&self.file, boxes);
         info!("{}", self.table(boxes));
+        if let Some(line) = self.not_offered_line(boxes) {
+            info!("{line}");
+        }
         true
+    }
+
+    /// The log line naming the surfaces on a look that is not offered
+    /// (board #5462, `SurfaceBehavior::offered`): embers and sparks, whose
+    /// particles are gone, and astrolabe and fenestra, held back. They
+    /// show nothing. `None` while the set is the one last named, so a room
+    /// saved with one says it once, and again only when it changes.
+    fn not_offered_line(&mut self, boxes: &[LaneBox<'_>]) -> Option<String> {
+        let mut now: Vec<([u8; 16], SurfaceBehavior)> = boxes
+            .iter()
+            .zip(&self.behaviors)
+            .filter(|(_, b)| !b.offered())
+            .map(|(x, &b)| (x.uuid, b))
+            .collect();
+        now.sort_unstable_by_key(|(u, _)| *u);
+        if now == self.not_offered {
+            return None;
+        }
+        self.not_offered = now;
+        if self.not_offered.is_empty() {
+            return None;
+        }
+        let cells: Vec<String> = boxes
+            .iter()
+            .zip(&self.behaviors)
+            .enumerate()
+            .filter(|(_, (_, b))| !b.offered())
+            .map(|(k, (b, behavior))| {
+                let (label, uuid8) = box_label(b);
+                format!("#{k} {label} {uuid8} {}", behavior.name())
+            })
+            .collect();
+        Some(format!(
+            "room {}: on a look not offered, showing nothing: {}",
+            room_label(self.room),
+            cells.join(" | ")
+        ))
     }
 
     /// The rows for the aux block, one per box of the last update.
@@ -1733,7 +1777,7 @@ mod tests {
         assert!(lanes.poll_knob(Some("#3=sparks@0.4"), false, &boxes));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Tessera));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Prism));
-        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Astrolabe));
+        // Astrolabe is held back (board #5462): the cycle steps past it.
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Aurora));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::None));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Rings));
@@ -1900,10 +1944,11 @@ mod tests {
         assert!(lanes.poll_knob(Some("#5=embers"), false, &boxes));
         assert_eq!(lanes.cycle(5, &boxes), Ok(B::Rings));
         // The floor: the rings by default (step 2d), then the
-        // streamlines, the curls, its four ported effects (aurora the
-        // sky's reflection, board #5436), none, the rings. Sparks is on
-        // its list and the cycle steps past it (board #5470).
-        let floor: Vec<_> = (0..8).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
+        // streamlines, the curls, three of its four ported effects (aurora
+        // the sky's reflection, board #5436), none, the rings. Sparks and
+        // astrolabe are on its list and the cycle steps past them (boards
+        // #5470, #5462).
+        let floor: Vec<_> = (0..7).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
         assert_eq!(
             floor,
             [
@@ -1911,7 +1956,6 @@ mod tests {
                 B::Curls,
                 B::Tessera,
                 B::Prism,
-                B::Astrolabe,
                 B::Aurora,
                 B::None,
                 B::Rings
@@ -2008,6 +2052,56 @@ mod tests {
                 .anchors
                 .iter()
                 .all(|e| plane_id(&e.uuid).is_none())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Board #5462: a saved room with surfaces on looks not offered loads
+    /// them as they are, names them in the log once, and again only when
+    /// the set changes; the editor's cycle takes each to a look offered.
+    #[test]
+    fn a_saved_surface_on_a_look_not_offered_loads_and_is_named_once() {
+        let (dir, boxes, id, _) = fresh("not-offered");
+        let path = room_path(&dir, id.unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text = format!(
+            r#"{{ "version": 2, "anchors": [
+                  {{ "uuid": "{}", "kind": "floor", "behavior": "astrolabe" }},
+                  {{ "uuid": "{}", "kind": "wall", "behavior": "fenestra" }},
+                  {{ "uuid": "{}", "kind": "table", "behavior": "embers" }} ] }}"#,
+            uuid_hex(&uuid(4)),
+            uuid_hex(&uuid(2)),
+            uuid_hex(&uuid(1))
+        );
+        std::fs::write(&path, &text).unwrap();
+        let mut lanes = RoomLanes::new(dir.clone());
+        assert!(lanes.update(id, &boxes));
+        assert_eq!(lanes.behavior(3), B::Astrolabe);
+        assert_eq!(lanes.behavior(1), B::Fenestra);
+        assert_eq!(lanes.behavior(0), B::Embers);
+        // Named at load; the same set says nothing again.
+        assert_eq!(lanes.not_offered.len(), 3);
+        assert_eq!(lanes.not_offered_line(&boxes), None);
+        lanes.revision += 1;
+        assert!(lanes.update(id, &boxes));
+        assert_eq!(lanes.not_offered_line(&boxes), None);
+        // Nothing written by loading.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        // The editor's step leaves each for a look offered.
+        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Aurora));
+        assert_eq!(lanes.cycle(1, &boxes), Ok(B::Bezel));
+        lanes.update(id, &boxes);
+        assert_eq!(lanes.not_offered.len(), 1);
+        // A line for the new set, with its box.
+        lanes.not_offered.clear();
+        let line = lanes.not_offered_line(&boxes).expect("a line");
+        assert!(
+            line.contains("#0 DESK") && line.ends_with("embers"),
+            "{line}"
+        );
+        assert!(
+            !line.contains("astrolabe") && !line.contains("fenestra"),
+            "{line}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
