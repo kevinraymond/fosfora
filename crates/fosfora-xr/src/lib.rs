@@ -1,4 +1,4 @@
-//! Fosfora VR: OpenXR, Android and VR-specific glue (`docs/xr/XR_DESIGN.md`).
+//! Fosfora XR: OpenXR, Android and VR-specific glue (`docs/xr/XR_DESIGN.md`).
 //!
 //! Everything in this crate is Android-only. On other targets it compiles to an
 //! empty library so the desktop workspace (`cargo clippy --all-targets`,

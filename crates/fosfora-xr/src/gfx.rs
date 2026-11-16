@@ -284,7 +284,7 @@ impl Gfx {
         let instance_ext_ptrs: Vec<*const c_char> =
             instance_extensions.iter().map(|e| e.as_ptr()).collect();
         let app_info = vk::ApplicationInfo::default()
-            .application_name(c"Fosfora VR")
+            .application_name(c"Fosfora XR")
             .application_version(1)
             .engine_name(c"fosfora")
             .engine_version(1)

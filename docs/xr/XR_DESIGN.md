@@ -1951,7 +1951,7 @@ moved to `android/app/build.gradle.kts` (`namespace` / `applicationId`).
     <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker"/>
     <intent><action android:name="org.khronos.openxr.OpenXRRuntimeService"/></intent>
   </queries>
-  <application android:hasCode="false" android:label="Fosfora VR">
+  <application android:hasCode="false" android:label="Fosfora XR">
     <meta-data android:name="com.oculus.supportedDevices" android:value="quest3|quest3s"/>
     <activity android:name="android.app.NativeActivity"
               android:configChanges="density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|uiMode"
@@ -1968,8 +1968,8 @@ moved to `android/app/build.gradle.kts` (`namespace` / `applicationId`).
 </manifest>
 ```
 
-- The package id is a placeholder. Ask Kevin before the first dashboard upload;
-  it is hard to change later.
+- The package id is `dev.fosfora.xr`, on the project's own domain. It cannot
+  change once a build has been uploaded.
 - Release signing, the version policy and the upload: [RELEASE.md](RELEASE.md).
 - The `supportedDevices` value for Meta VR Glasses isn't known yet. Add it when
   Meta publishes it.

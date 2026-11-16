@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fosfora VR dev loop for a Quest over adb: build the Rust cdylib with cargo-ndk,
+# Fosfora XR dev loop for a Quest over adb: build the Rust cdylib with cargo-ndk,
 # package it with the Gradle project in android/, install, launch and follow the
 # filtered logcat. See docs/xr/BUILD_PLAN.md (S1).
 #

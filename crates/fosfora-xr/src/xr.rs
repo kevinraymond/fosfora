@@ -251,7 +251,7 @@ impl XrContext {
         let instance = entry
             .create_instance(
                 &xr::ApplicationInfo {
-                    application_name: "Fosfora VR",
+                    application_name: "Fosfora XR",
                     application_version: 1,
                     engine_name: "fosfora",
                     engine_version: 1,

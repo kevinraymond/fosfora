@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The Fosfora VR release keystore: print the keytool command that creates it,
+# The Fosfora XR release keystore: print the keytool command that creates it,
 # or create it with --create <path>. See docs/xr/RELEASE.md.
 #
 #   scripts/xr/release-keystore.sh                  print the command

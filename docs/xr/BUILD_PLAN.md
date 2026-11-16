@@ -1,7 +1,7 @@
 # Build plan: week-1 spike (S0–S7)
 
 **Goal:** by **Sun Oct 4, 2026**, know whether native Rust + OpenXR + wgpu can
-carry Fosfora VR to a shippable build. Each step answers one risky question.
+carry Fosfora XR to a shippable build. Each step answers one risky question.
 Stop at every gate and report (format in `CLAUDE.md`).
 
 | Step | Question it answers | Where | Time box | Depends on |
@@ -167,7 +167,7 @@ absorb.
 
 ## S5: world-space particles (local + device, 1.5 days)
 
-The core technical question for Fosfora VR. **Don't port an existing sim yet.**
+The core technical question for Fosfora XR. **Don't port an existing sim yet.**
 Their `pos_life.z` is overloaded (see `PHASE0.md`).
 
 **Tasks**

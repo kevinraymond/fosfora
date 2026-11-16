@@ -51,7 +51,7 @@
     </queries>
 
     <application
-        android:label="Fosfora VR"
+        android:label="Fosfora XR"
         android:hasCode="false"
         android:allowBackup="false">
 

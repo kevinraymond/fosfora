@@ -1,6 +1,6 @@
 # Release builds
 
-How the Fosfora VR APK is built for a Meta release channel: the signing key,
+How the Fosfora XR APK is built for a Meta release channel: the signing key,
 the version policy, the build and its checks, what Meta's store checks in the
 manifest, and the upload. Day-to-day development stays on the debug APK
 (`scripts/xr/run.sh build`, [BUILD_PLAN.md](BUILD_PLAN.md) S1).
@@ -241,8 +241,8 @@ for example `--token "$(<password manager command>)"`.
 
 Before the first upload:
 
-- The package id, `dev.fosfora.xr`, is a placeholder (`build.gradle.kts`);
-  confirm it, since it cannot change once uploaded.
+- The package id is `dev.fosfora.xr` (`build.gradle.kts`), on the project's
+  own domain. It cannot change once uploaded.
 - Create the real keystore and back it up (above); its certificate becomes
   the app's for good.
 - Bump `versionCode` past any build already uploaded.

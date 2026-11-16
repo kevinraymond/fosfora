@@ -219,7 +219,7 @@ def build() -> str:
     if missing:
         sys.exit(f"notice: no metadata for {missing}")
     out: list[str] = []
-    title = "Fosfora VR: notices and licenses"
+    title = "Fosfora XR: notices and licenses"
     out.append(f"{title}\n{'=' * len(title)}")
     out.append(
         "Fosfora is under the MIT license or the Apache License 2.0, at your\n"

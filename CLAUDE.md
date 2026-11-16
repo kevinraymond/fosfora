@@ -63,7 +63,7 @@ CI auto-tags and releases. Never `git tag` by hand.
 
 ## XR work (branch `xr`)
 
-Fosfora VR (Quest 3 / Meta VR Glasses) lives on the `xr` branch. Plan, design and
+Fosfora XR (Quest 3 / Meta VR Glasses) lives on the `xr` branch. Plan, design and
 measurements are in `docs/xr/` (start with `BUILD_PLAN.md`). Invariants — breaking one
 is a stop-and-ask:
 

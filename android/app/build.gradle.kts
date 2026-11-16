@@ -19,8 +19,8 @@ val xrVersionName: String = System.getenv("XR_VERSION_NAME")
     ?: error("versionName missing from android/version.properties")
 
 android {
-    // Placeholder package id (board #3205): confirm with Kevin before the first
-    // dashboard upload; it cannot change afterwards.
+    // The package id, on the project's own domain (fosfora.dev). It cannot
+    // change once a build has been uploaded.
     namespace = "dev.fosfora.xr"
     compileSdk = 34
 
