@@ -5,6 +5,12 @@
 //! hard to make by accident, so a swipe steps the room's theme (board
 //! #5470; it stepped the world effect while there were three).
 //!
+//! Hard to make by accident, with one exception found worn (board #5531):
+//! a hand closing into a fist drags its thumb along the index, and the
+//! runtime reports a swipe. A swipe is therefore held back a moment
+//! ([`SwipeGate`], [`SWIPE_HOLD_S`]) and dropped if its hand is a fist by
+//! then.
+//!
 //! Two halves. The decision (what a frame's swipes do) is plain data and
 //! builds and tests on every target. The OpenXR half, Android only, is the
 //! app's one action set: five boolean actions with the two hands as
@@ -125,6 +131,85 @@ pub fn consume(frame: &MicroFrame, panel_up: bool, edit_on: bool, themes: bool) 
     [1, 0].into_iter().find_map(|hand| {
         frame.swipe[hand].and_then(|s| outcome(s, hand, panel_up, edit_on, themes).step())
     })
+}
+
+/// How long a swipe is held back before it acts (s), to see whether its
+/// hand is closing into a fist (board #5531). A fist's voice window steps
+/// no theme. In the one worn session that shows it, two fists swiped on
+/// the way: one hand was already a fist when its swipe fired, and the
+/// other read as one at most 0.11 s after (its window opened 0.375 s after
+/// the swipe, less the fist's 0.25 s of dwell, at 72 frames a second).
+/// This is that plus three frames. The cost is that every swipe acts this
+/// much later.
+pub const SWIPE_HOLD_S: f32 = 0.15;
+/// How long after a swipe went through a fist on its hand is still
+/// reported (s), so the log shows a hold that was too short.
+pub const SWIPE_WATCH_S: f32 = 0.5;
+
+/// What the gate did with this frame's swipes, per hand (left, right).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Gated {
+    /// The swipes to act on now: held back [`SWIPE_HOLD_S`] ago, their
+    /// hands no fist since.
+    pub swipe: [Option<Swipe>; 2],
+    /// A swipe dropped because its hand is a fist, and how long after the
+    /// swipe the fist was seen (s; 0 when it already was one).
+    pub dropped: [Option<(Swipe, f32)>; 2],
+    /// A fist seen this long after a swipe that went through (s, within
+    /// [`SWIPE_WATCH_S`]): the hold would have had to be this long.
+    pub late: [Option<f32>; 2],
+}
+
+/// Holds each hand's swipe back for [`SWIPE_HOLD_S`] and drops it if the
+/// hand is a fist by then: the swipe was the thumb sliding along the index
+/// as the hand closed, not a gesture. A swipe from a hand that stays open
+/// goes through unchanged, that much later. A second swipe from the same
+/// hand lets the first through at once.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SwipeGate {
+    /// The swipe held back and for how long (s).
+    pending: [Option<(Swipe, f32)>; 2],
+    /// How long ago a swipe went through (s), while it is watched.
+    passed: [Option<f32>; 2],
+}
+
+impl SwipeGate {
+    /// This frame, `dt` seconds after the last: the swipes that fired
+    /// (`swipe`, rising edges) and whether each hand is a fist now
+    /// (`fist`: the pose reader says so, or its fingers are curled under
+    /// `pose::FIST_ON_M`).
+    pub fn step(&mut self, swipe: [Option<Swipe>; 2], fist: [bool; 2], dt: f32) -> Gated {
+        let dt = dt.max(0.0);
+        let mut out = Gated::default();
+        for h in 0..2 {
+            if let Some(age) = self.passed[h].take() {
+                if fist[h] {
+                    out.late[h] = Some(age);
+                } else if age + dt < SWIPE_WATCH_S {
+                    self.passed[h] = Some(age + dt);
+                }
+            }
+            if let Some((held, age)) = self.pending[h].take() {
+                let age = age + dt;
+                if fist[h] {
+                    out.dropped[h] = Some((held, age));
+                } else if age >= SWIPE_HOLD_S - 1e-6 || swipe[h].is_some() {
+                    out.swipe[h] = Some(held);
+                    self.passed[h] = Some(0.0);
+                } else {
+                    self.pending[h] = Some((held, age));
+                }
+            }
+            if let Some(new) = swipe[h] {
+                if fist[h] {
+                    out.dropped[h] = Some((new, 0.0));
+                } else {
+                    self.pending[h] = Some((new, 0.0));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// The first of the swipes that rose this frame, in [`Swipe::ALL`] order,
@@ -515,5 +600,178 @@ mod tests {
         let mut tap = MicroFrame::default();
         tap.tap[1] = true;
         assert!(!tap.is_empty());
+    }
+
+    const DT: f32 = 1.0 / 72.0;
+
+    /// Step `gate` for `seconds` with no new swipe and the hands as
+    /// `fist`, collecting what it did on each frame that it did anything.
+    fn gate_for(gate: &mut SwipeGate, fist: [bool; 2], seconds: f32) -> Vec<(f32, Gated)> {
+        (0..(seconds / DT).round() as usize)
+            .filter_map(|i| {
+                let out = gate.step([None; 2], fist, DT);
+                (out != Gated::default()).then_some(((i + 1) as f32 * DT, out))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_swipe_from_an_open_hand_goes_through_after_the_hold_once() {
+        for hand in [0, 1] {
+            let mut gate = SwipeGate::default();
+            let mut fired = [None; 2];
+            fired[hand] = Some(Swipe::Right);
+            // Held back on the frame it fires.
+            assert_eq!(gate.step(fired, [false; 2], DT), Gated::default());
+            let did = gate_for(&mut gate, [false; 2], 2.0);
+            let [(at, out)] = did.as_slice() else {
+                panic!("{did:?}");
+            };
+            assert!((at - SWIPE_HOLD_S).abs() <= DT, "{at}");
+            assert_eq!(out.swipe[hand], Some(Swipe::Right));
+            assert_eq!(out.swipe[1 - hand], None);
+            assert_eq!((out.dropped, out.late), ([None; 2], [None; 2]));
+            // What comes out steps the theme as the swipe itself would.
+            let frame = MicroFrame {
+                swipe: out.swipe,
+                tap: [false; 2],
+            };
+            assert_eq!(consume(&frame, false, false, true), Some(1));
+        }
+        // The hold is short: under a fifth of a second.
+        const { assert!(SWIPE_HOLD_S < 0.2) };
+    }
+
+    #[test]
+    fn a_swipe_from_a_hand_closing_into_a_fist_is_dropped() {
+        // The hand is a fist already when the swipe fires.
+        let mut gate = SwipeGate::default();
+        let out = gate.step([Some(Swipe::Left), None], [true, false], DT);
+        assert_eq!(out.dropped, [Some((Swipe::Left, 0.0)), None]);
+        assert_eq!(out.swipe, [None; 2]);
+        assert!(gate_for(&mut gate, [true, false], 1.0).is_empty());
+        // The fist reads 0.11 s after the swipe, the longest seen worn.
+        let mut gate = SwipeGate::default();
+        gate.step([Some(Swipe::Left), None], [false; 2], DT);
+        assert!(gate_for(&mut gate, [false; 2], 0.11 - DT).is_empty());
+        let did = gate_for(&mut gate, [true, false], 1.0);
+        let [(_, out)] = did.as_slice() else {
+            panic!("{did:?}");
+        };
+        let Some((Swipe::Left, age)) = out.dropped[0] else {
+            panic!("{out:?}");
+        };
+        assert!((age - 0.11).abs() <= DT, "{age}");
+        assert_eq!(out.swipe, [None; 2]);
+        // The other hand's fist drops nothing: the right hand swipes
+        // while the left one holds the voice window.
+        let mut gate = SwipeGate::default();
+        gate.step([None, Some(Swipe::Right)], [true, false], DT);
+        let did = gate_for(&mut gate, [true, false], 1.0);
+        assert!(
+            matches!(did.as_slice(), [(_, out)] if out.swipe == [None, Some(Swipe::Right)]),
+            "{did:?}"
+        );
+    }
+
+    #[test]
+    fn a_fist_after_the_hold_is_too_late_and_the_log_says_by_how_much() {
+        let mut gate = SwipeGate::default();
+        gate.step([Some(Swipe::Left), None], [false; 2], DT);
+        let did = gate_for(&mut gate, [false; 2], 0.3);
+        assert!(
+            matches!(did.as_slice(), [(_, out)] if out.swipe[0] == Some(Swipe::Left)),
+            "{did:?}"
+        );
+        // The swipe went through 0.15 s in, the fist reads at 0.3 s.
+        let did = gate_for(&mut gate, [true, false], 1.0);
+        let [(_, out)] = did.as_slice() else {
+            panic!("{did:?}");
+        };
+        let late = out.late[0].expect("a late fist");
+        assert!((late - (0.3 - SWIPE_HOLD_S)).abs() <= 2.0 * DT, "{late}");
+        // A fist long after is no business of the swipe's.
+        let mut gate = SwipeGate::default();
+        gate.step([Some(Swipe::Left), None], [false; 2], DT);
+        gate_for(&mut gate, [false; 2], SWIPE_HOLD_S + SWIPE_WATCH_S + 0.1);
+        assert!(gate_for(&mut gate, [true, false], 1.0).is_empty());
+    }
+
+    #[test]
+    fn two_quick_swipes_from_one_hand_both_go_through() {
+        let mut gate = SwipeGate::default();
+        gate.step([None, Some(Swipe::Right)], [false; 2], DT);
+        assert!(gate_for(&mut gate, [false; 2], 0.08).is_empty());
+        // The second lets the first through at once and is held in turn.
+        let out = gate.step([None, Some(Swipe::Left)], [false; 2], DT);
+        assert_eq!(out.swipe, [None, Some(Swipe::Right)]);
+        let did = gate_for(&mut gate, [false; 2], 1.0);
+        assert!(
+            matches!(did.as_slice(), [(_, out)] if out.swipe == [None, Some(Swipe::Left)]),
+            "{did:?}"
+        );
+    }
+
+    /// The swipes the worn sessions recorded that the wearer meant: 25
+    /// that stepped the theme or the effect, on two days, either hand.
+    /// Each is the swiping hand's smallest curl (m) in the second the
+    /// swipe fired in and in the second after. The log has the curl as a
+    /// range once a second, so these bound the curl at every frame the
+    /// gate looks at. None comes near the fist's, so the gate drops none.
+    #[test]
+    fn every_recorded_swipe_that_was_meant_still_goes_through() {
+        const MEANT: [(f32, f32); 25] = [
+            (0.115, 0.111),
+            (0.114, 0.119),
+            (0.117, 0.118),
+            (0.121, 0.104),
+            (0.104, 0.106),
+            (0.105, 0.132),
+            (0.121, 0.104),
+            (0.104, 0.101),
+            (0.094, 0.130),
+            (0.114, 0.116),
+            (0.067, 0.118),
+            (0.112, 0.066),
+            (0.109, 0.113),
+            (0.104, 0.104),
+            (0.118, 0.117),
+            (0.121, 0.114),
+            (0.119, 0.105),
+            (0.100, 0.117),
+            (0.069, 0.089),
+            (0.090, 0.083),
+            (0.118, 0.130),
+            (0.124, 0.126),
+            (0.118, 0.119),
+            (0.123, 0.125),
+            (0.123, 0.132),
+        ];
+        // The two that came from a closing fist: under the fist's curl in
+        // the second they fired in.
+        const FISTS: [f32; 2] = [0.050, 0.046];
+        let fist = |curl: f32| curl < crate::pose::FIST_ON_M;
+        for (now, next) in MEANT {
+            assert!(!fist(now) && !fist(next), "{now} {next}");
+            // Through the gate with the hand at its most curled the whole
+            // time: out after the hold.
+            let mut gate = SwipeGate::default();
+            let curled = [false, fist(now.min(next))];
+            gate.step([None, Some(Swipe::Right)], curled, DT);
+            let did = gate_for(&mut gate, curled, 1.0);
+            assert!(
+                matches!(did.as_slice(), [(_, out)] if out.swipe[1] == Some(Swipe::Right)),
+                "{now} {next}"
+            );
+        }
+        for curl in FISTS {
+            assert!(fist(curl), "{curl}");
+        }
+        // The closest a meant swipe came to the fist's curl.
+        let least = MEANT
+            .iter()
+            .map(|(a, b)| a.min(*b))
+            .fold(f32::MAX, f32::min);
+        assert!(least - crate::pose::FIST_ON_M > 0.01, "{least}");
     }
 }

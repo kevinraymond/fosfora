@@ -1881,6 +1881,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut hint_shown = false;
     let mut caption = crate::label::Label::default();
     let mut swipe_knob = crate::intent::SayKnob::default();
+    // Board #5531: a swipe is held back a moment and dropped if its hand
+    // is closing into a fist (`microgestures::SwipeGate`). `fist_last` is
+    // each hand's pose from the frame before, a fist or not.
+    let mut swipe_gate = crate::microgestures::SwipeGate::default();
+    let mut fist_last = [false; 2];
     let mut palm_was = false;
     // Board #5378: every surface's voice name on the surface, while the
     // editor is on, while a voice window is open and a while after, after
@@ -2737,6 +2742,43 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         }
                     }
                 }
+                // Board #5531: a hand closing into a fist drags its thumb
+                // along the index, and the runtime reports a swipe. Each
+                // swipe waits `SWIPE_HOLD_S` and is dropped if its hand is
+                // a fist by then: the pose reader said so last frame, or
+                // its fingers are curled under the fist's now.
+                {
+                    let fists = [0, 1].map(|h| {
+                        fist_last[h]
+                            || HandInput {
+                                palm: input.hands.palm[h].map(|(p, q)| {
+                                    (glam::Vec3::from(p), glam::Quat::from_array(q))
+                                }),
+                                tips: input.hands.finger_tips[h]
+                                    .map(|t| t.map(glam::Vec3::from)),
+                            }
+                            .curl()
+                            .is_some_and(|c| c < crate::pose::FIST_ON_M)
+                    });
+                    let gated = swipe_gate.step(micro.swipe, fists, dt);
+                    for h in 0..2 {
+                        if let Some((s, after)) = gated.dropped[h] {
+                            info!(
+                                "microgesture: swipe {} ({} hand) -> nothing (the hand was a fist {after:.2} s after it)",
+                                s.label(),
+                                hand_name(h)
+                            );
+                        }
+                        if let Some(after) = gated.late[h] {
+                            info!(
+                                "microgesture: the {} hand was a fist {after:.2} s after its swipe went through (held back {} s)",
+                                hand_name(h),
+                                crate::microgestures::SWIPE_HOLD_S
+                            );
+                        }
+                    }
+                    micro.swipe = gated.swipe;
+                }
                 let micro = &micro;
                 let outcomes = [0, 1].map(|h| {
                     micro.swipe[h].map(|s| {
@@ -3235,6 +3277,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // Board #5531: a pinching hand is no fist to the voice (the
                 // menu's press, the editor's tap).
                 voice_hands = crate::voice::hands(&pose_frame, input.hands.pinching);
+                fist_last = [0, 1].map(|h| pose_frame.pose[h] == Some(Pose::Fist));
                 let poses_apply = poses_on && world && POSE_EFFECTS.contains(&world_effect);
                 // Board #3751, V4: with voice on a fist on either hand
                 // holds the voice window everywhere (board #5531), so the
