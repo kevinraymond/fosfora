@@ -162,6 +162,22 @@ pub fn no_songs(blocked: bool) -> &'static str {
     }
 }
 
+/// Whether to ask for the storage permission now (board #5549). The app
+/// does not ask at launch: the bundled tracks play without it, and the
+/// system's dialog speaks of photos and videos. It asks once a run, when
+/// the wearer goes for music the list does not hold: a step round an end
+/// of the list (`playlist::wraps`) or "scan my music" (`wants_more`),
+/// while the shared folder is there and unread (`blocked`) and this run
+/// has not asked (`asked`). `debug.fosfora.ask 0` turns the ask off for
+/// unworn runs, at the call.
+pub fn asks_storage(wants_more: bool, blocked: bool, asked: bool) -> bool {
+    wants_more && blocked && !asked
+}
+
+/// What the label says as the system's storage dialog comes up, so the
+/// wearer knows what it is for.
+pub const ASK_STORAGE_LABEL: &str = "Allow storage to add your own music.";
+
 /// [`no_songs`]' words: no songs anywhere it can read, and the shared
 /// folder unread.
 pub const NO_SONGS_LABEL: &str = "No songs on the headset. Put them in its Music folder.";
@@ -200,6 +216,22 @@ pub fn header(playing: bool, audio_source: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_is_asked_once_when_the_wearer_wants_more_than_the_list_holds() {
+        // A step round an end, or "scan my music", with the shared folder
+        // unread and nothing asked yet.
+        assert!(asks_storage(true, true, false));
+        // A step inside the list asks nothing.
+        assert!(!asks_storage(false, true, false));
+        // The folder is read already, or there is none.
+        assert!(!asks_storage(true, false, false));
+        // Once a run: a wearer who said no is not asked at every wrap.
+        assert!(!asks_storage(true, true, true));
+        // The label fits one line or two and says what the dialog is for.
+        assert!(ASK_STORAGE_LABEL.contains("your own music"));
+        assert!(crate::label::layout(ASK_STORAGE_LABEL).lines.len() <= 2);
+    }
 
     #[test]
     fn the_bundled_tracks_are_files_the_player_takes_and_the_test_clip_is_not_one() {

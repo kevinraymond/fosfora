@@ -328,7 +328,7 @@ wearer's own files (board #5546).
   The wearer's own music brings no theme. `debug.fosfora.tracktheme 0`
   turns it off.
 - **Your music follows.** When a scan finds tracks in either folder (at
-  launch, when the permission arrives, on "scan my music"), they join the
+  launch, when the storage permission is granted, on "scan my music"), they join the
   same list after the bundled ones, in the folders' order. A step past the
   last bundled track is the wearer's first, and a step back from the first
   bundled track is the wearer's last. A scan never interrupts a track that
@@ -360,8 +360,9 @@ wearer's own files (board #5546).
   allow file access in the headset. Copy the files into `Music` at the top of
   the headset's storage, or into `Android/data/dev.fosfora.xr/files/Music`.
   The files the app reads are `.mp3`, `.ogg`, `.flac`, `.wav` and `.m4a`.
-- **The permission.** Reading `Music/` needs a runtime permission, asked for
-  at launch with the room's and the microphone's. The app targets SDK 32, so
+- **The permission.** Reading `Music/` needs a runtime permission. It is
+  asked for when the wearer goes past the songs the list holds, not at
+  launch ("Runtime permissions", board #5549). The app targets SDK 32, so
   it asks for `READ_EXTERNAL_STORAGE`, which Android 13 and later grant as
   `READ_MEDIA_AUDIO` and the other media permissions. The name follows the
   target SDK (`permissions::storage`), and the manifest declares both.
@@ -2631,12 +2632,25 @@ and clear it afterwards. Should the JNI layer fail, the app takes everything
 as granted and runs as it did before it asked.
 
 Board #5385 adds a third, the shared `Music/` folder's storage permission
-(`READ_EXTERNAL_STORAGE` at `targetSdk` 32, see "Your music"). It is asked for
-with the others whatever the audio source, and its log line reads like
-theirs. A grant within the 120 s logs `permission READ_EXTERNAL_STORAGE
-granted after N s: scanning Music/` and adds that folder's tracks without a
-relaunch. Denied, the app's own music folder still plays, and the bundled
-tracks while that folder is empty.
+(`READ_EXTERNAL_STORAGE` at `targetSdk` 32, see "Your music"). It is not
+asked for at launch (board #5549). The bundled tracks play without it, and
+the system's dialog for it speaks of "media files, including audio, photos
+and videos", which reads badly as the first thing a music app asks. The
+launch logs `permission READ_EXTERNAL_STORAGE: missing, asked when the
+wearer steps round an end of the songs or says "scan my music"`. The app
+asks once a run, when the wearer goes for music the list does not hold
+(`music::asks_storage`): a `<` or `>` (or a spoken "next song") that would
+go round an end of the list, or "scan my music", while the shared folder is
+unread. The label reads "Allow storage to add your own music." as the
+dialog comes up. The step that asks does not step, so after the grant the
+same step lands on the wearer's own first or last song. A wearer who says
+no is not asked again that run, and the next step wraps as it always did.
+The grant is polled once a second for as long as the folder is unread,
+whether it comes from the app's ask, from Settings or from `pm grant`. It
+logs `permission READ_EXTERNAL_STORAGE granted: scanning Music/` and adds
+that folder's tracks after the bundled ones without a relaunch, the playing
+track left alone. Denied, the bundled tracks and the app's own music folder
+still play.
 
 Device check (the reviewer's recipe):
 

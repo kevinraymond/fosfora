@@ -538,6 +538,17 @@ impl Music {
         );
     }
 
+    /// Whether a step `by` goes round an end of the list
+    /// (`playlist::wraps`): the wearer wants more than it holds.
+    pub fn step_wraps(&self, by: isize) -> bool {
+        let from = if self.on_fallback {
+            None
+        } else {
+            self.playlist.current()
+        };
+        playlist::wraps(self.playlist.len(), from, by)
+    }
+
     /// The Music row's `<` (-1) or `>` (1), or the voice's "next song":
     /// the next track not refused yet, wrapping. Playing, it decodes while
     /// the old one plays on and swaps in when ready; stopped, it is

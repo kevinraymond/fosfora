@@ -195,8 +195,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       file = the test clip looping on the speakers, analysis on its tap;
     //       loop = the clip on the speakers, analysis on the AAudio microphones (acoustic loopback))
     //   adb shell setprop debug.fosfora.ask 0|1        (board #3264: ask for the missing runtime permissions at launch, USE_SCENE and,
-    //       for the sources that open the microphones, RECORD_AUDIO, and the shared Music/ folder's storage permission (board
-    //       #5385, permissions::storage); default 1. 0 for unworn runs, where the OS dialog would sit
+    //       for the sources that open the microphones, RECORD_AUDIO; the shared Music/ folder's storage permission (board
+    //       #5385, permissions::storage) is asked for later, when the wearer goes for their own music (board #5549); default 1. 0 for unworn runs, where the OS dialog would sit
     //       over the view: the app still checks and logs them and picks up a later `pm grant` within 120 s)
     //   adb shell setprop debug.fosfora.file <path>   (.ogg/.mp3/.wav/.flac decoded by the core, or a raw
     //       48 kHz stereo f32 file ending in .f32, or "click" / "click:100" for a click track at that BPM;
@@ -708,7 +708,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             voice_on || crate::permissions::wants_mic(&audio_source),
             mic_granted,
         ),
-        (storage_permission, true, storage_granted),
     ] {
         info!(
             "permission {}: {}",
@@ -723,11 +722,22 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
         );
     }
-    let mut missing =
-        crate::permissions::to_ask(&audio_source, voice_on, scene_granted, mic_granted);
-    if !storage_granted {
-        missing.push(storage_permission);
-    }
+    // Board #5549: the storage permission is not asked for at launch. The
+    // bundled tracks play without it, and the system's dialog speaks of
+    // photos and videos. It is asked once a run, when the wearer goes for
+    // music the list does not hold (`music::asks_storage`, below).
+    info!(
+        "permission {}: {}",
+        crate::permissions::short(storage_permission),
+        match (storage_granted, ask) {
+            (true, _) => "granted",
+            (false, true) =>
+                "missing, asked when the wearer steps round an end of the songs or says \"scan my music\"",
+            (false, false) => "missing, not asking (debug.fosfora.ask 0)",
+        }
+    );
+    let mut storage_asked = false;
+    let missing = crate::permissions::to_ask(&audio_source, voice_on, scene_granted, mic_granted);
     if ask
         && !missing.is_empty()
         && let Some(p) = &permissions
@@ -3206,10 +3216,58 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     Action::SetMusic(on) => music.set(on),
                     // Board #5385: the Music row's `<` `>` and the voice's
                     // songs.
-                    Action::PrevTrack => music.step(-1),
-                    Action::NextTrack => music.step(1),
+                    // Board #5549: a step round an end of the list, or
+                    // "scan my music", with the shared folder unread asks
+                    // for the storage permission, once a run. The step
+                    // that asks does not step, so after the grant the
+                    // same step lands on the wearer's own first (or
+                    // last) song.
+                    Action::PrevTrack | Action::NextTrack | Action::ScanMusic => {
+                        let by = match action {
+                            Action::PrevTrack => -1,
+                            Action::NextTrack => 1,
+                            _ => 0,
+                        };
+                        let wants_more = by == 0 || music.step_wraps(by);
+                        let asking = ask
+                            && permissions.is_some()
+                            && crate::music::asks_storage(
+                                wants_more,
+                                music.shared_blocked(),
+                                storage_asked,
+                            );
+                        if asking && let Some(p) = &permissions {
+                            storage_asked = true;
+                            match p.request(&[storage_permission]) {
+                                Ok(()) => info!(
+                                    "permissions: asked for {} ({}), the label reads \"{}\"",
+                                    crate::permissions::short(storage_permission),
+                                    if by == 0 {
+                                        "scan my music"
+                                    } else {
+                                        "a step round the end of the songs"
+                                    },
+                                    crate::music::ASK_STORAGE_LABEL
+                                ),
+                                Err(e) => error!("permissions: {e:#}"),
+                            }
+                            let (point, normal) = crate::label::menu_reply_at(
+                                glam::Vec3::from(input.head),
+                                glam::Quat::from_array(input.head_rot),
+                            );
+                            menu_reply.show(
+                                crate::music::ASK_STORAGE_LABEL.to_owned(),
+                                point,
+                                normal,
+                            );
+                        }
+                        match by {
+                            0 => music.rescan(),
+                            _ if asking => {}
+                            _ => music.step(by),
+                        }
+                    }
                     Action::PlayTrack(i) => music.play_track(i),
-                    Action::ScanMusic => music.rescan(),
                     // Board #3789: the wearer's own density is the
                     // governor's new ceiling, its debt cleared.
                     Action::SetDensity => {
@@ -5889,6 +5947,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 controls.mic = true;
                 info!("permission RECORD_AUDIO granted: the voice window can open");
             }
+            // Board #5549: the storage permission's grant, once a second
+            // while the shared folder is unread: after the app's own ask,
+            // from Settings, or by `pm grant`. The folder joins the
+            // playlist after the bundled tracks, the playing track left
+            // alone.
+            if music.shared_blocked() && granted_now(storage_permission) {
+                info!(
+                    "permission {} granted: scanning Music/",
+                    crate::permissions::short(storage_permission)
+                );
+                music.storage_granted();
+            }
             for change in permission_watch.poll(asked_at.elapsed().as_secs_f32(), granted_now) {
                 match change {
                     Change::Granted { name, after_s } if name == USE_SCENE => {
@@ -5904,15 +5974,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             "querying the room"
                         };
                         info!("permission USE_SCENE granted after {after_s:.0} s: {then}");
-                    }
-                    // Board #5385: the shared Music/ folder joins the
-                    // playlist.
-                    Change::Granted { name, after_s } if name == storage_permission => {
-                        info!(
-                            "permission {} granted after {after_s:.0} s: scanning Music/",
-                            crate::permissions::short(name)
-                        );
-                        music.storage_granted();
                     }
                     Change::Granted { name, after_s } => {
                         // Board #3751: the voice window's stream needs only

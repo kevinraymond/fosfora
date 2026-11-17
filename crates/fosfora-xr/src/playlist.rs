@@ -330,6 +330,21 @@ pub fn find<S: AsRef<str>>(titles: &[S], spoken: &str) -> Found {
     }
 }
 
+/// Whether a step `by` from `current` goes round an end of a list of `n`
+/// tracks: forward from the last one, back from the first, or any step
+/// with no track to stand on. That is the wearer asking for more than the
+/// list holds, which is when the app asks to read the shared `Music/`
+/// folder (`music::asks_storage`).
+pub fn wraps(n: usize, current: Option<usize>, by: isize) -> bool {
+    match current {
+        Some(i) if n > 0 => {
+            let to = i as isize + by;
+            to < 0 || to >= n as isize
+        }
+        _ => true,
+    }
+}
+
 /// Of `n` tracks, the one `by` steps from `current` (1 next, -1
 /// previous), wrapping at both ends; from no current track, the first for
 /// a step forward and the last for a step back. `None` when there are
@@ -958,6 +973,24 @@ mod tests {
         // No bundled track either: nothing.
         let none = Playlist::new(listed(Vec::new(), &[], false));
         assert!(none.is_empty() && none.bundled_len() == 0);
+    }
+
+    #[test]
+    fn a_step_round_an_end_of_the_list_wraps() {
+        // Inside the list: no.
+        assert!(!wraps(3, Some(0), 1));
+        assert!(!wraps(3, Some(1), 1));
+        assert!(!wraps(3, Some(2), -1));
+        // Forward from the last, back from the first.
+        assert!(wraps(3, Some(2), 1));
+        assert!(wraps(3, Some(0), -1));
+        // One track: every step goes round.
+        assert!(wraps(1, Some(0), 1) && wraps(1, Some(0), -1));
+        // No track to stand on (the test clip, an empty list).
+        assert!(wraps(3, None, 1) && wraps(0, None, -1) && wraps(0, Some(0), 1));
+        // It agrees with `stepped`: a wrap lands on the far end.
+        assert_eq!(stepped(3, Some(2), 1), Some(0));
+        assert_eq!(stepped(3, Some(0), -1), Some(2));
     }
 
     #[test]

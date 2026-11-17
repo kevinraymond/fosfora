@@ -6,9 +6,11 @@
 //! `RECORD_AUDIO` (without it the microphones do not open and the analysis
 //! runs on the synthetic groove, and the voice path's window stays closed,
 //! board #3751). Board #5385 adds a third, reading the shared `Music/`
-//! folder ([`storage`]); without it the app's own music folder still
-//! plays. At launch the app checks them, asks for
-//! the missing ones in one `Activity.requestPermissions` call (the OS shows
+//! folder ([`storage`]); without it the bundled tracks and the app's own
+//! music folder still play, so it is asked for only when the wearer goes
+//! for their own music (board #5549, `music::asks_storage`). At launch
+//! the app checks them, asks for
+//! the missing two in one `Activity.requestPermissions` call (the OS shows
 //! one dialog per permission it has not decided) and carries on; the result
 //! callback never reaches native code, so the frame loop polls the grants
 //! once a second for [`WATCH_S`] and picks a grant up without a relaunch
