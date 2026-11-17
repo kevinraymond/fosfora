@@ -457,11 +457,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       pitcher's pour), its sim stepping on so on shows it as it would have been, Edit room on or off; default 1, not saved)
     //   adb shell setprop debug.fosfora.picktest 3               (diagnostic: the room editor's ray from 0.5 m ahead of the head along the view tilted
     //       20 degrees down, untracked, with a synthetic right-hand tap every 3 s, for an unworn check; implies editroom 1)
-    //   adb shell setprop debug.fosfora.throw 0|1                (a pinch tap throws a burst where the far hand points; default on)
+    //   adb shell setprop debug.fosfora.throw 0|1                (board #5531: the one switch for the hands' throw and lift. 1, a pinch tap
+    //       throws a burst where the hand points and an open palm lifts; 0, a pinch throws nothing and a palm lifts nothing, and
+    //       everything else a pinch does (the begin, the hand menu's rows, the room editor) is as it was; the pitcher and the
+    //       throwtest diagnostic do not read it; default 1 (`instruments::THROW_DEFAULT`), read at launch, logged in the
+    //       `instruments:` line)
     //   adb shell setprop debug.fosfora.burstcount 6000          (particles a throw bursts into on impact, at most 17000, the pool's slots the
     //       fireflies never take, `fireflies::BURST_MAX`)
-    //   adb shell setprop debug.fosfora.lift 0|1                 (an open far palm held still, facing down, lifts the hand particles lying
-    //       under it; default on)
+    //   adb shell setprop debug.fosfora.lift 0|1                 (an open palm held still, facing down, lifts the hand particles lying
+    //       under it; default on, and off whenever debug.fosfora.throw is 0)
     //   adb shell setprop debug.fosfora.liftradius 0.35          (the lift's radius around the far palm, m)
     //   adb shell setprop debug.fosfora.throwtest 3              (diagnostic: every 3 s a right-hand throw from 0.5 m ahead of the head
     //       along the view, untracked, for an unworn check)
@@ -1727,8 +1731,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #3327: the hands as instruments, whose particles are the
     // world effect's hand particles. A throw's impact asks for no more
     // than the pool's slots the fireflies never take (board #5470).
-    let throw_on = toggle("debug.fosfora.throw", true);
-    let lift_on = toggle("debug.fosfora.lift", true);
+    // Board #5531: `debug.fosfora.throw` is the one switch for the throw
+    // and the lift (`instruments::Play`).
+    let play = crate::instruments::Play::from_knobs(
+        switch("debug.fosfora.throw"),
+        switch("debug.fosfora.lift"),
+    );
     let mut thrower = crate::instruments::Thrower::new(crate::fireflies::burst_count(
         debug_prop("debug.fosfora.burstcount")
             .and_then(|v| v.parse::<u32>().ok())
@@ -1763,9 +1771,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     (controls.pitcher, controls.pitcher_rate) = (pitcher.on, pitcher.rate);
     info!(
         "instruments: throw {} (burst {}) · lift {} (radius {} m) · pitcher {} ({}/s at {} m/s){}",
-        if throw_on { "on" } else { "off" },
+        if play.throw { "on" } else { "off" },
         thrower.burst_count,
-        if lift_on { "on" } else { "off" },
+        play.lift_label(),
         lifter.radius,
         if pitcher.on { "on" } else { "off" },
         pitcher.rate,
@@ -3608,7 +3616,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     let pinch_of = |hand: usize| {
                         input.hands.pinch_point[hand].map(|p| glam::Vec3::from(p) + offsets[hand])
                     };
-                    let mut throw = tap.filter(|_| throw_on).map(|h| (h, pinch_of(h)));
+                    let mut throw = play.thrown(tap).map(|h| (h, pinch_of(h)));
                     if let Some(every) = throw_test_s
                         && t - last_throw_test >= every
                     {
@@ -3677,7 +3685,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             })
                     };
                     let pour = pitcher.step(nozzle, burst.is_some(), dt);
-                    let lift = if lift_on {
+                    let lift = if play.lift {
                         lifter.step(
                             [0, 1].map(|h| crate::instruments::LiftHand {
                                 pose: pose_frame.pose[h],

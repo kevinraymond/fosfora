@@ -1735,8 +1735,18 @@ the hand instruments.*
   `flux_xr_lift_raises_resting_embers` (embers settled on the room table
   at y -0.472, top -0.480; 20 frames of lift raise the column's mean to
   -0.410, against -0.468 without it).
-- **Knobs.** `debug.fosfora.throw` (0/1, default 1), `burstcount`
-  (6000), `lift` (0/1, default 1), `liftradius` (0.35).
+- **The switch** (board #5531, `instruments::Play`). Whether the throw
+  and the lift stay in the product is open, so one switch covers both:
+  `debug.fosfora.throw 0`. At 0 a pinch throws nothing and a palm lifts
+  nothing. Everything else a pinch does is untouched: the begin, the
+  hand menu's rows and the room editor. The default is one constant,
+  `instruments::THROW_DEFAULT`, so taking them out is a change of that
+  value. The launch's `instruments:` line says `throw off` and `lift off
+  with the throw`. The pitcher and the `throwtest` diagnostic do not read
+  the switch. Test: `one_switch_turns_the_throw_and_the_lift_off`.
+- **Knobs.** `debug.fosfora.throw` (0/1, default 1, the lift with it),
+  `burstcount` (6000), `lift` (0/1, default 1, the lift alone),
+  `liftradius` (0.35).
 
 ## Hands: the gesture vocabulary (board #3336)
 
