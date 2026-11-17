@@ -30,7 +30,9 @@
 //! below [`MIN_TOP`]: a band far under the rest, or near silence, does not
 //! stretch its noise over the wall, and silence (0) shows nothing. A bar's
 //! height rises at once and falls at [`RELEASE_PER_S`] wall heights per
-//! second, by time, so 72 and 90 Hz behave alike.
+//! second, by time, so 72 and 90 Hz behave alike. The edge bars' free
+//! heights are canvases with a fall speed of their own
+//! ([`Canvas::release`], `edge_bars::Heights`).
 //!
 //! **The look.** The floor ripple's family: premultiplied warm white, peak
 //! alpha 0.25 (times `canvasgain`), light on the real wall rather than paint
@@ -238,6 +240,9 @@ pub struct Canvas {
     pub bars: usize,
     /// Brightness multiplier (`canvasgain`).
     pub gain: f32,
+    /// Fall speed of a bar (wall heights per second): [`RELEASE_PER_S`]
+    /// unless whoever shows the bars sets another.
+    pub release: f32,
     heights: [f32; MAX_BARS],
     /// Each bar's running maximum (dB/80).
     tops: [f32; MAX_BARS],
@@ -256,6 +261,7 @@ impl Canvas {
         Self {
             bars: bars.clamp(1, MAX_BARS),
             gain,
+            release: RELEASE_PER_S,
             heights: [0.0; MAX_BARS],
             tops: [0.0; MAX_BARS],
             shown: 0,
@@ -274,7 +280,7 @@ impl Canvas {
             *top = (*top * decay).max(r);
         }
         let loudest = self.top();
-        let fall = RELEASE_PER_S * dt.max(0.0);
+        let fall = self.release.max(0.0) * dt.max(0.0);
         for ((h, top), r) in self.heights.iter_mut().zip(self.tops).zip(raw).take(n) {
             let floor = top.max(loudest - TILT_RANGE).max(MIN_TOP) - SPAN;
             let target = if r > 0.0 {
