@@ -1,8 +1,19 @@
 //! The Music row's player (board #3472, #5385): the wearer's tracks from
-//! the two music folders (`playlist.rs`), or the bundled clip while they
-//! are empty, played through one output stream (`playback.rs`) with the
-//! analysis on its tap (`music.rs` has the row's words and where the
-//! analysis goes).
+//! the two music folders (`playlist.rs`), played through one output
+//! stream (`playback.rs`) with the analysis on its tap (`music.rs` has the
+//! row's words and where the analysis goes).
+//!
+//! **With no music of the wearer's own** (board #5528) the playlist is
+//! the tracks the app ships with (`music::BUNDLED`), in that list's
+//! order, and they play as the wearer's do. When a scan finds a track in
+//! either folder the playlist is the wearer's tracks only, and when the
+//! folders are empty again the bundled ones return. At either change the
+//! first track of the new playlist takes over: at once while the music
+//! plays, else at the next play. `debug.fosfora.bundled 1` keeps the
+//! playlist on the bundled tracks whatever the folders hold, and saves no
+//! track, so the wearer's own place is still there without it. The test
+//! clip (`music::CLIP`) is what the measurement sources play. The row
+//! falls back to it, looped, only when no track plays at all.
 //!
 //! **Off the frame loop.** A track is decoded whole (`Clip::decode`, about
 //! 23 MB a minute as 48 kHz stereo f32) on the music thread, which also
@@ -15,12 +26,12 @@
 //!
 //! **Play through.** With two tracks or more, the next one decodes
 //! [`PRELOAD_S`] before the playing one ends and the callback swaps it in
-//! where the last one ends. One track, or the bundled clip, loops.
+//! where the last one ends. One track, or the test clip, loops.
 //!
 //! **Remembered.** The current track and the last play or stop are saved
 //! in `music.json` beside `hand_menu.json` (`playlist::Saved`), so a launch
 //! resumes the wearer's music. `debug.fosfora.file`, when set, is played
-//! in place of the bundled clip and of the saved track until the wearer
+//! in place of the test clip and of the saved track until the wearer
 //! steps to a track.
 //!
 //! Streaming decode is a later step: [`decode_track`] is the one place a track
@@ -178,14 +189,21 @@ impl Worker {
     }
 }
 
-/// The two music folders: the shared one (read only with the storage
-/// permission) and the app's own.
+/// Where the tracks come from: the two music folders, the shared one
+/// (read only with the storage permission) and the app's own, and the
+/// tracks the app ships with.
 #[derive(Debug, Clone, Default)]
 pub struct Folders {
     pub shared: Option<PathBuf>,
     pub own: Option<PathBuf>,
     /// The storage permission is granted: the shared folder is scanned.
     pub shared_readable: bool,
+    /// The bundled tracks in their order (`playlist::bundled`): the
+    /// playlist while the folders hold no track (board #5528).
+    pub bundled: Vec<playlist::Track>,
+    /// `debug.fosfora.bundled 1`: the playlist is the bundled tracks
+    /// whatever the folders hold.
+    pub only_bundled: bool,
 }
 
 impl Folders {
@@ -223,7 +241,7 @@ pub struct Music {
     options: PlaybackOptions,
     folders: Folders,
     playlist: Playlist,
-    /// What plays while the folders are empty, looped: the bundled clip,
+    /// What plays while there is no track at all, looped: the test clip,
     /// or `debug.fosfora.file`.
     fallback: PathBuf,
     fallback_title: String,
@@ -317,7 +335,7 @@ impl Music {
         for (dir, why) in &scan.unreadable {
             warn!("music: {} unreadable: {why}", dir.display());
         }
-        self.playlist = Playlist::new(scan.tracks.clone());
+        self.playlist = Playlist::new(self.listed(scan.tracks.clone()));
         let resumed = match self
             .saved
             .track
@@ -332,6 +350,23 @@ impl Music {
         };
         self.on_fallback = self.pinned || self.playlist.is_empty();
         (scan, resumed)
+    }
+
+    /// The playlist for what a scan found (`playlist::listed`): the
+    /// wearer's tracks, or the bundled ones while the folders hold none.
+    fn listed(&self, found: Vec<playlist::Track>) -> Vec<playlist::Track> {
+        playlist::listed(found, &self.folders.bundled, self.folders.only_bundled)
+    }
+
+    /// The launch line for the launch's `scan` (`playlist::launch_line`).
+    pub fn launch_line(&self, scan: &Scan, resumed: bool, playing: bool) -> String {
+        playlist::launch_line(
+            scan,
+            &self.playlist,
+            self.folders.only_bundled,
+            resumed,
+            playing,
+        )
     }
 
     /// The selected track's title, `None` on the fallback.
@@ -357,7 +392,8 @@ impl Music {
         }
     }
 
-    /// Whether the folders hold a track to step to (board #5461).
+    /// Whether there is a track to step to (board #5461), the wearer's or
+    /// a bundled one.
     pub fn has_tracks(&self) -> bool {
         !self.playlist.is_empty()
     }
@@ -511,7 +547,7 @@ impl Music {
                 self.direction = by.signum();
                 self.go(i);
             }
-            None => info!("music: no tracks to step through (put files in Music/)"),
+            None => info!("music: no tracks to step through"),
         }
     }
 
@@ -763,7 +799,7 @@ impl Music {
                 }
             }
             None => {
-                warn!("music: no track in the folders plays: the bundled clip");
+                warn!("music: no track plays: the test clip");
                 self.on_fallback = true;
                 if self.want {
                     self.decode(self.fallback.clone(), true);
@@ -784,10 +820,25 @@ impl Music {
             if scan.full { ", the cap" } else { "" }
         );
         self.bad.clear();
-        self.playlist.replace(scan.tracks);
-        // The folders had nothing and now have tracks: the first takes
-        // over from the bundled clip.
-        if self.on_fallback && !self.pinned && !self.playlist.is_empty() {
+        let was_bundled = self.playlist.is_bundled();
+        self.playlist.replace(self.listed(scan.tracks));
+        let swapped = was_bundled != self.playlist.is_bundled();
+        if swapped {
+            info!(
+                "music: the playlist is now {}",
+                if self.playlist.is_bundled() {
+                    "the bundled tracks: the music folders are empty"
+                } else {
+                    "the tracks in the music folders"
+                }
+            );
+        }
+        // The first track takes over, at once while the music plays: from
+        // the test clip when there was no track and now there is, and
+        // from the old playlist's track when the bundled tracks gave way
+        // to the wearer's or came back (board #5528).
+        let takes_over = playlist::takes_over(self.on_fallback, self.pinned, swapped);
+        if takes_over && !self.playlist.is_empty() {
             self.on_fallback = false;
             self.resume = 0;
             if self.want {
@@ -860,16 +911,15 @@ impl Music {
     }
 
     /// Save the row's track (not the fallback) and its play or stop in
-    /// `music.json`, when they changed.
+    /// `music.json`, when they changed. With `debug.fosfora.bundled` the
+    /// saved track stays as it was: the knob's playlist is not the
+    /// wearer's choice.
     fn save(&mut self) {
-        let now = Saved {
-            track: self
-                .playlist
-                .current_track()
-                .map(|t| t.path.clone())
-                .or_else(|| self.saved.track.clone()),
-            playing: Some(self.want),
-        };
+        let now = self.saved.next(
+            self.playlist.current_track(),
+            self.folders.only_bundled,
+            self.want,
+        );
         if now == self.saved {
             return;
         }

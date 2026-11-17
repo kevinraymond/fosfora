@@ -133,7 +133,7 @@ pub struct Controls {
     /// launch): off, the effect is hidden, its sim stepping on
     /// (`room_edit::Cloud`).
     pub cloud: bool,
-    /// The bundled clip plays, the analysis on its tap (the hand menu's
+    /// The music plays, the analysis on its tap (the hand menu's
     /// Music row; not saved; on at launch unless the launch source is a
     /// microphone or `debug.fosfora.music 0` forbids it, board #4191;
     /// `music::plays_at_launch`).
@@ -297,7 +297,7 @@ pub struct View<'a> {
     pub bass: f32,
     pub beat: f32,
     pub audio: &'a str,
-    /// The Music row's title: the playlist's track, or the bundled clip's
+    /// The Music row's title: the playlist's track, or the test clip's
     /// (board #5385).
     pub track: &'a str,
     /// Seated reach per hand: (real, virtual) shoulder-to-palm meters.

@@ -112,13 +112,14 @@ pub struct Vocabulary<'a> {
     pub surfaces: Vec<Surface>,
     /// The lane box under the room editor's beam, if any.
     pub pointed: Option<usize>,
-    /// The music folders' tracks (board #5385).
+    /// The Music row's tracks (board #5385).
     pub tracks: Tracks<'a>,
 }
 
-/// The music folders' tracks as the grammar names them (board #5385,
-/// `playlist.rs`): their titles in the playlist's order, the one the
-/// Music row shows (`None` on the bundled clip), whether the music plays,
+/// The Music row's tracks as the grammar names them (board #5385,
+/// `playlist.rs`; the wearer's, or the bundled ones while the folders
+/// are empty, board #5528): their titles in the playlist's order, the one the
+/// Music row shows (`None` on the test clip), whether the music plays,
 /// and whether the shared `Music/` folder goes unread for want of the
 /// storage permission (board #5461: a step with no songs names it). The
 /// default is no tracks, for the agent's vocabularies, whose actions name
@@ -521,7 +522,7 @@ pub const CREDITS: [&str; 6] = [
     "whisper.cpp, Whisper",
     "Voice model: from Ettin",
     "ONNX Runtime, OpenXR",
-    "Music: Ember Glow, oglsdl",
+    "Music: made with YuE2",
     "Licenses: the NOTICE file",
 ];
 /// "What can I say" (V4).
@@ -1973,7 +1974,7 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
             match (t.current.and_then(|i| t.titles.get(i)), t.playing) {
                 (Some(title), true) => format!("playing: {title}"),
                 (Some(title), false) => format!("stopped: {title}"),
-                (None, true) => "playing the bundled clip".to_owned(),
+                (None, true) => "playing the test clip".to_owned(),
                 (None, false) => "music off".to_owned(),
             }
         }
@@ -3354,15 +3355,30 @@ mod tests {
         assert_eq!(reply(&Intent::NowPlaying, &v), "playing: One More Time");
         v.tracks.playing = false;
         assert_eq!(reply(&Intent::NowPlaying, &v), "stopped: One More Time");
-        // On the bundled clip.
+        // On the test clip.
         v.tracks.current = None;
         assert_eq!(reply(&Intent::NowPlaying, &v), "music off");
         assert_eq!(reply(&Intent::NextTrack, &v), "next: One More Time");
         v.tracks.playing = true;
-        assert_eq!(reply(&Intent::NowPlaying, &v), "playing the bundled clip");
+        assert_eq!(reply(&Intent::NowPlaying, &v), "playing the test clip");
+        // With no music of the wearer's own the tracks are the bundled
+        // ones (board #5528): a step names the one it goes to, whether or
+        // not the shared folder is read, and never says "no songs".
+        let bundled = ["Bundled One".to_owned(), "Bundled Two".to_owned()];
+        for blocked in [false, true] {
+            v.tracks = Tracks {
+                titles: &bundled,
+                current: Some(0),
+                playing: true,
+                blocked,
+            };
+            assert_eq!(reply(&Intent::NextTrack, &v), "next: Bundled Two");
+            assert_eq!(reply(&Intent::PrevTrack, &v), "previous: Bundled Two");
+            assert_eq!(reply(&Intent::NowPlaying, &v), "playing: Bundled One");
+        }
         // No songs (board #5461): where to put them, or the permission
         // when the shared folder goes unread for want of it; the words of
-        // the Music row's `<` `>`.
+        // the Music row's `<` `>`. Only with no bundled track either.
         v.tracks = Tracks::default();
         assert_eq!(
             reply(&Intent::NextTrack, &v),

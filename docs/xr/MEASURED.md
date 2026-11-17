@@ -3722,3 +3722,98 @@ fix of ec0e2fc. In 8.5 minutes of music the log shows five drops, each
 `immersion: drop, to 1 for 8.0 s`. The worn sittings of Nov 14 and 15, on
 builds with the flash limit and without the fix, show none; sessions of
 Nov 12 and 13, before the flash limit, show them.
+
+## The bundled tracks as the playlist (board #5528)
+
+Quest 3, unworn, seated, the saved room replayed
+(`debug.fosfora.anchors replay`), `debug.fosfora.begin 1`, Immersion full
+(`debug.fosfora.immerse 1`), debug APK of 45080af, 10 h after a reboot.
+The headset has 7 tracks of its own in `Music/`, so the bundled tracks are
+reached with `debug.fosfora.bundled 1`.
+
+**The playlist.** Without the knob the launch line is `music: 7 tracks (7
+in Music, 0 in the app folder) · "<title>", stopped`: the headset's own
+tracks, no bundled one. With it: `music: debug.fosfora.bundled 1 over 7
+tracks (7 in Music, 0 in the app folder) · bundled: "Let the Night Come
+In", "Slow Blue", "Second Wind" · playing "Let the Night Come In"`.
+`debug.fosfora.audio file` still plays the test clip: `music: playing
+ember_glow_excerpt.ogg (the analysis on its tap)`.
+
+**The begin, the change and a step.**
+
+| What | Log |
+|---|---|
+| The first track decodes at launch, 2.3 s before the begin | `music: playing "Let the Night Come In" · 3:28 · decoded in 0.6 s`, 38 ms after `first run: the show begins` |
+| The next track decodes 30 s before the end | `music: decoding "Slow Blue"` at 2:57.6 |
+| It takes over where the first ends | `music: playing "Slow Blue" · 3:15 · decoded in 0.5 s` at 3:27.6, 0 xruns |
+| "next song" | label `next: Second Wind`, `music: playing "Second Wind" · 3:15 · decoded in 0.5 s` 0.5 s after it was asked |
+| "previous song" | label `previous: Slow Blue`, `music: playing "Slow Blue" · 3:15 · decoded in 0.5 s` |
+
+**The show on the first track**, from the track's start. The level is the
+immersion's, logged once a second: 0 is the plain room, 1 the room black.
+
+| From the start | Level |
+|---|---|
+| 0:00 to 0:10 | the opening: the plain room, then its glide to 0.35 |
+| 0:10 to 0:15 | rises from 0.33 to 0.76 |
+| 0:15.6 | a drop, to 1 |
+| 0:16 to 0:45 | 1.00 |
+| 0:46 to 0:50 | opens to 0.62 |
+| 0:50.4 | a drop, to 1 |
+| 0:51 to 1:19 | 1.00 |
+| 1:20 to 1:29 | 0.97 down to 0.70, holding near 0.76 |
+| 1:30 to 1:39 | open: 0.64 down to 0.48 at 1:35, back to 0.64 |
+| 1:40 to 1:50 | closes to 1.00 by 1:48 |
+| 1:51 to 2:07 | open: 0.48 at 2:00 and 2:01, 0.71 at 2:07 |
+| 2:07.8 | a drop, to 1 |
+| 2:08 to 2:36 | 1.00 |
+| 2:37 to 2:54 | open: 0.46 at 2:48 and 2:49, 0.53 at 2:54 |
+| 2:54.7 | a drop, to 1 |
+| 2:55 to 3:23 | 1.00 |
+| 3:24 to 3:27 | 0.95 down to 0.70 as the track ends |
+| 3:27.6, the next track starts | 0.25, then near 0.41 for 5 s and rising; a drop 11 s into that track takes it to 1 |
+
+The room is open three times, for 10 to 17 s each, and once briefly at
+0:46. Four drops take it to black. On the 45 s clip, in the launch before this one, the level
+reached 1.00 at 0:30 and stayed there for the two minutes after; no drop
+was logged.
+
+**Frame cost**, the first 150 s of each from the music's start, the clip's
+run first and the bundled run right after it. `App` is the runtime's
+`VrApi` figure, one line a second.
+
+| | Test clip, looped | First bundled track |
+|---|---|---|
+| App, median (ms) | 9.07 | 9.17 |
+| App, mean and p95 (ms) | 9.01, 9.51 | 9.14, 9.60 |
+| App over 0:30 to 2:30, median (ms) | 9.07 | 9.18 |
+| The app's CPU frame, mean (ms) | 2.66 | 2.67 |
+| Frame rate, median | 73 | 73 |
+| Battery at the start and the end (C) | 33, 40 | 40, 42 |
+
+A 0.1 ms difference, with the bundled run second and the headset 7 C
+warmer when it began. The track's length costs nothing in the frame.
+
+**Memory** (`dumpsys meminfo`, the PSS total).
+
+| When | PSS (MB) |
+|---|---|
+| The clip playing, at 1:00 and 2:00 | 476, 478 |
+| The first track playing, at 1:00, 2:00 and 2:32 | 536, 538, 539 |
+| The next track decoded and waiting, at 3:01 | 612 |
+| 2 s and 10 s after the change | 537, 537 |
+| After the step to "Second Wind", after the step back | 537, 538 |
+
+A decoded 3:28 track is 76 MB against the clip's 16 MB, and the app is 60
+MB up with one playing. Two are held from 30 s before a track's end until
+the change, 73 MB more with "Slow Blue" waiting. A step holds two for the
+half second of the swap.
+
+**The APK** is 248.2 MB with the three tracks (10.5 MB of Vorbis), from
+237.7 MB.
+
+Not covered: the Music row's `<` and `>` and its title by hand, the
+wearer's music arriving or leaving while a bundled track plays (a headset
+with empty folders, the permission's grant, "scan my music"), the saved
+bundled track across launches, and all of it worn. The desktop tests cover
+the playlist's side of those.
