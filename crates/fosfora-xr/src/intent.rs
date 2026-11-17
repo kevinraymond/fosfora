@@ -3064,11 +3064,22 @@ mod tests {
                 // Board #5431: Mirror through the same grammar.
                 ("Mirror theme.", to(Theme::Mirror)),
                 ("Set the theme to mirror", to(Theme::Mirror)),
+                // Board #5533: Flint and Contour too, by the table alone.
+                ("Theme flint.", to(Theme::Flint)),
+                ("Flint theme", to(Theme::Flint)),
+                ("Theme contour.", to(Theme::Contour)),
+                ("Set the theme to contour", to(Theme::Contour)),
                 // The words around them still mean what they did.
                 ("Next effect.", Intent::NextEffect),
                 ("next", Intent::NextEffect),
                 ("Switch to Tide Pool.", Intent::Effect(3)),
                 ("Every wall aurora.", on(Target::Kind(KIND_WALL), B::Aurora)),
+                // The look is not the theme: without the word "theme" it
+                // is the contours on the walls.
+                (
+                    "Every wall contours.",
+                    on(Target::Kind(KIND_WALL), B::Contours),
+                ),
             ],
         );
         missed(

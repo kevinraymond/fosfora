@@ -444,7 +444,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       5 green, 6 teal, 7 rose, 8 the key's tint), band 0..3 (rms, bass, mid, high), e.g. "table=curls:5:2@0.8"; "clear" drops
     //       every assignment and the theme, so the room is fresh again and runs Aurora, saved only once something changes
     //       (board #5447); live: polled once a second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
-    //   adb shell setprop debug.fosfora.theme drift                (board #5415, themes.rs: classic, drift, tide, aurora, mirror or flint, the whole room's
+    //   adb shell setprop debug.fosfora.theme drift                (board #5415, themes.rs: classic, drift, tide, aurora, mirror, flint or contour, the whole room's
     //       look as the hand menu's Theme control sets it, every surface and kind default, hand assignments included; writes the saved
     //       room as the control does; live: polled once a second, applied once when the value changes, after the room's anchors are in;
     //       at launch a value naming the room's own theme (edited since or not, or the Aurora a fresh room runs) applies nothing; to
@@ -1917,7 +1917,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // the log (`None` before the first frame, so the first count is logged
     // too).
     let mut surface_clock = crate::surface_fx::Clock::default();
-    let mut surfaces_lit: Option<([usize; 6], usize)> = None;
+    let mut surfaces_lit: Option<([usize; 7], usize)> = None;
     // Board #5436: the sky (`sky.rs`). Its knob, polled once a second
     // below; the facing its seam is behind, taken at launch (the first
     // frame) and at each recenter, with which of the two it was; what the
@@ -2030,6 +2030,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // `themes::Bringing`): the track starts seen for it, from none, so a
     // track already on the speakers brings its own on the first frame; the
     // change under way; and `debug.fosfora.tracktheme`, live.
+    let mut terrain = crate::surface_fx::Terrain::default();
     let mut theme_starts = 0u32;
     let mut bringing = crate::themes::Bringing::default();
     let mut track_themes = switch_now(crate::music::TRACK_THEME_KNOB).unwrap_or(true);
@@ -2479,9 +2480,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 );
             }
             // Board #5533: a bundled track brings its theme. When one goes
-            // on the speakers from its top the room's light falls to dark
-            // over a second, the theme is laid there, unsaved, and the new
-            // look rises (`themes::Bringing`); the wearer's own music
+            // on the speakers from its top the room's light falls to dark,
+            // the theme is laid there, unsaved, and the new look rises
+            // (`themes::Bringing`, stepped below once the flash limit has
+            // this frame's direction); the wearer's own music
             // brings none and puts the room's own back. A theme the wearer
             // picked since the track started stands. The knob, live: 0
             // puts the room's own back, 1 brings the playing track's.
@@ -2523,18 +2525,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         Brought::Own => false,
                     };
                     bringing.start(what, shows, surface_lanes.picks());
-                }
-                if let Some(due) = bringing.step(dt) {
-                    if due.picks != surface_lanes.picks() {
-                        info!("themes: the wearer picked a theme since the track started: it stands");
-                    } else {
-                        match due.what {
-                            Brought::Theme(theme) => surface_lanes.bring_theme(theme),
-                            Brought::Own => {
-                                surface_lanes.put_back();
-                            }
-                        }
-                    }
                 }
             }
             // S7: hands and room as obstacles. I5: pinch gestures.
@@ -4638,6 +4628,24 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 },
             );
             (hop.beat_fired, hop.downbeat_fired, hop.drop_fired) = (gate.beat, gate.downbeat, gate.drop);
+            // Board #5533: a track's theme comes through dark, the room's
+            // light moving only the way the flash limit's direction goes
+            // this frame, so the change adds no turn of its own; laid while
+            // dark, on the next frame's rows, unless the wearer picked a
+            // theme since the track started.
+            if let Some(due) = bringing.step(dt, crate::themes::Turn::of(&flash_limit)) {
+                use crate::themes::Brought;
+                if due.picks != surface_lanes.picks() {
+                    info!("themes: the wearer picked a theme since the track started: it stands");
+                } else {
+                    match due.what {
+                        Brought::Theme(theme) => surface_lanes.bring_theme(theme),
+                        Brought::Own => {
+                            surface_lanes.put_back();
+                        }
+                    }
+                }
+            }
             flash_limit.features(hop.frame.features.as_slice_mut(), dt, gate);
             flash_limit.mel(&mut hop.frame.mel, dt);
             let hop = hop;
@@ -4840,8 +4848,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     downbeat: downbeat_shown,
                     bar_phase: f.bar_phase,
                     key_tint: [1.0; 3],
+                    land: {
+                        // Board #5533: the contours' land, on its own
+                        // clock and the levels the flash limit lets through.
+                        terrain.step(
+                            dt,
+                            motion,
+                            [f.rms, f.bass, f.mid, f.presence.max(f.brilliance)],
+                            hop.downbeat_fired,
+                        );
+                        terrain.land()
+                    },
                 };
-                let mut counts = [0usize; 6];
+                let mut counts = [0usize; 7];
                 let mut slots = Vec::new();
                 // The ported effects' rates integrate every frame, lit or
                 // not, one state per effect: two walls on aurora drift in
@@ -4966,6 +4985,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         SurfaceBehavior::Streamlines => counts[1] += 1,
                         SurfaceBehavior::Curls => counts[2] += 1,
                         SurfaceBehavior::Pulse => counts[3] += 1,
+                        SurfaceBehavior::Contours => counts[6] += 1,
                         _ => counts[4] += 1,
                     }
                     slots.push(crate::surface_fx::Slot {
@@ -5168,13 +5188,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 port_faces.truncate(max.saturating_sub(faces.len()));
                 if Some((counts, dropped)) != surfaces_lit {
                     info!(
-                        "surfaces: {lit} lit (rings {}, streamlines {}, curls {}, pulse {}, spectrum {}, ports {})",
+                        "surfaces: {lit} lit (rings {}, streamlines {}, curls {}, pulse {}, spectrum {}, ports {}, contours {})",
                         counts[0],
                         counts[1],
                         counts[2],
                         counts[3],
                         counts[4],
-                        counts[5]
+                        counts[5],
+                        counts[6]
                     );
                     if dropped > 0 {
                         info!(

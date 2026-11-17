@@ -21,7 +21,10 @@
 //! any other face). Every position is in the face's
 //! (u, v): meters along its two axes from its center, which the vertex
 //! stage hands the fragment, so one shader works on any face at any
-//! orientation. The audio band ([`BAND_RMS`] to [`BAND_HIGH`]) is the
+//! orientation (the contours also take the fragment's world position, and
+//! their `shape` is the land's clock, level, breath and traveling line's
+//! height, with the high land's color and that line's light in the first
+//! ring's row). The audio band ([`BAND_RMS`] to [`BAND_HIGH`]) is the
 //! level the streamlines, the curls and the pulse follow; the rings follow
 //! the ripple's own bass.
 //!
@@ -80,6 +83,35 @@
 //! time constant) over a floor of [`PULSE_FLOOR`] times the band's level
 //! ([`pulse_level`]), so a frame breathes with the bar and never goes
 //! black while the music plays. Peak alpha [`PULSE_PEAK_ALPHA`].
+//!
+//! **Contours** (id 16, board #5533): contour lines, as on a topographic
+//! map, over one landscape that fills the room. The land is a height field
+//! in world space ([`land`]): three sines of the fragment's position, two
+//! of them with their phase bent by a fourth and a fifth, so the hills are
+//! not a grid. Every face samples it where it stands, so a line that
+//! reaches a wall's edge goes on across the next wall, the floor or the
+//! ceiling, and no face fades toward its edges. A line runs wherever the
+//! height crosses a multiple of [`LAND_INTERVAL`]. Its distance in meters
+//! comes from the height's own gradient along the face, worked out with
+//! the height at no extra sine, so a line is [`STREAM_LINE_M`] wide on a
+//! steep slope and on a gentle one. Every [`LAND_INDEX_EVERY`]th line is
+//! an index line, always drawn; the lines between show as the level rises
+//! past [`LAND_FEW_FROM`] and are dimmer ([`LAND_BETWEEN`]). The color
+//! runs from the surface's own on low land to [`LAND_HIGH_COLOR`] on high
+//! land. A fragment costs ten sines and cosines, five dot products and
+//! three smoothsteps, with no texture read, no hash and no loop, against
+//! the streamlines' eight lattice hashes off a line and sixteen on one.
+//!
+//! **The land moves gently** ([`Terrain`], stepped once a frame). It
+//! drifts on its own clock, which the beat does not speed up, a few
+//! centimeters a second. The music reaches it only through values that
+//! glide: the band's level over [`LAND_LEVEL_S`] and the bass over
+//! [`LAND_BREATH_S`]. The level raises the land by up to [`LAND_TIDE`], so
+//! the lines spread outward from the peaks like a tide over a map, lights
+//! the lines between and widens every line a little. The bass swells the
+//! relief by [`LAND_BREATH`]. On a downbeat, at most once in
+//! [`LAND_TRAVEL_GAP_S`], one faint line sets out from the low land and
+//! climbs to the peaks over [`LAND_TRAVEL_S`], fading in and out.
 //!
 //! **The clock** ([`Clock`]) runs at 1 + the beat envelope, so the flow
 //! and the drift double on the beat and settle back, without the jumps a
@@ -157,6 +189,62 @@ pub const PULSE_EDGE: f32 = 0.35;
 pub const PULSE_FLOOR: f32 = 0.15;
 /// The downbeat envelope's decay (per second): a 0.6 s time constant.
 pub const DOWNBEAT_DECAY_PER_S: f32 = 1.6;
+/// The contours' alpha at full strength and full level: the streamlines'.
+pub const CONTOUR_PEAK_ALPHA: f32 = STREAM_PEAK_ALPHA;
+/// The height between two contour lines (the land's height runs from -1
+/// to 1), and how many lines from one index line to the next.
+pub const LAND_INTERVAL: f32 = 0.125;
+pub const LAND_INDEX_EVERY: u32 = 5;
+/// How far a full level raises the land (two intervals), and how much a
+/// full bass swells its relief.
+pub const LAND_TIDE: f32 = 0.25;
+pub const LAND_BREATH: f32 = 0.12;
+/// The level the lines between the index lines start to show at and are
+/// all lit by, and their light against an index line's.
+pub const LAND_FEW_FROM: f32 = 0.15;
+pub const LAND_FEW_TO: f32 = 0.6;
+pub const LAND_BETWEEN: f32 = 0.6;
+/// A line's width with the music quiet against its width at full level,
+/// and its light.
+pub const LAND_THIN: f32 = 0.6;
+pub const LAND_FLOOR: f32 = 0.35;
+/// The gentlest slope a line's width is worked out with (1/m): on a
+/// summit's flat the line stays a line.
+pub const LAND_SLOPE_MIN: f32 = 0.15;
+/// The tint runs from the low land's color at minus this height to the
+/// high land's at plus it.
+pub const LAND_TINT_HALF: f32 = 0.5;
+/// The high land's color; the low land's is the surface's own.
+pub const LAND_HIGH_COLOR: [f32; 3] = crate::surfaces::WARM_WHITE;
+/// The land's waves (rad/m), each sine's weight, how far the first two
+/// bend (rad), the bending waves, each phase's drift (rad per second of
+/// the land's clock) and the second and third sines' offsets: the WGSL's
+/// `land` literals.
+const LAND_K: [Vec3; 3] = [
+    Vec3::new(1.52, 0.72, 1.04),
+    Vec3::new(-1.12, 1.68, 2.08),
+    Vec3::new(3.12, -2.48, 1.92),
+];
+const LAND_WEIGHT: [f32; 3] = [0.5, 0.32, 0.18];
+const LAND_BEND: [f32; 2] = [1.1, 0.8];
+const LAND_Q: [Vec3; 2] = [Vec3::new(-0.56, 0.88, 1.28), Vec3::new(1.6, -0.48, 0.72)];
+const LAND_DRIFT: [f32; 5] = [0.13, 0.07, -0.11, -0.05, 0.09];
+const LAND_OFFSET: [f32; 2] = [1.7, 4.1];
+/// The land's clock wraps here (s): every drift is a whole number of
+/// hundredths of a radian a second, so every phase has come round.
+pub const LAND_CLOCK_WRAP_S: f64 = 200.0 * std::f64::consts::PI;
+/// How long the level and the bass take to reach the land (s, one pole).
+pub const LAND_LEVEL_S: f32 = 1.5;
+pub const LAND_BREATH_S: f32 = 0.8;
+/// The traveling line: how long it climbs (s), the least time from one
+/// setting out to the next (s), the heights it climbs between, its light
+/// at most against an index line's, and the level under which none sets
+/// out.
+pub const LAND_TRAVEL_S: f32 = 7.0;
+pub const LAND_TRAVEL_GAP_S: f32 = 12.0;
+pub const LAND_TRAVEL_HEIGHTS: [f32; 2] = [-0.9, 0.9];
+pub const LAND_TRAVEL_LIGHT: f32 = 0.35;
+pub const LAND_TRAVEL_MIN_LEVEL: f32 = 0.25;
 /// The audio band a surface follows (`params.z`): the rms, the bass, the
 /// mid, the high (the larger of presence and brilliance).
 pub const BAND_RMS: u32 = 0;
@@ -190,6 +278,144 @@ pub struct Audio {
     pub downbeat: f32,
     pub bar_phase: f32,
     pub key_tint: [f32; 3],
+    /// The contours' land this frame ([`Terrain::land`]).
+    pub land: Land,
+}
+
+/// The contours' land as a frame draws it ([`Terrain::land`]): its clock
+/// (s, wrapped), each band's level as it reached the land, the bass as it
+/// did, and the traveling line's height and light (0: none).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Land {
+    pub clock: f32,
+    pub levels: [f32; BANDS as usize],
+    pub breath: f32,
+    pub travel: f32,
+    pub travel_light: f32,
+}
+
+/// The contours' land from frame to frame (board #5533): its own clock,
+/// the music as it reaches it, and the one line that travels. One for the
+/// room, since the land is one.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Terrain {
+    clock: f64,
+    levels: [f32; BANDS as usize],
+    breath: f32,
+    /// The traveling line's age (s).
+    travel: Option<f32>,
+    /// Seconds since the last one set out.
+    since: f32,
+}
+
+impl Terrain {
+    /// `dt` seconds on. The clock runs at `motion` (the flash limit's
+    /// share of the looks' own speed, 1 as a rule) and not with the beat.
+    /// `levels` are the bands' (rms, bass, mid, high) as the flash limit
+    /// lets them through; each glides to the land over [`LAND_LEVEL_S`],
+    /// the bass also as the breath over [`LAND_BREATH_S`]. A `downbeat`
+    /// sends the traveling line out when none travels, the last set out
+    /// [`LAND_TRAVEL_GAP_S`] ago or more and the rms has reached
+    /// [`LAND_TRAVEL_MIN_LEVEL`].
+    pub fn step(&mut self, dt: f32, motion: f32, levels: [f32; BANDS as usize], downbeat: bool) {
+        let dt = dt.max(0.0);
+        self.clock =
+            (self.clock + f64::from(dt * motion.clamp(0.0, 1.0))).rem_euclid(LAND_CLOCK_WRAP_S);
+        let toward = |now: f32, want: f32, secs: f32| {
+            now + (want.clamp(0.0, 1.0) - now) * (1.0 - (-dt / secs).exp())
+        };
+        for (now, want) in self.levels.iter_mut().zip(levels) {
+            *now = toward(*now, want, LAND_LEVEL_S);
+        }
+        self.breath = toward(self.breath, levels[BAND_BASS as usize], LAND_BREATH_S);
+        self.since += dt;
+        self.travel = self
+            .travel
+            .map(|age| age + dt)
+            .filter(|age| *age < LAND_TRAVEL_S);
+        if downbeat
+            && self.travel.is_none()
+            && self.since >= LAND_TRAVEL_GAP_S
+            && self.levels[BAND_RMS as usize] >= LAND_TRAVEL_MIN_LEVEL
+        {
+            self.travel = Some(0.0);
+            self.since = 0.0;
+        }
+    }
+
+    /// The land as this frame draws it. The traveling line climbs evenly
+    /// between [`LAND_TRAVEL_HEIGHTS`] and its light is a half sine over
+    /// its climb, squared: it leaves and arrives at no light.
+    pub fn land(&self) -> Land {
+        let (travel, travel_light) = self.travel.map_or((0.0, 0.0), |age| {
+            let x = (age / LAND_TRAVEL_S).clamp(0.0, 1.0);
+            let [from, to] = LAND_TRAVEL_HEIGHTS;
+            let s = (std::f32::consts::PI * x).sin();
+            (from + (to - from) * x, LAND_TRAVEL_LIGHT * s * s)
+        });
+        Land {
+            clock: self.clock as f32,
+            levels: self.levels,
+            breath: self.breath,
+            travel,
+            travel_light,
+        }
+    }
+}
+
+/// The land's height at world point `p` (m) at `clock` (s), about -1 to 1,
+/// and its gradient (1/m). The WGSL's `land`.
+pub fn land(p: Vec3, clock: f32) -> (f32, Vec3) {
+    let [k1, k2, k3] = LAND_K;
+    let [q1, q2] = LAND_Q;
+    let [w1, w2, w3] = LAND_WEIGHT;
+    let t1 = q1.dot(p) + LAND_DRIFT[0] * clock;
+    let f1 = k1.dot(p) + LAND_BEND[0] * t1.sin() + LAND_DRIFT[1] * clock;
+    let t2 = q2.dot(p) + LAND_DRIFT[2] * clock;
+    let f2 = k2.dot(p) + LAND_BEND[1] * t2.sin() + LAND_DRIFT[3] * clock + LAND_OFFSET[0];
+    let f3 = k3.dot(p) + LAND_DRIFT[4] * clock + LAND_OFFSET[1];
+    (
+        w1 * f1.sin() + w2 * f2.sin() + w3 * f3.sin(),
+        w1 * f1.cos() * (k1 + LAND_BEND[0] * t1.cos() * q1)
+            + w2 * f2.cos() * (k2 + LAND_BEND[1] * t2.cos() * q2)
+            + w3 * f3.cos() * k3,
+    )
+}
+
+/// The contours' light, 0 to 1, where the land is `height` high and
+/// `slope` steep along the face (1/m, [`land`]'s gradient less its part
+/// along the face's normal), for a land of `level`, `breath` and
+/// traveling line `travel` (its height and its light), on a pixel `px`
+/// meters across: the WGSL's `contours_light`.
+pub fn contour_light(
+    height: f32,
+    slope: f32,
+    level: f32,
+    breath: f32,
+    travel: [f32; 2],
+    px: f32,
+) -> f32 {
+    let smooth = |a: f32, b: f32, x: f32| {
+        let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let level = level.clamp(0.0, 1.0);
+    let amp = 1.0 + LAND_BREATH * breath.clamp(0.0, 1.0);
+    let slope = (amp * slope).max(LAND_SLOPE_MIN);
+    let h = amp * height + LAND_TIDE * level;
+    let v = h / LAND_INTERVAL;
+    let m = v.round();
+    let soft = STREAM_LINE_SOFT_M.max(px);
+    let half_w = 0.5 * STREAM_LINE_M * (LAND_THIN + (1.0 - LAND_THIN) * level);
+    let line = |d: f32| 1.0 - smooth(half_w - soft, half_w + soft, d);
+    let weight = if (m as i32).rem_euclid(LAND_INDEX_EVERY as i32) == 0 {
+        1.0
+    } else {
+        LAND_BETWEEN * smooth(LAND_FEW_FROM, LAND_FEW_TO, level)
+    };
+    let light = (weight * line((v - m).abs() * LAND_INTERVAL / slope))
+        .max(travel[1] * line((h - travel[0]).abs() / slope));
+    light * (LAND_FLOOR + (1.0 - LAND_FLOOR) * level)
 }
 
 /// The downbeat envelope after `dt` seconds from `env`: 1 when the
@@ -333,6 +559,7 @@ pub fn rows(
         ),
         SurfaceBehavior::Curls => (CURL_SPEED_M_S, CURL_PEAK_ALPHA),
         SurfaceBehavior::Pulse => (0.0, PULSE_PEAK_ALPHA),
+        SurfaceBehavior::Contours => (0.0, CONTOUR_PEAK_ALPHA),
         SurfaceBehavior::Spectrum => (
             0.0,
             crate::canvas::PEAK_ALPHA * spectrum.map_or(0.0, |s| s.gain),
@@ -389,6 +616,17 @@ pub fn rows(
             }
         }
         SurfaceBehavior::Pulse => {}
+        SurfaceBehavior::Contours => {
+            let land = audio.land;
+            rows[9] = [
+                land.clock,
+                land.levels[slot.band.min(BANDS - 1) as usize],
+                land.breath,
+                land.travel,
+            ];
+            let [r, g, b] = LAND_HIGH_COLOR;
+            rows[RINGS_ROW] = [r, g, b, land.travel_light];
+        }
         _ => {
             let feature = if floor {
                 STREAM_FLOOR_FEATURE_M
@@ -550,9 +788,13 @@ struct SurfaceFx {
     audio2: vec4<f32>,
     // rings: x, y their origin (m), z the glow; streamlines and curls: w
     // the feature size (m); spectrum: x the sign of u toward the wearer's
-    // right, y the bar count, z the bottom glow, w the bar fill
+    // right, y the bar count, z the bottom glow, w the bar fill; contours:
+    // x the land's clock (s), y its level, z its breath, w the traveling
+    // line's height
     shape: vec4<f32>,
     // origin u, v (m), radius (m), intensity; 0 intensity for an empty slot
+    // (contours: the first row is the high land's color, w the traveling
+    // line's light)
     rings: array<vec4<f32>, 8>,
     // the spectrum's bar heights 0..1, four per row, from the wearer's left
     bars: array<vec4<f32>, 16>,
@@ -565,6 +807,7 @@ const BEHAVIOR_RINGS: u32 = 4u;
 const BEHAVIOR_STREAMLINES: u32 = 5u;
 const BEHAVIOR_CURLS: u32 = 6u;
 const BEHAVIOR_PULSE: u32 = 7u;
+const BEHAVIOR_CONTOURS: u32 = 16u;
 const BAND_BASS: u32 = 1u;
 const BAND_MID: u32 = 2u;
 const BAND_HIGH: u32 = 3u;
@@ -596,6 +839,22 @@ const CURL_FILL_SOFT: f32 = 0.25;
 // band's level).
 const PULSE_EDGE: f32 = 0.35;
 const PULSE_FLOOR: f32 = 0.15;
+// The contours' land: the height between two lines and the lines from one
+// index line to the next, how far the level raises it and the bass swells
+// it, the level the lines between show from and to and their light, a
+// quiet line's width and light, the gentlest slope a width is worked out
+// with (1/m), and the height the tint runs to either side of 0.
+const LAND_INTERVAL: f32 = 0.125;
+const LAND_INDEX_EVERY: u32 = 5u;
+const LAND_TIDE: f32 = 0.25;
+const LAND_BREATH: f32 = 0.12;
+const LAND_FEW_FROM: f32 = 0.15;
+const LAND_FEW_TO: f32 = 0.6;
+const LAND_BETWEEN: f32 = 0.6;
+const LAND_THIN: f32 = 0.6;
+const LAND_FLOOR: f32 = 0.35;
+const LAND_SLOPE_MIN: f32 = 0.15;
+const LAND_TINT_HALF: f32 = 0.5;
 // The spectrum's (the canvas's): the softness of a bar's sides (fraction
 // of its slot) and of its top and cap (fraction of the wall's height),
 // and the bottom glow's height.
@@ -607,6 +866,8 @@ const GLOW_HEIGHT: f32 = 0.03;
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    // The point of the face in the world (m), for the contours' land.
+    @location(1) world: vec3<f32>,
 }
 
 @vertex
@@ -619,6 +880,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
     var out: VsOut;
     out.pos = eye.view_proj * vec4<f32>(fx.corners[k].xyz, 1.0);
     out.uv = signs[k] * fx.face.xy;
+    out.world = fx.corners[k].xyz;
     return out;
 }
 
@@ -800,6 +1062,67 @@ fn pulse_light(uv: vec2<f32>) -> f32 {
     return radial * env * edge_fade(uv);
 }
 
+// The land: x its height at world point p (m) at clock tau (s), about -1
+// to 1, yzw its gradient (1/m). Three sines of the position, the first two
+// with their phase bent by another, each drifting its own way.
+fn land(p: vec3<f32>, tau: f32) -> vec4<f32> {
+    let k1 = vec3<f32>(1.52, 0.72, 1.04);
+    let q1 = vec3<f32>(-0.56, 0.88, 1.28);
+    let k2 = vec3<f32>(-1.12, 1.68, 2.08);
+    let q2 = vec3<f32>(1.6, -0.48, 0.72);
+    let k3 = vec3<f32>(3.12, -2.48, 1.92);
+    let t1 = dot(q1, p) + 0.13 * tau;
+    let f1 = dot(k1, p) + 1.1 * sin(t1) + 0.07 * tau;
+    let t2 = dot(q2, p) + -0.11 * tau;
+    let f2 = dot(k2, p) + 0.8 * sin(t2) + -0.05 * tau + 1.7;
+    let f3 = dot(k3, p) + 0.09 * tau + 4.1;
+    return vec4<f32>(
+        0.5 * sin(f1) + 0.32 * sin(f2) + 0.18 * sin(f3),
+        0.5 * cos(f1) * (k1 + 1.1 * cos(t1) * q1)
+            + 0.32 * cos(f2) * (k2 + 0.8 * cos(t2) * q2)
+            + 0.18 * cos(f3) * k3,
+    );
+}
+
+// The contours: x a line's light where the land's height, raised by the
+// level and swelled by the bass, crosses a multiple of the interval, or
+// where it crosses the traveling line's height; y how high the land is,
+// 0 on low land to 1 on high, for the tint. The distance to a line in
+// meters is the height's distance over the slope along the face, so a
+// line is as wide on a steep slope as on a gentle one. Index lines are
+// always drawn; the lines between show as the level rises.
+fn contours_light(world: vec3<f32>, px: f32) -> vec2<f32> {
+    let level = clamp(fx.shape.y, 0.0, 1.0);
+    let amp = 1.0 + LAND_BREATH * clamp(fx.shape.z, 0.0, 1.0);
+    let l = land(world, fx.shape.x);
+    let n = normalize(cross(
+        fx.corners[1].xyz - fx.corners[0].xyz,
+        fx.corners[3].xyz - fx.corners[0].xyz,
+    ));
+    let across = dot(l.yzw, n);
+    let slope = max(amp * sqrt(max(dot(l.yzw, l.yzw) - across * across, 0.0)), LAND_SLOPE_MIN);
+    let h = amp * l.x + LAND_TIDE * level;
+    let v = h / LAND_INTERVAL;
+    let m = round(v);
+    let soft = max(LINE_SOFT_M, px);
+    let half_w = 0.5 * LINE_M * mix(LAND_THIN, 1.0, level);
+    let every = i32(LAND_INDEX_EVERY);
+    var weight = LAND_BETWEEN * smoothstep(LAND_FEW_FROM, LAND_FEW_TO, level);
+    if ((i32(m) % every) + every) % every == 0 {
+        weight = 1.0;
+    }
+    let d = abs(v - m) * LAND_INTERVAL / slope;
+    let dt = abs(h - fx.shape.w) / slope;
+    let light = max(
+        weight * (1.0 - smoothstep(half_w - soft, half_w + soft, d)),
+        fx.rings[0].w * (1.0 - smoothstep(half_w - soft, half_w + soft, dt)),
+    );
+    return vec2<f32>(
+        light * mix(LAND_FLOOR, 1.0, level),
+        smoothstep(-LAND_TINT_HALF, LAND_TINT_HALF, l.x),
+    );
+}
+
 // The wall spectrum: bars of light climbing the face, the bar index along
 // u times the sign (low bands on the wearer's left), the height along v,
 // brightest at the bar's top with a cap line, over a glow along the
@@ -831,7 +1154,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let px = length(fwidth(in.uv));
     let id = u32(fx.face.w + 0.5);
     var light = 0.0;
-    if id == BEHAVIOR_RINGS {
+    var rgb = fx.color.rgb;
+    if id == BEHAVIOR_CONTOURS {
+        // Low land in the surface's color, high land in the land's own.
+        let c = contours_light(in.world, px);
+        light = c.x;
+        rgb = mix(rgb, fx.rings[0].rgb, c.y);
+    } else if id == BEHAVIOR_RINGS {
         light = rings_light(in.uv);
     } else if id == BEHAVIOR_STREAMLINES {
         light = streamlines_light(in.uv, px);
@@ -843,7 +1172,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         light = spectrum_light(in.uv);
     }
     let a = fx.color.w * clamp(fx.params.x, 0.0, 1.0) * clamp(light, 0.0, 1.0);
-    return vec4<f32>(fx.color.rgb * a, a);
+    return vec4<f32>(rgb * a, a);
 }
 ";
 
@@ -950,6 +1279,18 @@ mod tests {
             ("BEHAVIOR_SPECTRUM", SurfaceBehavior::Spectrum.id() as f32),
             ("BEHAVIOR_CURLS", SurfaceBehavior::Curls.id() as f32),
             ("BEHAVIOR_PULSE", SurfaceBehavior::Pulse.id() as f32),
+            ("BEHAVIOR_CONTOURS", SurfaceBehavior::Contours.id() as f32),
+            ("LAND_INTERVAL", LAND_INTERVAL),
+            ("LAND_INDEX_EVERY", LAND_INDEX_EVERY as f32),
+            ("LAND_TIDE", LAND_TIDE),
+            ("LAND_BREATH", LAND_BREATH),
+            ("LAND_FEW_FROM", LAND_FEW_FROM),
+            ("LAND_FEW_TO", LAND_FEW_TO),
+            ("LAND_BETWEEN", LAND_BETWEEN),
+            ("LAND_THIN", LAND_THIN),
+            ("LAND_FLOOR", LAND_FLOOR),
+            ("LAND_SLOPE_MIN", LAND_SLOPE_MIN),
+            ("LAND_TINT_HALF", LAND_TINT_HALF),
             ("BAND_BASS", BAND_BASS as f32),
             ("BAND_MID", BAND_MID as f32),
             ("BAND_HIGH", BAND_HIGH as f32),
@@ -986,6 +1327,40 @@ mod tests {
             let lit = format!("vec2<f32>({:?}, {:?})", v.x, v.y);
             assert!(SURFACE_FX_WGSL.contains(&lit), "{lit}");
         }
+        // And the land's: its waves, weights, bends, drifts and offsets.
+        for (name, v) in ["k1", "k2", "k3"]
+            .iter()
+            .zip(LAND_K)
+            .chain(["q1", "q2"].iter().zip(LAND_Q))
+        {
+            let lit = format!("let {name} = vec3<f32>({:?}, {:?}, {:?});", v.x, v.y, v.z);
+            assert!(SURFACE_FX_WGSL.contains(&lit), "{lit}");
+        }
+        let [w1, w2, w3] = LAND_WEIGHT;
+        let [b1, b2] = LAND_BEND;
+        let d = LAND_DRIFT;
+        let [o1, o2] = LAND_OFFSET;
+        for lit in [
+            format!("let t1 = dot(q1, p) + {:?} * tau;", d[0]),
+            format!("let f1 = dot(k1, p) + {b1:?} * sin(t1) + {:?} * tau;", d[1]),
+            format!("let t2 = dot(q2, p) + {:?} * tau;", d[2]),
+            format!(
+                "let f2 = dot(k2, p) + {b2:?} * sin(t2) + {:?} * tau + {o1:?};",
+                d[3]
+            ),
+            format!("let f3 = dot(k3, p) + {:?} * tau + {o2:?};", d[4]),
+            format!("{w1:?} * sin(f1) + {w2:?} * sin(f2) + {w3:?} * sin(f3),"),
+            format!("{w1:?} * cos(f1) * (k1 + {b1:?} * cos(t1) * q1)"),
+            format!("+ {w2:?} * cos(f2) * (k2 + {b2:?} * cos(t2) * q2)"),
+            format!("+ {w3:?} * cos(f3) * k3,"),
+        ] {
+            assert!(SURFACE_FX_WGSL.contains(&lit), "{lit}");
+        }
+        // Every drift a whole number of hundredths: the clock's wrap
+        // brings every phase round.
+        for r in LAND_DRIFT {
+            assert_close!((r * 100.0).round(), r * 100.0);
+        }
     }
 
     #[test]
@@ -1001,6 +1376,7 @@ mod tests {
             downbeat: 0.7,
             bar_phase: 0.25,
             key_tint: [0.9, 0.2, 0.4],
+            ..Audio::default()
         };
         let s = Slot {
             strength: 0.7,
@@ -1059,6 +1435,7 @@ mod tests {
             downbeat: 0.7,
             bar_phase: 0.25,
             key_tint: [0.9, 0.2, 0.4],
+            ..Audio::default()
         };
         // Curls on a chair (a volume, other): its top, the rms by default.
         let face = table();
@@ -1674,5 +2051,307 @@ mod tests {
         // Never backward.
         c.advance(-1.0, 5.0);
         assert!((c.seconds() - 3.0).abs() < 1e-5);
+    }
+
+    /// A wall of the room the contours' tests stand in: 4 m wide, 2.5 m
+    /// high, at z = -2, facing the room.
+    fn wall() -> Face {
+        acting_face(
+            Vec3::new(0.0, 1.25, -2.0),
+            Quat::IDENTITY,
+            Vec3::new(2.0, 1.25, 0.02),
+            HEAD,
+        )
+    }
+
+    /// Board #5533: the land's gradient is its height's, so a line's
+    /// width in meters is right; it stays within -1 to 1 and a room holds
+    /// both its low land and its high.
+    #[test]
+    fn the_lands_gradient_is_its_heights_and_a_room_holds_hills_and_hollows() {
+        let (mut low, mut high) = (f32::MAX, f32::MIN);
+        let eps = 1e-3;
+        for i in 0..400 {
+            let p = Vec3::new(
+                -2.5 + 5.0 * hash(i, 1, 9).abs(),
+                2.5 * hash(i, 2, 9).abs(),
+                -2.5 + 5.0 * hash(i, 3, 9).abs(),
+            );
+            let clock = 300.0 * hash(i, 4, 9).abs();
+            let (h, g) = land(p, clock);
+            assert!(h.abs() <= 1.0 + 1e-5, "{h}");
+            (low, high) = (low.min(h), high.max(h));
+            for (axis, want) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().zip(g.to_array()) {
+                let d =
+                    (land(p + axis * eps, clock).0 - land(p - axis * eps, clock).0) / (2.0 * eps);
+                assert!(
+                    (d - want).abs() < 0.02,
+                    "{p:?} {axis:?}: {d} against {want}"
+                );
+            }
+        }
+        assert!(low < -0.7 && high > 0.7, "{low}..{high}");
+        // Rolling, not rugged: no slope a line could not follow.
+        let steepest: f32 = LAND_K
+            .iter()
+            .zip(LAND_WEIGHT)
+            .zip([LAND_BEND[0], LAND_BEND[1], 0.0])
+            .zip([LAND_Q[0], LAND_Q[1], Vec3::ZERO])
+            .map(|(((k, w), bend), q)| w * (k.length() + bend * q.length()))
+            .sum();
+        assert!(steepest < 4.5, "{steepest}");
+    }
+
+    /// One landscape, not six: two faces that meet at a corner sample the
+    /// same land, so a line that reaches the edge goes on across the next
+    /// face. Each face's quad is lifted off its own surface, so the two
+    /// quads' edges are the lift's diagonal apart (2.8 cm), and across
+    /// that gap the land's height changes by under half the step between
+    /// two lines: the line that leaves the wall is the line that arrives
+    /// on the floor.
+    #[test]
+    fn a_contour_line_goes_on_across_a_corner() {
+        let (wall, floor) = (wall(), level_floor(floor(), None));
+        let audio = Audio::default();
+        let on = |face: Face, kind: u32| {
+            rows(
+                &slot(face, kind, SurfaceBehavior::Contours),
+                audio,
+                None,
+                None,
+                0.0,
+            )
+        };
+        // The world point the vertex stage hands the fragment: the corners
+        // blended, as the rasterizer blends them.
+        let world = |rows: &[[f32; 4]; UNIFORM_ROWS], s: f32, t: f32| {
+            let c = |k: usize| Vec3::new(rows[k][0], rows[k][1], rows[k][2]);
+            c(0).lerp(c(1), s).lerp(c(3).lerp(c(2), s), t)
+        };
+        let (w, f) = (on(wall, KIND_WALL), on(floor, KIND_FLOOR));
+        // Along the corner, where the wall's face meets the floor's.
+        assert_close!(floor.center.y, 0.0);
+        for i in 0..=20 {
+            let x = -1.0 + 0.15 * i as f32;
+            let edge = Vec3::new(x, 0.0, wall.center.z);
+            // The same world point reached over each face's own (u, v).
+            let on_wall = edge + wall.normal * LIFT_M;
+            let on_floor = edge + floor.normal * LIFT_M;
+            let (uw, uf) = (face_uv(&wall, on_wall), face_uv(&floor, on_floor));
+            let blend = |face: &Face, uv: Vec2| {
+                (
+                    0.5 + 0.5 * uv.x / face.half[0],
+                    0.5 + 0.5 * uv.y / face.half[1],
+                )
+            };
+            let (sw, tw) = blend(&wall, uw);
+            let (sf, tf) = blend(&floor, uf);
+            assert!((world(&w, sw, tw) - on_wall).length() < 1e-4);
+            assert!((world(&f, sf, tf) - on_floor).length() < 1e-4);
+            assert_close!((on_wall - on_floor).length(), LIFT_M * 2f32.sqrt());
+            for clock in [0.0, 77.0] {
+                let (a, b) = (land(on_wall, clock).0, land(on_floor, clock).0);
+                assert!(
+                    (a - b).abs() < 0.5 * LAND_INTERVAL,
+                    "x {x}: {a} on the wall, {b} on the floor"
+                );
+            }
+        }
+    }
+
+    /// With the music quiet the lines are few and thin: the index lines
+    /// alone. At full level every line is lit, the index lines brighter,
+    /// and each is wider. A line is as wide on a steep slope as on a
+    /// gentle one.
+    #[test]
+    fn quiet_shows_the_index_lines_and_full_level_all_of_them() {
+        let px = 0.001;
+        // On the line of height `m` intervals, less the tide the level adds.
+        let on_line = |m: i32, level: f32| m as f32 * LAND_INTERVAL - LAND_TIDE * level;
+        let at =
+            |m: i32, level: f32| contour_light(on_line(m, level), 1.0, level, 0.0, [0.0; 2], px);
+        // Quiet: the index lines at the floor's light, nothing between.
+        for m in [-5, 0, 5] {
+            assert!(at(m, 0.0) > 0.9 * LAND_FLOOR, "{m}");
+        }
+        for m in [-3, -1, 1, 2, 4] {
+            assert_close!(at(m, 0.0), 0.0);
+            assert_close!(at(m, LAND_FEW_FROM), 0.0);
+        }
+        // Full: every line, an index line brighter than the ones between.
+        assert!(at(0, 1.0) > 0.95);
+        for m in [-3, -1, 1, 2, 4] {
+            assert!((at(m, 1.0) - LAND_BETWEEN * at(0, 1.0)).abs() < 1e-3, "{m}");
+        }
+        // Between two lines, nothing.
+        let between = on_line(0, 1.0) + 0.5 * LAND_INTERVAL;
+        assert_close!(contour_light(between, 1.0, 1.0, 0.0, [0.0; 2], px), 0.0);
+        // The width: where the light is half an index line's, in meters
+        // from the line, at a slope of 1 and of 3.
+        let half_width = |level: f32, slope: f32| {
+            let peak = contour_light(on_line(0, level), slope, level, 0.0, [0.0; 2], px);
+            (0..2000)
+                .map(|i| i as f32 * 1e-5)
+                .find(|d| {
+                    contour_light(
+                        on_line(0, level) + d * slope,
+                        slope,
+                        level,
+                        0.0,
+                        [0.0; 2],
+                        px,
+                    ) < 0.5 * peak
+                })
+                .expect("the line ends")
+        };
+        let (thin, wide) = (half_width(0.0, 1.0), half_width(1.0, 1.0));
+        assert!((wide - 0.5 * STREAM_LINE_M).abs() < 2e-4, "{wide}");
+        assert!(
+            (thin - 0.5 * LAND_THIN * STREAM_LINE_M).abs() < 2e-4,
+            "{thin}"
+        );
+        assert!((half_width(1.0, 3.0) - wide).abs() < 2e-4);
+        // The level raises the land: quiet, the index line runs where the
+        // land is 0 high; at full level, on ground lower by the tide.
+        assert!(contour_light(0.0, 1.0, 0.0, 0.0, [0.0; 2], px) > 0.9 * LAND_FLOOR);
+        assert!(contour_light(-LAND_TIDE, 1.0, 1.0, 0.0, [0.0; 2], px) > 0.9);
+        assert_close!(
+            contour_light(
+                -LAND_TIDE - 0.5 * LAND_INTERVAL,
+                1.0,
+                1.0,
+                0.0,
+                [0.0; 2],
+                px
+            ),
+            0.0
+        );
+        // The traveling line: its own height, its own light, anywhere.
+        let off = on_line(0, 1.0) + 0.4 * LAND_INTERVAL;
+        let h = off + LAND_TIDE;
+        assert_close!(
+            contour_light(off, 1.0, 1.0, 0.0, [h, LAND_TRAVEL_LIGHT], px),
+            LAND_TRAVEL_LIGHT
+        );
+        assert_close!(contour_light(off, 1.0, 1.0, 0.0, [h, 0.0], px), 0.0);
+    }
+
+    /// Nothing jumps: the music reaches the land gliding, its clock does
+    /// not run with the beat, and the one traveling line leaves and
+    /// arrives at no light, on a downbeat, one at a time.
+    #[test]
+    fn the_land_moves_gently() {
+        let dt = 1.0 / 72.0;
+        let mut t = Terrain::default();
+        // The level from nothing to full in one frame: the land takes
+        // under 1 % of it, and most of it within three time constants.
+        t.step(dt, 1.0, [1.0; 4], false);
+        let first = t.land();
+        assert!(first.levels.iter().all(|l| *l > 0.0 && *l < 0.01));
+        assert!(first.breath > 0.0 && first.breath < 0.02);
+        for _ in 0..(3.0 * LAND_LEVEL_S / dt) as usize {
+            let before = t.land();
+            t.step(dt, 1.0, [1.0; 4], false);
+            let now = t.land();
+            // A frame moves a line by a small part of the step between
+            // two lines.
+            assert!(LAND_TIDE * (now.levels[0] - before.levels[0]) < 0.02 * LAND_INTERVAL);
+        }
+        assert!(t.land().levels[0] > 0.94);
+        // Each band its own level.
+        let mut bands = Terrain::default();
+        for _ in 0..720 {
+            bands.step(dt, 1.0, [0.2, 0.9, 0.5, 0.0], false);
+        }
+        for (now, want) in bands.land().levels.iter().zip([0.2, 0.9, 0.5, 0.0]) {
+            assert!((now - want).abs() < 0.01, "{now} against {want}");
+        }
+        assert!((bands.land().breath - 0.9).abs() < 0.01);
+        // The clock: seconds, whatever the beat does; slower with the
+        // flash limit's motion; wrapped where every phase comes round.
+        let mut c = Terrain::default();
+        for _ in 0..72 {
+            c.step(dt, 1.0, [0.0; 4], true);
+        }
+        assert!((c.land().clock - 1.0).abs() < 1e-3);
+        for _ in 0..72 {
+            c.step(dt, 0.5, [0.0; 4], false);
+        }
+        assert!((c.land().clock - 1.5).abs() < 1e-3);
+        let wrap = LAND_CLOCK_WRAP_S as f32;
+        let p = Vec3::new(0.7, 1.1, -1.3);
+        assert!((land(p, wrap).0 - land(p, 0.0).0).abs() < 2e-3);
+        assert!((land(p, wrap - 0.01).0 - land(p, 0.0).0).abs() < 2e-3);
+        // The traveling line. Quiet, a downbeat sends none.
+        assert_close!(c.land().travel_light, 0.0);
+        let mut t = Terrain::default();
+        for _ in 0..(LAND_TRAVEL_GAP_S / dt) as usize + 72 {
+            t.step(dt, 1.0, [0.8; 4], false);
+        }
+        assert_close!(t.land().travel_light, 0.0);
+        t.step(dt, 1.0, [0.8; 4], true);
+        // It sets out at no light from the low land.
+        let start = t.land();
+        assert_close!(start.travel_light, 0.0);
+        assert_close!(start.travel, LAND_TRAVEL_HEIGHTS[0]);
+        let (mut peak, mut last, mut frames) = (0.0f32, start, 0);
+        loop {
+            // A downbeat on every frame: still one line.
+            t.step(dt, 1.0, [0.8; 4], true);
+            let now = t.land();
+            if now.travel_light == 0.0 && frames > 10 {
+                break;
+            }
+            assert!(now.travel >= last.travel, "it climbs");
+            assert!((now.travel_light - last.travel_light).abs() < 0.01);
+            peak = peak.max(now.travel_light);
+            (last, frames) = (now, frames + 1);
+        }
+        assert!((peak - LAND_TRAVEL_LIGHT).abs() < 1e-3, "{peak}");
+        assert!((frames as f32 * dt - LAND_TRAVEL_S).abs() < 0.1);
+        // It arrived near the peaks at almost no light, and the next waits
+        // out the gap.
+        assert!(last.travel > 0.85 && last.travel_light < 0.01);
+        let mut waited = 0;
+        while t.land().travel_light == 0.0 && t.land().travel == 0.0 {
+            t.step(dt, 1.0, [0.8; 4], true);
+            waited += 1;
+            assert!(waited < 2000);
+        }
+        let gap = (frames + waited) as f32 * dt;
+        assert!((gap - LAND_TRAVEL_GAP_S).abs() < 0.1, "{gap}");
+    }
+
+    #[test]
+    fn a_contours_slot_carries_the_land() {
+        let land = Land {
+            clock: 41.5,
+            levels: [0.1, 0.2, 0.3, 0.4],
+            breath: 0.6,
+            travel: -0.2,
+            travel_light: 0.3,
+        };
+        let audio = Audio {
+            land,
+            ..Audio::default()
+        };
+        let s = Slot {
+            color: 5,
+            band: BAND_MID,
+            ..slot(wall(), KIND_WALL, SurfaceBehavior::Contours)
+        };
+        let rows = rows(&s, audio, None, None, 0.0);
+        assert_close!(rows[4][3], SurfaceBehavior::Contours.id() as f32);
+        assert_close!(rows[5], [1.0, 5.0, BAND_MID as f32, 0.0]);
+        let green = crate::surfaces::GREEN;
+        assert_close!(rows[6], [green[0], green[1], green[2], CONTOUR_PEAK_ALPHA]);
+        assert_close!(rows[9], [41.5, 0.3, 0.6, -0.2]);
+        let [r, g, b] = LAND_HIGH_COLOR;
+        assert_close!(rows[RINGS_ROW], [r, g, b, 0.3]);
+        for row in &rows[RINGS_ROW + 1..] {
+            assert_close!(*row, [0.0; 4]);
+        }
+        // The band's default is the rms.
+        assert_eq!(SurfaceBehavior::Contours.default_band(), BAND_RMS);
     }
 }

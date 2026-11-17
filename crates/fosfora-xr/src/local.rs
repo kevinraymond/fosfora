@@ -1690,10 +1690,14 @@ mod tests {
                 "describe"
             ]
         );
-        // The behaviors per kind are the app's own catalog, in its order.
+        // The behaviors per kind are the app's own catalog, in its order,
+        // as it was when the model was trained: the contours (board #5533)
+        // came after, so the model never offers them, and the grammar
+        // names them directly ("every wall contours").
         for (kind, name) in KIND_NAMES {
             let app: Vec<&str> = SurfaceBehavior::catalogue(kind)
                 .iter()
+                .filter(|b| **b != SurfaceBehavior::Contours)
                 .map(|b| b.name())
                 .collect();
             assert_eq!(s.value.behaviors[name], app, "{name}");

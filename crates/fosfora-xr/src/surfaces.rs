@@ -69,7 +69,8 @@ pub fn kind_from_name(name: &str) -> Option<u32> {
 /// (the floor ripple, renamed, any face), the streamlines (D1), the curls
 /// and the pulse (D2); 8 to 15 are the desktop's single-pass fragment
 /// effects drawn on the face (`surface_port.rs`, board #3489), named by
-/// their `.pfx`.
+/// their `.pfx`; 16 is the contours (board #5533), a surface shader of
+/// the surfaces pass again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SurfaceBehavior {
     /// Nothing: the surface is an obstacle only.
@@ -112,6 +113,10 @@ pub enum SurfaceBehavior {
     Reticle,
     /// The desktop's Tessera: a grid of tiles revealing in waves.
     Tessera,
+    /// Contour lines, as on a topographic map, over one slowly rolling
+    /// landscape that fills the room (`surface_fx.rs`, board #5533): a
+    /// line that reaches a face's edge goes on across the next face.
+    Contours,
 }
 
 /// Behavior names the catalogue reserves for a later step: the knob and
@@ -125,7 +130,7 @@ pub const RINGS_ALIAS: &str = "ripple";
 
 impl SurfaceBehavior {
     /// Every behavior, in id order.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::None,
         Self::Embers,
         Self::Sparks,
@@ -142,6 +147,7 @@ impl SurfaceBehavior {
         Self::Fenestra,
         Self::Reticle,
         Self::Tessera,
+        Self::Contours,
     ];
 
     /// The behaviors a wearer can give a surface (boards #5470, #5462):
@@ -152,7 +158,7 @@ impl SurfaceBehavior {
     /// them ([`Self::next_for`]), and the voice path's vocabulary, its help
     /// and the agent's lists are built from this list. A room file that
     /// names one still loads.
-    pub const OFFERED: [Self; 12] = [
+    pub const OFFERED: [Self; 13] = [
         Self::None,
         Self::Spectrum,
         Self::Rings,
@@ -165,6 +171,7 @@ impl SurfaceBehavior {
         Self::Bezel,
         Self::Reticle,
         Self::Tessera,
+        Self::Contours,
     ];
 
     /// The catalogue id (`XR_BEHAVIOR_*` in `flux_xr_sim.wgsl`, `BEHAVIOR_*`
@@ -176,7 +183,9 @@ impl SurfaceBehavior {
     /// For a ported desktop effect (ids 8 to 15), its index in
     /// `surface_port::PORTS`.
     pub fn port(self) -> Option<usize> {
-        (self.id().checked_sub(crate::surface_port::FIRST_ID)).map(|i| i as usize)
+        (self.id().checked_sub(crate::surface_port::FIRST_ID))
+            .map(|i| i as usize)
+            .filter(|i| *i < crate::surface_port::PORTS.len())
     }
 
     /// The behavior of catalogue id `id`; `None` for a reserved or unknown
@@ -204,6 +213,7 @@ impl SurfaceBehavior {
             | Self::Fenestra
             | Self::Reticle
             | Self::Tessera => crate::surface_port::PORTS[(self as u32 - 8) as usize].name,
+            Self::Contours => "contours",
         }
     }
 
@@ -220,7 +230,7 @@ impl SurfaceBehavior {
 
     /// The next behavior in the whole catalogue, wrapping: none, embers,
     /// sparks, spectrum, rings, streamlines, curls, pulse, the eight ports
-    /// from aurora to tessera, none. The room editor steps through a
+    /// from aurora to tessera, contours, none. The room editor steps through a
     /// kind's own ([`Self::next_for`]); this one is for the knob's side.
     #[must_use]
     pub fn next(self) -> Self {
@@ -257,6 +267,10 @@ impl SurfaceBehavior {
     /// carry a header bar and need an up; reticle's marks are small and
     /// hop about, so they read on a small face; tessera is a floor's
     /// tiles, and a grid on any top.
+    /// The contours (board #5533) come last on the lists of the room's
+    /// planes, a floor, a wall and a ceiling, where the landscape runs from
+    /// one face onto the next. A table, a frame and other things show too
+    /// small a piece of it to read as land; the knob still puts it there.
     /// Stepping through the whole catalogue instead left most steps looking
     /// alike on a given surface (a wall on embers, sparks or none emits
     /// nothing; Kevin, worn, Sep 29). The knob still takes any behavior on
@@ -283,6 +297,7 @@ impl SurfaceBehavior {
                 Self::Prism,
                 Self::Astrolabe,
                 Self::Aurora,
+                Self::Contours,
             ],
             KIND_WALL => &[
                 Self::None,
@@ -293,6 +308,7 @@ impl SurfaceBehavior {
                 Self::Aurora,
                 Self::Fenestra,
                 Self::Bezel,
+                Self::Contours,
             ],
             KIND_CEILING => &[
                 Self::None,
@@ -301,6 +317,7 @@ impl SurfaceBehavior {
                 Self::Streamlines,
                 Self::Aurora,
                 Self::Astrolabe,
+                Self::Contours,
             ],
             KIND_FRAME => &[
                 Self::None,
@@ -391,15 +408,16 @@ impl SurfaceBehavior {
     }
 
     /// Whether the surfaces pass draws every surface running it: the
-    /// rings, the streamlines, the curls and the pulse (`surface_fx.rs`)
-    /// and the ported desktop effects (`surface_port.rs`). Embers and
+    /// rings, the streamlines, the curls, the pulse and the contours
+    /// (`surface_fx.rs`) and the ported desktop effects
+    /// (`surface_port.rs`). Embers and
     /// sparks are the cloud's; the spectrum is drawn by the pass too since
     /// D2, but on the one wall `canvas::WallPick` chooses, not on every
     /// surface running it.
     pub fn draws_on_face(self) -> bool {
         matches!(
             self,
-            Self::Rings | Self::Streamlines | Self::Curls | Self::Pulse
+            Self::Rings | Self::Streamlines | Self::Curls | Self::Pulse | Self::Contours
         ) || self.port().is_some()
     }
 
@@ -1413,7 +1431,7 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_names_and_numbers_the_sixteen_behaviors() {
+    fn the_catalogue_names_and_numbers_the_behaviors() {
         use SurfaceBehavior as B;
         for (id, b) in B::ALL.into_iter().enumerate() {
             assert_eq!(b.id() as usize, id);
@@ -1439,7 +1457,8 @@ mod tests {
                 "bezel",
                 "fenestra",
                 "reticle",
-                "tessera"
+                "tessera",
+                "contours"
             ]
         );
         assert_eq!((B::Rings.id(), B::Streamlines.id()), (4, 5));
@@ -1459,7 +1478,14 @@ mod tests {
         for b in &B::ALL[..8] {
             assert_eq!(b.port(), None, "{b:?}");
         }
-        assert_eq!(B::Tessera.next(), B::None);
+        // Board #5533: the contours are 16, a shader of the surfaces pass
+        // and no port.
+        assert_eq!(B::Contours.id(), 16);
+        assert_eq!(B::Contours.port(), None);
+        assert!(B::Contours.draws_on_face() && B::Contours.offered());
+        assert_eq!(B::from_name("Contours"), Some(B::Contours));
+        assert_eq!(B::Tessera.next(), B::Contours);
+        assert_eq!(B::Contours.next(), B::None);
         assert_eq!(B::Pulse.next(), B::Aurora);
         assert_eq!(B::from_name(" Embers "), Some(B::Embers));
         // The ripple's old name reads as the rings; the name is the new one.
@@ -1467,11 +1493,11 @@ mod tests {
         assert_eq!(B::from_name(" RIPPLE "), Some(B::Rings));
         assert_eq!(B::Rings.name(), "rings");
         // D2 made 6 and 7 real and 8 to 15 the ports: nothing is
-        // reserved, 16 on is unknown.
+        // reserved, 17 on is unknown.
         assert!(RESERVED_BEHAVIORS.is_empty());
         assert_eq!(B::from_name("Curls"), Some(B::Curls));
         assert_eq!(B::from_name(" PULSE "), Some(B::Pulse));
-        for id in 16..24 {
+        for id in 17..24 {
             assert_eq!(B::from_id(id), None);
         }
         let emitting: Vec<_> = B::ALL.into_iter().filter(|b| b.emits()).collect();
@@ -1480,7 +1506,10 @@ mod tests {
             .into_iter()
             .filter(|b| b.draws_on_face() && b.port().is_none())
             .collect();
-        assert_eq!(drawn, vec![B::Rings, B::Streamlines, B::Curls, B::Pulse]);
+        assert_eq!(
+            drawn,
+            vec![B::Rings, B::Streamlines, B::Curls, B::Pulse, B::Contours]
+        );
         // The rings and the pulse hit with the bass; the flows follow the
         // whole mix.
         let bass: Vec<_> = B::ALL
@@ -1661,6 +1690,7 @@ mod tests {
                     B::Prism,
                     B::Astrolabe,
                     B::Aurora,
+                    B::Contours,
                 ],
             ),
             (
@@ -1674,6 +1704,7 @@ mod tests {
                     B::Aurora,
                     B::Fenestra,
                     B::Bezel,
+                    B::Contours,
                 ],
             ),
             (
@@ -1685,6 +1716,7 @@ mod tests {
                     B::Streamlines,
                     B::Aurora,
                     B::Astrolabe,
+                    B::Contours,
                 ],
             ),
             (
@@ -1723,7 +1755,7 @@ mod tests {
         assert_eq!(B::Pulse.next_for(KIND_FRAME), B::Rings);
         assert_eq!(B::Curls.next_for(KIND_OTHER), B::Streamlines);
         let mut floor = vec![B::default_for(KIND_FLOOR)];
-        for _ in 0..7 {
+        for _ in 0..8 {
             floor.push(floor.last().unwrap().next_for(KIND_FLOOR));
         }
         assert_eq!(
@@ -1735,6 +1767,7 @@ mod tests {
                 B::Tessera,
                 B::Prism,
                 B::Aurora,
+                B::Contours,
                 B::None,
                 B::Rings
             ]
@@ -1743,11 +1776,21 @@ mod tests {
         // ceiling's without astrolabe (board #5462).
         assert_eq!(B::Aurora.next_for(KIND_WALL), B::Bezel);
         assert_eq!(B::Reticle.next_for(KIND_FRAME), B::None);
-        assert_eq!(B::Aurora.next_for(KIND_CEILING), B::None);
+        // Board #5533: the contours last on the three planes' lists.
+        assert_eq!(B::Aurora.next_for(KIND_CEILING), B::Contours);
+        assert_eq!(B::Bezel.next_for(KIND_WALL), B::Contours);
+        assert_eq!(B::Aurora.next_for(KIND_FLOOR), B::Contours);
+        for kind in [KIND_FLOOR, KIND_WALL, KIND_CEILING] {
+            assert_eq!(B::catalogue(kind).last(), Some(&B::Contours));
+            assert_eq!(B::Contours.next_for(kind), B::None);
+        }
+        for kind in [KIND_TABLE, KIND_FRAME, KIND_OTHER] {
+            assert!(!B::catalogue(kind).contains(&B::Contours));
+        }
     }
 
     #[test]
-    fn the_ports_sit_on_at_most_two_lists_and_no_list_passes_eight_but_the_floors_sky() {
+    fn the_ports_sit_on_at_most_two_lists_and_no_list_passes_eight_but_for_the_sky_and_the_land() {
         use SurfaceBehavior as B;
         // Other and unlabeled share one list, so it counts once.
         assert_eq!(B::catalogue(KIND_OTHER), B::catalogue(KIND_NONE));
@@ -1771,6 +1814,12 @@ mod tests {
         .into_iter()
         .zip(lists)
         {
+            // The contours (board #5533) end the lists of the room's
+            // three planes; before them the lists are as they were.
+            let list = match list.split_last() {
+                Some((B::Contours, head)) => head,
+                _ => list,
+            };
             // The floor's ninth is aurora, the sky's reflection (board
             // #5436), last.
             if kind == KIND_FLOOR {
@@ -1841,7 +1890,7 @@ mod tests {
         // A surface a saved room left on astrolabe or fenestra steps on
         // the same way (board #5462).
         assert_eq!(B::Astrolabe.next_for(KIND_FLOOR), B::Aurora);
-        assert_eq!(B::Astrolabe.next_for(KIND_CEILING), B::None);
+        assert_eq!(B::Astrolabe.next_for(KIND_CEILING), B::Contours);
         assert_eq!(B::Fenestra.next_for(KIND_WALL), B::Bezel);
         assert_eq!(B::Fenestra.next_for(KIND_FRAME), B::None);
         // What is offered is everything but those four.
@@ -1964,7 +2013,11 @@ mod tests {
         assert_eq!(lane_behavior([8.0, 1.0, 0.0, 0.0], KIND_TABLE), B::Pulse);
         assert_eq!(lane_behavior([9.0, 1.0, 0.0, 0.0], KIND_TABLE), B::Aurora);
         assert_eq!(lane_behavior([16.0, 1.0, 0.0, 0.0], KIND_TABLE), B::Tessera);
-        assert_eq!(lane_behavior([17.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
+        assert_eq!(
+            lane_behavior([17.0, 1.0, 0.0, 0.0], KIND_TABLE),
+            B::Contours
+        );
+        assert_eq!(lane_behavior([18.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
     }
 
     #[test]

@@ -35,7 +35,7 @@ pub const CLIP: &str = "ember_glow_excerpt.ogg";
 pub const BUNDLED: &[Bundled] = &[
     Bundled::new("Let_the_Night_Come_In.ogg", Theme::Aurora),
     Bundled::new("Slow_Blue.ogg", Theme::Flint),
-    Bundled::new("Second_Wind.ogg", Theme::Drift),
+    Bundled::new("Second_Wind.ogg", Theme::Contour),
 ];
 
 /// One track the app ships with: its file's name and the theme the room

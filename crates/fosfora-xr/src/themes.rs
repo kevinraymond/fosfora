@@ -17,11 +17,10 @@
 //!
 //! Plain data, so it builds and tests on the desktop: the table, lookup by
 //! name, the cycle, what a room file shows, and the launch rule of the
-//! `debug.fosfora.theme` knob ([`Knob`]). No theme adds a behavior or a
-//! shader: each is built from the catalogue (`SurfaceBehavior::catalogue`),
-//! every pairing on its kind's own list.
+//! `debug.fosfora.theme` knob ([`Knob`]). Each is built from the catalogue
+//! (`SurfaceBehavior::catalogue`), every pairing on its kind's own list.
 //!
-//! The six. The four first ones color by one rule: the room's planes
+//! The seven. The four first ones color by one rule: the room's planes
 //! (walls, floor, ceiling) one color, what stands in it (tables, frames,
 //! other) the other, so a table reads against the floor and a frame
 //! against its wall. Classic, Drift and Tide keep the edge bars on the
@@ -64,11 +63,24 @@
 //!   surfaces stand their edge bars up, a fence of spikes on each rim.
 //!   Prism is angular too and was left out: it turns and swells, and it
 //!   is the catalogue's hardest flasher before the limiter.
+//! - **Contour** (board #5533): gentle rolling scenery, for music that
+//!   swells and has no drum to hit. Walls, the ceiling and the floor run
+//!   the contours (`surface_fx.rs`): one landscape's contour lines round
+//!   the whole room, green on the low land and warm white on the high.
+//!   Their edge bars are off, as Aurora's are, so no bar cuts the land at
+//!   a corner. Tables and frames run nothing and keep their outline on the
+//!   face, warm white, which reads against the green lines. Other surfaces
+//!   run the curls at 0.4, warm white: small closed rings beside the
+//!   map's.
 //!
 //! Every band is the behavior's own ([`SurfaceBehavior::default_band`]):
 //! the rms for the flows, the bass for the rings and the pulse, as Drift
 //! asks; a band per theme waits for signal dumps of real songs to choose it
-//! by. Every strength is 1 but Drift's frames.
+//! by. Every strength is 1 but Drift's frames and Contour's other
+//! surfaces.
+//!
+//! No theme adds a behavior but Contour, whose look was made with it; it
+//! is in the catalogue like any other and a hand can put it on a surface.
 
 use crate::edge_bars::Mode;
 use crate::room_file::RoomFile;
@@ -83,6 +95,7 @@ const BLUE: u32 = 1;
 const VIOLET: u32 = 2;
 const WARM_WHITE: u32 = 3;
 const AMBER: u32 = 4;
+const GREEN: u32 = 5;
 const TEAL: u32 = 6;
 const ROSE: u32 = 7;
 
@@ -157,17 +170,19 @@ pub enum Theme {
     Aurora,
     Mirror,
     Flint,
+    Contour,
 }
 
 impl Theme {
     /// Every theme, in the cycle's order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Classic,
         Self::Drift,
         Self::Tide,
         Self::Aurora,
         Self::Mirror,
         Self::Flint,
+        Self::Contour,
     ];
 
     /// The name the room file, the knob and the log use.
@@ -179,6 +194,7 @@ impl Theme {
             Self::Aurora => "aurora",
             Self::Mirror => "mirror",
             Self::Flint => "flint",
+            Self::Contour => "contour",
         }
     }
 
@@ -191,6 +207,7 @@ impl Theme {
             Self::Aurora => "Aurora",
             Self::Mirror => "Mirror",
             Self::Flint => "Flint",
+            Self::Contour => "Contour",
         }
     }
 
@@ -275,6 +292,16 @@ impl Theme {
                 KIND_CEILING => look(B::None, WARM_WHITE, BAND_RMS, 1.0, face),
                 KIND_FRAME => look(B::Reticle, AMBER, BAND_RMS, 1.0, face),
                 _ => look(B::Shards, AMBER, BAND_RMS, 1.0, Mode::Standing),
+            },
+            // Board #5533: one landscape round the room, its edges off so
+            // nothing cuts it at a corner; what stands in it calm, in the
+            // high land's warm white.
+            Self::Contour => match kind {
+                KIND_FLOOR | KIND_WALL | KIND_CEILING => {
+                    look(B::Contours, GREEN, BAND_RMS, 1.0, Mode::Off)
+                }
+                KIND_TABLE | KIND_FRAME => look(B::None, WARM_WHITE, BAND_RMS, 1.0, face),
+                _ => look(B::Curls, WARM_WHITE, BAND_RMS, 0.4, face),
             },
         })
     }
@@ -471,12 +498,39 @@ impl Knob {
 
 /// How long the room's light takes to go dark before a track's theme is
 /// laid, how long it stays dark, and how long the new look takes to come
-/// up (s). The fall and the rise are each one change of light and are more
-/// than a second apart whatever the look's brightness, so the change adds
-/// at most one transition to any second the flash rule counts (`flash.rs`).
+/// up, with the music still and while it rises on a hit (s).
 pub const BRING_OUT_S: f32 = 1.0;
 pub const BRING_DARK_S: f32 = 0.25;
 pub const BRING_IN_S: f32 = 1.5;
+pub const BRING_IN_HIT_S: f32 = 0.3;
+
+/// What the flash limit lets the room's light do this frame
+/// (`flash::Limiter`): everything it limits moves one shared way at a
+/// time, and the fade of a theme's change moves that way too, so it adds
+/// no turn of its own to the second the flash rule counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Turn {
+    /// The direction has not turned for a second (still or quiet music, or
+    /// the limiter off): the fade runs either way.
+    Free,
+    /// The lights may rise this frame.
+    Rise,
+    /// The lights may fall this frame.
+    Fall,
+}
+
+impl Turn {
+    /// This frame's, from the limiter once its frame has begun.
+    pub fn of(limiter: &crate::flash::Limiter) -> Self {
+        if limiter.turns_last_second() == 0 {
+            return Self::Free;
+        }
+        match limiter.phase() {
+            crate::flash::Phase::Rise => Self::Rise,
+            crate::flash::Phase::Fall => Self::Fall,
+        }
+    }
+}
 
 /// What a change of the room's look at a track's start comes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,15 +552,25 @@ pub struct Due {
 
 /// A bundled track brings its theme (board #5533): the change of the
 /// room's look when a track starts, as a fade through dark instead of a
-/// cut. The room's light falls to nothing over [`BRING_OUT_S`] from the
-/// track's first frame, the theme is laid while it is dark, and after
-/// [`BRING_DARK_S`] the new look rises over [`BRING_IN_S`]. So the song
-/// that ends keeps its look to its last note, and the wearer sees the room
-/// go dark as the new song begins and come back changed. A room that
-/// already shows the theme is laid at once with no fade: nothing changes
-/// to the eye. Plain numbers; `app.rs` starts it at a track's start, steps
-/// it once a frame, multiplies every lit surface's light by [`Self::veil`]
-/// and lays what [`Self::step`] hands back.
+/// cut. The room's light falls to nothing from the track's first frame,
+/// the theme is laid while it is dark, and after [`BRING_DARK_S`] the new
+/// look rises. So the song that ends keeps its look to its last note, and
+/// the wearer sees the room go dark as the new song begins and come back
+/// changed. A room that already shows the theme is laid at once with no
+/// fade: nothing changes to the eye.
+///
+/// The fade keeps to the flash limit's direction ([`Turn`]). It falls only
+/// in frames where the lights may fall, over [`BRING_OUT_S`] of them, and
+/// waits through a rise. It rises only where they may rise: with a hit, so
+/// the new look comes up on the first beats, [`BRING_IN_HIT_S`] of rising
+/// frames in all; with the music still, evenly over [`BRING_IN_S`]. A
+/// fade that ran on its own clock put one more change of light in a second
+/// that the music had already filled: Aurora's red curtains on a 4 Hz
+/// pulse went from 3 flashes to 3.5 while it rose.
+///
+/// Plain numbers; `app.rs` starts it at a track's start, steps it once a
+/// frame, multiplies every lit surface's light by [`Self::veil`] and lays
+/// what [`Self::step`] hands back.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bringing {
     /// The light's share, 0 to 1.
@@ -552,8 +616,9 @@ impl Bringing {
         };
     }
 
-    /// `dt` seconds on: the look to lay now, if one is due.
-    pub fn step(&mut self, dt: f32) -> Option<Due> {
+    /// `dt` seconds on, the lights free to move as `turn` says: the look to
+    /// lay now, if one is due.
+    pub fn step(&mut self, dt: f32, turn: Turn) -> Option<Due> {
         let dt = dt.max(0.0);
         match self.phase {
             BringPhase::Idle => None,
@@ -562,7 +627,9 @@ impl Bringing {
                 Some(due)
             }
             BringPhase::Out(due) => {
-                self.veil = (self.veil - dt / BRING_OUT_S).max(0.0);
+                if turn != Turn::Rise {
+                    self.veil = (self.veil - dt / BRING_OUT_S).max(0.0);
+                }
                 if self.veil > 0.0 {
                     return None;
                 }
@@ -579,7 +646,12 @@ impl Bringing {
                 None
             }
             BringPhase::In => {
-                self.veil = (self.veil + dt / BRING_IN_S).min(1.0);
+                let secs = match turn {
+                    Turn::Free => BRING_IN_S,
+                    Turn::Rise => BRING_IN_HIT_S,
+                    Turn::Fall => f32::INFINITY,
+                };
+                self.veil = (self.veil + dt / secs).min(1.0);
                 if self.veil >= 1.0 {
                     self.phase = BringPhase::Idle;
                 }
@@ -609,8 +681,8 @@ pub fn veil_rows<const N: usize>(mut rows: [[f32; 4]; N], veil: f32) -> [[f32; 4
 }
 
 /// The themes' names for a reply or a warning, in the cycle's order:
-/// "classic, drift, … or flint" ([`Theme::name`]) or with `titles`
-/// "Classic, Drift, … or Flint".
+/// "classic, drift, … or contour" ([`Theme::name`]) or with `titles`
+/// "Classic, Drift, … or Contour".
 pub fn listed(titles: bool) -> String {
     let names: Vec<&str> = Theme::ALL
         .iter()
@@ -774,6 +846,31 @@ mod tests {
             };
             assert_eq!(l.color, want, "{}", kind_name(kind));
         }
+        // Contour (board #5533): the contours on the room's three planes
+        // and nowhere else, green; the rest warm white, nothing on the
+        // tables and the frames, the curls at 0.4 on other surfaces.
+        assert_eq!(
+            behaviors(Theme::Contour),
+            [
+                B::None,
+                B::Contours,
+                B::Contours,
+                B::Contours,
+                B::None,
+                B::Curls
+            ]
+        );
+        for (kind, l) in Theme::Contour.looks() {
+            let land = [KIND_FLOOR, KIND_WALL, KIND_CEILING].contains(&kind);
+            assert_eq!(l.color, if land { GREEN } else { WARM_WHITE });
+            let other = kind == crate::surfaces::KIND_OTHER;
+            assert_close!(l.strength, if other { 0.4 } else { 1.0 });
+        }
+        // Only Contour runs the contours.
+        for theme in Theme::ALL {
+            let contours = theme.looks().any(|(_, l)| l.behavior == B::Contours);
+            assert_eq!(contours, theme == Theme::Contour, "{theme:?}");
+        }
         // Every band the behavior's own: Drift's rms, but the bass where
         // the behavior's default is the bass.
         for theme in Theme::ALL {
@@ -792,7 +889,9 @@ mod tests {
     fn names_and_the_cycle() {
         assert_eq!(
             Theme::ALL.map(Theme::name),
-            ["classic", "drift", "tide", "aurora", "mirror", "flint"]
+            [
+                "classic", "drift", "tide", "aurora", "mirror", "flint", "contour"
+            ]
         );
         for t in Theme::ALL {
             assert_eq!(Theme::from_name(t.name()), Some(t));
@@ -819,6 +918,7 @@ mod tests {
                 Theme::Aurora,
                 Theme::Mirror,
                 Theme::Flint,
+                Theme::Contour,
                 Theme::Classic
             ]
         );
@@ -831,6 +931,7 @@ mod tests {
         assert_eq!(
             seen,
             [
+                Theme::Contour,
                 Theme::Flint,
                 Theme::Mirror,
                 Theme::Aurora,
@@ -850,17 +951,18 @@ mod tests {
         assert_eq!(Shown::Theme(Theme::Drift).step(-1), Theme::Classic);
         assert_eq!(Shown::Edited(Theme::Aurora).step(-1), Theme::Tide);
         let last = Theme::ALL[Theme::ALL.len() - 1];
-        assert_eq!(last, Theme::Flint);
+        assert_eq!(last, Theme::Contour);
         assert_eq!(Shown::Theme(Theme::Classic).prev(), last);
         assert_eq!(Shown::Theme(last).step(1), Theme::Classic);
         assert_eq!(Shown::Custom.step(1), Theme::Classic);
         assert_eq!(Shown::Custom.step(-1), last);
         // The control's press: the next after the one shown, edited or
-        // not; custom starts the cycle. Mirror comes after Aurora, and
-        // Flint after Mirror.
+        // not; custom starts the cycle. Mirror comes after Aurora, Flint
+        // after Mirror and Contour last.
         assert_eq!(Shown::Theme(Theme::Drift).next(), Theme::Tide);
         assert_eq!(Shown::Edited(Theme::Aurora).next(), Theme::Mirror);
         assert_eq!(Shown::Theme(Theme::Mirror).next(), Theme::Flint);
+        assert_eq!(Shown::Theme(Theme::Flint).next(), Theme::Contour);
         assert_eq!(Shown::Theme(last).next(), Theme::Classic);
         assert_eq!(Shown::Custom.next(), Theme::Classic);
         // The words.
@@ -870,11 +972,11 @@ mod tests {
         assert_eq!(Shown::Edited(Theme::Classic).value(), "Classic*");
         assert_eq!(
             listed(true),
-            "Classic, Drift, Tide, Aurora, Mirror or Flint"
+            "Classic, Drift, Tide, Aurora, Mirror, Flint or Contour"
         );
         assert_eq!(
             listed(false),
-            "classic, drift, tide, aurora, mirror or flint"
+            "classic, drift, tide, aurora, mirror, flint or contour"
         );
     }
 
@@ -939,6 +1041,23 @@ mod tests {
             Theme::Flint
                 .summary()
                 .contains("table shards@1.00 warm white rms edges stand")
+        );
+        // Contour (board #5533): the land's planes off, as Aurora's sky,
+        // the rest on the face.
+        for (kind, l) in Theme::Contour.looks() {
+            let land = [KIND_FLOOR, KIND_WALL, KIND_CEILING].contains(&kind);
+            let want = if land { Mode::Off } else { Mode::Face };
+            assert_eq!(l.edges, want, "{}", kind_name(kind));
+        }
+        assert!(
+            Theme::Contour
+                .summary()
+                .contains("wall contours@1.00 green rms edges off")
+        );
+        assert!(
+            Theme::Contour
+                .summary()
+                .contains("other curls@0.40 warm white rms")
         );
         // The room's theme decides; with none saved (fresh or custom),
         // every kind on the face.
@@ -1055,7 +1174,7 @@ mod tests {
         let mut b = Bringing::default();
         assert_close!(b.veil(), 1.0);
         assert!(!b.busy());
-        assert_eq!(b.step(dt), None);
+        assert_eq!(b.step(dt, Turn::Free), None);
         let what = Brought::Theme(Theme::Flint);
         b.start(what, false, 3);
         let (mut laid, mut laid_at, mut t) = (Vec::new(), 0.0, 0.0f32);
@@ -1063,7 +1182,7 @@ mod tests {
         let mut last = b.veil();
         let mut turned_up = false;
         while b.busy() {
-            let due = b.step(dt);
+            let due = b.step(dt, Turn::Free);
             t += dt;
             if let Some(due) = due {
                 // Laid with no light on the room.
@@ -1086,11 +1205,68 @@ mod tests {
         let whole = BRING_OUT_S + BRING_DARK_S + BRING_IN_S;
         assert!((t - whole).abs() < 4.0 * dt, "{t}");
         assert_close!(b.veil(), 1.0);
-        // The fall's last tenth of the light and the rise's first tenth
-        // are more than a second apart: the brightest look's two changes
-        // never share a window of the flash rule.
-        let apart = 0.9 * BRING_OUT_S + BRING_DARK_S + 0.1 * BRING_IN_S;
-        assert!(apart > 1.0, "{apart}");
+    }
+
+    /// The fade keeps to the flash limit's direction: it falls only where
+    /// the lights may fall and rises only where they may rise, faster on a
+    /// hit, and with the direction still it runs on its own clock.
+    #[test]
+    fn the_fade_moves_only_the_way_the_lights_may() {
+        let dt = 1.0 / 72.0;
+        let mut b = Bringing::default();
+        b.start(Brought::Theme(Theme::Flint), false, 0);
+        // A rise: the fall waits.
+        for _ in 0..72 {
+            assert_eq!(b.step(dt, Turn::Rise), None);
+        }
+        assert_close!(b.veil(), 1.0);
+        // Falls: a second of them, however they are spread.
+        let mut falling = 0;
+        let mut frame = 0;
+        let due = loop {
+            let turn = if frame % 3 == 0 {
+                Turn::Fall
+            } else {
+                Turn::Rise
+            };
+            let before = b.veil();
+            let due = b.step(dt, turn);
+            assert!(b.veil() <= before);
+            assert_eq!(b.veil() < before, turn == Turn::Fall);
+            falling += usize::from(turn == Turn::Fall);
+            frame += 1;
+            if due.is_some() {
+                break due;
+            }
+            assert!(frame < 1000);
+        };
+        assert!(due.is_some());
+        assert!((falling as f32 * dt - BRING_OUT_S).abs() < 2.0 * dt);
+        // Dark, whatever the direction.
+        for _ in 0..(BRING_DARK_S / dt) as usize {
+            b.step(dt, Turn::Rise);
+            assert_close!(b.veil(), 0.0);
+        }
+        b.step(dt, Turn::Rise);
+        // The rise: none in a fall, quick on a hit.
+        let start = b.veil();
+        for _ in 0..72 {
+            b.step(dt, Turn::Fall);
+        }
+        assert_close!(b.veil(), start);
+        let mut rising = 0;
+        while b.busy() {
+            let before = b.veil();
+            b.step(dt, Turn::Rise);
+            assert!(b.veil() > before);
+            rising += 1;
+            assert!(rising < 1000);
+        }
+        assert!(
+            (rising as f32 * dt - BRING_IN_HIT_S).abs() < 3.0 * dt,
+            "{rising}"
+        );
+        assert_close!(b.veil(), 1.0);
     }
 
     /// A look the room shows already is laid on the next step, the light
@@ -1104,7 +1280,7 @@ mod tests {
         b.start(aurora, true, 0);
         assert!(b.busy());
         assert_eq!(
-            b.step(dt),
+            b.step(dt, Turn::Free),
             Some(Due {
                 what: aurora,
                 picks: 0
@@ -1115,7 +1291,7 @@ mod tests {
         // Half way down for Flint, the next track starts: the room's own.
         b.start(Brought::Theme(Theme::Flint), false, 0);
         for _ in 0..36 {
-            assert_eq!(b.step(dt), None);
+            assert_eq!(b.step(dt, Turn::Free), None);
         }
         let mid = b.veil();
         assert!(mid > 0.4 && mid < 0.6, "{mid}");
@@ -1125,7 +1301,7 @@ mod tests {
         while b.busy() {
             // The light goes on down from where it was.
             let before = b.veil();
-            if let Some(due) = b.step(dt) {
+            if let Some(due) = b.step(dt, Turn::Free) {
                 laid.push(due);
             }
             if laid.is_empty() {
@@ -1144,14 +1320,14 @@ mod tests {
         // During the rise, a shown look does not skip the fade's end: the
         // new start goes down again from where the light is.
         b.start(Brought::Theme(Theme::Flint), false, 1);
-        while b.step(dt).is_none() {}
+        while b.step(dt, Turn::Free).is_none() {}
         for _ in 0..40 {
-            b.step(dt);
+            b.step(dt, Turn::Free);
         }
         let rising = b.veil();
         assert!(rising > 0.0 && rising < 1.0, "{rising}");
         b.start(aurora, true, 1);
-        b.step(dt);
+        b.step(dt, Turn::Free);
         assert!(b.veil() < rising);
     }
 }

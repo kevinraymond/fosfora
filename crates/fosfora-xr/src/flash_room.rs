@@ -543,6 +543,7 @@ struct Show {
     presence: Presence,
     outline: Outline,
     clock: Clock,
+    terrain: surface_fx::Terrain,
     beat_env: f32,
     downbeat_env: f32,
     frame: u64,
@@ -570,6 +571,7 @@ impl Show {
             presence: Presence::default(),
             outline: Outline::default(),
             clock: Clock::default(),
+            terrain: surface_fx::Terrain::default(),
             beat_env: 0.0,
             downbeat_env: 0.0,
             frame: 0,
@@ -638,6 +640,10 @@ impl Show {
             .unwrap_or(1.0);
         let motion = motion * self.limiter.motion();
         self.clock.advance(dt * motion, beat_env);
+        // The contours' land (board #5533), as in app.rs.
+        let high = f.presence.max(f.brilliance);
+        self.terrain
+            .step(dt, motion, [f.rms, f.bass, f.mid, high], gate.downbeat);
         self.ripple
             .update(t, dt, head, gate.beat, f.bass.max(f.sub_bass), f.bass);
         self.canvas.update(dt, &mel);
@@ -670,6 +676,7 @@ impl Show {
             downbeat: downbeat_env,
             bar_phase: f.bar_phase,
             key_tint: [1.0; 3],
+            land: self.terrain.land(),
         };
         if looks.iter().any(|l| l.color == COLOR_KEY) {
             let hue = fosfora_app::bindings::sources::collect_audio(&f)
@@ -1749,6 +1756,311 @@ fn one_pulse_train_run() {
     let gpu = Gpu::new(&effects());
     let found = run_with(&gpu, theme, every, part, v[3] == "1", source.as_mut());
     eprintln!("{one}: {}", cell(&found));
+}
+
+/// A theme changing as a bundled track brings one (board #5533,
+/// `themes::Bringing`): `from` plays for 3 s, then the room's light goes
+/// through dark to `to`, as `app.rs` does it, the limiter on and the fade
+/// keeping to its direction. The veil
+/// scales each region's mean light, which is what scaling every lit
+/// face's alpha comes to over a black room, but for pixels past full
+/// white.
+fn run_change(gpu: &Gpu, from: Theme, to: Theme, source: &mut dyn Source) -> Found {
+    use crate::themes::{Bringing, Brought, Turn};
+    let mut show = Show::new(from, None, Part::All, true, effects());
+    let mut bringing = Bringing::default();
+    let mut counters = vec![Counter::new(); REGIONS];
+    let dt = 1.0 / FPS;
+    let frames = (source.duration() * FPS).floor() as usize;
+    for n in 0..frames {
+        let t = n as f64 / FPS;
+        if n == 3 * FPS as usize {
+            bringing.start(Brought::Theme(to), false, 0);
+        }
+        let hop = source.at(t, dt);
+        let draws = show.step(t as f32, dt as f32, &hop);
+        gpu.draw(&draws, 0);
+        // After the limiter's frame began, as in app.rs: the theme laid
+        // now is in the next frame's draws.
+        if bringing.step(dt as f32, Turn::of(&show.limiter)).is_some() {
+            show.theme = to;
+        }
+        let veil = bringing.veil();
+        for (c, m) in counters.iter_mut().zip(gpu.read(1)) {
+            c.push(t, [m[0] * veil, m[1] * veil, m[2] * veil]);
+        }
+    }
+    let mut found = Found::default();
+    for (r, c) in counters.iter().enumerate() {
+        let w = c.worst();
+        if w.general > found.worst.general {
+            found.general_region = r;
+        }
+        if w.red > found.worst.red {
+            found.red_region = r;
+        }
+        found.worst = found.worst.max(w);
+        found.failing += usize::from(!w.passes());
+    }
+    found
+}
+
+/// Each bundled track's theme giving way to the next one's through dark,
+/// on the pulse trains with the limiter on: the change adds no flash past
+/// the rule.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn a_tracks_theme_coming_stays_within_three_flashes() {
+    let gpu = Gpu::new(&effects());
+    let themes: Vec<Theme> = crate::music::BUNDLED.iter().map(|b| b.theme).collect();
+    let mut failed = Vec::new();
+    for (i, &from) in themes.iter().enumerate() {
+        let to = themes[(i + 1) % themes.len()];
+        if to == from {
+            continue;
+        }
+        for hz in [4.0, 8.0, 12.0, 16.0] {
+            let found = run_change(&gpu, from, to, &mut Pulse::new(hz, 12.0));
+            eprintln!(
+                "| pulse {hz} Hz | {} to {} | {} |",
+                from.name(),
+                to.name(),
+                cell(&found)
+            );
+            if !found.worst.passes() {
+                failed.push(format!("{hz} Hz {} to {}", from.name(), to.name()));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "over three flashes: {failed:?}");
+}
+
+impl Gpu {
+    /// The frame drawn last ([`Self::draw`] wrote its uniforms), seen from
+    /// the seated eye looking along `forward`, `width` by `height` pixels
+    /// across `fov_deg` degrees, as a PPM (light over black, sRGB): a still
+    /// to look at, larger than the cube's faces.
+    fn still(
+        &self,
+        draws: &Draws,
+        forward: Vec3,
+        fov_deg: f32,
+        (width, height): (u32, u32),
+        path: &std::path::Path,
+    ) {
+        let target = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("still"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let half = (0.5 * fov_deg).to_radians();
+        let up_down = (half.tan() * height as f32 / width as f32).atan();
+        let fov = Fov {
+            left: -half,
+            right: half,
+            up: up_down,
+            down: -up_down,
+        };
+        let forward = forward.normalize();
+        let right = forward.cross(Vec3::Y).normalize();
+        let look = Quat::from_mat3(&Mat3::from_cols(right, right.cross(forward), -forward));
+        let vp = math::view_projection(look.to_array(), scene().eye.to_array(), fov, 0.05, 100.0);
+        let mut block = [0.0f32; surface_port::EYE_BYTES / 4];
+        block[..16].copy_from_slice(&vp.to_cols_array());
+        block[16..18].copy_from_slice(&[width as f32, height as f32]);
+        let eye = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("still-eye"),
+            size: surface_port::EYE_BYTES as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue
+            .write_buffer(&eye, 0, bytemuck::cast_slice(&block));
+        let group = |layout: &wgpu::BindGroupLayout, buffers: &[&wgpu::Buffer]| {
+            let entries: Vec<_> = buffers
+                .iter()
+                .enumerate()
+                .map(|(i, b)| wgpu::BindGroupEntry {
+                    binding: i as u32,
+                    resource: b.as_entire_binding(),
+                })
+                .collect();
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout,
+                entries: &entries,
+            })
+        };
+        let fx_eye = group(&self.fx.get_bind_group_layout(0), &[&eye]);
+        let port_eyes: Vec<wgpu::BindGroup> = draws
+            .ports
+            .iter()
+            .zip(&self.port_slots)
+            .map(|((effect, ..), (_, rows, ..))| {
+                group(&self.ports[*effect].get_bind_group_layout(1), &[&eye, rows])
+            })
+            .collect();
+        let edge_eyes =
+            [&self.strips, &self.tunnels].map(|p| group(&p.get_bind_group_layout(0), &[&eye]));
+        let row = (width * 8).next_multiple_of(256);
+        let back = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("still-back"),
+            size: u64::from(row * height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("still"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.fx);
+            pass.set_bind_group(0, &fx_eye, &[]);
+            for (_, g) in self.fx_slots.iter().take(draws.faces.len()) {
+                pass.set_bind_group(1, g, &[]);
+                pass.draw(0..6, 0..1);
+            }
+            for (((effect, ..), (.., g0, _)), g1) in
+                draws.ports.iter().zip(&self.port_slots).zip(&port_eyes)
+            {
+                pass.set_pipeline(&self.ports[*effect]);
+                pass.set_bind_group(0, g0, &[]);
+                pass.set_bind_group(1, g1, &[]);
+                pass.draw(0..6, 0..1);
+            }
+            let edges = [(&self.strips, draws.strips), (&self.tunnels, draws.tunnels)];
+            for (((pipeline, n), (_, rows)), eye) in
+                edges.into_iter().zip(&self.edge_groups).zip(&edge_eyes)
+            {
+                if n > 0 {
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0, eye, &[]);
+                    pass.set_bind_group(1, rows, &[]);
+                    pass.draw(0..6, 0..n as u32);
+                }
+            }
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &back,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+        back.slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let bytes = back.slice(..).get_mapped_range().to_vec();
+        let half_float = |h: u16| {
+            let (e, m) = (i32::from((h >> 10) & 0x1f), f32::from(h & 0x3ff));
+            match e {
+                0 => m * 2f32.powi(-24),
+                31 => 1.0,
+                _ => (1.0 + m / 1024.0) * 2f32.powi(e - 15),
+            }
+        };
+        let mut out = format!("P6\n{width} {height}\n255\n").into_bytes();
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let o = y * row as usize + x * 8;
+                for c in 0..3 {
+                    let v =
+                        half_float(u16::from_le_bytes([bytes[o + 2 * c], bytes[o + 2 * c + 1]]));
+                    out.push((v.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8);
+                }
+            }
+        }
+        std::fs::write(path, out).expect("writing the still");
+    }
+}
+
+/// Stills of a theme, to look at: `FOSFORA_STILL=<theme>:<dump>:<dir>:
+/// <seconds>[,<seconds>…]` plays the dump's song on the theme with the
+/// limiter on and writes, at each of those times, the view ahead and the
+/// view to the right and down as `<theme>_<seconds>_<view>.ppm`, 1280 by
+/// 720 across 100 degrees. The room is black and nothing hides anything:
+/// the harness draws no occluder, so a wall shows through the table.
+#[test]
+#[ignore = "needs a GPU adapter and a song dump"]
+fn stills_of_a_theme() {
+    let Ok(spec) = std::env::var("FOSFORA_STILL") else {
+        return;
+    };
+    let v: Vec<&str> = spec.split(':').collect();
+    let theme = Theme::from_name(v[0]).expect("a theme");
+    let mut source = Dump::read(std::path::Path::new(v[1])).expect("a dump");
+    let dir = std::path::Path::new(v[2]);
+    let mut times: Vec<f64> = v[3]
+        .split(',')
+        .map(|t| t.parse().expect("seconds"))
+        .collect();
+    times.sort_by(f64::total_cmp);
+    let gpu = Gpu::new(&effects());
+    let mut show = Show::new(theme, None, Part::All, true, effects());
+    let dt = 1.0 / FPS;
+    let views = [
+        ("ahead", Vec3::new(0.0, -0.05, -1.0)),
+        ("right", Vec3::new(0.8, -0.3, -0.6)),
+    ];
+    let last = times.last().copied().unwrap_or(0.0);
+    for n in 0..=(last * FPS).ceil() as usize {
+        let t = n as f64 / FPS;
+        let hop = source.at(t, dt);
+        let draws = show.step(t as f32, dt as f32, &hop);
+        if times.first().is_some_and(|at| t >= *at) {
+            let at = times.remove(0);
+            gpu.draw(&draws, 0);
+            for (name, forward) in views {
+                let file = format!("{}_{at:05.1}_{name}.ppm", theme.name());
+                gpu.still(&draws, forward, 100.0, (1280, 720), &dir.join(file));
+            }
+            eprintln!("{} at {at} s: rms {:.2}", theme.name(), hop.features.rms);
+        }
+    }
 }
 
 // ---- The sweep over the depth light (board #5511, `sonar.rs`) -----------

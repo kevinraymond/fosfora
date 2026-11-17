@@ -254,7 +254,7 @@ fn parse_assignment(part: &str) -> Result<Assignment, String> {
         } else {
             format!(
                 "unknown behavior '{behavior}' (none embers sparks spectrum rings streamlines curls pulse \
-                 aurora prism shards astrolabe bezel fenestra reticle tessera)"
+                 aurora prism shards astrolabe bezel fenestra reticle tessera contours)"
             )
         }
     })?;
@@ -1836,7 +1836,8 @@ mod tests {
         assert_eq!(B::Streamlines.next(), B::Curls);
         assert_eq!(B::Curls.next(), B::Pulse);
         assert_eq!(B::Pulse.next(), B::Aurora);
-        assert_eq!(B::Tessera.next(), B::None);
+        assert_eq!(B::Tessera.next(), B::Contours);
+        assert_eq!(B::Contours.next(), B::None);
         let dir = std::env::temp_dir().join(format!("fosfora-lanes-cycle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let boxes = room();
@@ -1891,6 +1892,8 @@ mod tests {
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Prism));
         // Astrolabe is held back (board #5462): the cycle steps past it.
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Aurora));
+        // Board #5533: the contours end the floor's list.
+        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Contours));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::None));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Rings));
         assert_eq!(lanes.effective(3, &boxes), Some((B::Rings, 0.4)));
@@ -2057,10 +2060,10 @@ mod tests {
         assert_eq!(lanes.cycle(5, &boxes), Ok(B::Rings));
         // The floor: the rings by default (step 2d), then the
         // streamlines, the curls, three of its four ported effects (aurora
-        // the sky's reflection, board #5436), none, the rings. Sparks and
-        // astrolabe are on its list and the cycle steps past them (boards
-        // #5470, #5462).
-        let floor: Vec<_> = (0..7).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
+        // the sky's reflection, board #5436), the contours (board #5533),
+        // none, the rings. Sparks and astrolabe are on its list and the
+        // cycle steps past them (boards #5470, #5462).
+        let floor: Vec<_> = (0..8).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
         assert_eq!(
             floor,
             [
@@ -2069,6 +2072,7 @@ mod tests {
                 B::Tessera,
                 B::Prism,
                 B::Aurora,
+                B::Contours,
                 B::None,
                 B::Rings
             ]
