@@ -188,10 +188,12 @@ impl ImmersionStep {
 }
 
 /// The hand menu's Theme control by voice (board #5415): the next theme,
-/// as a press, or one by name.
+/// as a press, the one before, as the thumb's swipe back (board #5541), or
+/// one by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeStep {
     Next,
+    Previous,
     To(crate::themes::Theme),
 }
 
@@ -705,6 +707,15 @@ const NEXT_THEME: [&str; 9] = [
     "switch theme",
     "cycle theme",
     "theme next",
+];
+/// Board #5541: the theme before, as [`normalize`] leaves them.
+const PREVIOUS_THEME: [&str; 6] = [
+    "previous theme",
+    "last theme",
+    "prior theme",
+    "theme before",
+    "theme previous",
+    "theme back",
 ];
 /// Verbs a theme sentence may open with, dropped: "set the theme to
 /// aurora", "use the drift theme", "switch to the tide theme".
@@ -1221,7 +1232,8 @@ fn immersion(ts: &[&str]) -> Option<ImmersionStep> {
 }
 
 /// Board #5415: the whole room's theme. "next theme" (and "another theme",
-/// "change the theme") steps it as the control's press does; "theme drift",
+/// "change the theme") steps it as the control's press does; "previous
+/// theme" (and "last theme", "go back a theme") steps it back; "theme drift",
 /// "drift theme", "set the theme to aurora", "use the tide theme" name one
 /// (a leading verb of [`THEME_VERBS`] dropped). A name no theme has is
 /// [`Reason::UnknownTheme`], whose reply lists the themes. `None` for a
@@ -1229,6 +1241,9 @@ fn immersion(ts: &[&str]) -> Option<ImmersionStep> {
 fn theme(ts: &[&str]) -> Option<Result<ThemeStep, Reason>> {
     if any(ts, &NEXT_THEME) {
         return Some(Ok(ThemeStep::Next));
+    }
+    if any(ts, &PREVIOUS_THEME) {
+        return Some(Ok(ThemeStep::Previous));
     }
     let (ts, verb) = match ts {
         [v, rest @ ..] if THEME_VERBS.contains(v) && !rest.is_empty() => (rest, true),
@@ -1255,6 +1270,19 @@ fn theme(ts: &[&str]) -> Option<Result<ThemeStep, Reason>> {
     .contains(&name.as_str())
     {
         return Some(Ok(ThemeStep::Next));
+    }
+    if [
+        "previous",
+        "previous one",
+        "last",
+        "last one",
+        "prior",
+        "one before",
+        "back",
+    ]
+    .contains(&name.as_str())
+    {
+        return Some(Ok(ThemeStep::Previous));
     }
     Some(
         crate::themes::Theme::from_name(&name)
@@ -2044,6 +2072,7 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         Intent::Roam(on) => format!("roam {}", on_off(on)),
         Intent::Theme(ThemeStep::To(theme)) => theme_reply(theme),
         Intent::Theme(ThemeStep::Next) => "next theme".to_owned(),
+        Intent::Theme(ThemeStep::Previous) => "previous theme".to_owned(),
         Intent::Behavior { target, behavior } => of(target, behavior.name()),
         Intent::Color { target, color: 0 } => of(target, "own color"),
         Intent::Color { target, color } => of(target, color_name(color)),
@@ -2313,6 +2342,7 @@ pub fn apply(
         let theme = match step {
             ThemeStep::To(theme) => theme,
             ThemeStep::Next => lanes.theme().next(),
+            ThemeStep::Previous => lanes.theme().prev(),
         };
         lanes.apply_theme(theme, boxes, "voice");
         return Some(theme_reply(theme));
@@ -3204,9 +3234,16 @@ mod tests {
         let v = vocab(&e, &boxes, Some(0));
         let to = |t| Intent::Theme(ThemeStep::To(t));
         let next = Intent::Theme(ThemeStep::Next);
+        let previous = Intent::Theme(ThemeStep::Previous);
         check(
             &v,
             &[
+                // Board #5541: the theme before.
+                ("Previous theme.", previous),
+                ("last theme", previous),
+                ("Theme back", previous),
+                ("Go to the previous theme.", previous),
+                ("Set the theme to the last one.", previous),
                 ("Theme drift.", to(Theme::Drift)),
                 ("theme: Aurora", to(Theme::Aurora)),
                 ("Drift theme", to(Theme::Drift)),
@@ -3317,6 +3354,14 @@ mod tests {
         assert_eq!(say("next theme", &mut lanes).label, "theme: Classic");
         assert_eq!(say("next theme", &mut lanes).label, "theme: Drift");
         assert_eq!(lanes.theme(), Shown::Theme(Theme::Drift));
+        // Board #5541: and back, round the cycle's start.
+        assert_eq!(say("Previous theme.", &mut lanes).label, "theme: Classic");
+        assert_eq!(
+            say("last theme", &mut lanes).label,
+            format!("theme: {}", Theme::ALL[Theme::ALL.len() - 1].title())
+        );
+        assert_eq!(say("next theme", &mut lanes).label, "theme: Classic");
+        assert_eq!(say("next theme", &mut lanes).label, "theme: Drift");
         // An edit by voice after it: edited, and the next press goes on.
         say("The desk in rose.", &mut lanes);
         assert_eq!(lanes.theme(), Shown::Edited(Theme::Drift));

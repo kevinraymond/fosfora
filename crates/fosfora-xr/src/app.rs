@@ -4288,6 +4288,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // fits, or one naming an unknown behavior, goes to the model
             // instead of the miss's label.
             if let Some(sentence) = sentence.take() {
+                // Board #5540: the speech model loops on a short clip
+                // ("reset" 25 times over); one phrase over and over is that
+                // phrase once, for the label and the grammar alike. The
+                // count is logged, the words are not (board #4204).
+                let sentence = match crate::voice::once(&sentence) {
+                    (_, 1) => sentence,
+                    (kept, times) => {
+                        info!("voice: one phrase {times} times over in the sentence, kept once");
+                        kept.to_owned()
+                    }
+                };
                 let vocab = crate::intent::Vocabulary {
                     effects: &cut_effects,
                     behaviors: &crate::surfaces::SurfaceBehavior::OFFERED,

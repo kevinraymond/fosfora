@@ -1655,6 +1655,31 @@ Unworn: `debug.fosfora.say 'next effect'` and `say 'switch to flock'` log
 the reply "The effects are gone". `say 'what can I say'` logs a card with
 no effect on it.
 
+## One phrase over and over (board #5540)
+
+Worn, the speech model sometimes loops on a short clip. One "reset" came
+back about 25 times over on the label, and "next theme" came back twice
+and stepped two themes. The window that looped took 2.5 s to transcribe
+against 0.3 s for its neighbors. Fed by `debug.fosfora.say`, "next theme"
+steps once and "Next theme. Next theme." steps twice, so the grammar did
+what the transcript said.
+
+`voice::once` takes a sentence that is one phrase repeated and keeps the
+phrase once. Words compare without case or punctuation, the phrase is the
+shortest one the whole sentence repeats at least twice, and the last
+repeat may stop short, where the decoder's token limit cut the loop. Any
+other sentence passes whole. It runs where the app takes a sentence, so
+the label, the grammar and the model all get the phrase once, and the
+`say` knob goes through it too. The log says how many times the phrase
+came, not what it was.
+
+The cost: "darker darker" in one window is one step. Two steps are two
+windows.
+
+Not done: finding why the model loops. The encoder window is cut to the
+clip (`audio_ctx`), which is the first thing to test, and it needs windows
+dumped from a worn sitting (`debug.fosfora.voicedump`).
+
 ## Credits (board #4198)
 
 "Credits", "show the credits", "licenses", "license", "about", "about the

@@ -1069,6 +1069,46 @@ pub fn spoken(text: &str) -> &str {
     }
 }
 
+/// A transcript that is one phrase said over and over, once, with how many
+/// times it came (1 for any other transcript, returned whole; board
+/// #5540). The speech model loops on a short clip: one "reset" came back
+/// 25 times over, and "Next theme. Next theme." stepped two themes. Words
+/// compare without case or punctuation; the phrase is the shortest one the
+/// whole transcript repeats, at least twice, and the last repeat may stop
+/// short (the decoder's token limit cuts a loop mid-phrase, and mid-word
+/// once two whole repeats stand before it). A wearer who means it twice
+/// says it in two windows.
+pub fn once(text: &str) -> (&str, usize) {
+    let key = |w: &str| -> String {
+        w.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    // Each word's key and where it ends in `text`.
+    let mut words: Vec<(String, usize)> = Vec::new();
+    let mut at = 0;
+    for w in text.split_whitespace() {
+        let start = at + text[at..].find(w).unwrap_or(0);
+        at = start + w.len();
+        let k = key(w);
+        if !k.is_empty() {
+            words.push((k, at));
+        }
+    }
+    let n = words.len();
+    for p in 1..=n / 2 {
+        let same = |i: usize| {
+            words[i].0 == words[i - p].0
+                || (i == n - 1 && i >= 2 * p && words[i - p].0.starts_with(&words[i].0))
+        };
+        if (p..n).all(same) {
+            return (text[..words[p - 1].1].trim(), n / p);
+        }
+    }
+    (text, 1)
+}
+
 /// The log line for a transcription of `ms` milliseconds:
 /// `voice: heard "…" (412 ms)`; `voice: heard nothing ("[Music]")` when
 /// whisper returned only a non-speech annotation, quoted so the log tells
@@ -3030,6 +3070,41 @@ mod tests {
         let mut long = vec![0.5; 48_000];
         pad_short(&mut long);
         assert_eq!(long.len(), 48_000);
+    }
+
+    #[test]
+    fn a_transcript_of_one_phrase_over_and_over_is_kept_once() {
+        // Board #5540: the two the wearer met.
+        let reset = ["reset"; 25].join(" ");
+        assert_eq!(once(&reset), ("reset", 25));
+        assert_eq!(once("Next theme. Next theme."), ("Next theme.", 2));
+        // Case and punctuation do not hide a repeat.
+        assert_eq!(once("Reset. reset, RESET!"), ("Reset.", 3));
+        assert_eq!(once("next theme next theme next theme"), ("next theme", 3));
+        // The token limit cuts the last repeat short, mid-phrase or mid-word.
+        assert_eq!(once("next theme next theme next"), ("next theme", 2));
+        assert_eq!(once("reset reset res"), ("reset", 3));
+        assert_eq!(once("  darker  darker "), ("darker", 2));
+    }
+
+    #[test]
+    fn any_other_transcript_is_whole() {
+        for text in [
+            "",
+            "reset",
+            "next theme",
+            "The desk in amber.",
+            "amber on table 14 and the walls on the bass",
+            "play play song",
+            "next next theme",
+            "theme tide theme drift",
+            // A cut word needs two whole repeats before it.
+            "next theme next the",
+            "the desk in amber the desk",
+            "[BLANK_AUDIO]",
+        ] {
+            assert_eq!(once(text), (text, 1), "{text:?}");
+        }
     }
 
     #[test]

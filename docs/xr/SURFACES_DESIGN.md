@@ -1695,7 +1695,8 @@ count or height changed.
 **By voice** (`intent.rs`). "theme drift", "drift theme", "set the theme
 to aurora", "change the theme to tide", "use the classic theme" name a
 theme. "next theme", "another theme", "change the theme" step it as a
-press does. The reply names the theme it came to ("theme: Aurora"). A name
+press does. "previous theme", "last theme", "theme back" step it back, as
+the thumb's swipe left does (board #5541). The reply names the theme it came to ("theme: Aurora"). A name
 no theme has replies with the list: No theme called "sunset": Classic,
 Drift, Tide, Aurora, Mirror, Flint or Contour. "mirror theme", "theme
 flint" and "set the theme to contour" work through the same grammar, with
