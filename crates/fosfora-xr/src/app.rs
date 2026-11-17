@@ -3856,7 +3856,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     } else {
                         [crate::voice::Hand::Open; 2]
                     },
-                    tap: tap_hand.is_some() && listens,
+                    tap: tap_hand.filter(|_| listens),
                     level: v.level(),
                 };
                 let fist_window = matches!(
@@ -3951,6 +3951,22 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 );
                             }
                         }
+                    }
+                    // Board #5531: the tap came from a hand closing into
+                    // a fist, and the fist is held: the window is the
+                    // fist's, and the label says how to finish.
+                    Some(VoiceEvent::Gripped) => {
+                        info!(
+                            "voice: the window is the {} fist's (a fist {} s after its tap)",
+                            hand_name(push_to_talk.held().hand),
+                            crate::voice::TAKEOVER_S
+                        );
+                        voice_label.show_for(
+                            crate::voice::HOLD_LABEL.to_owned(),
+                            voice_at.0,
+                            voice_at.1,
+                            crate::voice::FIST_MAX_S + 1.0,
+                        );
                     }
                     // Board #5531: a fist window with nothing to send, an
                     // instant's fist or a silent one. "Listening…" goes

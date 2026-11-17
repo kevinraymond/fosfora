@@ -44,7 +44,11 @@
 //! closes on silence: once speech has been heard and [`MIN_SPEECH_S`]
 //! has passed, [`QUIET_S`] under the quiet level closes it ([`level`], the
 //! RMS of the stream's last [`LEVEL_S`]), and so do [`MAX_S`] and a second
-//! tap. A fist does nothing to a tap window, and a tap nothing to a fist's.
+//! tap. A tap does nothing to a fist's window. A fist does nothing to a tap
+//! window, with one exception: closing a fist can make the runtime report
+//! a thumb tap first, so a tap whose hand is a fist [`TAKEOVER_S`] later
+//! was a fist all along, and its window becomes that fist's
+//! ([`Event::Gripped`]).
 //!
 //! A closed window is [`Window::Closing`] until its transcription
 //! returns ([`PushToTalk::finish`]): a fist or a tap then is ignored, so
@@ -100,6 +104,15 @@ pub const SILENT_S: f32 = MAX_S;
 /// closes (s): from the loss on it is a tap window, with the tap's
 /// longest wait ([`MAX_S`]).
 pub const LOST_MAX_S: f32 = MAX_S;
+/// A thumb tap whose own hand is a fist this long after it was no tap
+/// (s): the wearer closed a fist, and the thumb touched the index on the
+/// way. The window the tap opened becomes the fist's, with the hold's
+/// rules and label. In the one worn session that logged both, the same
+/// hand's tap came 49 to 119 ms before the frame the fist's dwell
+/// completed (six fists) and 4 and 23 ms after it (two). This is two and a
+/// half times the longest lead. A tap whose hand is open again by then,
+/// or was never a fist, is a tap as before.
+pub const TAKEOVER_S: f32 = 0.3;
 /// A tap window (V4), and a fist window whose hand the cameras lost,
 /// closes once the level has stayed under the quiet level for this long
 /// (s)...
@@ -266,6 +279,11 @@ pub enum Unsent {
 pub enum Event {
     /// The window opened: start listening.
     Opened(Opener),
+    /// The tap that opened the window came from a hand closing into a
+    /// fist, and the fist is held ([`TAKEOVER_S`]): the window is the
+    /// fist's from here on ([`PushToTalk::held`]). The microphone stays as
+    /// it is and the label takes the hold's words.
+    Gripped,
     /// The window closed after `seconds` of listening: transcribe.
     Closed { seconds: f32, why: Close },
     /// A fist window ended after `seconds` with nothing to send: close
@@ -274,13 +292,13 @@ pub enum Event {
     Dropped { seconds: f32, why: Unsent },
 }
 
-/// One frame's input to the window: each hand (left, right), a thumb tap
-/// on either hand (its rising edge), and the stream's level ([`level`]; 0
-/// before a window opens).
+/// One frame's input to the window: each hand (left, right), the hand
+/// whose thumb tapped this frame (its rising edge; 0 left, 1 right), and
+/// the stream's level ([`level`]; 0 before a window opens).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Press {
     pub hands: [Hand; 2],
-    pub tap: bool,
+    pub tap: Option<usize>,
     pub level: f32,
 }
 
@@ -308,6 +326,9 @@ pub struct PushToTalk {
     /// through somebody else's): it has to be seen open before its next
     /// fist counts.
     wait_release: [bool; 2],
+    /// The hand whose tap opened the tap window, until [`TAKEOVER_S`]
+    /// after it: its fist may still take the window.
+    tapper: Option<usize>,
     /// A fist window's hold, the window's age when its hand was last not
     /// seen open (a fist, or out of view), and how long the hand has now
     /// been away from the fist, has read open, and has been lost (s).
@@ -338,6 +359,7 @@ impl PushToTalk {
             window: Window::Closed,
             fist_s: [0.0; 2],
             wait_release: [false; 2],
+            tapper: None,
             held: Held::default(),
             kept_s: 0.0,
             away_s: 0.0,
@@ -388,13 +410,27 @@ impl PushToTalk {
     /// after [`DWELL_S`], the right hand's when both get there on the same
     /// frame, as the right hand wins the other gestures' ties. A fist
     /// window is its hand's: it ignores the other hand, taps, and (while
-    /// its hand is in view) silence. A tap window ignores the fists.
+    /// its hand is in view) silence. A tap window ignores the fists, but
+    /// for the tapping hand's own, which takes the window if it is a fist
+    /// [`TAKEOVER_S`] after the tap.
     pub fn step_with(&mut self, press: Press, dt: f32) -> Option<Event> {
         let dt = dt.max(0.0);
         match self.window {
             Window::Closed => {
-                if press.tap {
+                if let Some(tapper) = press.tap {
+                    // The tapping hand keeps the fist it has begun: it may
+                    // take this window ([`TAKEOVER_S`]).
+                    // A fist that has to open first takes nothing.
+                    let tapper = tapper.min(1);
+                    let mine = !self.wait_release[tapper];
+                    let begun = if mine && press.hands[tapper] == Hand::Fist {
+                        self.fist_s[tapper]
+                    } else {
+                        0.0
+                    };
                     self.fist_s = [0.0; 2];
+                    self.fist_s[tapper] = begun;
+                    self.tapper = mine.then_some(tapper);
                     self.spoke = false;
                     self.quiet_s = 0.0;
                     self.window = Window::Open {
@@ -446,16 +482,53 @@ impl PushToTalk {
                 since_s,
                 opener: Opener::Tap,
             } => {
-                // A fist held through a tap window must open before it
-                // counts once the window is done.
-                for h in 0..2 {
-                    self.wait_release[h] |= press.hands[h].closed();
-                }
-                if press.tap {
+                if press.tap.is_some() {
                     return Some(self.close(since_s, Close::Tap));
                 }
                 let since_s = since_s + dt;
+                let mut gripped = None;
+                for h in 0..2 {
+                    if self.tapper != Some(h) {
+                        // A fist held through a tap window must open
+                        // before it counts once the window is done.
+                        self.wait_release[h] |= press.hands[h].closed();
+                        continue;
+                    }
+                    // The hand that tapped: its fist counts toward the
+                    // dwell until the takeover time, and takes the window
+                    // if it is a fist then.
+                    match press.hands[h] {
+                        Hand::Fist => self.fist_s[h] += dt,
+                        Hand::Curled => {}
+                        Hand::Open | Hand::Lost => self.fist_s[h] = 0.0,
+                    }
+                    if since_s >= TAKEOVER_S - 1e-6 {
+                        self.tapper = None;
+                        if self.fist_s[h] >= DWELL_S - 1e-6 && press.hands[h].closed() {
+                            gripped = Some(h);
+                        } else {
+                            self.fist_s[h] = 0.0;
+                            self.wait_release[h] |= press.hands[h].closed();
+                        }
+                    }
+                }
                 self.hear(press.level, dt);
+                if let Some(hand) = gripped {
+                    self.fist_s = [0.0; 2];
+                    self.wait_release[hand] = true;
+                    self.held = Held {
+                        hand,
+                        held_s: since_s,
+                        ..Held::default()
+                    };
+                    (self.kept_s, self.away_s, self.open_s, self.lost_s) = (since_s, 0.0, 0.0, 0.0);
+                    self.quiet_s = 0.0;
+                    self.window = Window::Open {
+                        since_s,
+                        opener: Opener::Fist,
+                    };
+                    return Some(Event::Gripped);
+                }
                 if let Some(why) = self.quiet_close(since_s, press.level) {
                     return Some(self.close(since_s, why));
                 }
@@ -585,6 +658,7 @@ impl PushToTalk {
     /// Close the open window after `seconds`, for `why`.
     fn close(&mut self, seconds: f32, why: Close) -> Event {
         self.window = Window::Closing;
+        self.tapper = None;
         self.quiet_s = 0.0;
         Event::Closed { seconds, why }
     }
@@ -612,6 +686,7 @@ impl PushToTalk {
     pub fn cancel(&mut self) {
         if matches!(self.window, Window::Open { .. }) {
             self.window = Window::Closed;
+            self.tapper = None;
             self.fist_s = [0.0; 2];
         }
     }
@@ -1580,7 +1655,7 @@ mod tests {
                 ptt.step_with(
                     Press {
                         hands,
-                        tap: false,
+                        tap: None,
                         level,
                     },
                     DT,
@@ -2157,7 +2232,7 @@ mod tests {
                 ptt.step_with(
                     Press {
                         hands: OPEN,
-                        tap: tap && i == 0,
+                        tap: (tap && i == 0).then_some(1),
                         level,
                     },
                     DT,
@@ -2280,7 +2355,7 @@ mod tests {
             events.extend(ptt.step_with(
                 Press {
                     hands: LEFT,
-                    tap: i % 30 == 29,
+                    tap: (i % 30 == 29).then_some(0),
                     level: 0.0,
                 },
                 DT,
@@ -2328,6 +2403,151 @@ mod tests {
                 vec![Event::Opened(Opener::Fist)]
             );
         }
+    }
+
+    /// One frame with a thumb tap from `hand`, the hands as `hands`.
+    fn tap(ptt: &mut PushToTalk, hand: usize, hands: [Hand; 2]) -> Option<Event> {
+        ptt.step_with(
+            Press {
+                hands,
+                tap: Some(hand),
+                level: 0.0,
+            },
+            DT,
+        )
+    }
+
+    #[test]
+    fn a_tap_from_a_closing_fist_gives_a_fist_window_in_either_order() {
+        for (hand, fist) in [(0, LEFT), (1, RIGHT)] {
+            // The tap first: the thumb touches the index as the hand
+            // closes, and the fist reads a few frames later.
+            let mut ptt = PushToTalk::default();
+            assert_eq!(tap(&mut ptt, hand, OPEN), Some(Event::Opened(Opener::Tap)));
+            assert!(run(&mut ptt, OPEN, 0.0, 0.05).is_empty());
+            // A tap window until the takeover time, then the fist's.
+            let events = run(&mut ptt, fist, 0.0, TAKEOVER_S);
+            assert_eq!(events, vec![Event::Gripped], "{hand}");
+            assert!(fist_window(&ptt));
+            assert_eq!(ptt.held().hand, hand);
+            // The hold's rules from here: a pause longer than a tap
+            // window's quiet and its cap does not close it, a second tap
+            // does nothing, and opening the hand sends it.
+            assert!(run(&mut ptt, fist, SPEECH, 1.0).is_empty());
+            assert!(run(&mut ptt, fist, 0.0, MAX_S + 1.0).is_empty());
+            assert_eq!(tap(&mut ptt, hand, fist), None);
+            let events = run(&mut ptt, OPEN, 0.0, RELEASE_S + DT);
+            assert!(
+                matches!(
+                    events.as_slice(),
+                    [Event::Closed {
+                        why: Close::Release,
+                        ..
+                    }]
+                ),
+                "{events:?}"
+            );
+
+            // The fist first, its dwell not yet done when the tap fires
+            // (in the worn log the tap led the dwell by 49 to 119 ms).
+            let mut ptt = PushToTalk::default();
+            assert!(run(&mut ptt, fist, 0.0, DWELL_S - 0.1).is_empty());
+            assert_eq!(tap(&mut ptt, hand, fist), Some(Event::Opened(Opener::Tap)));
+            let events = run(&mut ptt, fist, 0.0, TAKEOVER_S);
+            assert_eq!(events, vec![Event::Gripped], "{hand}");
+            assert_eq!(ptt.held().hand, hand);
+            // Held with nothing said: dropped as any silent hold is.
+            let events = run(&mut ptt, fist, 0.0, SILENT_S);
+            assert!(
+                matches!(
+                    events.as_slice(),
+                    [Event::Dropped {
+                        why: Unsent::Silent,
+                        ..
+                    }]
+                ),
+                "{events:?}"
+            );
+
+            // The fist's window already open when the tap fires (4 and
+            // 23 ms after it in the worn log): the tap is ignored.
+            let mut ptt = talking(fist, 0.02);
+            assert_eq!(tap(&mut ptt, hand, fist), None);
+            assert!(fist_window(&ptt));
+        }
+        // The takeover waits longer than the longest lead seen, and is
+        // over before a tap window could close on quiet.
+        const { assert!(TAKEOVER_S > 2.0 * 0.119) };
+        const { assert!(TAKEOVER_S < MIN_SPEECH_S) };
+    }
+
+    #[test]
+    fn a_tap_that_is_no_fist_stays_a_tap_window() {
+        let tap_window = |ptt: &PushToTalk| {
+            matches!(
+                ptt.window(),
+                Window::Open {
+                    opener: Opener::Tap,
+                    ..
+                }
+            )
+        };
+        // The fingers curl for a moment around the tap and open again
+        // before the takeover time: a tap, closed by quiet after speech.
+        let mut ptt = PushToTalk::default();
+        tap(&mut ptt, 0, LEFT);
+        assert!(run(&mut ptt, LEFT, 0.0, TAKEOVER_S - 0.1).is_empty());
+        assert!(run(&mut ptt, OPEN, SPEECH, 1.0).is_empty());
+        assert!(tap_window(&ptt));
+        let events = run(&mut ptt, OPEN, 0.0, QUIET_S + DT);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [Event::Closed {
+                    why: Close::Quiet { .. },
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
+        // A fist made too late to have been the tap's: ignored, as a fist
+        // in a tap window always was.
+        let mut ptt = PushToTalk::default();
+        tap(&mut ptt, 0, OPEN);
+        assert!(run(&mut ptt, OPEN, 0.0, TAKEOVER_S - 0.1).is_empty());
+        assert!(run(&mut ptt, LEFT, SPEECH, 2.0).is_empty());
+        assert!(tap_window(&ptt));
+        // The other hand's fist is not the tap's: the right thumb taps
+        // while the left hand closes.
+        let mut ptt = PushToTalk::default();
+        tap(&mut ptt, 1, OPEN);
+        assert!(run(&mut ptt, LEFT, SPEECH, 2.0).is_empty());
+        assert!(tap_window(&ptt));
+        // A hand curled but no fist (a pinch, a palm up) takes nothing.
+        let mut ptt = PushToTalk::default();
+        let curled = [Hand::Curled, Hand::Open];
+        tap(&mut ptt, 0, curled);
+        assert!(run(&mut ptt, curled, SPEECH, 2.0).is_empty());
+        assert!(tap_window(&ptt));
+        // A fist that has to open first (it rested through a dropped
+        // window) takes nothing either: its tap is a tap.
+        let mut ptt = PushToTalk::default();
+        run(&mut ptt, LEFT, 0.0, SILENT_S + 1.0);
+        assert_eq!(ptt.window(), Window::Closed);
+        assert_eq!(tap(&mut ptt, 0, LEFT), Some(Event::Opened(Opener::Tap)));
+        assert!(run(&mut ptt, LEFT, SPEECH, 2.0).is_empty());
+        assert!(tap_window(&ptt));
+        // A second tap inside the takeover time still closes the window.
+        let mut ptt = PushToTalk::default();
+        tap(&mut ptt, 0, OPEN);
+        assert!(run(&mut ptt, OPEN, 0.0, 0.1).is_empty());
+        assert!(matches!(
+            tap(&mut ptt, 0, OPEN),
+            Some(Event::Closed {
+                why: Close::Tap,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -2727,7 +2947,7 @@ mod tests {
             ..Press::default()
         };
         let tap = Press {
-            tap: true,
+            tap: Some(1),
             ..Press::default()
         };
         run(&mut ptt, fist(LEFT), 1.0);
