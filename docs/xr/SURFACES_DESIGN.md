@@ -1507,8 +1507,9 @@ that reads as a high onset with little kick.
   cell there (54 cm) is wider than the 10 degrees the rule counts in and
   an edge crossing a region is a change of its light. At full strength
   the ceiling took one dumped song to 3.5 flashes a second in one region
-  overhead and three more to 3. At 0.5 the worst was 3 on one song and
-  2.5 on the rest. A wall this close to a chair would do the same.
+  overhead and three more to 3. At 0.5 and at 0.4 the worst was 3 on one
+  song and 2.5 on the rest, so 0.4 bought nothing measurable over 0.5. A
+  wall this close to a chair would do the same.
 - **Steel, not stained glass** (`Look::mono`, `Port::mono`). Shards' own
   fills are magenta and green. Flint draws every shards in one color: the
   effect's `saturation` input at 0, so the cells are gray with white
@@ -1990,7 +1991,7 @@ key on C so Aurora's tint is red (6 s each):
 | Tide | 3 / 0 -> 2.5 / 0 | 2.5 / 0 -> 2 / 0 | 3.5 / 0 -> 2.5 / 0 | 4 / 0 -> 2.5 / 0 |
 | Aurora | 4.5 / 4.5 -> 2.5 / 3 | 8.5 / 8.5 -> 2.5 / 2.5 | 12.5 / 12.5 -> 2.5 / 2.5 | 16.5 / 16 -> 2.5 / 2.5 |
 | Mirror | 4.5 / 0 -> 2.5 / 0 | 8 / 0 -> 2.5 / 0 | 0.5 / 0 -> 2.5 / 0 | 0.5 / 0 -> 3 / 0 |
-| Flint | 4.5 / 0 -> 2.5 / 0.5 | 8.5 / 0 -> 2.5 / 0.5 | 12.5 / 0 -> 2 / 0.5 | 16.5 / 0 -> 1.5 / 0.5 |
+| Flint | 5.5 / 0 -> 2.5 / 0 | 9 / 0 -> 2.5 / 0 | 12.5 / 0 -> 2.5 / 0 | 16.5 / 0 -> 2.5 / 0 |
 | Contour | 0.5 / 0 -> 2 / 0 | 0.5 / 0 -> 1.5 / 0 | 0.5 / 0 -> 1.5 / 0 | 0.5 / 0 -> 0.5 / 0 |
 
 Each behavior alone on every surface that offers it, no edge bars, the worst
@@ -2003,7 +2004,19 @@ theme stays at 1 or under, limited or not.
 
 Flint and Contour (board #5533) were measured on Nov 16, after the five.
 Contour's own light hardly moves; what the limiter leaves it is the edge
-bars on its table.
+bars on its table. Flint lights the walls and the ceiling with shards, so
+without the limiter over a thousand of the 1,734 regions fail on every
+train. Its own motion is also the largest of the themes: with the music
+held still it reads 1.5 flashes a second at a level of 0.3 and 2 at 0.8,
+where the others stay at 1 or under, because shards' cell edges move on
+their own clock and with the onsets. On the dumped songs Flint's worst is
+3 flashes a second, on one song, in a region of the ceiling overhead, and
+2.5 or under on the other seven. Shards alone on every surface that now
+offers them, at full strength and in their own colors, read 2.5 on the
+pulse trains and 3 on the four songs tried, where they read 1 before they
+were on a wall's and a ceiling's list. A Flint ceiling raised to full
+strength by hand reached 3.5 on one song (above): that edit is over the
+rule and nothing stops it yet.
 
 The same runs over real songs (`the_dumped_songs_stay_within_three_flashes`,
 eight tracks, fast ones and dense hi-hats among them) read dumps kept
