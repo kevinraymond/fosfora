@@ -29,10 +29,13 @@
 //! That function and that word are the only places that say so.
 //!
 //! **The hints** ([`Hints`], [`Hint`]). Three things are taught once per
-//! install, in this order: the thumb swipe, how to talk (hold a fist, or
-//! tap the thumb on the index finger), and the left palm that brings the
-//! menu. A hint shows when
-//! the show is on and no other label has been up for [`HINT_GAP_S`], one at
+//! install, in this order ([`Hint::SHOW_ORDER`], board #5547): the left
+//! palm that brings the menu, how to talk (hold a fist, or tap the thumb
+//! on the index finger), and the thumb swipe. The two that change nothing
+//! in the room come first, and the swipe, which steps the theme, last.
+//! No hint shows until the show has been on [`FIRST_HINT_S`]: the opening
+//! belongs to the song and the look made for it. After that a hint shows
+//! when no other label has been up for [`HINT_GAP_S`], one at
 //! a time, ahead of the view where the voice label floats. It waits for
 //! the wearer to make its gesture. When they do, the label says
 //! [`GOT_IT`] for [`GOT_IT_S`] and the app plays the understood cue with
@@ -262,7 +265,8 @@ impl HeldPinches {
     }
 }
 
-/// A gesture the first run teaches, in the order the hints show.
+/// A gesture the first run teaches. The variants are in the order of
+/// [`Hint::ALL`] and the arrays; the hints show in [`Hint::SHOW_ORDER`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hint {
     /// The thumb swipe along the index finger, which steps the theme.
@@ -276,8 +280,10 @@ pub enum Hint {
     Palm,
 }
 
-/// The swipe hint's words.
-pub const SWIPE_HINT: &str = "Swipe your thumb\nalong your finger";
+/// The swipe hint's words (board #5547). The last line says what the
+/// swipe does, so the hint reads as an offer: a wearer who likes the look
+/// the track brought can leave it.
+pub const SWIPE_HINT: &str = "Swipe your thumb\nalong your finger\nto change the look";
 /// The talk hint's words (board #5531): the fist, step by step, on two
 /// lines, the thumb tap as the other way on the third, and a sentence the
 /// grammar has on the last. Four lines, where the other hints have two:
@@ -296,12 +302,24 @@ pub const GOT_IT_S: f32 = 2.5;
 pub const GOT_IT_WAIT_S: f32 = 3.0;
 /// How long the label is free, with the show on, before a hint shows (s).
 pub const HINT_GAP_S: f32 = 5.0;
+/// How long the show has been on, in a run, before its first hint (s,
+/// board #5547). The first hint used to show 10 s after the begin and ask
+/// for a swipe, which stepped the theme away from the one the opening
+/// track brings. This long, and the wearer has seen that look through a
+/// first build before anything asks for a gesture.
+pub const FIRST_HINT_S: f32 = 45.0;
 /// How long a hint stays in view before it gives up (s).
 pub const HINT_GIVE_UP_S: f32 = 20.0;
 
 impl Hint {
-    /// Every hint, in the order they show.
+    /// Every hint, in the order of the arrays of [`HintInput`] and of the
+    /// saved names. Not the order they show in ([`Self::SHOW_ORDER`]).
     pub const ALL: [Self; 3] = [Self::Swipe, Self::Talk, Self::Palm];
+
+    /// The order the hints show in (board #5547): the palm and the talk
+    /// first, which change nothing in the room, and the swipe last, which
+    /// steps the theme.
+    pub const SHOW_ORDER: [Self; 3] = [Self::Palm, Self::Talk, Self::Swipe];
 
     /// Its place in [`Self::ALL`], and in the arrays of [`HintInput`].
     pub fn index(self) -> usize {
@@ -385,7 +403,7 @@ impl Taught {
 /// One frame of the hints. The arrays are in [`Hint::ALL`]'s order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HintInput {
-    /// The show is on: it has begun and its opening is over.
+    /// The show is on: it has begun.
     pub show_on: bool,
     /// No other label shows this frame.
     pub label_free: bool,
@@ -467,6 +485,8 @@ enum Stage {
 pub struct Hints {
     taught: Taught,
     stage: Stage,
+    /// How long the show has been on this run (s), for [`FIRST_HINT_S`].
+    on_s: f32,
 }
 
 impl Hints {
@@ -475,6 +495,7 @@ impl Hints {
         Self {
             taught,
             stage: Stage::Idle { free_s: 0.0 },
+            on_s: 0.0,
         }
     }
 
@@ -499,6 +520,9 @@ impl Hints {
     /// first.
     pub fn step(&mut self, dt: f32, input: HintInput) -> Vec<HintEvent> {
         let dt = dt.max(0.0);
+        if input.show_on {
+            self.on_s += dt;
+        }
         let mut events = Vec::new();
         // A gesture made teaches its hint, whether the hint shows or not.
         for hint in Hint::ALL {
@@ -520,11 +544,11 @@ impl Hints {
             Stage::Idle { free_s } => {
                 let free = input.show_on && input.label_free && input.hands_seen;
                 let free_s = if free { free_s + dt } else { free_s };
-                let next = Hint::ALL
+                let next = Hint::SHOW_ORDER
                     .into_iter()
                     .find(|h| !self.taught.has(*h) && input.can[h.index()]);
                 match next {
-                    Some(hint) if free && free_s >= HINT_GAP_S => {
+                    Some(hint) if free && free_s >= HINT_GAP_S && self.on_s >= FIRST_HINT_S => {
                         events.push(HintEvent::Shown(hint));
                         Stage::Showing { hint, shown_s: 0.0 }
                     }
@@ -862,20 +886,29 @@ mod tests {
 
     #[test]
     fn every_hint_shows_as_it_is_written_at_a_size_worth_reading() {
-        for (hint, lines) in [
-            (Hint::Swipe, ["Swipe your thumb", "along your finger"]),
-            (
-                Hint::Palm,
-                ["Left palm to your face", "for the menu. It stays there."],
-            ),
-        ] {
-            let laid = layout(hint.text());
-            assert_eq!(laid.lines, lines);
-            assert!(laid.px > 64.0, "{hint:?} {laid:?}");
-            assert!(laid.px <= TWO_LINES_FONT_PX);
-            // A hint stays far longer than it takes to read.
-            assert!(HINT_GIVE_UP_S > 2.0 * read_s(hint.text()));
-        }
+        let laid = layout(PALM_HINT);
+        assert_eq!(
+            laid.lines,
+            ["Left palm to your face", "for the menu. It stays there."]
+        );
+        assert!(laid.px > 64.0, "{laid:?}");
+        assert!(laid.px <= TWO_LINES_FONT_PX);
+        // A hint stays far longer than it takes to read.
+        assert!(HINT_GIVE_UP_S > 2.0 * read_s(PALM_HINT));
+        // The swipe hint is three lines as written, none wrapped, at the
+        // size the talk hint has: the gesture on two, what it does on the
+        // third.
+        let laid = layout(SWIPE_HINT);
+        assert_eq!(
+            laid.lines,
+            [
+                "Swipe your thumb",
+                "along your finger",
+                "to change the look"
+            ]
+        );
+        assert_close!(laid.px, crate::label::LINES_FONT_PX);
+        assert!(HINT_GIVE_UP_S > 2.0 * read_s(SWIPE_HINT));
         // The talk hint is four lines, each as written, none wrapped, at
         // the size the voice's help card has: the fist step by step, the
         // tap, and something to say.
@@ -938,8 +971,57 @@ mod tests {
         input
     }
 
+    /// The hints of a run whose opening is over: the show has been on
+    /// [`FIRST_HINT_S`] under another label, so the gap has not started.
+    fn after_the_opening(taught: Taught) -> Hints {
+        let mut hints = Hints::new(taught);
+        let covered = HintInput {
+            label_free: false,
+            ..ON
+        };
+        assert!(hints_for(&mut hints, FIRST_HINT_S + 0.1, covered).is_empty());
+        hints
+    }
+
+    #[test]
+    fn no_hint_shows_until_the_opening_has_had_its_time() {
+        let mut hints = Hints::new(Taught::default());
+        // The show on, the label free, a hand seen: nothing for the whole
+        // opening, however long the label has been free.
+        assert!(hints_for(&mut hints, FIRST_HINT_S - 0.2, ON).is_empty());
+        assert_eq!(hints.now(), None);
+        assert_eq!(hints.taught(), Taught::default());
+        // Then the first hint, at once: the label has been free all along.
+        assert_eq!(
+            hints_for(&mut hints, 0.4, ON),
+            [HintEvent::Shown(Hint::Palm)]
+        );
+        // The time before the begin does not count.
+        let mut hints = Hints::new(Taught::default());
+        let before = HintInput {
+            show_on: false,
+            ..ON
+        };
+        assert!(hints_for(&mut hints, 2.0 * FIRST_HINT_S, before).is_empty());
+        assert!(hints_for(&mut hints, FIRST_HINT_S - 0.2, ON).is_empty());
+        // A gesture made during the opening still teaches itself.
+        assert_eq!(
+            hints.step(DT, made(Hint::Swipe)),
+            [HintEvent::SelfTaught(Hint::Swipe)]
+        );
+        // The opening is long enough to hold the hints back and short
+        // against a song.
+        const { assert!(FIRST_HINT_S >= 30.0 && FIRST_HINT_S <= 90.0) };
+    }
+
     #[test]
     fn the_hints_show_in_order_one_at_a_time_a_few_seconds_apart() {
+        // The order: the two that change nothing in the room, then the
+        // swipe, which steps the theme.
+        assert_eq!(Hint::SHOW_ORDER, [Hint::Palm, Hint::Talk, Hint::Swipe]);
+        for hint in Hint::ALL {
+            assert!(Hint::SHOW_ORDER.contains(&hint), "{hint:?}");
+        }
         let mut hints = Hints::new(Taught::default());
         // Nothing before the show is on, however long.
         let before = HintInput {
@@ -948,21 +1030,22 @@ mod tests {
         };
         assert!(hints_for(&mut hints, 30.0, before).is_empty());
         assert_eq!(hints.now(), None);
-        // The swipe first, after the gap.
+        // The palm first, after the opening and the gap.
+        let mut hints = after_the_opening(Taught::default());
         assert!(hints_for(&mut hints, HINT_GAP_S - 0.1, ON).is_empty());
         assert_eq!(
             hints_for(&mut hints, 0.2, ON),
-            [HintEvent::Shown(Hint::Swipe)]
+            [HintEvent::Shown(Hint::Palm)]
         );
-        assert_eq!(hints.now().map(|n| n.0), Some(SWIPE_HINT));
-        // The wearer swipes: "Got it" with its cue, and the hint is
-        // taught.
+        assert_eq!(hints.now().map(|n| n.0), Some(PALM_HINT));
+        // The wearer turns the palm: "Got it" with its cue, and the hint
+        // is taught.
         assert_eq!(
-            hints.step(DT, made(Hint::Swipe)),
-            [HintEvent::Made(Hint::Swipe), HintEvent::GotIt]
+            hints.step(DT, made(Hint::Palm)),
+            [HintEvent::Made(Hint::Palm), HintEvent::GotIt]
         );
         assert_eq!(hints.now().map(|n| n.0), Some(GOT_IT));
-        assert!(hints.taught().has(Hint::Swipe));
+        assert!(hints.taught().has(Hint::Palm));
         // "Got it" has its time, then the gap, then how to talk.
         assert!(hints_for(&mut hints, GOT_IT_S + HINT_GAP_S - 0.1, ON).is_empty());
         assert_eq!(
@@ -973,15 +1056,15 @@ mod tests {
             hints.step(DT, made(Hint::Talk)),
             [HintEvent::Made(Hint::Talk), HintEvent::GotIt]
         );
-        // The palm last.
+        // The swipe last.
         assert_eq!(
             hints_for(&mut hints, GOT_IT_S + HINT_GAP_S + 0.1, ON),
-            [HintEvent::Shown(Hint::Palm)]
+            [HintEvent::Shown(Hint::Swipe)]
         );
-        assert_eq!(hints.now().map(|n| n.0), Some(PALM_HINT));
+        assert_eq!(hints.now().map(|n| n.0), Some(SWIPE_HINT));
         assert_eq!(
-            hints.step(DT, made(Hint::Palm)),
-            [HintEvent::Made(Hint::Palm), HintEvent::GotIt]
+            hints.step(DT, made(Hint::Swipe)),
+            [HintEvent::Made(Hint::Swipe), HintEvent::GotIt]
         );
         assert_eq!(hints.taught(), Taught::ALL);
         // Every hint taught: nothing shows again, in this run or the next.
@@ -1001,20 +1084,26 @@ mod tests {
         };
         assert_eq!(hints.step(DT, waiting), [HintEvent::SelfTaught(Hint::Palm)]);
         assert_eq!(hints.now(), None);
-        // The swipe hint shows, and the wearer talks instead: talking is
-        // taught by doing, and the swipe hint stays.
+        // The talk hint shows after the opening, and the wearer swipes
+        // instead: the swipe is taught by doing, and the talk hint stays.
+        let covered = HintInput {
+            label_free: false,
+            ..ON
+        };
+        hints_for(&mut hints, FIRST_HINT_S + 0.1, covered);
         hints_for(&mut hints, HINT_GAP_S + 0.1, ON);
-        assert_eq!(
-            hints.step(DT, made(Hint::Talk)),
-            [HintEvent::SelfTaught(Hint::Talk)]
-        );
-        assert_eq!(hints.now().map(|n| n.0), Some(SWIPE_HINT));
-        // Made again, a taught gesture says nothing.
-        assert!(hints.step(DT, made(Hint::Talk)).is_empty());
-        // The swipe is the only hint this install shows.
+        assert_eq!(hints.now().map(|n| n.0), Some(TALK_HINT));
         assert_eq!(
             hints.step(DT, made(Hint::Swipe)),
-            [HintEvent::Made(Hint::Swipe), HintEvent::GotIt]
+            [HintEvent::SelfTaught(Hint::Swipe)]
+        );
+        assert_eq!(hints.now().map(|n| n.0), Some(TALK_HINT));
+        // Made again, a taught gesture says nothing.
+        assert!(hints.step(DT, made(Hint::Swipe)).is_empty());
+        // How to talk is the only hint this install shows.
+        assert_eq!(
+            hints.step(DT, made(Hint::Talk)),
+            [HintEvent::Made(Hint::Talk), HintEvent::GotIt]
         );
         assert!(hints_for(&mut hints, 120.0, ON).is_empty());
         assert_eq!(hints.taught(), Taught::ALL);
@@ -1022,7 +1111,7 @@ mod tests {
 
     #[test]
     fn a_hint_gives_up_after_its_time_in_view_and_is_taught() {
-        let mut hints = Hints::new(Taught::default());
+        let mut hints = after_the_opening(Taught::default());
         hints_for(&mut hints, HINT_GAP_S + 0.1, ON);
         // Another label covers it for a while: its time stops.
         let covered = HintInput {
@@ -1030,15 +1119,15 @@ mod tests {
             ..ON
         };
         assert!(hints_for(&mut hints, 60.0, covered).is_empty());
-        assert_eq!(hints.now().map(|n| n.0), Some(SWIPE_HINT));
+        assert_eq!(hints.now().map(|n| n.0), Some(PALM_HINT));
         // Back in view, it has its 20 s, fading at the end, then gives up.
         assert!(hints_for(&mut hints, HINT_GIVE_UP_S - 0.3, ON).is_empty());
         assert!(hints.now().is_some_and(|n| n.1 < 1.0));
         assert_eq!(
             hints_for(&mut hints, 0.4, ON),
-            [HintEvent::GaveUp(Hint::Swipe)]
+            [HintEvent::GaveUp(Hint::Palm)]
         );
-        assert!(hints.taught().has(Hint::Swipe));
+        assert!(hints.taught().has(Hint::Palm));
         assert_eq!(hints.now(), None);
         // The next one follows after the gap.
         assert_eq!(
@@ -1070,8 +1159,12 @@ mod tests {
         };
         // The swipe's caption covers the label for 2 s: "Got it" and its
         // cue come when it goes, for their whole time.
-        let mut hints = Hints::new(Taught::default());
+        let mut others = Taught::default();
+        others.set(Hint::Palm);
+        others.set(Hint::Talk);
+        let mut hints = after_the_opening(others);
         hints_for(&mut hints, HINT_GAP_S + 0.1, ON);
+        assert_eq!(hints.now().map(|n| n.0), Some(SWIPE_HINT));
         let swiped = HintInput {
             label_free: false,
             ..made(Hint::Swipe)
@@ -1084,8 +1177,11 @@ mod tests {
         hints_for(&mut hints, 0.6, ON);
         assert_eq!(hints.now(), None);
         // A spoken "what can I say" brings its card, which stays longer
-        // than the wait: no "Got it" and no cue, and the palm hint follows
+        // than the wait: no "Got it" and no cue, and the swipe hint follows
         // once the label is free again.
+        let mut palm = Taught::default();
+        palm.set(Hint::Palm);
+        let mut hints = after_the_opening(palm);
         hints_for(&mut hints, HINT_GAP_S + 0.1, ON);
         assert_eq!(hints.now().map(|n| n.0), Some(TALK_HINT));
         let tapped = HintInput {
@@ -1098,7 +1194,7 @@ mod tests {
         assert!(hints_for(&mut hints, 20.0, covered).is_empty());
         assert_eq!(
             hints_for(&mut hints, HINT_GAP_S + 0.1, ON),
-            [HintEvent::Shown(Hint::Palm)]
+            [HintEvent::Shown(Hint::Swipe)]
         );
     }
 
@@ -1111,13 +1207,13 @@ mod tests {
             ..ON
         };
         let mut taught = Taught::default();
-        taught.set(Hint::Swipe);
-        let mut hints = Hints::new(taught);
+        taught.set(Hint::Palm);
+        let mut hints = after_the_opening(taught);
         assert_eq!(
             hints_for(&mut hints, HINT_GAP_S + 0.1, no_voice),
-            [HintEvent::Shown(Hint::Palm)]
+            [HintEvent::Shown(Hint::Swipe)]
         );
-        hints.step(DT, made(Hint::Palm));
+        hints.step(DT, made(Hint::Swipe));
         assert!(hints_for(&mut hints, 60.0, no_voice).is_empty());
         assert!(!hints.taught().has(Hint::Talk));
         // Voice comes on: the talk hint shows now.
@@ -1138,7 +1234,7 @@ mod tests {
 
     #[test]
     fn the_hints_wait_for_a_free_label_and_a_tracked_hand() {
-        let mut hints = Hints::new(Taught::default());
+        let mut hints = after_the_opening(Taught::default());
         // The controllers are still in hand: no hint is used up.
         let no_hands = HintInput {
             hands_seen: false,
@@ -1156,7 +1252,7 @@ mod tests {
         assert!(hints_for(&mut hints, 0.9, ON).is_empty());
         assert_eq!(
             hints_for(&mut hints, 0.2, ON),
-            [HintEvent::Shown(Hint::Swipe)]
+            [HintEvent::Shown(Hint::Palm)]
         );
     }
 
@@ -1255,7 +1351,10 @@ mod tests {
             made[Hint::Swipe.index()] = consume(&frame, panel_up, false, themes).is_some();
             HintInput { made, ..ON }
         };
-        let mut hints = Hints::new(Taught::default());
+        let mut others = Taught::default();
+        others.set(Hint::Palm);
+        others.set(Hint::Talk);
+        let mut hints = after_the_opening(others);
         assert_eq!(
             hints_for(&mut hints, HINT_GAP_S + 0.1, ON),
             [HintEvent::Shown(Hint::Swipe)]
@@ -1272,7 +1371,10 @@ mod tests {
         );
         assert!(hints.taught().has(Hint::Swipe));
         assert_eq!(hints.now().map(|n| n.0), Some(GOT_IT));
-        // The hint's words are the ones it always had.
-        assert_eq!(SWIPE_HINT, "Swipe your thumb\nalong your finger");
+        // The hint says the gesture, then what it does.
+        assert_eq!(
+            SWIPE_HINT,
+            "Swipe your thumb\nalong your finger\nto change the look"
+        );
     }
 }

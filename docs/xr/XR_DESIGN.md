@@ -1134,8 +1134,7 @@ a row of clumps all the way down. What else changed is how they move.
   (`themes::Shown::step`, `lanes::RoomLanes::step_theme`). It is the path
   the Theme control and the spoken "next theme" take, and it saves with
   the room. The caption names the new theme ("Aurora"). The first run's
-  swipe hint keeps its words and is taught by a swipe that changed the
-  theme.
+  swipe hint is taught by a swipe that changed the theme.
 - **The hand menu** has no effect row. It was six rows, five on the
   release surface, until the Limit flashing row went in at the top (board
   #5534): seven and six.
@@ -2074,7 +2073,7 @@ What a wearer can meet, in the order of a first launch:
 | Room editor: a first hold | desk: hold again for all tables -> curls | at the surface | the arm's 2.5 s |
 | A voice reply or miss | theme: Aurora, Didn't catch that… | the voice window's place | its own time or its reading time |
 | A thumb swipe stepped the theme | Aurora | the voice window's place | its reading time |
-| A first run hint, the label free for 5 s | Swipe your thumb along your finger | the voice window's place | until the gesture is made, 20 s at most |
+| A first run hint, the show on for 45 s and the label free for 5 s | Left palm to your face for the menu. It stays there. | the voice window's place | until the gesture is made, 20 s at most |
 | The hint's gesture was made | Got it | same | 2.5 s |
 | The session ends on an error | Fosfora stopped: the session was lost | 1.2 m ahead, level | 4 s, then the app exits |
 
@@ -2217,13 +2216,18 @@ not run on the headset yet.
    starts (the track was decoded during the wait), and the opening runs:
    **"Sit back and relax"** for 4 s at the wait's 0.25, then the glide to
    0.35 over 3 s.
-6. **The swipe hint.** Once the label has been free for 5 s with the show
-   on (about 9 s after the pinch), ahead of the view and 10 degrees under
-   the line of sight: **"Swipe your thumb"** over **"along your finger"**.
-   The wearer swipes, the theme steps with its tick, and the caption
-   names it: **"Mirror"**. Then **"Got it"** for 2.5 s with the
-   understood cue.
-7. **The talk hint**, 5 s of free label later, only with voice on and the
+6. **Nothing for the opening** (board #5547). No hint shows until the
+   show has been on for 45 s (`FIRST_HINT_S`). The first hint used to
+   show about 9 s after the pinch and ask for a swipe, which stepped the
+   theme away from the one the opening track brings. The opening belongs
+   to the song and its look. A gesture made in that time still works and
+   teaches itself.
+7. **The palm hint**, first, once the label has been free for 5 s, ahead
+   of the view and 10 degrees under the line of sight: **"Left palm to
+   your face"** over **"for the menu. It stays there."** The palm brings
+   the menu, then **"Got it"** for 2.5 s with the understood cue. The
+   menu changes nothing in the room.
+8. **The talk hint**, 5 s of free label later, only with voice on and the
    microphone allowed (board #5531; until then the tap hint, "Tap your
    thumb to talk."): **"Make a fist, say a command,"** over **"then open
    your hand."**, **"Or tap thumb on index finger."** and **"Try: what
@@ -2232,9 +2236,12 @@ not run on the headset yet.
    with something said in it answers the hint. "Got it" waits 3 s for the
    label and is dropped behind an answer that stays longer, and its cue
    never plays into an open microphone.
-8. **The palm hint**, last: **"Left palm to your face"** over **"for the
-   menu. It stays there."** The palm brings the menu, then "Got it" and
-   the cue.
+9. **The swipe hint**, last, because the swipe is the one gesture of the
+   three that changes the room: **"Swipe your thumb"** over **"along your
+   finger"** and **"to change the look"**. The last line says what the
+   swipe does, so the hint is an offer and a wearer who likes the look
+   can leave it. The wearer swipes, the theme steps with its tick, and
+   the caption names it: **"Mirror"**. Then "Got it" and the cue.
 
 A hint that has been in view for 20 s gives up. Made or given up, it is
 saved as taught and never shows again on that install.
@@ -2373,8 +2380,9 @@ What was considered and left out for the hands' answer:
 - **The depth.** The wait's dim is scaled by the Immersion control like
   the rest: off leaves the room plain, black is black from the launch as
   it was. `WAIT_LEVEL` 0 would leave the room plain for everyone.
-- **Hints wait their turn** (`first_run::Hints`). One at a time, in the
-  order above, after 5 s of free label (`HINT_GAP_S`), never over another
+- **Hints wait their turn** (`first_run::Hints`). None in the show's
+  first 45 s (`FIRST_HINT_S`), then one at a time, in the
+  order above (`Hint::SHOW_ORDER`), after 5 s of free label (`HINT_GAP_S`), never over another
   label. A hint's 20 s (`HINT_GIVE_UP_S`) count only while it is the
   label showing. A hint whose gesture can't work in this run (voice off,
   no microgestures) is passed over without being saved, and shows in a
@@ -2448,10 +2456,10 @@ it waits, so the card names the pinch only.
 
 A capture of every step, with `ask 0` and `handshint 0` set: launch with
 `hints 1` and no `begin` to see the card (the controllers line joins it
-after 4 s unless `handshint 0`), then `say 'begin'`. The swipe hint shows
-about 9 s later; `swipe right` gives the caption and "Got it". The tap
+after 4 s unless `handshint 0`), then `say 'begin'`. The palm hint shows
+about 45 s later, and unworn it can only give up, 20 s on. The talk
 hint follows (it needs voice on and the microphone granted), then the
-palm hint, which unworn can only give up.
+swipe hint; `swipe right` gives the caption and "Got it".
 
 The tests (`first_run.rs`):
 `the_show_waits_until_the_wearer_pinches_with_the_card_up`,
