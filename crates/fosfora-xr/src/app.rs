@@ -276,7 +276,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       left to the one before (board #5470), either hand, not while the hand menu is up nor from the right hand in Edit room;
     //       forward and backward are logged and unassigned; the thumb tap opens the voice window (board #3751, V4, with voice on); default 1;
     //       0 creates no action set; read at launch)
-    //   adb shell setprop debug.fosfora.voice 0|1                (board #3751: the voice path: hold the left fist to talk, release it (or 6 s pass)
+    //   adb shell setprop debug.fosfora.voice 0|1                (board #3751: the voice path: hold a fist to talk, open the hand (or 20 s pass, board #5531)
     //       and the transcription goes through the grammar (V2, intent.rs: the hand menu's and the room editor's actions by voice), the
     //       label shows what it did or "Didn't catch that", the log both; the fist opens the window in every mode, Edit room and the hand
     //       menu included; V4: the hand menu's Voice toggle, saved in hand_menu.json ("voice", on when absent), which the knob forces
@@ -380,7 +380,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the palm, as before; default 1, polled once a second)
     //   adb shell setprop debug.fosfora.menuidle 5               (board #5459: seconds the menu stays in the air with no pointer on it, 0.5 to 60,
     //       in place of the default 3; polled once a second, "" back to the default)
-    //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: hands' sim spheres extend Go-Go style past a comfortable reach; default on in mr/world)
+    //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: the hands extend Go-Go style past a comfortable reach. Board
+    //       #5531: 1 = only while Edit room is on, where the far hand, its ghost and its beam are as they were; with Edit room off each
+    //       hand is its real hand, and turning the editor on or off glides the extension out or back in about 0.2 s; 0 = never;
+    //       default 1 in mr/world)
     //   adb shell setprop debug.fosfora.reachat 0.30             (reach: shoulder-to-palm distance, m, within which the hand is 1:1)
     //   adb shell setprop debug.fosfora.reachgain 40             (reach: quadratic gain, 1/m; 40 puts a 0.52 m palm at 2.5 m, capped at 3 m)
     //   The next seven were the cloud effects' (Flock's hand poses and Embers' surface emitters) and change nothing since board
@@ -422,7 +425,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.begin 1                  (board #5452, first_run.rs: the show begins at once, with no "Pinch to begin"
     //       card and no wait for the wearer, for unworn runs and measurements; the music and the opening start as they did before the
     //       card; unset, every launch waits for a pinch, a spoken "begin" or 60 s of the card; read at launch and polled once a second
-    //       while the show waits, so setting it also begins a launch that is waiting; logged `first run: the show begins (...)`)
+    //       while the show waits, so setting it also begins a launch that is waiting; logged `first run: the show begins (...)`;
+    //       board #5531: while the show waits the hand menu does not come, by the palm or by voice, and nothing is thrown or lifted)
     //   adb shell setprop debug.fosfora.hints 1                  (board #5452: the first run's three hints again this launch: what
     //       hand_menu.json saved as taught is left out, and the hints show without a hand having been tracked, so they can be captured
     //       unworn; a hint made or given up in such a launch is saved, and the file then holds only what that launch taught; read at
@@ -461,11 +465,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       pitcher's pour), its sim stepping on so on shows it as it would have been, Edit room on or off; default 1, not saved)
     //   adb shell setprop debug.fosfora.picktest 3               (diagnostic: the room editor's ray from 0.5 m ahead of the head along the view tilted
     //       20 degrees down, untracked, with a synthetic right-hand tap every 3 s, for an unworn check; implies editroom 1)
-    //   adb shell setprop debug.fosfora.throw 0|1                (a pinch tap throws a burst where the far hand points; default on)
+    //   adb shell setprop debug.fosfora.throw 0|1                (board #5531: the one switch for the hands' throw and lift. 1, a pinch tap
+    //       throws a burst where the hand points and an open palm lifts; 0, a pinch throws nothing and a palm lifts nothing, and
+    //       everything else a pinch does (the begin, the hand menu's rows, the room editor) is as it was; the pitcher and the
+    //       throwtest diagnostic do not read it; default 1 (`instruments::THROW_DEFAULT`), read at launch, logged in the
+    //       `instruments:` line)
     //   adb shell setprop debug.fosfora.burstcount 6000          (particles a throw bursts into on impact, at most 17000, the pool's slots the
     //       fireflies never take, `fireflies::BURST_MAX`)
-    //   adb shell setprop debug.fosfora.lift 0|1                 (an open far palm held still, facing down, lifts the hand particles lying
-    //       under it; default on)
+    //   adb shell setprop debug.fosfora.lift 0|1                 (an open palm held still, facing down, lifts the hand particles lying
+    //       under it; default on, and off whenever debug.fosfora.throw is 0)
     //   adb shell setprop debug.fosfora.liftradius 0.35          (the lift's radius around the far palm, m)
     //   adb shell setprop debug.fosfora.throwtest 3              (diagnostic: every 3 s a right-hand throw from 0.5 m ahead of the head
     //       along the view, untracked, for an unworn check)
@@ -760,14 +768,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .filter(|q| q.is_finite() && *q > 0.0)
         .unwrap_or(crate::voice::QUIET_LEVEL);
     info!(
-        "voice: openers the left fist (the next fist closes it, or {} s) and a thumb tap (closes after {} s under {voice_quiet:.4} RMS, debug.fosfora.voicequiet, a second tap, or {} s)",
+        "voice: a fist on either hand holds the window open (it ends {} s after the hand opens or at {} s, sends nothing for a fist under {} s or with nothing said by {} s, and out of view closes on quiet or after {} s) and a thumb tap opens one (closes after {} s under {voice_quiet:.4} RMS, debug.fosfora.voicequiet, a second tap, or {} s)",
+        crate::voice::RELEASE_S,
         crate::voice::FIST_MAX_S,
+        crate::voice::MIN_HOLD_S,
+        crate::voice::SILENT_S,
+        crate::voice::LOST_MAX_S,
         crate::voice::QUIET_S,
         crate::voice::MAX_S
     );
     let mut push_to_talk = PushToTalk::new(voice_quiet);
-    // V4: whether the flock last saw the left fist masked for voice, for
-    // the log's one line per change.
+    // V4: whether the flock last saw the fists masked for voice, for the
+    // log's one line per change.
     let mut flock_rule_logged = false;
     // The voice path's own label (the editor's is stepped and cleared by
     // Edit room), and where it floats. Board #5453: ahead of the view,
@@ -1085,7 +1097,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(if world { WORLD_HAND_KICK } else { MR_HAND_KICK });
     // Seated reach (board #3308): Go-Go arm extension of the hands' sim
-    // spheres, on by default wherever hands are obstacles.
+    // spheres, on by default wherever hands are obstacles. Board #5531:
+    // on is only while the room editor is on (`reach::live`).
     let reach_on = toggle("debug.fosfora.reach", mixed);
     let reach_threshold = debug_prop("debug.fosfora.reachat")
         .and_then(|v| v.parse::<f32>().ok())
@@ -1648,6 +1661,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut gpu_window = crate::governor::GpuWindow::default();
     let mut gov_logged_period: Option<f32> = None;
     let mut reach = crate::reach::Reach::new(reach_threshold, reach_gain);
+    // Board #5531: live only while the room editor is on, set per frame.
+    reach.live = false;
+    info!(
+        "reach: {}",
+        if reach_on {
+            "only while Edit room is on"
+        } else {
+            "off"
+        }
+    );
     // This frame's reach per hand, and the furthest (real, virtual) since
     // the last log line.
     let mut reach_now: [Option<crate::reach::HandReach>; 2] = [None; 2];
@@ -1731,8 +1754,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #3327: the hands as instruments, whose particles are the
     // world effect's hand particles. A throw's impact asks for no more
     // than the pool's slots the fireflies never take (board #5470).
-    let throw_on = toggle("debug.fosfora.throw", true);
-    let lift_on = toggle("debug.fosfora.lift", true);
+    // Board #5531: `debug.fosfora.throw` is the one switch for the throw
+    // and the lift (`instruments::Play`).
+    let play = crate::instruments::Play::from_knobs(
+        switch("debug.fosfora.throw"),
+        switch("debug.fosfora.lift"),
+    );
     let mut thrower = crate::instruments::Thrower::new(crate::fireflies::burst_count(
         debug_prop("debug.fosfora.burstcount")
             .and_then(|v| v.parse::<u32>().ok())
@@ -1767,9 +1794,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     (controls.pitcher, controls.pitcher_rate) = (pitcher.on, pitcher.rate);
     info!(
         "instruments: throw {} (burst {}) · lift {} (radius {} m) · pitcher {} ({}/s at {} m/s){}",
-        if throw_on { "on" } else { "off" },
+        if play.throw { "on" } else { "off" },
         thrower.burst_count,
-        if lift_on { "on" } else { "off" },
+        play.lift_label(),
         lifter.radius,
         if pitcher.on { "on" } else { "off" },
         pitcher.rate,
@@ -1812,13 +1839,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // wearer behind a card at the center of view; three gestures are
     // taught once per install as the wearer makes them, on a label ahead
     // of the view; a thumb swipe's caption names the theme it stepped to.
-    // `begin_pinch` is the pinch that began the show, which does nothing
-    // more than its burst until it opens. `hint_made` collects the taught
+    // `begin_pinch` holds back every pinch closed during the wait, the one
+    // that began the show included, until it opens (board #5531).
+    // `hint_made` collects the taught
     // gestures made this frame, in `first_run::Hint::ALL`'s order.
     let mut wait = crate::first_run::Wait::default();
     let mut begin_knob = debug_prop("debug.fosfora.begin").as_deref() == Some("1");
     let mut spoken_begin = false;
-    let mut begin_pinch = [false; 2];
+    let mut begin_pinch = crate::first_run::HeldPinches::default();
     let mut card_ready = false;
     let mut card_follow = crate::voice::Follow::centered(glam::Quat::IDENTITY);
     let mut card_shown = false;
@@ -1858,6 +1886,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut hint_shown = false;
     let mut caption = crate::label::Label::default();
     let mut swipe_knob = crate::intent::SayKnob::default();
+    // Board #5531: a swipe is held back a moment and dropped if its hand
+    // is closing into a fist (`microgestures::SwipeGate`). `fist_last` is
+    // each hand's pose from the frame before, a fist or not.
+    let mut swipe_gate = crate::microgestures::SwipeGate::default();
+    let mut fist_last = [false; 2];
     let mut palm_was = false;
     // Board #5378: every surface's voice name on the surface, while the
     // editor is on, while a voice window is open and a while after, after
@@ -2554,10 +2587,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // The panel first. While it is up its pinches are its own: no
             // cloud gestures from either hand (a pinch that just missed a
             // row moved the cloud), except one already in progress.
+            // Board #5531: while the show waits for the wearer the menu is
+            // held back, and the palm does not bring it.
+            let menu_live = wait.live().menu;
             let panel_up = hud.as_mut().is_some_and(|h| {
                 h.record(&input.perf);
                 if hud_test {
                     h.place_parked(&gfx, input.head, input.head_rot);
+                    false
+                } else if !menu_live {
+                    h.hold(&gfx, &input.hands, input.head);
                     false
                 } else {
                     h.place(&gfx, &input.hands, (input.head, input.head_rot), menu_stay, dt);
@@ -2579,15 +2618,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             palm_was = on_palm;
             // Board #5452: the show waits for the wearer (`first_run::Wait`).
-            // The start gesture begins it with the card up, unless the
-            // pinch is the menu's. A spoken begin, the wearer's own play
-            // and the knob begin it whatever shows. The music starts here,
-            // as the launch started it before there was a card.
-            for h in 0..2 {
-                if !input.hands.pinching[h] {
-                    begin_pinch[h] = false;
-                }
-            }
+            // The start gesture begins it with the card up. A spoken
+            // begin, the wearer's own play and the knob begin it whatever
+            // shows. The music starts here, as the launch started it
+            // before there was a card.
             if wait.waiting() {
                 if frame_index.is_multiple_of(72) {
                     begin_knob |= switch_now("debug.fosfora.begin") == Some(true);
@@ -2621,22 +2655,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     } else if music_at_launch {
                         music.play_at_launch();
                     }
-                    // The pinch that began the show ticks and throws its
-                    // burst, as a pinch and release does, and nothing
-                    // else: no gesture reads it until it opens.
-                    if let crate::first_run::Begun::Gesture { hand } = why {
-                        begin_pinch[hand] = true;
+                    // The pinch that began the show ticks, and nothing
+                    // else (board #5531): it throws nothing, and no
+                    // gesture reads it until it opens (`begin_held`).
+                    if let crate::first_run::Begun::Gesture { .. } = why {
                         crate::ui_sound::play(crate::ui_sound::Cue::Press);
-                        if !(controls.edit_room && hand == 1) {
-                            tapped = Some(hand);
-                        }
                     }
                 }
             }
             spoken_begin = false;
             // While the show waits no pinch is a gesture: nothing is
-            // thrown and the cloud stays where it is.
-            let held_back = [0, 1].map(|h| swallowed[h] || wait.waiting() || begin_pinch[h]);
+            // thrown and the cloud stays where it is. Board #5531: nor is
+            // a pinch closed during the wait, until it opens.
+            let begin_held = begin_pinch.step(input.hands.pinching, wait.waiting());
+            let held_back = [0, 1].map(|h| swallowed[h] || begin_held[h]);
             let pinches = [0, 1].map(|h| PinchInput {
                 pinching: input.hands.pinching[h]
                     && !(panel_up && gestures.owner() != Some(h))
@@ -2763,7 +2795,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     micro.swipe[1] = swipe.or(micro.swipe[1]);
                 }
                 // Board #5452: while the show waits a swipe steps nothing.
-                if wait.waiting() {
+                if !wait.live().swipes {
                     for h in 0..2 {
                         if let Some(s) = micro.swipe[h].take() {
                             info!(
@@ -2773,6 +2805,43 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             );
                         }
                     }
+                }
+                // Board #5531: a hand closing into a fist drags its thumb
+                // along the index, and the runtime reports a swipe. Each
+                // swipe waits `SWIPE_HOLD_S` and is dropped if its hand is
+                // a fist by then: the pose reader said so last frame, or
+                // its fingers are curled under the fist's now.
+                {
+                    let fists = [0, 1].map(|h| {
+                        fist_last[h]
+                            || HandInput {
+                                palm: input.hands.palm[h].map(|(p, q)| {
+                                    (glam::Vec3::from(p), glam::Quat::from_array(q))
+                                }),
+                                tips: input.hands.finger_tips[h]
+                                    .map(|t| t.map(glam::Vec3::from)),
+                            }
+                            .curl()
+                            .is_some_and(|c| c < crate::pose::FIST_ON_M)
+                    });
+                    let gated = swipe_gate.step(micro.swipe, fists, dt);
+                    for h in 0..2 {
+                        if let Some((s, after)) = gated.dropped[h] {
+                            info!(
+                                "microgesture: swipe {} ({} hand) -> nothing (the hand was a fist {after:.2} s after it)",
+                                s.label(),
+                                hand_name(h)
+                            );
+                        }
+                        if let Some(after) = gated.late[h] {
+                            info!(
+                                "microgesture: the {} hand was a fist {after:.2} s after its swipe went through (held back {} s)",
+                                hand_name(h),
+                                crate::microgestures::SWIPE_HOLD_S
+                            );
+                        }
+                    }
+                    micro.swipe = gated.swipe;
                 }
                 let micro = &micro;
                 let outcomes = [0, 1].map(|h| {
@@ -3150,8 +3219,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     ),
                 }
             }
-            // The left fist this frame, for the voice path (below).
-            let mut left_fist = false;
+            // What each hand shows the voice window this frame (below). With
+            // no poses read, no hand is in view.
+            let mut voice_hands = [crate::voice::Hand::Lost; 2];
             if let Some(p) = particles.as_ref() {
                 if recenter_on_wearer && !recentered {
                     recentered = true;
@@ -3224,6 +3294,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let mut offsets = [glam::Vec3::ZERO; 2];
                 reach.threshold = controls.reach_threshold;
                 reach.gain = controls.reach_gain;
+                // Board #5531: only while the room editor is on. Off, the
+                // extension glides back and the offsets are zero, so each
+                // hand is its real hand below: no ghost, no beam, and the
+                // throw from the real pinch.
+                let reach_live = crate::reach::live(reach_on, edit_on);
+                if reach_live != reach.live {
+                    reach.live = reach_live;
+                    info!(
+                        "reach: {} with Edit room",
+                        if reach_live { "on" } else { "off" }
+                    );
+                }
                 for h in 0..2 {
                     reach_now[h] = reach_on
                         .then(|| {
@@ -3246,8 +3328,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // at the far hand. Only the effects that read the lanes got
                 // a behavior per pose, and none does since board #5470, so
                 // `poses_apply` is false and every hand keeps the one pad
-                // and kick. The poses are still read: the left fist opens
-                // the voice window and an open palm lifts.
+                // and kick. The poses are still read: a fist on either hand
+                // holds the voice window and an open palm lifts.
                 let pose_frame = poses.step(
                     [0, 1].map(|h| HandInput {
                         palm: input.hands.palm[h]
@@ -3256,12 +3338,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }),
                     dt,
                 );
-                left_fist = pose_frame.pose[0] == Some(Pose::Fist);
+                // Board #5531: a pinching hand is no fist to the voice (the
+                // menu's press, the editor's tap).
+                voice_hands = crate::voice::hands(&pose_frame, input.hands.pinching);
+                fist_last = [0, 1].map(|h| pose_frame.pose[h] == Some(Pose::Fist));
                 let poses_apply = poses_on && world && POSE_EFFECTS.contains(&world_effect);
-                // Board #3751, V4: with voice on the left fist toggles the
-                // voice window everywhere (board #5380), so the flock sees
-                // an open left hand; the right fist keeps its predator.
-                // Logged once per change.
+                // Board #3751, V4: with voice on a fist on either hand
+                // holds the voice window everywhere (board #5531), so the
+                // flock sees open hands. Logged once per change.
                 let voice_fist = controls.voice && voice.is_some();
                 let flock_rule = poses_apply && voice_fist;
                 if flock_rule != flock_rule_logged {
@@ -3269,9 +3353,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     info!(
                         "{}",
                         if flock_rule {
-                            "pose: voice on, the left fist toggles the voice window and is no predator; the right fist is"
+                            "pose: voice on, a fist on either hand holds the voice window and is no predator"
                         } else {
-                            "pose: the left fist is a predator again"
+                            "pose: a fist is a predator again"
                         }
                     );
                 }
@@ -3659,10 +3743,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // pinch point, the lift at the far palm.
                 let tap = tapped.take();
                 // Board #5452: not while the show waits for the wearer.
-                // The pinch that begins it is past the wait by here, so
-                // its burst is thrown.
+                // Board #5531: the pinch that begins it is no tap, so it
+                // throws nothing.
                 let instruments =
-                    world && !wait.waiting() && !POSE_EFFECTS.contains(&world_effect);
+                    world && wait.live().instruments && !POSE_EFFECTS.contains(&world_effect);
                 let (instrument_rows, pour_row) = if instruments {
                     let head = glam::Vec3::from(input.head);
                     // The far pinch point of this frame's throw, if any: a
@@ -3671,7 +3755,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     let pinch_of = |hand: usize| {
                         input.hands.pinch_point[hand].map(|p| glam::Vec3::from(p) + offsets[hand])
                     };
-                    let mut throw = tap.filter(|_| throw_on).map(|h| (h, pinch_of(h)));
+                    let mut throw = play.thrown(tap).map(|h| (h, pinch_of(h)));
                     if let Some(every) = throw_test_s
                         && t - last_throw_test >= every
                     {
@@ -3740,7 +3824,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             })
                     };
                     let pour = pitcher.step(nozzle, burst.is_some(), dt);
-                    let lift = if lift_on {
+                    let lift = if play.lift {
                         lifter.step(
                             [0, 1].map(|h| crate::instruments::LiftHand {
                                 pose: pose_frame.pose[h],
@@ -3836,11 +3920,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // head: "Scanning the room…" until the query returns anchors,
             // "Loading your room" when it does, "No room found..." when
             // the retries give up.
-            // Board #3751: the voice path's window, toggled by the left
-            // fist (hand 0, board #5380: a fist opens it, the next closes
-            // it), or (V4) opened by a thumb tap on either hand, while the
-            // hand menu's Voice toggle is on. It opens whatever else the
-            // hands are doing: with Edit room on and with the hand menu up.
+            // Board #3751: the voice path's window, held open by a fist on
+            // either hand (board #5531: it opens under the fist and ends
+            // when that hand opens), or (V4) opened by a thumb tap on
+            // either hand, while the hand menu's Voice toggle is on. It
+            // opens whatever else the hands are doing, with Edit room on
+            // and with the hand menu up, and takes nothing from them: no
+            // pinch, press or edit reads the window.
             voice_label.step(dt);
             // The sentence heard this frame, for the grammar below.
             let mut sentence: Option<String> = None;
@@ -3872,10 +3958,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // with a label that says why.
                 let listens = controls.voice && !local_busy;
                 let press = VoicePress {
-                    fist: left_fist && listens,
-                    tap: tap_hand.is_some() && listens,
+                    hands: if listens {
+                        voice_hands
+                    } else {
+                        [crate::voice::Hand::Open; 2]
+                    },
+                    tap: tap_hand.filter(|_| listens),
                     level: v.level(),
                 };
+                let fist_window = matches!(
+                    push_to_talk.window(),
+                    VoiceWindow::Open {
+                        opener: VoiceOpener::Fist,
+                        ..
+                    }
+                );
                 match push_to_talk.step_with(press, dt) {
                     Some(VoiceEvent::Opened(_)) if !voice_mic => {
                         push_to_talk.cancel();
@@ -3899,7 +3996,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         voice_follow.place(head_rot);
                         voice_at = voice_follow.anchor(head);
                         let how = match opener {
-                            VoiceOpener::Fist => "left fist".to_owned(),
+                            VoiceOpener::Fist => {
+                                format!("{} fist", hand_name(push_to_talk.held().hand))
+                            }
                             VoiceOpener::Tap => {
                                 format!("thumb tap, {}", hand_name(tap_hand.unwrap_or(0)))
                             }
@@ -3907,16 +4006,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         match v.open(&how) {
                             // Up for the whole window: a fist's runs to
                             // 20 s (board #5380). Board #5460: and the
-                            // rising notes.
+                            // rising notes. Board #5531: under a fist the
+                            // label says how to finish.
                             Ok(()) => {
-                                // Board #5452: the gesture the tap hint
-                                // teaches.
-                                if opener == VoiceOpener::Tap {
-                                    hint_made[crate::first_run::Hint::Tap.index()] = true;
-                                }
                                 crate::ui_sound::play(crate::ui_sound::Cue::Listening);
                                 voice_label.show_for(
-                                    crate::voice::LISTENING_LABEL.to_owned(),
+                                    crate::voice::listening_label(opener).to_owned(),
                                     voice_at.0,
                                     voice_at.1,
                                     crate::voice::max_s(opener) + 1.0,
@@ -3930,6 +4025,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                     Some(VoiceEvent::Closed { seconds, why }) => {
                         crate::ui_sound::play(crate::ui_sound::Cue::Closed);
+                        // Board #5531: the hold, and the gaps in the fist
+                        // it forgave, for tuning the grace.
+                        if fist_window {
+                            info!("{}", crate::voice::held_line(push_to_talk.held()));
+                        }
+                        // Board #5531: a window with something said in it
+                        // is what the talk hint teaches, by a fist or by
+                        // a tap. A tap that opened a window nobody spoke
+                        // in teaches nothing.
+                        if push_to_talk.spoke() {
+                            hint_made[crate::first_run::Hint::Talk.index()] = true;
+                        }
                         if v.close(seconds, why) {
                             voice_label.show_for(
                                 crate::voice::WAITING_LABEL.to_owned(),
@@ -3951,6 +4058,32 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 );
                             }
                         }
+                    }
+                    // Board #5531: the tap came from a hand closing into
+                    // a fist, and the fist is held: the window is the
+                    // fist's, and the label says how to finish.
+                    Some(VoiceEvent::Gripped) => {
+                        info!(
+                            "voice: the window is the {} fist's (a fist {} s after its tap)",
+                            hand_name(push_to_talk.held().hand),
+                            crate::voice::TAKEOVER_S
+                        );
+                        voice_label.show_for(
+                            crate::voice::HOLD_LABEL.to_owned(),
+                            voice_at.0,
+                            voice_at.1,
+                            crate::voice::FIST_MAX_S + 1.0,
+                        );
+                    }
+                    // Board #5531: a fist window with nothing to send, an
+                    // instant's fist or a silent one. "Listening…" goes
+                    // with the closing notes, and nothing is transcribed,
+                    // so nothing can run.
+                    Some(VoiceEvent::Dropped { seconds, why }) => {
+                        crate::ui_sound::play(crate::ui_sound::Cue::Closed);
+                        info!("{}", crate::voice::held_line(push_to_talk.held()));
+                        v.drop_window(seconds, why);
+                        voice_label.clear();
                     }
                     None => {}
                 }
@@ -4071,6 +4204,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             } else {
                                 crate::intent::BEGUN_REPLY.to_owned()
                             };
+                        }
+                        // Board #5531: nor does the voice bring the menu
+                        // while the show waits.
+                        if *intent == crate::intent::Intent::Menu(true) && !wait.live().menu {
+                            return crate::first_run::menu_waits_reply();
                         }
                         hidden_reply(surface, intent).unwrap_or_else(|| {
                             apply_intent(
@@ -4337,7 +4475,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         }
                     };
                     // Board #5380: a fist window runs to 20 s, and
-                    // "Listening…" stays up all of it. A reply that lands
+                    // "Listening…" stays up all of it (board #5531: while
+                    // the fist holds it). A reply that lands
                     // meanwhile is in the log above, not on the label.
                     // Board #5460: its cue likewise, which the open
                     // microphone would hear.
@@ -4483,8 +4622,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // shows (`first_run::Hints`). One that is made or gives up
                 // is saved as taught. The understood cue plays as "Got it"
                 // goes up, and never into an open voice window, which
-                // would hear it: the thumb tap's answer is the window's
-                // own sound and "Listening…".
+                // would hear it.
                 let label_free = shown.is_none();
                 let events = hints.step(
                     dt,
@@ -4492,9 +4630,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         show_on: !wait.waiting(),
                         label_free,
                         hands_seen: hands_hint.seen() || hints_knob,
+                        // Board #5531: the talk hint teaches the fist,
+                        // which needs no microgestures.
                         can: [
                             micro_on && world,
-                            micro_on && controls.voice && voice.is_some() && voice_mic,
+                            controls.voice && voice.is_some() && voice_mic,
                             hud.is_some() && !hud_test,
                         ],
                         made: std::mem::take(&mut hint_made),
@@ -4515,8 +4655,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let hint_now = hints.now().filter(|_| label_free);
                 match hint_now {
                     Some(_) if !hint_shown => hint_follow.place(head_rot),
-                    // A hint is two lines, "Got it" one.
-                    Some(_) => hint_follow.step(head_rot, dt, 2),
+                    // A hint is two lines or four, "Got it" one.
+                    Some((text, _)) => {
+                        hint_follow.step(head_rot, dt, crate::label::lines(text).len());
+                    }
                     None => {}
                 }
                 hint_shown = hint_now.is_some();
@@ -5841,7 +5983,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 // Seated reach: each hand's furthest real and virtual
                 // shoulder-to-palm distance this second.
-                if reach_on && reach_max.iter().any(|m| m.0 > 0.0) {
+                if reach.live && reach_max.iter().any(|m| m.0 > 0.0) {
                     info!(
                         "reach: L {:.2} -> {:.2} m · R {:.2} -> {:.2} m (1:1 within {:.2}, gain {:.1})",
                         reach_max[0].0,

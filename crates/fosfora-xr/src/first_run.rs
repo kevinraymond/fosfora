@@ -7,27 +7,32 @@
 //! permission's labels have gone, a card at the center of view says
 //! "Pinch to begin" ([`card_text`]). Until the show begins the music does
 //! not play, the looks get silence in place of the audio, the room is
-//! dimmed to `immerse::WAIT_LEVEL` and a pinch, a drag and a thumb swipe do
-//! nothing. The show begins ([`Begun`]) when the wearer makes the start
+//! dimmed to `immerse::WAIT_LEVEL` and the hands do one thing, begin the
+//! show ([`Live`], board #5531): a pinch, a drag and a thumb swipe do
+//! nothing, nothing is thrown or lifted, and the hand menu does not come.
+//! A pinch closed during the wait, the one that begins the show included,
+//! is no gesture until it opens ([`HeldPinches`]). The show begins
+//! ([`Begun`]) when the wearer makes the start
 //! gesture with the card up, says "begin" (`intent::Intent::Begin`),
-//! starts the music from the hand menu or by voice, or when the card has
+//! starts the music by voice, or when the card has
 //! been up [`WAIT_MAX_S`] and nobody answered it, so nobody is stuck in
 //! front of it. `debug.fosfora.begin 1` begins at once, for unworn runs.
 //!
 //! **The start gesture** ([`start_gesture`], [`START_WORD`]) is a pinch.
 //! That function and that word are the only places that say so.
 //!
-//! **The hints** ([`Hints`], [`Hint`]). Three gestures are taught once per
-//! install, in this order: the thumb swipe, the thumb tap that opens the
-//! voice window, and the left palm that brings the menu. A hint shows when
+//! **The hints** ([`Hints`], [`Hint`]). Three things are taught once per
+//! install, in this order: the thumb swipe, how to talk (hold a fist, or
+//! tap the thumb on the index finger), and the left palm that brings the
+//! menu. A hint shows when
 //! the show is on and no other label has been up for [`HINT_GAP_S`], one at
 //! a time, ahead of the view where the voice label floats. It waits for
 //! the wearer to make its gesture. When they do, the label says
 //! [`GOT_IT`] for [`GOT_IT_S`] and the app plays the understood cue with
 //! it. The words wait up to [`GOT_IT_WAIT_S`] for a label that covers
 //! them, the swipe's caption, and are dropped behind one that stays
-//! longer: after a thumb tap the voice window's own "Listening…" is the
-//! answer. A hint that has been in view [`HINT_GIVE_UP_S`] gives up.
+//! longer: after a spoken command its own answer is the answer. A hint
+//! that has been in view [`HINT_GIVE_UP_S`] gives up.
 //! Either way it is saved as taught ([`Taught`], in `hand_menu.json`) and
 //! never shows again.
 //! A wearer who makes a gesture before its hint has shown has taught
@@ -85,7 +90,8 @@ pub enum Begun {
     Knob,
     /// A spoken "begin".
     Spoken,
-    /// The wearer started the music, from the hand menu or by voice.
+    /// The wearer started the music, by voice: the hand menu and its
+    /// Music row do not come while the show waits (board #5531).
     Music,
     /// The start gesture, on this hand (0 left, 1 right).
     Gesture { hand: usize },
@@ -180,6 +186,73 @@ impl Wait {
         self.begun = why;
         why
     }
+
+    /// What the hands may do now, apart from beginning the show.
+    pub fn live(&self) -> Live {
+        let on = !self.waiting();
+        Live {
+            menu: on,
+            pinches: on,
+            swipes: on,
+            instruments: on,
+        }
+    }
+}
+
+/// What the hands may do, apart from beginning the show (board #5531).
+/// While the show waits they do one thing, begin it, so every field is
+/// off. Every way to begin ([`Begun`]) turns them all on together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Live {
+    /// The hand menu: the left palm and the spoken "menu" bring it, and it
+    /// shows.
+    pub menu: bool,
+    /// A pinch is a tap, a drag or a hold.
+    pub pinches: bool,
+    /// A thumb swipe steps the theme.
+    pub swipes: bool,
+    /// The hand instruments: a tap throws, an open palm lifts, the pitcher
+    /// pours.
+    pub instruments: bool,
+}
+
+/// The label for a spoken "menu" while the show waits (board #5531): the
+/// card's words and "first".
+pub fn menu_waits_reply() -> String {
+    format!("{} first", card_text(false))
+}
+
+/// The pinches the begin holds back, per hand (left, right; board #5531).
+/// A pinch that was closed while the show waited is no gesture until it
+/// opens: the pinch that begins the show, and one held through a begin
+/// that came another way (the 60 s, the knob, a spoken begin). Its release
+/// is no tap, so it throws nothing and presses nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldPinches {
+    held: [bool; 2],
+    was_waiting: bool,
+}
+
+impl Default for HeldPinches {
+    fn default() -> Self {
+        Self {
+            held: [false; 2],
+            was_waiting: true,
+        }
+    }
+}
+
+impl HeldPinches {
+    /// This frame, after [`Wait::step`]: whether each hand is `pinching`,
+    /// and whether the show still waits. Returns the hands whose pinch no
+    /// gesture may read: both while the show waits, then each hand that
+    /// has not opened since.
+    pub fn step(&mut self, pinching: [bool; 2], waiting: bool) -> [bool; 2] {
+        let from_the_wait = waiting || self.was_waiting;
+        self.held = [0, 1].map(|h| pinching[h] && (from_the_wait || self.held[h]));
+        self.was_waiting = waiting;
+        self.held.map(|held| waiting || held)
+    }
 }
 
 /// A gesture the first run teaches, in the order the hints show.
@@ -187,16 +260,24 @@ impl Wait {
 pub enum Hint {
     /// The thumb swipe along the index finger, which steps the theme.
     Swipe,
-    /// The thumb tap on the index finger, which opens the voice window.
-    Tap,
+    /// How to talk (board #5531): a fist held while speaking and opened
+    /// to send, or a thumb tap on the index finger. It is taught by a
+    /// voice window with something said in it, opened either way. A fist
+    /// or a tap that opened a window nobody spoke in has taught nothing.
+    Talk,
     /// The left palm turned to the face, which brings the hand menu.
     Palm,
 }
 
 /// The swipe hint's words.
 pub const SWIPE_HINT: &str = "Swipe your thumb\nalong your finger";
-/// The tap hint's words. The second line is a sentence the grammar has.
-pub const TAP_HINT: &str = "Tap your thumb to talk.\nTry: what can I say";
+/// The talk hint's words (board #5531): the fist, step by step, on two
+/// lines, the thumb tap as the other way on the third, and a sentence the
+/// grammar has on the last. Four lines, where the other hints have two:
+/// the fist's three steps do not fit one line at a size worth reading,
+/// and the tap has to be told here, since a wearer who cannot hold a fist
+/// has no other way to ask what they can say.
+pub const TALK_HINT: &str = "Make a fist, say a command,\nthen open your hand.\nOr tap thumb on index finger.\nTry: what can I say";
 /// The palm hint's words.
 pub const PALM_HINT: &str = "Left palm to your face\nfor the menu. It stays there.";
 /// What the label says when the wearer makes the gesture a hint asks for,
@@ -213,13 +294,13 @@ pub const HINT_GIVE_UP_S: f32 = 20.0;
 
 impl Hint {
     /// Every hint, in the order they show.
-    pub const ALL: [Self; 3] = [Self::Swipe, Self::Tap, Self::Palm];
+    pub const ALL: [Self; 3] = [Self::Swipe, Self::Talk, Self::Palm];
 
     /// Its place in [`Self::ALL`], and in the arrays of [`HintInput`].
     pub fn index(self) -> usize {
         match self {
             Self::Swipe => 0,
-            Self::Tap => 1,
+            Self::Talk => 1,
             Self::Palm => 2,
         }
     }
@@ -228,16 +309,18 @@ impl Hint {
     pub fn text(self) -> &'static str {
         match self {
             Self::Swipe => SWIPE_HINT,
-            Self::Tap => TAP_HINT,
+            Self::Talk => TALK_HINT,
             Self::Palm => PALM_HINT,
         }
     }
 
-    /// Its name in `hand_menu.json` and in the log.
+    /// Its name in `hand_menu.json` and in the log. The talk hint was the
+    /// tap hint, saved as "tap", until board #5531. A file that has "tap"
+    /// has not been taught the fist, so the new hint shows once.
     pub fn name(self) -> &'static str {
         match self {
             Self::Swipe => "swipe",
-            Self::Tap => "tap",
+            Self::Talk => "talk",
             Self::Palm => "palm",
         }
     }
@@ -249,7 +332,7 @@ impl Hint {
 }
 
 /// The hints the wearer has been taught, saved in `hand_menu.json` as
-/// `"taught":["swipe","tap"]`. A file without the field has taught none.
+/// `"taught":["swipe","talk"]`. A file without the field has taught none.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Taught {
     done: [bool; 3],
@@ -303,7 +386,7 @@ pub struct HintInput {
     /// wearer still holding the controllers does not use them up.
     pub hands_seen: bool,
     /// The gesture works in this run: the swipe has a theme to step, the
-    /// tap has a voice window to open, the palm has a menu.
+    /// voice has a window to open, the palm has a menu.
     pub can: [bool; 3],
     /// The wearer made the gesture this frame, and it did what it does.
     pub made: [bool; 3],
@@ -618,6 +701,123 @@ mod tests {
         );
     }
 
+    /// Board #5531.
+    #[test]
+    fn before_the_begin_the_hands_only_begin_and_every_begin_opens_everything() {
+        let off = Live {
+            menu: false,
+            pinches: false,
+            swipes: false,
+            instruments: false,
+        };
+        let on = Live {
+            menu: true,
+            pinches: true,
+            swipes: true,
+            instruments: true,
+        };
+        // Under the scan's label and with the card up alike.
+        let mut wait = Wait::default();
+        assert_eq!(wait.live(), off);
+        assert_eq!(wait_for(&mut wait, 5.0, WaitInput::default()), None);
+        assert_eq!(wait.live(), off);
+        assert_eq!(wait_for(&mut wait, 10.0, READY), None);
+        assert_eq!(wait.live(), off);
+        // The pinch, the 60 s, the knob, a spoken begin and the music open
+        // the same things.
+        let pinch = WaitInput {
+            gesture: Some(1),
+            ..READY
+        };
+        let knob = WaitInput {
+            knob: true,
+            ..READY
+        };
+        let spoken = WaitInput {
+            spoken: true,
+            ..READY
+        };
+        let music = WaitInput {
+            music: true,
+            ..READY
+        };
+        for (input, secs) in [
+            (pinch, DT),
+            (READY, WAIT_MAX_S + 1.0),
+            (knob, DT),
+            (spoken, DT),
+            (music, DT),
+        ] {
+            let mut wait = Wait::default();
+            let why = wait_for(&mut wait, secs, input);
+            assert!(why.is_some(), "{input:?}");
+            assert_eq!(wait.live(), on, "{why:?}");
+        }
+        assert_eq!(menu_waits_reply(), "Pinch to begin first");
+    }
+
+    /// The gestures `pinching` makes over the frames of a wait that ends
+    /// on frame `begins`, with the held pinches kept from the machine as
+    /// `app.rs` keeps them.
+    fn gestures_through_a_begin(
+        frames: &[[bool; 2]],
+        begins: usize,
+    ) -> Vec<crate::gesture::Gesture> {
+        use crate::gesture::{Gestures, PinchInput};
+        let mut held = HeldPinches::default();
+        let mut gestures = Gestures::default();
+        let mut out = Vec::new();
+        for (i, pinching) in frames.iter().enumerate() {
+            let back = held.step(*pinching, i < begins);
+            let hands = [0, 1].map(|h| PinchInput {
+                pinching: pinching[h] && !back[h],
+                point: Some([0.0, 1.0, -0.4]),
+            });
+            out.extend(gestures.step(hands, DT));
+        }
+        out
+    }
+
+    /// Board #5531.
+    #[test]
+    fn the_pinch_that_begins_throws_nothing_and_its_release_is_no_tap() {
+        use crate::gesture::Gesture;
+        const OPEN: [bool; 2] = [false, false];
+        const RIGHT: [bool; 2] = [false, true];
+        const LEFT: [bool; 2] = [true, false];
+        // A pinch before the card, released: nothing. Then the pinch that
+        // begins (it closes on frame 6, the show's first), held 10 frames
+        // and released: no tap, so no throw and no press. The next pinch
+        // on that hand is a tap again.
+        let mut frames = vec![OPEN, RIGHT, RIGHT, OPEN, OPEN, OPEN];
+        frames.extend([RIGHT; 10]);
+        frames.extend([OPEN; 3]);
+        assert_eq!(gestures_through_a_begin(&frames, 6), []);
+        frames.extend([RIGHT, RIGHT, OPEN]);
+        assert_eq!(
+            gestures_through_a_begin(&frames, 6),
+            [Gesture::Tap { hand: 1 }]
+        );
+        // A pinch closed during the wait and still closed when the show
+        // begins by itself is held the same way. Its release is nothing.
+        let mut frames = vec![OPEN, LEFT, LEFT, LEFT, LEFT, LEFT, OPEN, OPEN];
+        assert_eq!(gestures_through_a_begin(&frames, 3), []);
+        // The other hand, open at the begin, is free at once.
+        frames.splice(4..6, [[true, true], LEFT]);
+        assert_eq!(
+            gestures_through_a_begin(&frames, 3),
+            [Gesture::Tap { hand: 1 }]
+        );
+        // While the show waits both hands are held back, pinching or not.
+        // After it, only a hand that has not opened since.
+        let mut held = HeldPinches::default();
+        assert_eq!(held.step(OPEN, true), [true, true]);
+        assert_eq!(held.step(RIGHT, false), [false, true]);
+        assert_eq!(held.step(RIGHT, false), [false, true]);
+        assert_eq!(held.step(OPEN, false), [false, false]);
+        assert_eq!(held.step(RIGHT, false), [false, false]);
+    }
+
     #[test]
     fn nobody_is_stuck_the_show_begins_by_itself_after_a_minute() {
         let mut wait = Wait::default();
@@ -654,13 +854,9 @@ mod tests {
     }
 
     #[test]
-    fn every_hint_is_two_lines_at_the_two_line_size() {
+    fn every_hint_shows_as_it_is_written_at_a_size_worth_reading() {
         for (hint, lines) in [
             (Hint::Swipe, ["Swipe your thumb", "along your finger"]),
-            (
-                Hint::Tap,
-                ["Tap your thumb to talk.", "Try: what can I say"],
-            ),
             (
                 Hint::Palm,
                 ["Left palm to your face", "for the menu. It stays there."],
@@ -673,10 +869,33 @@ mod tests {
             // A hint stays far longer than it takes to read.
             assert!(HINT_GIVE_UP_S > 2.0 * read_s(hint.text()));
         }
+        // The talk hint is four lines, each as written, none wrapped, at
+        // the size the voice's help card has: the fist step by step, the
+        // tap, and something to say.
+        let laid = layout(TALK_HINT);
+        assert_eq!(
+            laid.lines,
+            [
+                "Make a fist, say a command,",
+                "then open your hand.",
+                "Or tap thumb on index finger.",
+                "Try: what can I say",
+            ]
+        );
+        assert_close!(laid.px, crate::label::LINES_FONT_PX);
+        assert!(laid.lines.len() <= crate::label::MAX_LINES);
+        assert!(HINT_GIVE_UP_S > 2.0 * read_s(TALK_HINT));
+        // Either hand's fist opens the window, so it names no hand. It
+        // says what the thumb taps, and that the hand opens to finish, as
+        // the label under a held fist does.
+        assert!(!TALK_HINT.contains("left") && !TALK_HINT.contains("right"));
+        assert!(TALK_HINT.contains("thumb on index finger"));
+        assert!(TALK_HINT.contains("open your hand"));
+        assert!(crate::voice::HOLD_LABEL.contains("Open your hand"));
         assert_eq!(layout(GOT_IT).lines, [GOT_IT]);
         assert!(GOT_IT_S >= read_s(GOT_IT));
-        // The tap hint's example is a sentence the grammar has.
-        let said = TAP_HINT.rsplit("Try: ").next().expect("the example");
+        // The talk hint's example is a sentence the grammar has.
+        let said = TALK_HINT.rsplit("Try: ").next().expect("the example");
         let vocab = crate::intent::Vocabulary {
             effects: &[],
             behaviors: &[],
@@ -737,15 +956,15 @@ mod tests {
         );
         assert_eq!(hints.now().map(|n| n.0), Some(GOT_IT));
         assert!(hints.taught().has(Hint::Swipe));
-        // "Got it" has its time, then the gap, then the tap.
+        // "Got it" has its time, then the gap, then how to talk.
         assert!(hints_for(&mut hints, GOT_IT_S + HINT_GAP_S - 0.1, ON).is_empty());
         assert_eq!(
             hints_for(&mut hints, 0.2, ON),
-            [HintEvent::Shown(Hint::Tap)]
+            [HintEvent::Shown(Hint::Talk)]
         );
         assert_eq!(
-            hints.step(DT, made(Hint::Tap)),
-            [HintEvent::Made(Hint::Tap), HintEvent::GotIt]
+            hints.step(DT, made(Hint::Talk)),
+            [HintEvent::Made(Hint::Talk), HintEvent::GotIt]
         );
         // The palm last.
         assert_eq!(
@@ -775,16 +994,16 @@ mod tests {
         };
         assert_eq!(hints.step(DT, waiting), [HintEvent::SelfTaught(Hint::Palm)]);
         assert_eq!(hints.now(), None);
-        // The swipe hint shows, and the wearer taps instead: the tap is
+        // The swipe hint shows, and the wearer talks instead: talking is
         // taught by doing, and the swipe hint stays.
         hints_for(&mut hints, HINT_GAP_S + 0.1, ON);
         assert_eq!(
-            hints.step(DT, made(Hint::Tap)),
-            [HintEvent::SelfTaught(Hint::Tap)]
+            hints.step(DT, made(Hint::Talk)),
+            [HintEvent::SelfTaught(Hint::Talk)]
         );
         assert_eq!(hints.now().map(|n| n.0), Some(SWIPE_HINT));
         // Made again, a taught gesture says nothing.
-        assert!(hints.step(DT, made(Hint::Tap)).is_empty());
+        assert!(hints.step(DT, made(Hint::Talk)).is_empty());
         // The swipe is the only hint this install shows.
         assert_eq!(
             hints.step(DT, made(Hint::Swipe)),
@@ -817,20 +1036,20 @@ mod tests {
         // The next one follows after the gap.
         assert_eq!(
             hints_for(&mut hints, HINT_GAP_S + 0.1, ON),
-            [HintEvent::Shown(Hint::Tap)]
+            [HintEvent::Shown(Hint::Talk)]
         );
         // Only an event that teaches changes the saved state, and only
         // "Got it" plays the cue.
-        assert!(!HintEvent::Shown(Hint::Tap).teaches());
-        assert!(HintEvent::GaveUp(Hint::Tap).teaches());
-        assert!(HintEvent::SelfTaught(Hint::Tap).teaches());
-        assert!(HintEvent::Made(Hint::Tap).teaches());
+        assert!(!HintEvent::Shown(Hint::Talk).teaches());
+        assert!(HintEvent::GaveUp(Hint::Talk).teaches());
+        assert!(HintEvent::SelfTaught(Hint::Talk).teaches());
+        assert!(HintEvent::Made(Hint::Talk).teaches());
         assert!(HintEvent::GotIt.confirms() && !HintEvent::GotIt.teaches());
         for quiet in [
-            HintEvent::Shown(Hint::Tap),
-            HintEvent::Made(Hint::Tap),
-            HintEvent::SelfTaught(Hint::Tap),
-            HintEvent::GaveUp(Hint::Tap),
+            HintEvent::Shown(Hint::Talk),
+            HintEvent::Made(Hint::Talk),
+            HintEvent::SelfTaught(Hint::Talk),
+            HintEvent::GaveUp(Hint::Talk),
         ] {
             assert!(!quiet.confirms(), "{quiet:?}");
         }
@@ -857,16 +1076,16 @@ mod tests {
         assert_eq!(hints.now().map(|n| n.0), Some(GOT_IT));
         hints_for(&mut hints, 0.6, ON);
         assert_eq!(hints.now(), None);
-        // The thumb tap opens a voice window, whose label stays longer
+        // A spoken "what can I say" brings its card, which stays longer
         // than the wait: no "Got it" and no cue, and the palm hint follows
         // once the label is free again.
         hints_for(&mut hints, HINT_GAP_S + 0.1, ON);
-        assert_eq!(hints.now().map(|n| n.0), Some(TAP_HINT));
+        assert_eq!(hints.now().map(|n| n.0), Some(TALK_HINT));
         let tapped = HintInput {
             label_free: false,
-            ..made(Hint::Tap)
+            ..made(Hint::Talk)
         };
-        assert_eq!(hints.step(DT, tapped), [HintEvent::Made(Hint::Tap)]);
+        assert_eq!(hints.step(DT, tapped), [HintEvent::Made(Hint::Talk)]);
         assert!(hints_for(&mut hints, GOT_IT_WAIT_S + 0.1, covered).is_empty());
         assert_eq!(hints.now(), None);
         assert!(hints_for(&mut hints, 20.0, covered).is_empty());
@@ -878,7 +1097,8 @@ mod tests {
 
     #[test]
     fn a_hint_whose_gesture_does_not_work_is_passed_over_untaught() {
-        // Voice is off: the tap opens nothing, so its hint does not show.
+        // Voice is off: nothing opens a window, so the talk hint does not
+        // show.
         let no_voice = HintInput {
             can: [true, false, true],
             ..ON
@@ -892,20 +1112,20 @@ mod tests {
         );
         hints.step(DT, made(Hint::Palm));
         assert!(hints_for(&mut hints, 60.0, no_voice).is_empty());
-        assert!(!hints.taught().has(Hint::Tap));
-        // Voice comes on: the tap hint shows now.
+        assert!(!hints.taught().has(Hint::Talk));
+        // Voice comes on: the talk hint shows now.
         assert_eq!(
             hints_for(&mut hints, 0.1, ON),
-            [HintEvent::Shown(Hint::Tap)]
+            [HintEvent::Shown(Hint::Talk)]
         );
         // Voice goes off while it shows: it goes, untaught, and comes
         // back with voice.
         assert!(hints_for(&mut hints, 1.0, no_voice).is_empty());
         assert_eq!(hints.now(), None);
-        assert!(!hints.taught().has(Hint::Tap));
+        assert!(!hints.taught().has(Hint::Talk));
         assert_eq!(
             hints_for(&mut hints, HINT_GAP_S + 0.1, ON),
-            [HintEvent::Shown(Hint::Tap)]
+            [HintEvent::Shown(Hint::Talk)]
         );
     }
 
@@ -943,14 +1163,20 @@ mod tests {
             let json = serde_json::json!(taught.names());
             assert_eq!(Taught::from_json(Some(&json)), taught);
         }
-        assert_eq!(Taught::ALL.names(), ["swipe", "tap", "palm"]);
+        assert_eq!(Taught::ALL.names(), ["swipe", "talk", "palm"]);
         let json = serde_json::json!(Taught::ALL.names());
         assert_eq!(Taught::from_json(Some(&json)), Taught::ALL);
         // Names that are no hint's, and a field that is no list.
-        let odd = serde_json::json!(["fist", 3, "tap"]);
-        let mut tap = Taught::default();
-        tap.set(Hint::Tap);
-        assert_eq!(Taught::from_json(Some(&odd)), tap);
+        let odd = serde_json::json!(["fist", 3, "talk"]);
+        let mut talk = Taught::default();
+        talk.set(Hint::Talk);
+        assert_eq!(Taught::from_json(Some(&odd)), talk);
+        // An install taught the tap hint before the fist was a hold: the
+        // talk hint is not taught, so it shows once.
+        let old = serde_json::json!(["swipe", "tap", "palm"]);
+        let taught = Taught::from_json(Some(&old));
+        assert!(taught.has(Hint::Swipe) && taught.has(Hint::Palm));
+        assert!(!taught.has(Hint::Talk));
         assert_eq!(
             Taught::from_json(Some(&serde_json::json!(true))),
             Taught::default()
@@ -960,8 +1186,8 @@ mod tests {
     #[test]
     fn the_events_log_what_happened() {
         assert_eq!(
-            HintEvent::Shown(Hint::Tap).line(),
-            "first run: the tap hint shows, \"Tap your thumb to talk. | Try: what can I say\""
+            HintEvent::Shown(Hint::Talk).line(),
+            "first run: the talk hint shows, \"Make a fist, say a command, | then open your hand. | Or tap thumb on index finger. | Try: what can I say\""
         );
         assert_eq!(
             HintEvent::Made(Hint::Swipe).line(),

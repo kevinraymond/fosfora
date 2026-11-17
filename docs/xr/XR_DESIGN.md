@@ -532,14 +532,20 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   takes (board #5470; until then it stepped the world effect); nothing
   while a pointer is on the hand menu
   (board #5459; with `debug.fosfora.menustay 0`, while it is up), nothing
-  from the right hand in Edit room. Forward and backward are logged and
-  reserved; the thumb tap opens the voice window (board #3751, V4, the
-  Voice bullet below). The decision (`consume`) is plain data with desktop
+  from the right hand in Edit room. A swipe acts 0.15 s after it fires
+  and is dropped if its hand is a fist by then (board #5531,
+  `microgestures::SwipeGate`): a hand closing into a fist drags the thumb
+  along the index, and that stepped the theme. Forward and backward are
+  logged and reserved; the thumb tap opens the voice window (board #3751,
+  V4, the Voice bullet below), and a tap from a hand closing into a fist
+  gives that fist's window (`VOICE_DESIGN.md`, "The fist holds the
+  window"). The decision (`consume`) is plain data with desktop
   tests. Knob `debug.fosfora.micro 0|1`, default 1; 0 creates no action set.
-- **Voice (board #3751, `VOICE_DESIGN.md`, "V1 as built" to "V4 as built").** The left fist
-  toggles a voice window (board #5380: a fist opens it, the next fist or
-  20 s closes it), and (V4) a thumb tap on either hand opens one that
-  closes on silence; the transcription shows on the label. The
+- **Voice (board #3751, `VOICE_DESIGN.md`, "V1 as built" to "V4 as built").** A fist on
+  either hand holds a voice window open (board #5531: it opens under the
+  fist and what was said is sent when that hand opens, or at 20 s), and
+  (V4) a thumb tap on either hand opens one that closes on silence. The
+  answer shows on the label. The
   hand menu's Voice toggle (the Music row's right cell) turns it on and
   off, saved in `hand_menu.json`. The Agent row (board #3776, under the
   effect's) picks the agent's provider among what the headset has (local,
@@ -1669,7 +1675,8 @@ the hand instruments.*
 
 ### The hand instruments
 
-- **What.** Two instruments on the Go-Go far hand and the poses: a pinch
+- **What.** Two instruments on the hand (the Go-Go far hand while Edit
+  room is on, "The reach" below) and the poses: a pinch
   tap throws a burst that flies to where the hand points and bursts on the
   surface it hits, and an open palm held still, facing down, lifts the
   particles lying under it toward the palm. They were built on the Flux
@@ -1679,6 +1686,34 @@ the hand instruments.*
   moves the world effect's home is the anchor drag, as before. Host module
   `crates/fosfora-xr/src/instruments.rs` (the ray cast, the flights, the
   lift and the rows, host-tested).
+- **The reach** (board #5531, `reach::live`). The Go-Go far hand was
+  made for particle effects that are gone, so it is live only while Edit
+  room is on. With the editor off each hand is its real hand: no offset,
+  no ghost, no beam from the wrist, and the throw, the lift and the
+  pitcher act at the real pinch and palm. With the editor on the reach
+  is as it was, for both hands. `debug.fosfora.reach 0` still turns it
+  off everywhere, and 1 now means "with Edit room". Turning the editor
+  on or off with an arm stretched does not jump: the extension glides
+  through the reach's own low-pass (0.05 s), 63% of the way in 0.05 s
+  and 95% in 0.15 s. From a full stretch (1.94 m of extension) the ghost
+  is gone in 0.22 s and the hand is exactly the real hand in 0.39 s. The
+  log says `reach: on with Edit room` and `reach: off with Edit room`.
+  Tests (`reach.rs`): `the_reach_is_live_only_while_the_room_is_edited`,
+  `turning_the_editor_on_or_off_with_an_arm_stretched_does_not_jump`.
+- **What the reach is worth, in numbers**
+  (`without_the_reach_the_same_arm_aims_about_a_meter_lower_on_a_wall_3_m_away`).
+  The editor's ray and the throw's run from the head through the pinch
+  point, so both are a line of sight with or without the reach. Seated,
+  the right arm at a full stretch level with the shoulder, a wall 3 m
+  ahead: the ray lands 0.96 m up the wall with the reach and 0.05 m up
+  without, 1.14 m apart. Raised 20 degrees: 2.03 m and 1.06 m. A
+  centimeter of hand to the side moves the aim 6 cm either way. Without
+  the reach the wearer aims by holding the pinch over the target, at eye
+  height for a point at eye height. A throw from the level arm hits the
+  foot of that wall after 2.75 m and 0.46 s, where the far hand hit it
+  0.96 m up after 0.55 m. A hand low in front lands its throw on the
+  floor 1.04 m ahead, against 1.39 m with the reach. A hand within 0.30 m
+  of the shoulder throws the same either way.
 - **Instrument rows.** Three rows appended after Murmur's hand lanes,
   170..173 (`XR_AUX_INSTRUMENTS`, `XR_AUX_INSTRUMENT_ROWS` in
   `flux_xr_sim.wgsl`; the upload is now 173 rows, `WORLD_AUX_ROWS` in
@@ -1743,8 +1778,18 @@ the hand instruments.*
   `flux_xr_lift_raises_resting_embers` (embers settled on the room table
   at y -0.472, top -0.480; 20 frames of lift raise the column's mean to
   -0.410, against -0.468 without it).
-- **Knobs.** `debug.fosfora.throw` (0/1, default 1), `burstcount`
-  (6000), `lift` (0/1, default 1), `liftradius` (0.35).
+- **The switch** (board #5531, `instruments::Play`). Whether the throw
+  and the lift stay in the product is open, so one switch covers both:
+  `debug.fosfora.throw 0`. At 0 a pinch throws nothing and a palm lifts
+  nothing. Everything else a pinch does is untouched: the begin, the
+  hand menu's rows and the room editor. The default is one constant,
+  `instruments::THROW_DEFAULT`, so taking them out is a change of that
+  value. The launch's `instruments:` line says `throw off` and `lift off
+  with the throw`. The pitcher and the `throwtest` diagnostic do not read
+  the switch. Test: `one_switch_turns_the_throw_and_the_lift_off`.
+- **Knobs.** `debug.fosfora.throw` (0/1, default 1, the lift with it),
+  `burstcount` (6000), `lift` (0/1, default 1, the lift alone),
+  `liftradius` (0.35).
 
 ## Hands: the gesture vocabulary (board #3336)
 
@@ -1789,8 +1834,8 @@ beyond raw tip distance, and a proposal. Steps 1, 3 and 5 are built (see
   curl under 55 mm), palm up (normal within 37° of up), open; hands together
   under 0.30 m. Murmur's hand behaviors read them; the Flux lift reads an
   open far palm held still, facing down. With voice on (board #3751, V4)
-  the left fist toggles the voice window everywhere, so Murmur sees an
-  open left hand and only the right fist is a predator; with voice off,
+  a fist on either hand holds the voice window everywhere (board #5531),
+  so Murmur sees open hands and no fist is a predator. With voice off,
   either fist is.
 
 ### Where the vocabulary collides
@@ -2109,9 +2154,9 @@ feeds them once a frame.
    Fosfora uses your hands."** It stays while no hand is tracked and goes
    with the first one. It does not show on its own while the show waits.
 4. **The begin.** A pinch closing on either hand begins the show. It
-   ticks (the press cue) and throws its burst where the hand points, as a
-   pinch and release always does, and nothing else: no drag, no hold and
-   no tap come from that pinch until it opens. The card goes, the music
+   ticks (the press cue) and does nothing else (board #5531): it throws
+   no burst, and no drag, no hold and no tap come from that pinch until
+   it opens. The card goes, the music
    starts (the track was decoded during the wait), and the opening runs:
    **"Sit back and relax"** for 4 s at the wait's 0.25, then the glide to
    0.35 over 3 s.
@@ -2121,11 +2166,14 @@ feeds them once a frame.
    The wearer swipes, the theme steps with its tick, and the caption
    names it: **"Mirror"**. Then **"Got it"** for 2.5 s with the
    understood cue.
-6. **The tap hint**, 5 s of free label later, only with voice on, the
-   microphone allowed and the microgestures there: **"Tap your thumb to
-   talk."** over **"Try: what can I say"**. The tap opens the voice
-   window, and its own sound and "Listening…" are the answer: "Got it"
-   waits 3 s for the label and is dropped behind a window, and its cue
+6. **The talk hint**, 5 s of free label later, only with voice on and the
+   microphone allowed (board #5531; until then the tap hint, "Tap your
+   thumb to talk."): **"Make a fist, say a command,"** over **"then open
+   your hand."**, **"Or tap thumb on index finger."** and **"Try: what
+   can I say"**. A fist opens the voice window and holds it, and the
+   label reads "Listening…" over "Open your hand when done". A window
+   with something said in it answers the hint. "Got it" waits 3 s for the
+   label and is dropped behind an answer that stays longer, and its cue
    never plays into an open microphone.
 7. **The palm hint**, last: **"Left palm to your face"** over **"for the
    menu. It stays there."** The palm brings the menu, then "Got it" and
@@ -2137,19 +2185,32 @@ saved as taught and never shows again on that install.
 ### The rules
 
 - **Every launch waits**, not only the first. Until the begin a pinch, a
-  drag, a thumb swipe and the hand instruments do nothing. The hand menu
-  and the voice window work as always.
+  drag, a thumb swipe and the hand instruments do nothing.
+- **Before the begin the hands do one thing, begin** (board #5531,
+  `first_run::Live`). The hand menu does not come: the left palm does not
+  bring it (`PalmPanel::hold`), a spoken "menu" answers "Pinch to begin
+  first", and it is not drawn. Nothing is thrown, lifted or poured. A
+  palm turned to the face during the wait is not read when the show
+  begins: it brings the menu once it has turned away and back. Every way
+  to begin opens all of it together, the 60 s and the knob as the pinch
+  does.
+- **A pinch from the wait is no gesture** (`first_run::HeldPinches`).
+  The pinch that begins the show, and one that was closed when the show
+  began another way, is held back until it opens. Its release is no tap,
+  so it throws nothing, presses no menu row and changes no surface in the
+  editor.
+- **Still live before the begin.** The voice window opens with a thumb
+  tap or the left fist, and what is said there applies, the menu aside.
+  A thumb swipe is read and steps nothing. With Edit room turned on by
+  voice the editor's beam and labels show, and its pinches do nothing.
 - **Ways to begin** (`first_run::Begun`): the pinch with the card up; a
   spoken "begin" or "start" (`VOICE_DESIGN.md`); the wearer starting the
-  music from the hand menu or by voice; the card unanswered for 60 s
+  music by voice; the card unanswered for 60 s
   (`WAIT_MAX_S`), so nobody is stuck in front of it; and
   `debug.fosfora.begin 1`. The log says which: `first run: the show
   begins (a pinch on the right hand)`, `(a spoken begin)`, `(the wearer
   started the music)`, `(nobody answered the card in 60 s)`,
   `(debug.fosfora.begin 1)`.
-- **The pinch presses nothing.** While the hand menu is up its pinches
-  are its own, and a pinch that closes the menu from away from it is
-  swallowed, as before. Neither begins the show.
 - **The start gesture is in one place**: `first_run::start_gesture` and
   the card's word `START_WORD`.
 - **The music.** A launch used to start the music itself. It now starts
@@ -2166,13 +2227,19 @@ saved as taught and never shows again on that install.
   no microgestures) is passed over without being saved, and shows in a
   later run. No hint shows before a hand has been tracked, so a wearer
   still holding the controllers doesn't use them up.
-- **Taught by doing.** A swipe that steps the theme, a thumb tap that
-  opens a voice window or the palm bringing the menu, made before its
-  hint, saves that hint as taught and it never shows. The thumb tap and
-  the palm count during the wait too.
-- **The fist is not taught.**
-- **Saved** in `hand_menu.json` as `"taught":["swipe","tap","palm"]`,
-  written once one is taught. A file from before has taught none.
+- **Taught by doing.** A swipe that steps the theme, a voice window with
+  something said in it or the palm bringing the menu, made before its
+  hint, saves that hint as taught and it never shows. Talking counts
+  during the wait too. The palm does not, since it brings nothing then.
+- **The talk hint teaches the fist** (board #5531, `VOICE_DESIGN.md`, "The
+  fist holds the window"): "Make a fist, say a command," over "then open
+  your hand.", "Or tap thumb on index finger." and "Try: what can I say".
+  Until then the hint taught only the thumb tap and nothing taught the
+  fist. A fist or a tap that opened a window nobody spoke in does not
+  answer it.
+- **Saved** in `hand_menu.json` as `"taught":["swipe","talk","palm"]`,
+  written once one is taught. A file from before has taught none, and a
+  file with the old `tap` has not been taught the fist.
 - **The caption** (`first_run::swipe_caption`): every thumb swipe that
   steps the theme names the new one for its reading time, where the voice
   label floats: "Aurora", as the menu's Theme control shows it.
@@ -2181,14 +2248,15 @@ saved as taught and never shows again on that install.
 
 | Wearer | What happens |
 |---|---|
-| Voice off | The tap hint is passed over. The swipe and the palm are taught. |
+| Voice off | The talk hint is passed over. The swipe and the palm are taught. |
 | Microphone denied | The same card and hints. A fist or a tap still shows "The microphone isn't allowed" as before. |
 | Controllers in hand | No hand is tracked, so after 4 s the card says to put them down. A pinch then begins. Left alone, the show begins by itself after 60 s, and the hints wait for a hand. |
-| One hand | Either hand pinches, swipes and taps. The palm hint asks for the left hand; a wearer without it lets it give up after 20 s, and "menu" by voice opens the menu with no palm. |
-| Can't pinch | With a thumb tap or a left fist the voice window opens and "begin" starts the show. With no gesture at all, the 60 s. |
+| One hand | Either hand pinches, swipes, taps and makes the fist that talks. The palm hint asks for the left hand; a wearer without it lets it give up after 20 s, and "menu" by voice opens the menu with no palm. |
+| Can't hold a fist | The thumb tap opens the voice window and needs no held pose. The talk hint says so. |
+| Can't pinch | With a thumb tap or a fist the voice window opens and "begin" starts the show. With no gesture at all, the 60 s. |
 
 A spoken "begin" needs the voice window open, and the window still opens
-with a thumb tap or the left fist. The app does not listen by itself while
+with a thumb tap or a fist. The app does not listen by itself while
 it waits, so the card names the pinch only.
 
 ### Checking it unworn
@@ -2219,6 +2287,8 @@ The tests (`first_run.rs`):
 `the_start_gesture_is_a_pinch_on_either_hand`,
 `a_spoken_begin_the_music_and_the_knob_begin_without_the_card`,
 `nobody_is_stuck_the_show_begins_by_itself_after_a_minute`,
+`before_the_begin_the_hands_only_begin_and_every_begin_opens_everything`,
+`the_pinch_that_begins_throws_nothing_and_its_release_is_no_tap`,
 `the_card_names_the_pinch_and_the_controllers`,
 `every_hint_is_two_lines_at_the_two_line_size`,
 `the_hints_show_in_order_one_at_a_time_a_few_seconds_apart`,
@@ -2232,7 +2302,8 @@ The tests (`first_run.rs`):
 `the_swipe_caption_names_the_new_theme` and
 `the_swipe_hint_is_taught_by_a_swipe_that_changed_the_theme`. Beside them:
 `immerse.rs`'s `the_room_is_dim_and_still_while_the_show_waits_and_the_opening_runs_from_there`,
-`palm_panel.rs`'s `the_menu_file_saves_the_hints_taught_and_reads_none_when_absent`,
+`palm_panel.rs`'s `the_menu_file_saves_the_hints_taught_and_reads_none_when_absent`
+and `held_back_the_menu_does_not_come_and_nothing_from_the_hold_is_read_after`,
 `voice.rs`'s `a_centered_label_sits_on_the_line_of_sight_and_follows_the_same_way`,
 `intent.rs`'s `begin_the_show`, and the under-card rule in `label.rs`'s
 controllers test.

@@ -139,8 +139,8 @@ pub struct Controls {
     /// `music::plays_at_launch`).
     pub music: bool,
     /// The voice path listens (the hand menu's Voice toggle, saved in
-    /// `hand_menu.json`; board #3751, V4): off, neither the left fist nor
-    /// the thumb tap opens a window.
+    /// `hand_menu.json`; board #3751, V4): off, neither a fist nor the
+    /// thumb tap opens a window.
     pub voice: bool,
     /// `RECORD_AUDIO` is granted (board #5453; the app sets it): without
     /// it the Voice toggle reads "Voice: no mic" while on.
@@ -504,6 +504,23 @@ impl Hud {
             );
         }
         self.touch
+    }
+
+    /// Board #5531: the menu held back for this frame, in place of
+    /// [`Self::place`], while the show waits for the wearer: not drawn,
+    /// and the palm does not bring it (`PalmPanel::hold`).
+    pub fn hold(&mut self, gfx: &Gfx, hands: &crate::input::HandsFrame, head: [f32; 3]) {
+        let palm = hands.palm[0].map(|(p, q)| (Vec3::from(p), Quat::from_array(q)));
+        self.placement
+            .hold(palm, Vec3::from(head), hands.pinching[1]);
+        self.touch = Touch::default();
+        gfx.set_panel_pose(None);
+        gfx.set_beam(crate::gfx::BEAM_PANEL, None);
+        if self.shown_logged {
+            self.shown_logged = false;
+            log::info!("hand menu hidden (the show waits for the wearer)");
+        }
+        self.at_logged = At::Hidden;
     }
 
     /// Whether the panel is showing this frame.

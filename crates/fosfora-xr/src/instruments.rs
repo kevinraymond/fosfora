@@ -104,6 +104,49 @@ pub const POUR_NOZZLE_M: f32 = 0.02;
 /// ([`steal_fraction`]).
 pub const MAX_STEAL: f32 = 0.05;
 
+/// Whether the hands throw and lift when `debug.fosfora.throw` is unset
+/// (board #5531). Taking the throw and the lift out of the product is
+/// this one value.
+pub const THROW_DEFAULT: bool = true;
+
+/// What the wearer's hands play (board #5531). `debug.fosfora.throw` is
+/// the one switch for both: at 0 a pinch throws nothing and a palm lifts
+/// nothing. `debug.fosfora.lift 0` still turns the lift off alone.
+/// Nothing else a pinch does reads this: the begin, the hand menu's rows
+/// and the room editor are untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Play {
+    /// A pinch tap throws a burst.
+    pub throw: bool,
+    /// An open palm held still, facing down, lifts.
+    pub lift: bool,
+}
+
+impl Play {
+    /// From the two knobs as read at launch (`None` unset or not 0 or 1).
+    pub fn from_knobs(throw: Option<bool>, lift: Option<bool>) -> Self {
+        let throw = throw.unwrap_or(THROW_DEFAULT);
+        Self {
+            throw,
+            lift: throw && lift.unwrap_or(true),
+        }
+    }
+
+    /// The hand whose tap throws this frame, given the hand that tapped.
+    pub fn thrown(self, tap: Option<usize>) -> Option<usize> {
+        tap.filter(|_| self.throw)
+    }
+
+    /// The lift's word in the launch line: off with the throw says so.
+    pub fn lift_label(self) -> &'static str {
+        match (self.throw, self.lift) {
+            (_, true) => "on",
+            (true, false) => "off",
+            (false, false) => "off with the throw",
+        }
+    }
+}
+
 /// A box the throw can hit, in the reference space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RayBox {
@@ -672,6 +715,47 @@ mod tests {
             half: Vec3::new(0.6, 0.4, 0.35),
             kind: KIND_TABLE,
         }
+    }
+
+    /// Board #5531.
+    #[test]
+    fn one_switch_turns_the_throw_and_the_lift_off() {
+        // Unset, the switch is at its default.
+        assert_eq!(
+            Play::from_knobs(None, None),
+            Play::from_knobs(Some(THROW_DEFAULT), None)
+        );
+        // At 1: both on, a tap throws.
+        let on = Play::from_knobs(Some(true), None);
+        assert_eq!(
+            on,
+            Play {
+                throw: true,
+                lift: true
+            }
+        );
+        assert_eq!(on, Play::from_knobs(Some(true), Some(true)));
+        assert_eq!((on.thrown(Some(0)), on.thrown(Some(1))), (Some(0), Some(1)));
+        assert_eq!(on.thrown(None), None);
+        assert_eq!(on.lift_label(), "on");
+        // The switch at 0: no tap throws and nothing lifts, whatever the
+        // lift's own knob says.
+        for lift in [None, Some(true), Some(false)] {
+            let off = Play::from_knobs(Some(false), lift);
+            assert_eq!(
+                off,
+                Play {
+                    throw: false,
+                    lift: false
+                }
+            );
+            assert_eq!((off.thrown(Some(0)), off.thrown(Some(1))), (None, None));
+            assert_eq!(off.lift_label(), "off with the throw");
+        }
+        // The lift's knob still turns the lift off alone.
+        let no_lift = Play::from_knobs(None, Some(false));
+        assert!(no_lift.throw && !no_lift.lift);
+        assert_eq!(no_lift.lift_label(), "off");
     }
 
     #[test]

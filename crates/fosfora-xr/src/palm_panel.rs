@@ -322,6 +322,9 @@ pub struct PalmPanel {
     /// thresholds' hysteresis and nothing else; its rise brings the menu
     /// to the palm.
     palm_up: bool,
+    /// Board #5531: the palm faced the head while the menu was held back
+    /// ([`Self::hold`]) and has not turned away since.
+    held_palm: bool,
     /// Board #5459: seconds in the air with no pointer on it.
     idle_s: f32,
     /// The idle time `debug.fosfora.menuidle` asks for in place of
@@ -412,11 +415,42 @@ impl PalmPanel {
         head_rot: Quat,
     ) -> Option<Placement> {
         let rose = self.palm_faces(palm, head);
+        // Board #5531: a palm raised while the menu was held back brings
+        // nothing until it has turned away.
+        if self.held_palm {
+            if self.palm_up {
+                return self.visible();
+            }
+            self.held_palm = false;
+        }
         if self.stay {
             self.place_staying(palm, rose, head, head_rot)
         } else {
             self.place_on_palm(palm, head)
         }
+    }
+
+    /// Board #5531: the menu held back for this frame, in place of
+    /// [`Self::place`] and [`Self::input`], while the show waits for the
+    /// wearer: hidden, and the palm does not bring it. The left palm and
+    /// the right hand's pinch are still followed, so neither is new when
+    /// the hold ends: a palm already turned to the face brings the menu
+    /// only after it has turned away and back, and a pinch already closed
+    /// presses and closes nothing.
+    pub fn hold(&mut self, palm: Option<(Vec3, Quat)>, head: Vec3, pinching: bool) {
+        self.palm_faces(palm, head);
+        self.held_palm = self.palm_up;
+        self.at = At::Hidden;
+        self.placement = None;
+        self.closed = None;
+        self.swallowed = [false; 2];
+        self.pressed = false;
+        self.last_depth = None;
+        self.touch = Touch::default();
+        self.ray = Ray {
+            was_pinching: pinching,
+            ..Ray::default()
+        };
     }
 
     /// Board #5459: whether the left palm faces the head, with the show
@@ -842,7 +876,7 @@ impl MenuFile {
     /// The file's text: `{"debug":false,"immerse":"full","voice":true}`,
     /// with `"agent":"local"` (`anthropic`, `openai`, `off`) once picked,
     /// `"roam":true` and `"space_setup_asked":true` only while true, and
-    /// `"taught":["swipe","tap","palm"]` with the hints taught, once one
+    /// `"taught":["swipe","talk","palm"]` with the hints taught, once one
     /// is.
     pub fn to_json(self) -> String {
         let mut json = serde_json::json!({
@@ -1724,6 +1758,56 @@ mod tests {
         let p = panel.placement().expect("parked");
         assert!(p.center.y > HEAD.y + 0.4, "{}", p.center);
         assert!(p.up.z > 0.99 && p.right.x > 0.99, "{p:?}");
+    }
+
+    /// Board #5531: held back, the palm brings nothing. When the hold ends
+    /// a palm still turned to the face brings nothing either until it has
+    /// turned away and back, and a pinch closed through the end of the
+    /// hold neither presses a row nor closes the menu. With the menu
+    /// staying and on the palm alike.
+    #[test]
+    fn held_back_the_menu_does_not_come_and_nothing_from_the_hold_is_read_after() {
+        for stay in [true, false] {
+            let mut panel = PalmPanel::default();
+            panel.set_stay(stay);
+            for facing in [1.0, 0.0, 1.0, 1.0] {
+                panel.hold(Some(palm(facing)), HEAD, true);
+                assert!(panel.placement().is_none(), "stay {stay}");
+                assert_eq!(panel.at(), At::Hidden);
+            }
+            // The hold ends with the palm up and the right pinch closed.
+            for _ in 0..10 {
+                assert!(frame(&mut panel, Some(palm(1.0)), None, true, false).is_none());
+            }
+            // The palm turns away and back: the menu, on the palm. The
+            // pinch from the hold is still closed, on a row: no press.
+            frame(&mut panel, Some(palm(0.0)), None, true, false);
+            let p = frame(&mut panel, Some(palm(1.0)), None, true, false).expect("shown");
+            assert_eq!(panel.at(), At::Palm);
+            assert!(!aim(&mut panel, ray_at(&p, 0.0, 0.0), true).pressed);
+            // Nor does it close the menu from away from it.
+            frame(
+                &mut panel,
+                Some(palm(1.0)),
+                ray_at(&p, 0.0, -0.6),
+                true,
+                false,
+            );
+            assert_eq!(panel.swallowed(), [false, false], "stay {stay}");
+            assert!(panel.placement().is_some());
+            // Opened and closed again, it clicks.
+            aim(&mut panel, ray_at(&p, 0.0, 0.0), false);
+            assert!(aim(&mut panel, ray_at(&p, 0.0, 0.0), true).pressed);
+        }
+        // A palm that was down when the hold ended brings it at once.
+        let mut panel = PalmPanel::default();
+        panel.set_stay(true);
+        panel.hold(Some(palm(0.0)), HEAD, false);
+        assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_some());
+        // The hold hides a menu that is up.
+        let (mut panel, _) = staying();
+        panel.hold(None, HEAD, false);
+        assert!(panel.placement().is_none());
     }
 
     /// The knob at 0: the menu lives on the palm as before. The palm
