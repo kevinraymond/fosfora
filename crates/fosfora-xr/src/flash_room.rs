@@ -14,7 +14,10 @@
 //! playing. The light is drawn premultiplied over black, the faces first
 //! and the edge bars over them, as the compositor stacks the layers. Not
 //! drawn: the depth light (it needs a depth map), the world effect's
-//! particles (no theme emits any), the hands and occluders.
+//! particles (no theme emits any), the hands and occluders. The depth
+//! light's sweep (board #5511, `sonar.rs`) is counted apart, on the depth
+//! light's Rust copy over flat surfaces, with no adapter
+//! (`the_sweep_over_the_depth_light_stays_within_three_flashes`).
 //!
 //! **The view.** A cube around the seated eye, six faces of [`FACE_PX`]
 //! pixels across 90 degrees, so every way the wearer can look is measured.
@@ -1746,4 +1749,295 @@ fn one_pulse_train_run() {
     let gpu = Gpu::new(&effects());
     let found = run_with(&gpu, theme, every, part, v[3] == "1", source.as_mut());
     eprintln!("{one}: {}", cell(&found));
+}
+
+// ---- The sweep over the depth light (board #5511, `sonar.rs`) -----------
+
+/// A flat surface the sweep's count draws the depth light on: what to call
+/// it, a point of it and its normal.
+struct Lit {
+    name: &'static str,
+    at: Vec3,
+    normal: Vec3,
+}
+
+/// Rays along a counted region's side: `SWEEP_SIDE` squared cover its 10
+/// degrees.
+const SWEEP_SIDE: usize = 12;
+/// A pixel of the faces layer, where the depth light draws (rad): 840
+/// across about 94 degrees.
+const SWEEP_PIXEL_RAD: f32 = 0.001_95;
+
+/// The region of the view `CELL_DEG` degrees across around the ray from
+/// `eye` to `surface`'s point: where each of its rays meets the surface,
+/// and the world's change across a pixel each way there.
+fn sweep_region(eye: Vec3, surface: &Lit) -> Vec<(Vec3, [Vec3; 2])> {
+    let c = (surface.at - eye).normalize();
+    let u = c.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
+    let v = u.cross(c);
+    let hit = |a: f32, b: f32| {
+        let ray = (c + u * a.tan() + v * b.tan()).normalize();
+        eye + ray * ((surface.at - eye).dot(surface.normal) / ray.dot(surface.normal))
+    };
+    let half = (CELL_DEG as f32 / 2.0).to_radians();
+    let at = |k: usize| -half + 2.0 * half * (k as f32 + 0.5) / SWEEP_SIDE as f32;
+    (0..SWEEP_SIDE * SWEEP_SIDE)
+        .map(|n| {
+            let (a, b) = (at(n % SWEEP_SIDE), at(n / SWEEP_SIDE));
+            let p = hit(a, b);
+            (
+                p,
+                [
+                    hit(a + SWEEP_PIXEL_RAD, b) - p,
+                    hit(a, b + SWEEP_PIXEL_RAD) - p,
+                ],
+            )
+        })
+        .collect()
+}
+
+/// A source with a build and drops laid over it: `buildup` at `build`,
+/// and a drop asked on every frame from `drops_from` on (the limiter lets
+/// one through per its gap).
+struct Building<S: Source> {
+    under: S,
+    build: f32,
+    drops_from: f64,
+}
+
+impl<S: Source> Source for Building<S> {
+    fn duration(&self) -> f64 {
+        self.under.duration()
+    }
+
+    fn at(&mut self, t: f64, dt: f64) -> HopAt {
+        let mut hop = self.under.at(t, dt);
+        hop.features.buildup = self.build;
+        hop.drop = t >= self.drops_from;
+        hop.features.drop = f32::from(u8::from(hop.drop));
+        hop
+    }
+}
+
+/// The depth light with the sweep over `source`, as `app.rs` feeds it
+/// behind the limiter, at immersion level 1 in Aurora's colors, the
+/// regions of `surfaces` counted: the worst region's transitions, the
+/// sweeps that started and the standing lines' greatest strength.
+fn sweep_run(
+    source: &mut dyn Source,
+    sonar_opts: &crate::sonar::SonarOptions,
+    light_gain: f32,
+    surfaces: &[Lit],
+) -> (Worst, &'static str, u32, f32) {
+    use crate::depth_light::{self, DepthLightOptions, Drive};
+    use crate::flash::{Triggers, follower};
+    let eye = Vec3::new(0.0, 1.2, 0.0);
+    let theme = Some(Theme::Aurora);
+    let light_opts = DepthLightOptions {
+        gain: light_gain,
+        ..DepthLightOptions::default()
+    };
+    let tile = depth_light::points_tile();
+    let regions: Vec<_> = surfaces.iter().map(|s| sweep_region(eye, s)).collect();
+    let mut counters = vec![Counter::new(); surfaces.len()];
+    let mut limiter = Limiter::new(true);
+    let mut drive = Drive::default();
+    let mut sonar = crate::sonar::Sonar::default();
+    let mut beat_env = 0.0f32;
+    let (mut starts, mut lines) = (0, 0.0f32);
+    let dt = 1.0 / FPS;
+    for n in 0..(source.duration() * FPS).floor() as usize {
+        let t = n as f64 / FPS;
+        let hop = source.at(t, dt);
+        let dt = dt as f32;
+        let gate = limiter.begin(
+            dt,
+            Triggers {
+                beat: hop.beat,
+                downbeat: hop.downbeat,
+                drop: hop.drop,
+            },
+        );
+        let mut f = hop.features;
+        limiter.features(f.as_slice_mut(), dt, gate);
+        if gate.beat {
+            beat_env = 1.0;
+        }
+        beat_env *= (-dt * 6.0).exp();
+        let beat_shown = limiter.follow(follower::BEAT_ENV, beat_env);
+        let mut audio = Audio {
+            rms: f.rms,
+            bass: f.bass,
+            beat: beat_shown,
+            mid: f.mid,
+            high: f.presence.max(f.brilliance),
+            key_tint: [1.0; 3],
+            ..Audio::default()
+        };
+        let hue = fosfora_app::bindings::sources::collect_audio(&f)
+            .get("audio.key_hue")
+            .map_or(0.5, |v| v.0);
+        audio.key_tint = key_tint(hue);
+        limiter.follow_all(follower::TINT, &mut audio.key_tint);
+        drive.step(
+            dt,
+            depth_light::band_level(&audio, depth_light::band(theme)),
+            beat_shown,
+        );
+        let shown = drive.with_music(limiter.follow(follower::DEPTH_MUSIC, drive.music()));
+        let started = sonar.step(
+            sonar_opts,
+            crate::sonar::Input {
+                dt,
+                downbeat: gate.downbeat,
+                drop: gate.drop,
+                beat_period_s: f.beat_period_secs(),
+                buildup: f.buildup,
+                quiet: false,
+                head: eye,
+                motion: limiter.motion(),
+            },
+        );
+        starts += u32::from(started.is_some());
+        lines = lines.max(sonar.contours().strength);
+        let rows = depth_light::frame(
+            &light_opts,
+            &shown,
+            theme,
+            audio.key_tint,
+            LEVEL,
+            &sonar.rows(sonar_opts, LEVEL),
+        )
+        .rows;
+        let swept = depth_light::swept(&rows);
+        for ((surface, region), counter) in surfaces.iter().zip(&regions).zip(&mut counters) {
+            let mut sum = [0.0f32; 3];
+            for &(p, across) in region {
+                let range = (p - eye).length();
+                let bright = 1.0
+                    + (depth_light::FAR_FLOOR - 1.0)
+                        * depth_light::smoothstep(
+                            depth_light::FADE_M[0],
+                            depth_light::FADE_M[1],
+                            range,
+                        );
+                let c = if swept {
+                    depth_light::fragment_swept(
+                        &rows,
+                        &tile,
+                        eye,
+                        p,
+                        surface.normal,
+                        1.0,
+                        bright,
+                        across,
+                    )
+                } else {
+                    let fw = across[0].abs() + across[1].abs();
+                    depth_light::fragment(&rows, &tile, eye, p, surface.normal, 1.0, bright, fw)
+                };
+                for k in 0..3 {
+                    sum[k] += c[k].clamp(0.0, 1.0);
+                }
+            }
+            counter.push(t, sum.map(|v| v / region.len() as f32));
+        }
+    }
+    let mut worst = Worst::default();
+    let mut at = "";
+    for (surface, c) in surfaces.iter().zip(&counters) {
+        let w = c.worst();
+        if w.general > worst.general || w.red > worst.red {
+            at = surface.name;
+        }
+        worst = worst.max(w);
+    }
+    (worst, at, starts, lines)
+}
+
+/// The sweep and the standing lines over the depth light's points, behind
+/// the limiter as `app.rs` runs them, on the depth light's Rust copy
+/// (which the GPU test holds to the shader): a wall that faces the wearer
+/// and lights all at once, the floor ahead in the key's tint (red, on the
+/// pulse trains), a far wall and a wall seen at a slant. On the pulse
+/// trains, with the test knob starting sweeps as fast as the gap allows
+/// and both gains at their most, and through a build with drops asked on
+/// every frame, no region passes three general or three red flashes in
+/// any second.
+#[test]
+fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
+    use crate::sonar::{MIN_GAP_S, SonarOptions};
+    let surfaces = [
+        Lit {
+            name: "a wall 1.2 m ahead",
+            at: Vec3::new(0.0, 1.2, -1.2),
+            normal: Vec3::Z,
+        },
+        Lit {
+            name: "the floor 1.5 m ahead",
+            at: Vec3::new(0.0, 0.0, -1.5),
+            normal: Vec3::Y,
+        },
+        Lit {
+            name: "a wall 3.2 m ahead",
+            at: Vec3::new(0.3, 1.4, -3.2),
+            normal: Vec3::Z,
+        },
+        Lit {
+            name: "a wall at a slant 2 m away",
+            at: Vec3::new(1.4, 1.0, -1.4),
+            normal: Vec3::new(-0.9, 0.0, 0.436).normalize(),
+        },
+    ];
+    let on = SonarOptions::default();
+    let fastest = SonarOptions {
+        test_s: Some(MIN_GAP_S),
+        gain: crate::sonar::GAIN_MAX,
+        ..on
+    };
+    let secs = 8.0;
+    let mut failed = Vec::new();
+    let mut run = |what: &str, source: &mut dyn Source, opts: &SonarOptions, gain: f32| {
+        let (worst, at, starts, lines) = sweep_run(source, opts, gain, &surfaces);
+        eprintln!(
+            "| {what} | {starts} | {lines:.2} | {:.1} | {:.1} | {at} |",
+            worst.general_flashes(),
+            worst.red_flashes()
+        );
+        if !worst.passes() {
+            failed.push(what.to_owned());
+        }
+        (starts, lines)
+    };
+    eprintln!(
+        "| source | sweeps in {secs} s | standing lines at most | general flashes | red flashes | worst region |"
+    );
+    eprintln!("|---|---|---|---|---|---|");
+    for hz in [2.0, 4.0, 8.0, 16.0] {
+        let what = format!("pulse {hz} Hz");
+        let (starts, _) = run(&what, &mut Pulse::new(hz, secs), &on, 1.0);
+        // A downbeat every fourth pulse, one let through per 0.75 s.
+        assert!((4..=11).contains(&starts), "{what}: {starts}");
+        let what = format!("pulse {hz} Hz, a sweep every {MIN_GAP_S} s, both gains at 4");
+        let (starts, _) = run(&what, &mut Pulse::new(hz, secs), &fastest, 4.0);
+        // One per 0.7 s, less the ones three alive held back.
+        assert!((8..=12).contains(&starts), "{what}: {starts}");
+    }
+    // No beat at all: the test knob's sweeps alone.
+    let mut still = Still { level: 0.6, secs };
+    let (starts, _) = run("no beat, a sweep every 0.7 s", &mut still, &fastest, 4.0);
+    assert!(starts >= 8, "{starts}");
+    assert_eq!(sweep_run(&mut still, &on, 1.0, &surfaces).2, 0);
+    // A full build, and drops asked on every frame from 5 s on.
+    for hz in [2.0, 8.0] {
+        let what = format!("pulse {hz} Hz, a full build, drops from 5 s");
+        let mut source = Building {
+            under: Pulse::new(hz, 12.0),
+            build: 1.0,
+            drops_from: 5.0,
+        };
+        let (_, lines) = run(&what, &mut source, &on, 1.0);
+        assert!(lines > 0.9, "{what}: the standing lines reached {lines}");
+    }
+    assert!(failed.is_empty(), "over three flashes: {failed:?}");
 }

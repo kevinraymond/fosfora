@@ -159,10 +159,20 @@
 //! step: a thing narrower than about four texels can fall between its
 //! vertices and carry no points.
 //!
+//! **The sweep** (board #5511, `sonar.rs`). On a frame a sweep or one of a
+//! build's standing lines shows, the mesh that draws the points draws them
+//! with `fs_mesh_light_sonar` instead ([`fragment_swept`], [`swept`]): the
+//! same points, wave and veil, the points under a line swollen and
+//! brightened, and the line solid under them. Its rows follow the light's
+//! own ([`SONAR_ROW`], [`with_sonar`]) and are all 0 on every other frame
+//! and with `debug.fosfora.sonar 0`, when the mesh draws with
+//! `fs_mesh_light` as it did before the sweep.
+//!
 //! Plain numbers in, so it builds and tests on the desktop:
 //! [`vertex_light`] mirrors the WGSL's `mesh_light`, [`fragment`] its
-//! `fs_mesh_light` and [`veil`] the blend, and `tests/depth_light_gpu.rs`
-//! runs the stages on a desktop GPU against them.
+//! `fs_mesh_light`, [`fragment_swept`] its `fs_mesh_light_sonar` and
+//! [`veil`] the blend, and `tests/depth_light_gpu.rs` runs the stages on a
+//! desktop GPU against them.
 
 use std::f32::consts::PI;
 
@@ -181,8 +191,11 @@ pub const KNOB_VEIL: &str = "debug.fosfora.depthlightveil";
 pub const KNOB_POINTS: &str = "debug.fosfora.depthlightpoints";
 
 /// Rows of [`rows`], the end of `struct EnvEye` from `light` on
-/// (`env_depth::LIGHT_ROW`).
-pub const ROWS: usize = 9;
+/// (`env_depth::LIGHT_ROW`): the light's own, then the sweep's
+/// (`sonar.rs`, board #5511) from [`SONAR_ROW`].
+pub const ROWS: usize = SONAR_ROW + crate::sonar::ROWS;
+/// The first of the sweep's rows, `sonar` in `struct EnvEye`.
+pub const SONAR_ROW: usize = 9;
 
 /// The height of one band of the wave (m).
 pub const BAND_SPACING_M: f32 = 0.2;
@@ -684,7 +697,7 @@ pub fn rows(
 ) -> [[f32; 4]; ROWS] {
     let music = unit(drive.music);
     let (radius, presence) = point_layout(fill);
-    [
+    let own = [
         [
             1.0 / BAND_SPACING_M,
             drive.phase,
@@ -704,7 +717,35 @@ pub fn rows(
         [CELL_M, OCTAVE_BLEND, AA_CELLS_PER_PX[0], AA_CELLS_PER_PX[1]],
         [radius, presence, REACH, 1.0 + SWELL * music],
         [SIZE[0], SIZE[1], SOFT_CORE, TWINKLE_DEPTH],
-    ]
+    ];
+    // The sweep's rows stay 0, no sweep, until `with_sonar` sets them.
+    let mut rows = [[0.0f32; 4]; ROWS];
+    rows[..SONAR_ROW].copy_from_slice(&own);
+    rows
+}
+
+/// `rows` with the sweep's rows `sonar` (`sonar::Sonar::rows`, board
+/// #5511; all 0 for none).
+pub fn with_sonar(
+    mut rows: [[f32; 4]; ROWS],
+    sonar: &[[f32; 4]; crate::sonar::ROWS],
+) -> [[f32; 4]; ROWS] {
+    rows[SONAR_ROW..].copy_from_slice(sonar);
+    rows
+}
+
+/// Whether a sweep or a standing line shows in `rows`: the sweep's peak
+/// is not 0. The light's draw then takes `fs_mesh_light_sonar`; otherwise
+/// `fs_mesh_light`, as before the sweep.
+pub fn swept(rows: &[[f32; 4]; ROWS]) -> bool {
+    rows[SONAR_ROW][0] > 0.0
+}
+
+/// The sweep's rows of `rows`.
+pub fn sonar_rows(rows: &[[f32; 4]; ROWS]) -> [[f32; 4]; crate::sonar::ROWS] {
+    let mut out = [[0.0f32; 4]; crate::sonar::ROWS];
+    out.copy_from_slice(&rows[SONAR_ROW..]);
+    out
 }
 
 /// `rows` for a target whose pixels are `scale` times the eye's in size
@@ -719,25 +760,30 @@ pub fn scale_fades(mut rows: [[f32; 4]; ROWS], scale: f32) -> [[f32; 4]; ROWS] {
 }
 
 /// This frame's [`Frame`] under the options `opts`, with `drive` stepped,
-/// the room's `theme`, the key's tint `key` and the immersion `level`.
+/// the room's `theme`, the key's tint `key`, the immersion `level` and the
+/// sweep's rows `sonar` (`sonar::Sonar::rows`; all 0 for none).
 pub fn frame(
     opts: &DepthLightOptions,
     drive: &Drive,
     theme: Option<Theme>,
     key: [f32; 3],
     level: f32,
+    sonar: &[[f32; 4]; crate::sonar::ROWS],
 ) -> Frame {
     Frame {
-        rows: rows(
-            drive,
-            if opts.points {
-                peak_alpha(level, opts.gain)
-            } else {
-                0.0
-            },
-            colors(theme, key),
-            opts.fill,
-            veil_share(level, opts.veil),
+        rows: with_sonar(
+            rows(
+                drive,
+                if opts.points {
+                    peak_alpha(level, opts.gain)
+                } else {
+                    0.0
+                },
+                colors(theme, key),
+                opts.fill,
+                veil_share(level, opts.veil),
+            ),
+            sonar,
         ),
         veil: opts.veil,
     }
@@ -995,6 +1041,27 @@ pub fn points(
     keep: f32,
     fw: Vec3,
 ) -> f32 {
+    points_under(rows, tile, eye, p, normal, keep, fw, None)
+}
+
+/// [`points`] under the sweep (`sonar.rs`): with `under` the sweep's light
+/// on the fragment (the brighter of its line and its tail, 0..1), the
+/// points' radius grows by the sweep's swell times it, as far as keeps the
+/// largest point within its reach. `None` without a sweep this frame.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the fragment's inputs, as the WGSL has them"
+)]
+pub fn points_under(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    eye: Vec3,
+    p: Vec3,
+    normal: Vec3,
+    keep: f32,
+    fw: Vec3,
+    under: Option<f32>,
+) -> f32 {
     let [cell_row, point] = [rows[6], rows[7]];
     let n = unit_normal(normal);
     let n2 = n * n;
@@ -1006,7 +1073,11 @@ pub fn points(
         .clamp(OCTAVE_RANGE[0], OCTAVE_RANGE[1]);
     let li = l.floor();
     let next = smoothstep(cell_row[1], 1.0, l - li);
-    let radius_scale = point[0] * point[3] * keep.max(0.0).sqrt();
+    let mut radius_scale = point[0] * point[3] * keep.max(0.0).sqrt();
+    if let Some(under) = under {
+        radius_scale =
+            (radius_scale * (1.0 + rows[SONAR_ROW][2] * under)).min(point[2] / rows[8][1]);
+    }
     let (mut sum, mut used) = (0.0, 0.0);
     for j in 0..2 {
         let wo = if j == 1 { next } else { 1.0 - next };
@@ -1073,6 +1144,60 @@ pub fn fragment(
     [rgb(0), rgb(1), rgb(2), fade[3]]
 }
 
+/// The fragment stage of the light under the sweep (`fs_mesh_light_sonar`,
+/// board #5511, `sonar.rs`), drawn in [`fragment`]'s place on a frame the
+/// sweep shows ([`swept`]): [`fragment`]'s inputs, with the world's change
+/// across a pixel each way, `dx` and `dy`, in `fw`'s place. The points
+/// under a line or a tail swell and brighten to the line's peak; the line
+/// and its tail's glow are solid under them, the crest tinted toward the
+/// top's color, by `sonar::solid_share` of what the vertex keeps and of how
+/// squarely the triangle (`dx` x `dy`) faces the eye.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the fragment's inputs, as the WGSL has them"
+)]
+pub fn fragment_swept(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    eye: Vec3,
+    p: Vec3,
+    normal: Vec3,
+    keep: f32,
+    bright: f32,
+    [dx, dy]: [Vec3; 2],
+) -> [f32; 4] {
+    let [light, side, top, wave, fade, ..] = *rows;
+    let sonar = sonar_rows(rows);
+    let fw = dx.abs() + dy.abs();
+    let weight = light[2] * bright;
+    let sweep = if keep > 0.0 {
+        crate::sonar::shade(&sonar, p)
+    } else {
+        [0.0; 2]
+    };
+    let under = sweep[0].max(sweep[1]);
+    let flat = crate::sonar::solid_share(&sonar, dx.cross(dy), eye - p, keep);
+    let (mut lit, mut up) = (0.0, 0.0);
+    if keep > 0.0 && weight > 0.0 {
+        up = unit_normal(normal).y.clamp(0.0, 1.0);
+        lit = points_under(rows, tile, eye, p, normal, keep, fw, Some(under));
+    }
+    let fade_wave = 1.0 - smoothstep(wave[0], wave[1], fw.y * light[0]);
+    let crest = wave[2] + (crest(rows, p.y) - wave[2]) * fade_wave;
+    let band = side[3] + (1.0 - side[3]) * crest * light[3];
+    let tint = (up + top[3] * crest).clamp(0.0, 1.0);
+    let color = |tint: f32, k: usize| side[k] + (top[k] - side[k]) * tint;
+    let peak = sonar[0];
+    let lifted = ((weight * band).max(peak[0] * under) * lit).clamp(0.0, 1.0);
+    let crest_tint = peak[3] * sweep[0];
+    let solid = (peak[0] * flat * sweep[0].max(peak[1] * sweep[1])).clamp(0.0, 1.0);
+    let rgb = |k: usize| {
+        color((tint + crest_tint).clamp(0.0, 1.0), k) * lifted
+            + color(crest_tint.clamp(0.0, 1.0), k) * solid * (1.0 - lifted)
+    };
+    [rgb(0), rgb(1), rgb(2), fade[3]]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,6 +1220,8 @@ mod tests {
     const NEAR: f32 = 0.1;
     const MAP: u32 = 320;
     const STEP: u32 = 2;
+    /// No sweep: the sweep's rows all 0.
+    const NO_SONAR: [[f32; 4]; crate::sonar::ROWS] = [[0.0; 4]; crate::sonar::ROWS];
 
     /// An eye and its depth camera at `pos`, turned by `rot`, the eye's
     /// view the depth camera's (the parallax between them is millimeters).
@@ -1966,6 +2093,7 @@ mod tests {
             None,
             [1.0; 3],
             1.0,
+            &NO_SONAR,
         );
         assert_close!(no_points.rows[0][2], 0.0);
         assert!(
@@ -2006,10 +2134,17 @@ mod tests {
         assert!(change.starts_with("depth light: on") && change.contains("(was: off"));
         // The frame: the veil by the level, or 1 with it off.
         let drive = Drive::default();
-        let f = frame(&on, &drive, Some(Theme::Aurora), [1.0; 3], 0.75);
+        let f = frame(&on, &drive, Some(Theme::Aurora), [1.0; 3], 0.75, &NO_SONAR);
         assert!(f.veil);
         assert_close!(f.rows[4][3], 0.25);
-        let f = frame(&knobs(&[(KNOB_VEIL, "0")]), &drive, None, [1.0; 3], 0.75);
+        let f = frame(
+            &knobs(&[(KNOB_VEIL, "0")]),
+            &drive,
+            None,
+            [1.0; 3],
+            0.75,
+            &NO_SONAR,
+        );
         assert!(!f.veil);
         assert_close!(f.rows[4][3], 1.0);
     }

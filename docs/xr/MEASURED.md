@@ -3817,3 +3817,21 @@ wearer's music arriving or leaving while a bundled track plays (a headset
 with empty folders, the permission's grant, "scan my music"), the saved
 bundled track across launches, and all of it worn. The desktop tests cover
 the playlist's side of those.
+
+## The sweep over the depth light (board #5511)
+
+Quest 3, v209, unworn on a desk, 27 to 33 C, 34 h after a reboot, the debug
+APK of xr-sonar, seated, the saved room replayed, Immersion full, songs
+playing, `gov 0`, and `geomfirst 0` so every pixel of the depth map is lit
+(the depth light's worst case). One launch, 40 s a segment, VrApi App
+median, 456 MHz and 72 fps throughout:
+
+| Segment | App |
+|---|---|
+| Sweep off | 8.81 ms |
+| A sweep every 0.7 s and the standing lines held up (`sonartest 0.7`, `sonarbuild 0.7`) | 8.95 ms |
+| Sweep off | 8.78 ms |
+| Sweep on, following the music | 8.83 ms |
+
+So 0.15 ms at its worst and under 0.05 ms with the music. Not measured:
+anything worn, and the look.

@@ -660,7 +660,9 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   them as a fill fading to dark at the silhouette; worn, that read as
   chunky shifting outlines around every thing and between the items of one
   pile, and a shelf 3 m out was a black block. It is on by default
-  (`debug.fosfora.depthlight 0` turns it off).
+  (`debug.fosfora.depthlight 0` turns it off). On the `xr-sonar` branch a
+  sweep of light crosses these points on the downbeat: see
+  [The sweep](#the-sweep-lines-of-light-from-the-wearer-on-the-downbeat-board-5511).
   - **What is lit.** The mesh, where it still occludes. With geometry
     first on, that is what no room box explains. The eye pass's mesh writes
     the same depth as before, so the particles are hidden behind real
@@ -1229,6 +1231,285 @@ wearer in roam reads as their own motion or as the layer being dragged.
 Whether 2.5 m/s² feels like falling or like sinking, and whether a 5 cm
 band and 0.3 m/s make the edges read as lit lines or as stragglers. What
 the frame costs.
+
+## The sweep: lines of light from the wearer on the downbeat (board #5511)
+
+*A prototype behind a knob, on the `xr-sonar` branch. Built and tested on
+the desktop, on a desktop GPU too, and the device code passes the Android
+lint. Nothing here has run on the headset: every speed, width and time
+below is the code's constant, not a measurement, and most are a first
+guess for a worn tuning pass.*
+
+**Why.** Worn, the depth light's points were too sparse. The things the
+room scan does not know (a chair, a shelf, a pile, a vacuum) did not read
+as shapes, and they did not move with the music enough. The sweep is one
+way to make them read as forms and flow. The code is `sonar.rs`, and the
+drawing is in the depth light's shader (`env_depth::ENV_DEPTH_WGSL`).
+
+### What the wearer sees
+
+- **On a downbeat** a thin shell of light leaves the head and travels out
+  through the room. Where it crosses a thing the depth light draws, that
+  thing shows a bright line: its points at one distance from where the
+  sweep began. As the shell moves on, the line crawls over the thing and
+  traces its shape, the way a contour line on a map does. Behind the line
+  the points stay swollen and bright for a moment and then settle, with a
+  faint glow under them, so a thing just crossed glows and fades. Between
+  two things nothing shows.
+- **During a build** standing lines come up between the sweeps: faint
+  lines of equal distance from the wearer, drifting slowly outward. As
+  the build grows a second set fades in halfway between them and then a
+  third, so the spacing tightens from 0.6 m to 0.3 m to 0.15 m near the
+  wearer. This is the look's way of saying something is coming.
+- **On the drop** the standing lines fade in 0.3 s and one sweep at full
+  strength leaves. See "What it cannot do": on the headset no drop reaches
+  the sweep yet.
+
+### A sweep
+
+- **Origin.** The head's position when it started, fixed in the room from
+  then on. Turning or moving the head does not move a line already
+  traveling.
+- **Speed.** Fixed at its start: 4 m in one bar of four beats at the
+  song's tempo, between 1 and 3 m/s (60 and 180 BPM), so sweeps follow
+  each other 4 m apart. 2 m/s before the first tempo lock.
+- **Starts.** On a downbeat the flash limit let through, while the music
+  is not quiet (the immersion's quiet, or the show waiting for the
+  wearer). Never less than 0.7 s after the last start, whatever asks, and
+  never with three alive. A sweep is alive until its radius reaches
+  4.5 m.
+- **The line.** 2 cm to each side near the wearer, and three times the
+  depth map's noise model (0.002 times the squared range, `MEASURED.md`)
+  where that is more: 5.4 cm to each side at 3 m, 9.6 cm at 4 m. Its light
+  is all there to 1.5 m, half at 3 m and gone at 4.5 m. A downbeat's sweep
+  is at 0.7 of a drop's. The peak alpha runs from 0.25 with the room plain
+  to 0.9 with it black, times `sonargain`.
+- **The tail.** The light behind the crest falls to nothing over the
+  distance the shell travels in `sonartail` seconds: 0.35 s, 0.7 m at
+  2 m/s. A point under the crest or the tail grows by up to 35% of its
+  radius, as far as half a cell lets the largest, and brightens to the
+  line's peak whatever the distance had dimmed it to. The solid glow under
+  the points is 0.12 of the line's.
+- **Color.** The depth light's own: the color the theme gives other
+  surfaces, with the crest tinted 0.6 of the way toward the key's tint
+  where the theme uses it. Aurora draws a teal line with a crest toward
+  the key.
+- **Off the mesh's staircase.** The solid light fades out toward a mass's
+  edge and on a triangle of the mesh seen within about 7 to 17 degrees of
+  edge-on. That is the fringe that leans back at a step between two
+  depths. A line there traced the mesh's steps and not the thing in
+  renders of a depth recording, and it is where the map changes most from
+  one frame to the next.
+
+### The standing lines
+
+- **When.** While `buildup` is over the level the immersion reads as
+  tension (`immerse::BUILD_FROM`, 0.4). They are at full strength from a
+  `buildup` of 0.58. The second set fades in from 0.49 to 0.67 and the
+  third from 0.70 to 0.91. They center on where the head was when they
+  came up.
+- **The pattern limit.** Regular light and dark stripes are a hazard of
+  their own, beside the flash limit, unless they flow smoothly one way.
+  So the standing lines never flash, reverse or stand still. They drift
+  outward at 0.12 m/s all the time they show, the way the sweeps travel,
+  and the drift never turns back (half that speed while the flash limit
+  slows the looks' own motion). The spacing tightens by sets that fade in
+  between the lines, so no line moves inward when it tightens. Their
+  strength changes only by slow ramps: 1.5 s from nothing to all, and the
+  build the sets read moves at most a quarter of its range a second. The
+  one short ramp is the drop's 0.3 s, after which they stay away for 4 s.
+- **Faint.** A tenth of a sweep's line, and never over an alpha of 0.09
+  whatever the gains. That is under the change of luminance the flash
+  rule counts, so a line drifting over a wall that faces the wearer, which
+  lights all of it at once, is no transition by itself.
+- **How many.** The finest spacing is 0.15 m and the code holds it over a
+  floor of 0.12 m. The third set shows only to 2.5 m and the second to
+  3.5 m, where a line is still thin against its spacing. A surface that
+  faces the wearer and fills the view (104 by 96 degrees) shows, from its
+  nearest point out to its far corner:
+
+  | Distance | Loosest (the build just begun) | Tightest (a full build) |
+  |---|---|---|
+  | 1 m | 2 | 7 |
+  | 3 m | 1 | 2 |
+
+  The most at any distance is 8, at 1.2 m. A straight cut from corner to
+  corner through the nearest point crosses each line twice.
+
+### The flash limit
+
+A sweep starts on a trigger the limiter let through (`flash.rs`), as the
+floor's rings do, and then runs by itself. The standing lines read
+`buildup` as the limiter hands it on. The limiter lets a downbeat through
+at most every 0.75 s, and the sweep's own floor is 0.7 s whatever asks,
+the test knob included. So a place sees a line pass at most twice in any
+second, and each pass is one rise and one fall: two flashes at most from
+the sweeps, on a surface that faces the wearer and lights all at once.
+
+`flash_room.rs` counts it on the depth light's Rust copy (which the GPU
+test holds to the shader), behind the limiter as `app.rs` runs it: 10
+degree regions on a facing wall 1.2 m away, the floor, a far wall and a
+slanted wall, at 72 frames a second.
+
+| Source | General flashes in the worst second | Red |
+|---|---|---|
+| Pulse trains at 2, 4, 8 and 16 Hz | 1.5 | 0 |
+| The same, a sweep every 0.7 s, `sonargain` and `depthlightgain` at 4 | 2.0 | 0 |
+| No beat, a sweep every 0.7 s, both gains at 4 | 2.0 | 0 |
+| A full build with a drop asked on every frame | 1.5 | 0 |
+
+### The knobs
+
+Each is read at launch, polled once a second and logged on a change
+(`sonar::SonarOptions`).
+
+| Knob | Default | Range | What |
+|---|---|---|---|
+| `debug.fosfora.sonar` | 1 | 0, 1, 2 | 0 off: the depth light as it was. 1 the depth light's things. 2 is for the scanned room too, which is not built, so it draws as 1. |
+| `debug.fosfora.sonarspeed` | 1 | 0.25 to 4 | A factor on a sweep's speed. |
+| `debug.fosfora.sonarwidth` | 1 | 0.25 to 4 | A factor on the lines' width. |
+| `debug.fosfora.sonargain` | 1 | 0 to 4 | Brightness of the line and of the points under it. |
+| `debug.fosfora.sonartail` | 0.35 | 0 to 2 | The tail, s. 0 leaves the crest alone. |
+| `debug.fosfora.sonarcontours` | 1 | 0 to 1 | The standing lines' strength. 0 never shows them. |
+| `debug.fosfora.sonartest` | unset | 0.7 and up | A sweep every that many seconds whatever the music does, for unworn captures. |
+| `debug.fosfora.sonarbuild` | unset | 0 to 1 | The build the standing lines read, held there whatever the music does, for unworn captures. |
+
+The 0.7 s between starts, the three alive and the 4 m a bar are the
+requirement's. The noise model is measured. The rest are guesses: the
+speed's range, the 2 cm, the three noise widths, the fade from 1.5 to
+4.5 m, the tail, the glow, the strengths and alphas, the swell, the tint,
+the spacings and where the sets come in, the drift and the ramps.
+
+### Off is off
+
+With `debug.fosfora.sonar 0`, and on every frame with no sweep alive and
+no standing line showing, the sweep's rows of the uniform are all 0 and
+the mesh draws with `fs_mesh_light`, which is left exactly as it was
+before the sweep. The sweep has its own fragment, `fs_mesh_light_sonar`,
+in a second pipeline, and the pass takes it only on a frame something
+shows. A first version put the sweep in `fs_mesh_light` behind a branch on
+a uniform, and with the rows at 0 it still wrote 30,126 values that
+differed from before on an RTX 4090: the compiler contracts the same
+arithmetic differently once the function changes shape. The GPU test holds
+`fs_mesh_light` to a copy of the old fragment bit for bit.
+
+### What it should cost
+
+Not measured. It adds no pass, no render target and no texture read. Per
+fragment of the mesh that draws the points (the faces layer's, at half the
+eye's resolution, by default), on a frame a sweep or a standing line
+shows:
+
+- two more derivatives, a cross product, three dot products, a division
+  and two smoothsteps, for the solid light's share;
+- per live sweep, at most three: a square root, a smoothstep and about a
+  dozen multiplies and adds. They are three calls on plain rows, with no
+  loop and no array;
+- for the standing lines, while they show: a square root, two divisions,
+  two floors, two smoothsteps and about thirty multiplies and adds;
+- for the blend: two more color mixes and about fifteen multiplies and
+  adds.
+
+With one sweep alive that is about as much arithmetic as one more read of
+the points' tile without the read. The points with the whole map lit cost
+at most 0.8 ms (`MEASURED.md`), so the sweep should sit well under that.
+The uniform grows by 12 rows, 192 bytes, written where the light's rows
+already are.
+
+### Checking it unworn
+
+On the debug APK, with the depth light drawing (something unscanned in
+view, or `debug.fosfora.geomfirst 0`):
+
+- The log has `sonar: on, the depth light's things · …` at launch, and
+  each knob logs `sonar: … (was: …)` within a second of a `setprop`.
+- `debug.fosfora.sonartest 2` starts a sweep every 2 s with no music. At
+  debug level the log has `sonar: a sweep leaves (Test)` for each, and
+  `(Downbeat)` with music.
+- `debug.fosfora.sonarbuild 0.7` brings the standing lines up at the
+  middle spacing, and `1` at the tightest, within 2 s. Unset, they follow
+  the music.
+- `debug.fosfora.sonar 0` leaves the depth light as it was.
+
+### Tests
+
+`sonar.rs`: `a_sweep_starts_on_a_downbeat_from_the_head_and_keeps_its_origin`,
+`starts_keep_the_gap_whatever_asks`,
+`at_most_three_are_alive_and_none_starts_in_silence`,
+`the_speed_crosses_four_meters_a_bar_within_its_range`,
+`the_line_is_a_crest_with_a_tail_behind_it`,
+`the_line_widens_with_the_maps_noise_and_fades_with_distance`,
+`the_contours_come_up_with_the_build_and_tighten_by_halves`,
+`the_spacing_has_a_floor_and_a_full_view_shows_few_lines`,
+`the_drift_runs_outward_and_never_reverses`,
+`a_drop_fades_the_contours_and_sends_a_full_sweep` and
+`the_knobs_read_within_their_ranges_and_say_so`.
+
+`flash_room.rs`: `the_sweep_over_the_depth_light_stays_within_three_flashes`.
+
+On a desktop GPU, `#[ignore]`d (`cargo test -p fosfora-xr --test
+depth_light_gpu -- --ignored`):
+`with_the_sweep_off_the_light_draws_what_it_drew_bit_for_bit`,
+`the_sweep_changes_the_lights_things_alone`,
+`a_line_sits_at_its_radius_from_where_the_sweep_began`,
+`the_swept_fragment_matches_its_cpu_mirror` and
+`the_recorded_room_under_the_sweep`, which renders a depth recording with
+`FOSFORA_SONAR_REC=<file.lprec>` and writes the pictures to
+`FOSFORA_SONAR_DUMP=<dir>`.
+
+On a recording of a still headset (`debug.fosfora.liveplanesrec`, 64 by 64
+read-backs a quarter of a second apart), with the lines held still, this
+much of their light moved from one read-back to the next:
+
+| Lines | Their half-width | Moved, mean and worst of 8 | A shift of a quarter of the half-width moves |
+|---|---|---|---|
+| A sweep 0.75 m out | 2.0 cm | 0.11, 0.14 | 0.37 |
+| A sweep 2.75 m out | 4.5 cm | 0.06, 0.08 | 0.38 |
+| A sweep 3.75 m out | 8.4 cm | 0.15, 0.19 | 0.39 |
+| Standing, a mid build | 2.0 cm | 0.16, 0.18 | 0.29 |
+| Standing, a full build | 2.0 cm | 0.15, 0.17 | 0.31 |
+
+So the map's noise moves a line by about a tenth of its half-width, a
+couple of millimeters near. At 1.75 m that recording has almost no
+surface: what the sweep lights there is a few silhouette cells, and about
+half of that little light changes between read-backs.
+
+### What it cannot do
+
+- **The scanned room.** It draws only where the depth light draws. With
+  geometry first on, that is not the scanned walls, floor and tables.
+  Drawing it there (`sonar 2`) is not built. The faces pass draws three
+  kinds of fragment (the surfaces pass's, each ported effect's, the
+  sky's), and a branch in each would change what they write with the
+  sweep off, as it did here. The way that keeps off off is one more small
+  pipeline in the faces pass: each scanned face a shell or its tail
+  reaches, drawn once more with the sweep's lines alone, added over what
+  is there and scaled by one less the immersion level.
+- **The drop.** On the headset the hop is built with no drop
+  (`audio.rs`), so no drop reaches the flash limit, and the full sweep and
+  the 0.3 s fade never fire there. The standing lines then leave by their
+  slow ramp when the build ends. The same gap decides whether the
+  immersion's drop hold runs, so it is left for a decision of its own.
+- **Songs without downbeats.** A song the beat tracker has not locked
+  onto gets no sweeps.
+- **Facing and grazing surfaces.** A surface that faces the origin
+  squarely is all at one distance, so it lights at once instead of showing
+  a line. A surface seen nearly edge-on (the floor far away, a wall seen
+  along its length) carries the points' share and no solid line.
+- **Thin things.** The line is as coarse as the depth map's mesh, and a
+  thing narrower than a mesh cell may miss it.
+
+### What only a worn check can tell
+
+Whether a line 4 cm across that moves 2.8 cm a frame reads as a line that
+crawls or as a row of separate lines, with one eye. Whether the sweep
+makes a pile or a chair read as a form, or as a flash that passes. Whether
+0.7 against the points' own light is enough with the room black, and too
+much with it half visible. Whether the glow behind the line reads as the
+thing glowing or as a fill with the mesh's blocky edge. Whether the
+standing lines read as tension or as clutter, whether their drift is seen
+at all, and whether the map's noise makes them shimmer. Whether a sweep on
+every bar is too often. What the frame costs.
 
 ## The room first pass (board #3317)
 

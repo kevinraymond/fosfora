@@ -971,8 +971,8 @@ impl Gfx {
     /// The depth light for this frame (board #5439): its rows and the
     /// veil (`depth_light::frame`), or `None` to draw the depth map as
     /// depth alone. Read by the frame's environment depth `prepare`.
-    pub fn set_depth_light(&self, frame: Option<crate::depth_light::Frame>) {
-        self.depth_light.set(frame);
+    pub fn set_depth_light(&self, frame: Option<&crate::depth_light::Frame>) {
+        self.depth_light.set(frame.copied());
     }
 
     /// What [`Self::set_depth_light`] set last.
