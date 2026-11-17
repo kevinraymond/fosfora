@@ -981,6 +981,81 @@ impl Edges<'_> {
     }
 }
 
+/// How fast a free bar on an edge falls (heights of the tallest bar per
+/// second): half the wall spectrum's `canvas::RELEASE_PER_S`. A bar rises
+/// at once and only its fall takes time, so this bounds how fast the strips
+/// can dim a region of the view. Counted in `flash_room.rs`: at 2.5 a hit
+/// three or more times a second on every band takes a region next to a
+/// strip past three flashes a second, at 1.5 it sits on the three, and at
+/// 1.25 the strips alone stay at two.
+pub const FREE_RELEASE_PER_S: f32 = 1.25;
+
+/// The bars the edges draw this frame ([`Heights::step`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bars<'a> {
+    /// This frame's heights: the strips' bars and the tunnels' rim
+    /// ([`rows`]).
+    pub now: &'a [f32],
+    /// What the tunnels' rungs keep ([`History::step`]).
+    pub past: &'a [f32],
+}
+
+/// The heights the edge bars draw (board #5532, `flash.rs`, the bars'
+/// heights): the spectrum's bars as the flash limit shows them, or, free,
+/// bars of their own on the mel bands as the analysis made them, so each
+/// bar rises on its own hits, on their frame. Free, the strips' bars fall
+/// at [`FREE_RELEASE_PER_S`]; the bars the tunnels' rungs keep fall as the
+/// wall spectrum's do, since a rung's light is a small share of its face
+/// and the tunnels' count does not move with them.
+#[derive(Debug, Clone)]
+pub struct Heights {
+    /// The strips' bars and the tunnels' rim.
+    now: crate::canvas::Canvas,
+    /// The bars the tunnels' rungs keep.
+    past: crate::canvas::Canvas,
+}
+
+impl Heights {
+    /// For `bars` bars (the wall spectrum's count).
+    pub fn new(bars: usize) -> Self {
+        Self::falling(bars, FREE_RELEASE_PER_S)
+    }
+
+    /// [`Self::new`] with the strips' free bars falling `release` heights
+    /// a second: for the count that shows why it is what it is.
+    pub fn falling(bars: usize, release: f32) -> Self {
+        let past = crate::canvas::Canvas::new(bars, 1.0);
+        let mut now = past.clone();
+        now.release = release;
+        Self { now, past }
+    }
+
+    /// Once a frame, `dt` seconds after the last: `mel` the mel bands as
+    /// the analysis made them, before the flash limit, and `limited` the
+    /// bars as the limit shows them. Not `free`, both are `limited` and
+    /// nothing else is worked out.
+    pub fn step<'a>(
+        &'a mut self,
+        dt: f32,
+        free: bool,
+        mel: &[f32],
+        limited: &'a [f32],
+    ) -> Bars<'a> {
+        if !free {
+            return Bars {
+                now: limited,
+                past: limited,
+            };
+        }
+        self.now.update(dt, mel);
+        self.past.update(dt, mel);
+        Bars {
+            now: self.now.heights(),
+            past: self.past.heights(),
+        }
+    }
+}
+
 /// A bar height as the rows take it: 0..1, 0 for a value that is not a
 /// number.
 fn clean(h: f32) -> f32 {
@@ -2223,6 +2298,46 @@ mod tests {
         let none = one_strip(&[], 4, 0.25);
         assert_close!(light_at(&none, 0, 0.05, 0.002), LINE_LIGHT);
         assert_close!(light_at(&none, 0, 0.05, 0.05), 0.0);
+    }
+
+    #[test]
+    fn the_heights_are_the_limits_or_free_the_analysis_own() {
+        let dt = 1.0 / 72.0;
+        let mut h = Heights::new(4);
+        // Limited: the limit's bars for the strips and for the rungs,
+        // whatever the mel bands do.
+        let limited = [0.1, 0.2, 0.3, 0.4];
+        let bars = h.step(dt, false, &[0.8; 4], &limited);
+        assert_eq!((bars.now, bars.past), (&limited[..], &limited[..]));
+        // Free: a hit shows on its frame at full height, whatever the
+        // limit shows.
+        let held = [0.0; 4];
+        let bars = h.step(dt, true, &[0.8; 4], &held);
+        assert!(bars.now.iter().chain(bars.past).all(|&v| v > 0.999));
+        // One band drops out for a sixth of a second: the strips' bar
+        // falls at its own speed, the rungs' at the wall spectrum's.
+        let mut fell = (0.0, 0.0);
+        for _ in 0..12 {
+            let bars = h.step(dt, true, &[0.8, 0.25, 0.8, 0.8], &held);
+            fell = (1.0 - bars.now[1], 1.0 - bars.past[1]);
+            assert_close!([bars.now[0], bars.past[0]], [1.0, 1.0]);
+        }
+        assert!((fell.0 - FREE_RELEASE_PER_S / 6.0).abs() < 1e-3, "{fell:?}");
+        assert!(
+            (fell.1 - crate::canvas::RELEASE_PER_S / 6.0).abs() < 1e-3,
+            "{fell:?}"
+        );
+        // Back up on the hit's frame, both.
+        let bars = h.step(dt, true, &[0.8; 4], &held);
+        assert!(bars.now[1] > 0.999 && bars.past[1] > 0.999);
+        // The count is the wall spectrum's: the knob's, or the mel's.
+        assert_eq!(h.step(dt, true, &[0.6; 3], &held).now.len(), 3);
+        assert_eq!(
+            Heights::new(24).step(dt, true, &[0.6; 64], &held).now.len(),
+            24
+        );
+        // Half the wall spectrum's fall.
+        assert_close!(FREE_RELEASE_PER_S, 0.5 * crate::canvas::RELEASE_PER_S);
     }
 
     #[test]

@@ -238,6 +238,9 @@ pub struct Canvas {
     pub bars: usize,
     /// Brightness multiplier (`canvasgain`).
     pub gain: f32,
+    /// Fall speed of a bar (wall heights per second): [`RELEASE_PER_S`]
+    /// unless whoever shows the bars sets another.
+    pub release: f32,
     heights: [f32; MAX_BARS],
     /// Each bar's running maximum (dB/80).
     tops: [f32; MAX_BARS],
@@ -256,6 +259,7 @@ impl Canvas {
         Self {
             bars: bars.clamp(1, MAX_BARS),
             gain,
+            release: RELEASE_PER_S,
             heights: [0.0; MAX_BARS],
             tops: [0.0; MAX_BARS],
             shown: 0,
@@ -274,7 +278,7 @@ impl Canvas {
             *top = (*top * decay).max(r);
         }
         let loudest = self.top();
-        let fall = RELEASE_PER_S * dt.max(0.0);
+        let fall = self.release.max(0.0) * dt.max(0.0);
         for ((h, top), r) in self.heights.iter_mut().zip(self.tops).zip(raw).take(n) {
             let floor = top.max(loudest - TILT_RANGE).max(MIN_TOP) - SPAN;
             let target = if r > 0.0 {
