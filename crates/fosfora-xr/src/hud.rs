@@ -139,8 +139,8 @@ pub struct Controls {
     /// `music::plays_at_launch`).
     pub music: bool,
     /// The voice path listens (the hand menu's Voice toggle, saved in
-    /// `hand_menu.json`; board #3751, V4): off, neither the left fist nor
-    /// the thumb tap opens a window.
+    /// `hand_menu.json`; board #3751, V4): off, neither a fist nor the
+    /// thumb tap opens a window.
     pub voice: bool,
     /// `RECORD_AUDIO` is granted (board #5453; the app sets it): without
     /// it the Voice toggle reads "Voice: no mic" while on.
