@@ -213,6 +213,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.flashask 1     (board #5534, flash_choice.rs: the flash question again this launch, on
     //       an install that has answered it, for a capture or a worn check of the card; an answer is saved over the old
     //       one, no answer leaves the file as it was; debug.fosfora.begin 1 still skips it; read at launch)
+    //   adb shell setprop debug.fosfora.barsfree 0|1   (board #5532, flash.rs: what the edge bars' heights read. 0, the
+    //       default: the bars as the flash limit shows them, in steps a few times a second. 1: bars of their own that
+    //       follow the analysis, each rising on its own hits and falling 1.25 heights a second; the wall spectrum and
+    //       everything else stay behind the limit. Read at launch, logged in the flash limit's line)
     //   adb shell setprop debug.fosfora.playperf lowlatency|none   (AAudio performance mode of the playback
     //       output; default lowlatency: 36 ms to the speaker on the Quest 3 against 140-215 ms for none)
     //   adb shell setprop debug.fosfora.playbuf <ms>   (playback output buffer; default 84 ms in lowlatency so the
@@ -1731,6 +1735,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .is_none()
         .then(|| crate::canvas::Canvas::new(canvas_bars, 1.0));
     let mut edge_presence = crate::edge_bars::Presence::default();
+    // Board #5532: the heights the edge bars draw, the limit's or their
+    // own on the analysis (`debug.fosfora.barsfree`).
+    let mut edge_heights = crate::edge_bars::Heights::new(canvas_bars);
     let mut edge_history = crate::edge_bars::History::default();
     let mut edge_outline = crate::edge_bars::Outline::default();
     let mut edge_rows: Vec<[f32; 4]> = Vec::new();
@@ -2059,7 +2066,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         menu_saved.limit_flashing,
     );
     let mut flash_limit = crate::flash::Limiter::new(flash_on);
-    info!("{}", crate::flash::line(flash_on, flash_by));
+    // Board #5532: whether the edge bars' heights follow the analysis
+    // instead (`edge_bars::Heights`), read once, here.
+    let bars_free =
+        crate::flash::bars_free_from_knob(system_prop(crate::flash::BARS_KNOB).as_deref());
+    info!("{}", crate::flash::line(flash_on, flash_by, bars_free));
     if flash && !crate::flash_choice::strobe_may_run(flash_on, flash_by) {
         info!(
             "debug.fosfora.flash: the beat strobe waits for {} 0",
@@ -2642,6 +2653,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 &mut flash_limit,
                                 &mut flash_by,
                                 menu_saved.limit_flashing,
+                                bars_free,
                             );
                         }
                         // The pinch that answered ticks, as the one that
@@ -3002,7 +3014,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             "flash limit: the wearer set \"{}\" (saved)",
                             crate::flash_choice::row_label(on)
                         );
-                        sync_flash_limit(&mut flash_limit, &mut flash_by, menu_saved.limit_flashing);
+                        sync_flash_limit(
+                            &mut flash_limit,
+                            &mut flash_by,
+                            menu_saved.limit_flashing,
+                            bars_free,
+                        );
                         if flash_by == crate::flash::By::Knob {
                             info!(
                                 "flash limit: {} is set and still overrides the wearer's setting",
@@ -4831,7 +4848,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             // Board #5451: the flash limit, before anything reads the
             // audio: the triggers it lets through, the features and the
-            // mel bands it limits. Everything below reads this hop.
+            // mel bands it limits. Everything below reads this hop, but
+            // the edge bars' heights when they are free (board #5532),
+            // which read the mel bands as the analysis made them.
+            let mel_analyzed = hop.frame.mel;
             let raw_beat = hop.beat_fired;
             let gate = flash_limit.begin(
                 dt,
@@ -5403,12 +5423,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         music.analysis.is_some() || live_audio.is_some(),
                         f.loudness_m,
                     );
-                    let heights = if canvas.is_some() || edge_canvas.is_some() {
+                    let limited = if canvas.is_some() || edge_canvas.is_some() {
                         &shown_bars[..]
                     } else {
                         &[][..]
                     };
-                    edge_history.step(dt, heights);
+                    // Board #5532: the limit's bars, or free the edge bars'
+                    // own on the analysis.
+                    let bars = edge_heights.step(dt, bars_free, &mel_analyzed, limited);
+                    let heights = bars.now;
+                    edge_history.step(dt, bars.past);
                     // Board #5431: each shape in its kind's mode under the
                     // room's saved theme, or the mode forced on every kind.
                     let edge_theme = surface_lanes.saved_theme();
@@ -5864,7 +5888,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             // Board #5451: the flash limit's knob, live. Board #5534: over
             // the wearer's setting.
-            sync_flash_limit(&mut flash_limit, &mut flash_by, menu_saved.limit_flashing);
+            sync_flash_limit(
+                &mut flash_limit,
+                &mut flash_by,
+                menu_saved.limit_flashing,
+                bars_free,
+            );
             // Board #5436: the sky's knob, live; the surfaces pass logs the
             // sky's line on the next frame.
             let now = switch_now("debug.fosfora.sky").unwrap_or(true);
@@ -6294,18 +6323,21 @@ fn silence(hop: &mut fosfora_app::audio::hop::HopOutput) {
 
 /// Board #5534: the limiter follows the knob and the wearer's `setting`
 /// (`flash::decide`), and the log says what changed and which of the two
-/// decided. Called once a second for the knob and at once when the setting
-/// changes, so a press or a sentence takes effect on its frame.
+/// decided, with the edge bars' heights as the launch read them
+/// (`bars_free`, board #5532). Called once a second for the knob and at
+/// once when the setting changes, so a press or a sentence takes effect on
+/// its frame.
 fn sync_flash_limit(
     limiter: &mut crate::flash::Limiter,
     by: &mut crate::flash::By,
     setting: Option<bool>,
+    bars_free: bool,
 ) {
     let (on, now_by) = crate::flash::decide(system_prop(crate::flash::KNOB).as_deref(), setting);
     if on != limiter.on() || now_by != *by {
         limiter.set_on(on);
         *by = now_by;
-        info!("{}", crate::flash::line(on, now_by));
+        info!("{}", crate::flash::line(on, now_by, bars_free));
     }
 }
 

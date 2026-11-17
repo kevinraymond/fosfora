@@ -822,6 +822,19 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     the whole edge while music plays, so the outline stays when a band
     is at zero. In silence (immersion's quiet) nothing draws. The look is
     the wall spectrum's: brightest at the tip, a cap line, soft sides.
+  - **What the heights read (board #5532).** By default the bars as the
+    flash limit shows them, which move together in steps a few times a
+    second and land on every other beat above 120 BPM. Worn, that read as
+    bars out of time with the music. With `debug.fosfora.barsfree 1`,
+    read at launch, the edge bars keep bars of their own on the mel bands
+    as the analysis made them (`edge_bars::Heights`): each bar rises on
+    its own hits, on their frame. The strips' bars then fall at 1.25
+    heights a second, half the wall spectrum's speed, which is what
+    keeps the strips within three flashes a second. The tunnels' rungs
+    keep bars that fall at the wall spectrum's speed. The wall spectrum
+    and everything else stay behind the limit. `SURFACES_DESIGN.md`,
+    "Photosensitive safety", has the reasoning and the counts, and
+    `MEASURED.md` the timing on real songs.
   - **The scale rule.** The tallest bar is `edgebarsheight` (default
     0.12) of the face's smaller side, clamped to 2 to 20 cm, so a 40 cm
     box and a 4 m wall read alike: 4.8 cm on the box, 20 cm on the wall.
@@ -945,7 +958,8 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     to 4, default 1), `edgebarsheight` (0 to 0.5, default 0.12) and
     `edgebarsdepth` (0 to 2, default 0.6). The `edge bars:` log lines give
     the state at launch, each change, the mode per kind when it changes,
-    and what is outlined.
+    and what is outlined. `barsfree` (0 or 1, default 0) is read at launch
+    only and logged at the end of the `flash limit:` line.
   - **What it does not do.** It is a layer over every shape, not a lane
     behavior: the lanes keep drawing, and no room file or lane format
     changes. Off, the frame is what it was, with no strips, no buffer
@@ -2280,7 +2294,8 @@ asked before anything flashes. The rules are `flash_choice.rs`.
   it is set, for an A/B and for unworn runs. Unset, the setting rules.
   The log says which decided, at launch and on each change: `flash limit:
   on · … · the wearer's setting`, `· the wearer has not chosen`, or `·
-  debug.fosfora.flashlimit 0 overrides the wearer's setting`. The
+  debug.fosfora.flashlimit 0 overrides the wearer's setting`. The edge
+  bars' heights (`barsfree`) end the line after it. The
   measurement strobe (`debug.fosfora.flash 1`) still needs the knob at 0.
   The wearer's "Limit flashing: off" alone never starts it.
 - **The log.** `flash question: asked before the begin, nothing is saved`
