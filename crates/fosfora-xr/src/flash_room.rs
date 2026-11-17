@@ -2041,3 +2041,269 @@ fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
     }
     assert!(failed.is_empty(), "over three flashes: {failed:?}");
 }
+
+// ---- The bars against the analysis (board #5532) -------------------------
+
+/// The spectrum's bars over a source, frame by frame, two ways: as the
+/// analysis makes them (the canvas on the mel bands as they come) and as
+/// the limiter shows them (the canvas on the limited mel bands, followed,
+/// in `app.rs`'s order).
+struct BarRun {
+    raw: Vec<[f32; DEFAULT_BARS]>,
+    shown: Vec<[f32; DEFAULT_BARS]>,
+    /// Beats the analysis fired, and those the limiter let through.
+    beats: (u32, u32),
+    /// The direction's turns.
+    turns: u32,
+}
+
+fn bar_run(source: &mut dyn Source) -> BarRun {
+    use crate::flash::{Triggers, follower};
+    let mut limiter = Limiter::new(true);
+    let mut free = Canvas::new(DEFAULT_BARS, 1.0);
+    let mut limited = Canvas::new(DEFAULT_BARS, 1.0);
+    let (mut beat_env, mut downbeat_env) = (0.0f32, 0.0f32);
+    let mut run = BarRun {
+        raw: Vec::new(),
+        shown: Vec::new(),
+        beats: (0, 0),
+        turns: 0,
+    };
+    let mut phase = limiter.phase();
+    let dt = 1.0 / FPS;
+    for n in 0..(source.duration() * FPS).floor() as usize {
+        let hop = source.at(n as f64 / FPS, dt);
+        let dt = dt as f32;
+        let gate = limiter.begin(
+            dt,
+            Triggers {
+                beat: hop.beat,
+                downbeat: hop.downbeat,
+                drop: hop.drop,
+            },
+        );
+        run.beats.0 += u32::from(hop.beat);
+        run.beats.1 += u32::from(gate.beat);
+        run.turns += u32::from(limiter.phase() != phase);
+        phase = limiter.phase();
+        let mut f = hop.features;
+        limiter.features(f.as_slice_mut(), dt, gate);
+        let mut mel = hop.mel;
+        limiter.mel(&mut mel, dt);
+        if gate.beat {
+            beat_env = 1.0;
+        }
+        beat_env *= (-dt * 6.0).exp();
+        downbeat_env = surface_fx::downbeat_step(downbeat_env, gate.downbeat, dt);
+        limiter.follow(follower::BEAT_ENV, beat_env);
+        limiter.follow(follower::DOWNBEAT_ENV, downbeat_env);
+        free.update(dt, &hop.mel);
+        limited.update(dt, &mel);
+        let mut shown = [0.0; DEFAULT_BARS];
+        shown.copy_from_slice(limited.heights());
+        limiter.follow_all(follower::BARS, &mut shown);
+        limiter.follow(follower::BAR_GLOW, limited.glow());
+        let mut raw = [0.0; DEFAULT_BARS];
+        raw.copy_from_slice(free.heights());
+        run.raw.push(raw);
+        run.shown.push(shown);
+    }
+    run
+}
+
+/// The frames at which a series has risen `delta` from its last low: a
+/// zigzag with that threshold, as the limiter counts a level's hits.
+fn rises(series: impl Iterator<Item = f32>, delta: f32) -> Vec<usize> {
+    let mut out = Vec::new();
+    let (mut rising, mut ext) = (true, f32::MAX);
+    for (n, x) in series.enumerate() {
+        if n == 0 {
+            ext = x;
+        } else if rising {
+            if x > ext {
+                ext = x;
+            } else if ext - x >= delta {
+                (rising, ext) = (false, x);
+            }
+        } else if x < ext {
+            ext = x;
+        } else if x - ext >= delta {
+            (rising, ext) = (true, x);
+            out.push(n);
+        }
+    }
+    out
+}
+
+/// Pearson's correlation of two series; 0 where either stands still.
+fn correlation(a: &[f32], b: &[f32]) -> f64 {
+    let n = a.len().min(b.len()) as f64;
+    let mean = |v: &[f32]| v.iter().map(|&x| f64::from(x)).sum::<f64>() / n;
+    let (ma, mb) = (mean(a), mean(b));
+    let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
+    for (&x, &y) in a.iter().zip(b) {
+        let (x, y) = (f64::from(x) - ma, f64::from(y) - mb);
+        ab += x * y;
+        aa += x * x;
+        bb += y * y;
+    }
+    if aa < 1e-12 || bb < 1e-12 {
+        0.0
+    } else {
+        ab / (aa * bb).sqrt()
+    }
+}
+
+/// What a run's bars say (the fields' docs).
+#[derive(Debug, Clone, Copy, Default)]
+struct BarStats {
+    /// Rises of the raw bars over the threshold.
+    rises: usize,
+    /// The delay from a raw bar's rise to the shown bar's (ms): the median
+    /// and the 95th percentile over the rises the shown bar made.
+    median_ms: f64,
+    p95_ms: f64,
+    /// The share of raw rises the shown bar made more than 50 ms late or
+    /// not at all before the raw bar's next rise (or a second), and the
+    /// share it never made.
+    late: f64,
+    lost: f64,
+    /// The mean correlation between two different bars' heights, raw and
+    /// shown, and between their changes from frame to frame.
+    alike: (f64, f64),
+    alike_moves: (f64, f64),
+    /// The mean correlation between a bar as the analysis makes it and the
+    /// same bar shown.
+    tracks: f64,
+    /// The share of a raw bar's frames at the top of its strip (0.98 and
+    /// up) and at the bottom (0.02 and under).
+    pinned: (f64, f64),
+}
+
+fn bar_stats(raw: &[[f32; DEFAULT_BARS]], shown: &[[f32; DEFAULT_BARS]], delta: f32) -> BarStats {
+    let bar = |v: &[[f32; DEFAULT_BARS]], b: usize| v.iter().map(|f| f[b]).collect::<Vec<f32>>();
+    let moves = |v: &[f32]| v.windows(2).map(|w| w[1] - w[0]).collect::<Vec<f32>>();
+    let raws: Vec<Vec<f32>> = (0..DEFAULT_BARS).map(|b| bar(raw, b)).collect();
+    let showns: Vec<Vec<f32>> = (0..DEFAULT_BARS).map(|b| bar(shown, b)).collect();
+    let mut delays = Vec::new();
+    let (mut all, mut late, mut lost) = (0usize, 0usize, 0usize);
+    let second = FPS as usize;
+    for b in 0..DEFAULT_BARS {
+        let a = rises(raws[b].iter().copied(), delta);
+        let s = rises(showns[b].iter().copied(), delta);
+        for (k, &at) in a.iter().enumerate() {
+            let until = a.get(k + 1).map_or(at + second, |&n| n.min(at + second));
+            all += 1;
+            match s.iter().find(|&&n| n + 2 >= at && n < until) {
+                Some(&n) => {
+                    let ms = n.saturating_sub(at) as f64 / FPS * 1000.0;
+                    late += usize::from(ms > 50.0);
+                    delays.push(ms);
+                }
+                None => {
+                    late += 1;
+                    lost += 1;
+                }
+            }
+        }
+    }
+    delays.sort_by(f64::total_cmp);
+    let pct = |p: f64| {
+        delays
+            .get(((delays.len() as f64 - 1.0) * p).round() as usize)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let pairs = |v: &[Vec<f32>]| {
+        let (mut sum, mut n) = (0.0, 0);
+        for i in 0..v.len() {
+            for j in i + 1..v.len() {
+                sum += correlation(&v[i], &v[j]);
+                n += 1;
+            }
+        }
+        sum / f64::from(n)
+    };
+    let (raw_moves, shown_moves): (Vec<_>, Vec<_>) = (
+        raws.iter().map(|v| moves(v)).collect(),
+        showns.iter().map(|v| moves(v)).collect(),
+    );
+    let cells = (raw.len() * DEFAULT_BARS) as f64;
+    let share =
+        |test: fn(f32) -> bool| raw.iter().flatten().filter(|&&h| test(h)).count() as f64 / cells;
+    BarStats {
+        rises: all,
+        median_ms: pct(0.5),
+        p95_ms: pct(0.95),
+        late: late as f64 / all.max(1) as f64,
+        lost: lost as f64 / all.max(1) as f64,
+        alike: (pairs(&raws), pairs(&showns)),
+        alike_moves: (pairs(&raw_moves), pairs(&shown_moves)),
+        tracks: raws
+            .iter()
+            .zip(&showns)
+            .map(|(a, b)| correlation(a, b))
+            .sum::<f64>()
+            / DEFAULT_BARS as f64,
+        pinned: (share(|h| h >= 0.98), share(|h| h <= 0.02)),
+    }
+}
+
+/// The dumps in `FOSFORA_FLASH_DUMPS` (`*.bin`), sorted, by name.
+fn dumps() -> Vec<(String, std::path::PathBuf)> {
+    let Some(dir) = std::env::var_os("FOSFORA_FLASH_DUMPS") else {
+        eprintln!("FOSFORA_FLASH_DUMPS unset: no songs");
+        return Vec::new();
+    };
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .expect("the dumps' directory")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "bin"))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|p| {
+            let name = p.file_stem().map(|s| s.to_string_lossy().into_owned());
+            (name.unwrap_or_default(), p)
+        })
+        .collect()
+}
+
+/// The bars of the dumped songs as the analysis makes them against the
+/// bars the limiter shows: the table of board #5532. No GPU; nothing runs
+/// without the dumps.
+#[test]
+#[ignore = "needs song dumps"]
+fn the_bars_of_the_dumped_songs_against_the_analysis() {
+    eprintln!(
+        "| song | beats fired | let through | turns a second | raw rises | delay median ms | p95 ms | over 50 ms or never | never | bars alike raw | shown | moves alike raw | shown | shown tracks raw | raw at the top | at the bottom |"
+    );
+    eprintln!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    for (name, path) in dumps() {
+        let mut dump = Dump::read(&path).expect("a dump");
+        let secs = dump.duration();
+        let run = bar_run(&mut dump);
+        for delta in [0.1, 0.3] {
+            let s = bar_stats(&run.raw, &run.shown, delta);
+            eprintln!(
+                "| {name} ({delta}) | {} | {} | {:.1} | {} | {:.0} | {:.0} | {:.0} % | {:.0} % | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.0} % | {:.0} % |",
+                run.beats.0,
+                run.beats.1,
+                f64::from(run.turns) / secs,
+                s.rises,
+                s.median_ms,
+                s.p95_ms,
+                100.0 * s.late,
+                100.0 * s.lost,
+                s.alike.0,
+                s.alike.1,
+                s.alike_moves.0,
+                s.alike_moves.1,
+                s.tracks,
+                100.0 * s.pinned.0,
+                100.0 * s.pinned.1,
+            );
+        }
+    }
+}
