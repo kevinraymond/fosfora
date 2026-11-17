@@ -210,6 +210,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       setting, "Limit flashing" in the hand menu, on unless they turn it off, and this knob at 0 or 1 overrides
     //       that setting while it is set, for an A/B and for unworn runs; unset, the setting rules; the log says which
     //       of the two decided, at launch and on each change; live: polled once a second)
+    //   adb shell setprop debug.fosfora.flashask 1     (board #5534, flash_choice.rs: the flash question again this launch, on
+    //       an install that has answered it, for a capture or a worn check of the card; an answer is saved over the old
+    //       one, no answer leaves the file as it was; debug.fosfora.begin 1 still skips it; read at launch)
     //   adb shell setprop debug.fosfora.playperf lowlatency|none   (AAudio performance mode of the playback
     //       output; default lowlatency: 36 ms to the speaker on the Quest 3 against 140-215 ms for none)
     //   adb shell setprop debug.fosfora.playbuf <ms>   (playback output buffer; default 84 ms in lowlatency so the
@@ -422,7 +425,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       card and no wait for the wearer, for unworn runs and measurements; the music and the opening start as they did before the
     //       card; unset, every launch waits for a pinch, a spoken "begin" or 60 s of the card; read at launch and polled once a second
     //       while the show waits, so setting it also begins a launch that is waiting; logged `first run: the show begins (...)`;
-    //       board #5531: while the show waits the hand menu does not come, by the palm or by voice, and nothing is thrown or lifted)
+    //       board #5531: while the show waits the hand menu does not come, by the palm or by voice, and nothing is thrown or lifted;
+    //       board #5534: it skips the flash question too and saves no answer, so the limit is on unless the file or the
+    //       flashlimit knob says otherwise; set while the question is up, it ends the question the same way)
     //   adb shell setprop debug.fosfora.hints 1                  (board #5452: the first run's three hints again this launch: what
     //       hand_menu.json saved as taught is left out, and the hints show without a hand having been tracked, so they can be captured
     //       unworn; a hint made or given up in such a launch is saved, and the file then holds only what that launch taught; read at
@@ -1845,6 +1850,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut begin_knob = debug_prop("debug.fosfora.begin").as_deref() == Some("1");
     let mut spoken_begin = false;
     let mut begin_pinch = crate::first_run::HeldPinches::default();
+    // Board #5534: the flash question (`flash_choice.rs`), the first card
+    // of a launch where the wearer has not chosen, before "Pinch to
+    // begin". `spoken_flash` is a spoken answer, taken on the next frame
+    // as `spoken_begin` is. `question_pose` is the question card's pose
+    // and layout while it is the label showing, which the hands answer
+    // against on the next frame.
+    let flashask_knob = debug_prop("debug.fosfora.flashask").as_deref() == Some("1");
+    let mut flash_ask =
+        crate::flash_choice::Ask::at_launch(menu_saved.limit_flashing, begin_knob, flashask_knob);
+    info!(
+        "{}",
+        flash_ask.launch_line(menu_saved.limit_flashing, begin_knob, flashask_knob)
+    );
+    let mut spoken_flash: Option<crate::flash_choice::Answer> = None;
+    let mut question_pose: Option<(crate::label::Billboard, crate::label::Layout)> = None;
     let mut card_ready = false;
     let mut card_follow = crate::voice::Follow::centered(glam::Quat::IDENTITY);
     let mut card_shown = false;
@@ -2574,16 +2594,63 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .map(|h| input.hands.pinch_began[h] && !panel_up && !swallowed[h]),
                     thumb_tap: input.micro.tap,
                 };
+                // Board #5534: while the flash question is up the begin
+                // card is not, so the wait is handed no card and no start
+                // gesture: the pinch that answers does not begin the show.
+                let asking = flash_ask.asking();
                 let begun = wait.step(
                     dt,
-                    crate::first_run::WaitInput {
-                        ready: card_ready,
-                        gesture: crate::first_run::start_gesture(&edges),
-                        spoken: spoken_begin,
-                        music: music.wanted(),
-                        knob: begin_knob,
-                    },
+                    crate::flash_choice::wait_input(
+                        asking,
+                        crate::first_run::WaitInput {
+                            ready: card_ready,
+                            gesture: crate::first_run::start_gesture(&edges),
+                            spoken: spoken_begin,
+                            music: music.wanted(),
+                            knob: begin_knob,
+                        },
+                    ),
                 );
+                // The question: a pinch with its hand over an answer, as
+                // the wearer sees the card, a spoken answer, its own 60 s,
+                // or the show begun another way. Only an answer is saved;
+                // without one the limit stays on.
+                if asking {
+                    let head = glam::Vec3::from(input.head);
+                    let over = [0, 1].map(|h| {
+                        let (card, laid) = question_pose.as_ref()?;
+                        let point = glam::Vec3::from(input.hands.pinch_point[h]?);
+                        crate::flash_choice::over(head, card, laid, point)
+                    });
+                    let outcome = flash_ask.step(
+                        dt,
+                        crate::flash_choice::AskInput {
+                            shown: question_pose.is_some(),
+                            over,
+                            pinch_began: edges.pinch_began,
+                            spoken: spoken_flash,
+                            begun: begun.is_some(),
+                        },
+                    );
+                    if let Some(outcome) = outcome {
+                        info!("{}", outcome.line());
+                        if let Some(answer) = outcome.answer() {
+                            menu_saved.limit_flashing = Some(answer.limits());
+                            save_hand_menu(&menu_file, menu_saved);
+                            controls.flash_limit = answer.limits();
+                            sync_flash_limit(
+                                &mut flash_limit,
+                                &mut flash_by,
+                                menu_saved.limit_flashing,
+                            );
+                        }
+                        // The pinch that answered ticks, as the one that
+                        // begins does; a spoken answer already sounded.
+                        if let crate::flash_choice::Outcome::Hand { .. } = outcome {
+                            crate::ui_sound::play(crate::ui_sound::Cue::Press);
+                        }
+                    }
+                }
                 if let Some(why) = begun {
                     info!("{}", why.line());
                     let clip = launch_clip.take();
@@ -2607,6 +2674,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             spoken_begin = false;
+            spoken_flash = None;
             // While the show waits no pinch is a gesture: nothing is
             // thrown and the cloud stays where it is. Board #5531: nor is
             // a pinch closed during the wait, until it opens.
@@ -4114,8 +4182,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // for the anchors, so it works with no room.
             if frame_index.is_multiple_of(72) {
                 let say = system_prop("debug.fosfora.say");
-                let begins =
-                    wait.waiting() && say.as_deref().is_some_and(crate::intent::asks_to_begin);
+                // Board #5534: nor does one that answers the flash
+                // question.
+                let begins = wait.waiting()
+                    && say.as_deref().is_some_and(|said| {
+                        crate::intent::asks_to_begin(said)
+                            || (flash_ask.asking() && crate::intent::answers_flash(said).is_some())
+                    });
                 if let Some(said) =
                     say_knob.poll(say.as_deref(), has_room && input.room_id.is_none() && !begins)
                 {
@@ -4169,10 +4242,24 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 crate::intent::BEGUN_REPLY.to_owned()
                             };
                         }
+                        // Board #5534: while the flash question is up, a
+                        // spoken "limit flashing" or "full show" is its
+                        // answer, taken on the next frame. After it the
+                        // same words are the menu row's press.
+                        if let crate::intent::Intent::FlashLimit(on) = *intent
+                            && flash_ask.asking()
+                        {
+                            spoken_flash = Some(crate::flash_choice::Answer::from_limit(on));
+                            return crate::intent::flash_limit_reply(on).to_owned();
+                        }
                         // Board #5531: nor does the voice bring the menu
                         // while the show waits.
                         if *intent == crate::intent::Intent::Menu(true) && !wait.live().menu {
-                            return crate::first_run::menu_waits_reply();
+                            return if flash_ask.asking() {
+                                crate::flash_choice::MENU_WAITS.to_owned()
+                            } else {
+                                crate::first_run::menu_waits_reply()
+                            };
                         }
                         hidden_reply(surface, intent).unwrap_or_else(|| {
                             apply_intent(
@@ -4516,9 +4603,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // while no hand has been tracked. It floats at the center
                 // of the view and follows the head as the voice label
                 // does.
+                // Board #5534: while the flash question is open the card
+                // is the question, its fifth line naming the answer a hand
+                // has dwelt over.
                 card_ready = scan_label.now().is_none();
                 let card = wait.card_up(card_ready).then(|| {
-                    crate::first_run::card_text(hands_hint_on && hands_hint.under_card())
+                    let no_hands = hands_hint_on && hands_hint.under_card();
+                    if flash_ask.asking() {
+                        crate::flash_choice::card_text(flash_ask.armed(), no_hands)
+                    } else {
+                        crate::first_run::card_text(no_hands)
+                    }
                 });
                 match (&card, card_shown) {
                     (Some(text), shown) => {
@@ -4563,6 +4658,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // label, and the voice's and the editor's cover it (its
                 // hold counts only while it shows).
                 immerse_label_busy = shown.is_some();
+                // Board #5534: the question card's pose and layout while
+                // it is the label showing, for the hands' answer on the
+                // next frame. Under another label it takes no pinch and
+                // its 60 s do not count.
+                question_pose = card
+                    .as_deref()
+                    .filter(|_| flash_ask.asking() && shown.is_none())
+                    .map(|text| {
+                        (
+                            card_follow.billboard(head, head_rot),
+                            crate::label::layout(text),
+                        )
+                    });
                 // Board #5452: the begin card where the opening's message
                 // will be, while the show waits. Board #5461: the
                 // controllers label after the message, so it never holds

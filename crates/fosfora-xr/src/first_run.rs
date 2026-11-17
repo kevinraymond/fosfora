@@ -18,6 +18,13 @@
 //! been up [`WAIT_MAX_S`] and nobody answered it, so nobody is stuck in
 //! front of it. `debug.fosfora.begin 1` begins at once, for unworn runs.
 //!
+//! **Before the card, once** (board #5534, `flash_choice.rs`). On a launch
+//! where the wearer has not chosen whether to limit flashing, the card is
+//! first the warning and that question. While it is up the wait is handed
+//! no card and no start gesture (`flash_choice::wait_input`), so its
+//! [`WAIT_MAX_S`] start when the question is over, and the pinch that
+//! answers does not begin the show.
+//!
 //! **The start gesture** ([`start_gesture`], [`START_WORD`]) is a pinch.
 //! That function and that word are the only places that say so.
 //!
