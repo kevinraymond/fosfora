@@ -1479,12 +1479,12 @@ scenery". They come after Mirror in the cycle.
 
 | kind | Flint | Contour |
 | --- | --- | --- |
-| table | shards, warm white, rms, 1, edges standing | none, warm white, rms, 1, edges on the face |
+| table | shards in one color, warm white, rms, 1, edges standing | none, warm white, rms, 1, edges on the face |
 | floor | tessera, blue, rms, 1, edges on the face | contours, green, rms, 1, edges off |
-| wall | bezel, blue, rms, 1, edges on the face | contours, green, rms, 1, edges off |
-| ceiling | none, warm white, rms, 1, edges on the face | contours, green, rms, 1, edges off |
+| wall | shards in one color, own (untinted), rms, 1, edges on the face | contours, green, rms, 1, edges off |
+| ceiling | shards in one color, warm white, rms, 0.4, edges on the face | contours, green, rms, 1, edges off |
 | frame | reticle, amber, rms, 1, edges on the face | none, warm white, rms, 1, edges on the face |
-| other | shards, amber, rms, 1, edges standing | curls, warm white, rms, 0.4, edges on the face |
+| other | shards in one color, amber, rms, 1, edges standing | curls, warm white, rms, 0.4, edges on the face |
 
 *Flint* is built from the catalogue's angular looks, each chosen for what
 it does on a drum. The eight dumped songs (110 to 185 BPM; none is rock,
@@ -1492,38 +1492,74 @@ and the two nearest the rock track's 104 BPM are at 110 and 115) have a
 kick every 0.2 to 0.65 s whose level halves in 70 to 150 ms, and a snare
 that reads as a high onset with little kick.
 
-- **Tables and other surfaces: shards.** Its cell edges are lit by
-  `1 + 2 bass + 3 kick`, so they sit near 3 between kicks and jump to 4.0
-  to 4.7 on one, then fall back with the kick. A snare's onset (0.6 to
-  0.8) shifts the cell centers by a fifth of a cell and does not brighten
-  them: the cells crack on the snare and flash on the kick. Sustained
-  energy shows as the cells' fill, which follows the rms and never drops
-  out. Warm white on the tables, amber on the rest.
+- **The walls and the ceiling: shards.** A seated or lying wearer sees
+  mostly walls and ceiling, so the facets are there. The cell edges are
+  lit by `1 + 2 bass + 3 kick`, so they sit near 3 between kicks and jump
+  to 4.0 to 4.7 on one, then fall back with the kick. A snare's onset (0.6
+  to 0.8) shifts the cell centers by a fifth of a cell and does not
+  brighten them: the cells crack on the snare and flash on the kick.
+  Sustained energy shows as the cells' fill, which follows the rms and
+  never drops out. A wall 2.45 m high shows seven cells up its height,
+  about 35 cm each.
+- **The ceiling at 0.4.** Shards move their cell edges with the onsets,
+  which the flash limit cannot hold to its direction: a position, not a
+  light. The ceiling is the nearest face (1.25 m over a seated eye), so a
+  cell there (54 cm) is wider than the 10 degrees the rule counts in and
+  an edge crossing a region is a change of its light. At full strength
+  the ceiling took one dumped song to 3.5 flashes a second in one region
+  overhead and three more to 3. At 0.5 the worst was 3 on one song and
+  2.5 on the rest. A wall this close to a chair would do the same.
+- **Steel, not stained glass** (`Look::mono`, `Port::mono`). Shards' own
+  fills are magenta and green. Flint draws every shards in one color: the
+  effect's `saturation` input at 0, so the cells are gray with white
+  edges, and the look's color tints them. The walls' are untinted, the
+  ceiling's and the tables' warm white, other things' amber. It is asked
+  per kind by the theme and follows the saved theme's name, as the edges
+  do, so nothing new is in the room file. Classic's shards, a hand-picked
+  shards in any other room and a Flint surface edited to another look
+  draw as before.
+- **Tables and other surfaces: shards** too, warm white on the tables and
+  amber on the rest.
 - **The floor: tessera.** A grid of tiles that opens from the center over
   four bars. Its lines carry a hit that decays across each beat
   (`exp(-6 x beat phase)`) and a harder one on the bar. It reads the bar's
   clock, not the kick, so it holds its pulse through a passage with no
-  drums. Steel blue.
-- **The walls: bezel.** Corner brackets, an inset rule, tick marks and
-  faint scanlines across the whole wall, so every wall is ruled with
-  straight lines. Its stroke thickens on the beat and the bar and falls
-  back, and its corner meters ride four bands, so the guitar's sustained
-  energy stands in them as held bars. Steel blue.
+  drums. Blue. Its palette turns with the bar's phase, so under the tint
+  it dims and brightens once a bar. Nothing in the effect or the port
+  holds it still, and none was added.
 - **Frames: the reticle.** Crosshairs that take a new place every bar,
   with a bracket that closes on each beat. Amber, the one hot color.
-- **The ceiling: nothing**, with its outline on the face in warm white.
-  Nothing on its list is angular but the two looks held back.
 - **Edges.** On the face for the floor, the walls, the ceiling and the
   frames, so the room's own corners are lit lines. Standing on tables and
   other surfaces: a fence of spikes on each rim.
 
-Tried and left out: prism, the other angular look on a table's and a
-floor's list. It turns and swells with the bass, which is the opposite of
-a hit that cuts off, and before the limiter it is the catalogue's hardest
-flasher (12 to 16 general flashes a second on the dumped songs, against
-shards' 2.5 to 4). Bezel on frames was left for the reticle, since the walls
-already carry bezel. Astrolabe and fenestra are held back and were not
-considered.
+Shards were not on a wall's or a ceiling's list. They are now, after
+those kinds' other ports and before the contours: a list entry each and
+their tests, no new shader. The on-device model's spec was written before,
+so it does not offer shards there; the grammar does.
+
+*What the walls cost.* Not measured on the headset. Shards are the
+cheapest of the eight ports per fragment: 1.2 ms over a full view of one
+face in D2b, against Aurora's 1.5 (`MEASURED.md`, D2b, drawn in the eye
+pass then). The Aurora theme runs a port on every wall, the ceiling and
+the floor, the same faces Flint lights, and costs 0.3 to 0.4 ms of App
+over a room with none in the faces layer (`MEASURED.md`, Themes and
+Aurora as one sky). Shards' cost does not fall with a larger cell: every
+fragment looks at nine cells whatever their size. So expect Flint at
+Aurora's cost or a little under.
+
+A first version (Nov 16) had bezel on the walls, nothing on the ceiling
+and shards in their own colors on the tables. Bezel is a border: a 4 m
+wall was dark with chrome at its rim, the ceiling was empty, and the one
+surface with facets was a table in magenta and green. Tried and left out:
+prism, the other angular look on a table's and a floor's list. It turns
+and swells with the bass, which is the opposite of a hit that cuts off,
+and before the limiter it is the catalogue's hardest flasher (12 to 16
+general flashes a second on the dumped songs). Tessera on the ceiling was
+considered for a grid above and below. Shards went there instead: alone
+on every surface they flash least of the ports with the limiter on, and
+tessera reaches the limit on two of the songs. Astrolabe and fenestra are
+held back and were not considered.
 
 *Contour* is the contours on the room's three planes, one landscape in
 green rising to warm white, with the edge bars off there as on Aurora's

@@ -76,7 +76,8 @@ use crate::surfaces::Face;
 /// its `.pfx`, both the core's files, the float inputs a surface runs at
 /// another value than the `.pfx`'s default (name, value), whether it draws
 /// the sky (`sky.rs`), the float inputs its reflection on a floor runs at
-/// besides those, and whether the music moves its shapes.
+/// besides those, whether the music moves its shapes, and the float inputs
+/// it runs at where a theme asks for it in one color.
 #[derive(Debug, Clone, Copy)]
 pub struct Port {
     pub name: &'static str,
@@ -89,6 +90,12 @@ pub struct Port {
     /// structure), not only its light: its uniform then takes the levels
     /// the flash limit lets glide (`flash::Limiter::glided`, board #5451).
     pub shapes: bool,
+    /// The float inputs that take its own hues away, so the surface's
+    /// color alone tints it (board #5533). A theme asks per kind
+    /// (`themes::Look::mono`); everywhere else, a hand-picked look
+    /// included, it runs as its `.pfx` has it. Empty: it has no such
+    /// input, and runs the same either way.
+    pub mono: &'static [(&'static str, f32)],
 }
 
 impl Port {
@@ -117,6 +124,7 @@ macro_rules! port {
             sky: false,
             reflection: &[],
             shapes: true,
+            mono: &[],
         }
     };
 }
@@ -137,7 +145,12 @@ pub const PORTS: [Port; 8] = [
         ..port!("aurora")
     },
     port!("prism"),
-    port!("shards"),
+    // Board #5533: without their saturation the cells are gray with white
+    // edges, for a theme that wants them as steel.
+    Port {
+        mono: &[("saturation", 0.0)],
+        ..port!("shards")
+    },
     port!("astrolabe"),
     port!("bezel"),
     port!("fenestra"),
@@ -434,6 +447,8 @@ mod core_side {
         defaults: [f32; 16],
         /// The slots the reflection runs at another value, and the value.
         reflection: Vec<(usize, f32)>,
+        /// The slots it runs at another value in one color ([`Port::mono`]).
+        mono: Vec<(usize, f32)>,
         rates: RateState,
         params: [f32; 16],
     }
@@ -472,12 +487,19 @@ mod core_side {
             };
             set(&mut store, port.overrides)?;
             let defaults = store.pack_to_buffer();
+            let changed = |packed: [f32; 16]| -> Vec<(usize, f32)> {
+                (0..16)
+                    .filter(|&i| packed[i].to_bits() != defaults[i].to_bits())
+                    .map(|i| (i, packed[i]))
+                    .collect()
+            };
+            let mut plain = ParamStore::new();
+            plain.load_from_defs(&pfx.inputs);
+            set(&mut plain, port.overrides)?;
+            set(&mut plain, port.mono)?;
+            let mono = changed(plain.pack_to_buffer());
             set(&mut store, port.reflection)?;
-            let reflected = store.pack_to_buffer();
-            let reflection = (0..16)
-                .filter(|&i| reflected[i].to_bits() != defaults[i].to_bits())
-                .map(|i| (i, reflected[i]))
-                .collect();
+            let reflection = changed(store.pack_to_buffer());
             let slots =
                 rates::layout(&pfx.inputs, &pfx.rates).map_err(|e| anyhow!("{name}.pfx: {e}"))?;
             Ok(Self {
@@ -487,6 +509,7 @@ mod core_side {
                     .with_context(|| format!("{name}.wgsl"))?,
                 defaults,
                 reflection,
+                mono,
                 rates: RateState::new(slots),
                 params: defaults,
             })
@@ -511,6 +534,20 @@ mod core_side {
             let mut p = self.params;
             for &(i, v) in &self.reflection {
                 p[i] = v;
+            }
+            p
+        }
+    }
+
+    impl Effect {
+        /// Its `u.params` this frame in one color: this frame's, with
+        /// [`Port::mono`]'s inputs set, when `mono`; else this frame's.
+        pub fn params_in(&self, mono: bool) -> [f32; 16] {
+            let mut p = self.params;
+            if mono {
+                for &(i, v) in &self.mono {
+                    p[i] = v;
+                }
             }
             p
         }
@@ -911,6 +948,24 @@ mod tests {
         for e in &effects[1..] {
             assert_close!(e.reflection_params(), e.params(), "{}", e.name);
         }
+        // Board #5533: in one color, shards run without their saturation
+        // (slot 3, 0.5 in the `.pfx`) and are otherwise this frame's; asked
+        // or not, every other port runs as it does, and so do shards when
+        // not asked.
+        for (e, port) in effects.iter().zip(PORTS) {
+            assert_close!(e.params_in(false), e.params(), "{}", e.name);
+            assert_eq!(port.mono.is_empty(), port.name != "shards", "{}", e.name);
+            if port.mono.is_empty() {
+                assert_close!(e.params_in(true), e.params(), "{}", e.name);
+            }
+        }
+        let shards = &effects[2];
+        assert_eq!(shards.name, "shards");
+        assert_close!(shards.params()[..4], [0.5, 0.5, 0.3, 0.5]);
+        assert_close!(shards.params_in(true)[..4], [0.5, 0.5, 0.3, 0.0]);
+        let mut wrong = PORTS[2];
+        wrong.mono = &[("missing", 0.0)];
+        assert!(Effect::new(&loader, &wrong).is_err());
     }
 
     #[test]

@@ -5268,9 +5268,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                     _ => (face, crate::sky::Edges::OPEN),
                                 };
                                 let (resolution, params) = match map {
+                                    // Board #5533: in one color where
+                                    // the room's theme asks it of the kind.
                                     Map::Face => (
                                         crate::surface_port::resolution(face.half),
-                                        effect.params(),
+                                        effect.params_in(crate::themes::mono(
+                                            light_theme,
+                                            kind,
+                                            behavior,
+                                        )),
                                     ),
                                     Map::Sky => (crate::sky::RESOLUTION, effect.params()),
                                     Map::Reflection => {

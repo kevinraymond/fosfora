@@ -52,17 +52,23 @@
 //!   so nothing opens under a seated wearer's feet. Warm white on the walls
 //!   and the ceiling, blue on the rest.
 //! - **Flint** (board #5533): hardness and angles, for music with drums
-//!   and distortion. Every look is one of the catalogue's angular ones,
-//!   each of which hits with the drums and falls back within a beat. The
-//!   floor is tessera's grid of tiles, the walls bezel's brackets, rules
-//!   and scanlines, both steel blue with their edge bars on the face, so
-//!   the room's own corners are lit lines. The ceiling runs nothing and
-//!   keeps its outline, warm white. Tables are shards, warm white: cells
-//!   whose edges jump with the kick. Frames take the reticle and other
-//!   surfaces shards, both amber, the one hot color. Tables and other
-//!   surfaces stand their edge bars up, a fence of spikes on each rim.
-//!   Prism is angular too and was left out: it turns and swells, and it
-//!   is the catalogue's hardest flasher before the limiter.
+//!   and distortion. Its character is where a seated or lying wearer
+//!   looks: the walls and the ceiling are shards, cells whose edges jump
+//!   with the kick, drawn in one color ([`Look::mono`]) so the facets are
+//!   gray with white edges, steel, and not the effect's own stained
+//!   glass. The walls' are untinted and the ceiling's warm white, at 0.4:
+//!   the ceiling is the nearest face, a cell there is wider than the 10
+//!   degrees the flash rule counts in, and at full strength its edges
+//!   moving with the onsets took one song over three flashes. The
+//!   floor is tessera's grid of tiles, blue. Tables are shards too, warm
+//!   white. Frames take the reticle and other surfaces shards, both
+//!   amber, the one hot color. The edge bars are on the face of the
+//!   room's planes and of the frames, so the room's own corners are lit
+//!   lines, and stand on tables and other surfaces, a fence of spikes on
+//!   each rim. A first version had bezel on the walls and nothing on the
+//!   ceiling: bezel is a border, so the walls were dark with chrome at
+//!   their rim. Prism is angular too and was left out: it turns and
+//!   swells, and it is the catalogue's hardest flasher before the limiter.
 //! - **Contour** (board #5533): gentle rolling scenery, for music that
 //!   swells and has no drum to hit. Walls, the ceiling and the floor run
 //!   the contours (`surface_fx.rs`): one landscape's contour lines round
@@ -76,8 +82,8 @@
 //! Every band is the behavior's own ([`SurfaceBehavior::default_band`]):
 //! the rms for the flows, the bass for the rings and the pulse, as Drift
 //! asks; a band per theme waits for signal dumps of real songs to choose it
-//! by. Every strength is 1 but Drift's frames and Contour's other
-//! surfaces.
+//! by. Every strength is 1 but Drift's frames, Contour's other surfaces
+//! and Flint's ceiling.
 //!
 //! No theme adds a behavior but Contour, whose look was made with it; it
 //! is in the catalogue like any other and a hand can put it on a surface.
@@ -113,6 +119,11 @@ pub struct Look {
     /// How the edge bars draw this kind's edges (board #5431). Not saved:
     /// it follows the saved theme's name.
     pub edges: Mode,
+    /// A ported effect drawn without its own hues, so the look's color
+    /// alone tints it (board #5533, `surface_port::Port::mono`). Not
+    /// saved: like the edges it follows the saved theme's name
+    /// ([`mono`]), so a look picked by hand keeps its own colors.
+    pub mono: bool,
 }
 
 impl Look {
@@ -129,7 +140,14 @@ impl Look {
             band,
             strength,
             edges,
+            mono: false,
         }
+    }
+
+    /// This look in one color ([`Self::mono`]).
+    const fn in_one_color(mut self) -> Self {
+        self.mono = true;
+        self
     }
 
     /// The lane's two spare values for this look as the room file keeps
@@ -286,12 +304,14 @@ impl Theme {
             // planes, warm white on the tables and the ceiling's outline,
             // amber on the rest.
             Self::Flint => match kind {
-                KIND_TABLE => look(B::Shards, WARM_WHITE, BAND_RMS, 1.0, Mode::Standing),
+                KIND_TABLE => {
+                    look(B::Shards, WARM_WHITE, BAND_RMS, 1.0, Mode::Standing).in_one_color()
+                }
                 KIND_FLOOR => look(B::Tessera, BLUE, BAND_RMS, 1.0, face),
-                KIND_WALL => look(B::Bezel, BLUE, BAND_RMS, 1.0, face),
-                KIND_CEILING => look(B::None, WARM_WHITE, BAND_RMS, 1.0, face),
+                KIND_WALL => look(B::Shards, 0, BAND_RMS, 1.0, face).in_one_color(),
+                KIND_CEILING => look(B::Shards, WARM_WHITE, BAND_RMS, 0.4, face).in_one_color(),
                 KIND_FRAME => look(B::Reticle, AMBER, BAND_RMS, 1.0, face),
-                _ => look(B::Shards, AMBER, BAND_RMS, 1.0, Mode::Standing),
+                _ => look(B::Shards, AMBER, BAND_RMS, 1.0, Mode::Standing).in_one_color(),
             },
             // Board #5533: one landscape round the room, its edges off so
             // nothing cuts it at a corner; what stands in it calm, in the
@@ -365,6 +385,17 @@ impl Theme {
 /// saved (board #5447), so it has one.
 pub fn edge_mode(theme: Option<Theme>, kind: u32) -> Mode {
     theme.map_or(Mode::Face, |t| t.edges(kind))
+}
+
+/// Whether a surface of `kind` running `behavior` draws it in one color
+/// (board #5533, [`Look::mono`]) in a room whose saved theme is `theme`:
+/// the theme asks it of the kind, and the surface still runs the theme's
+/// look for the kind. A surface edited to another look, a room with no
+/// theme and every other theme draw each look in its own colors.
+pub fn mono(theme: Option<Theme>, kind: u32, behavior: SurfaceBehavior) -> bool {
+    theme
+        .and_then(|t| t.look(kind))
+        .is_some_and(|l| l.mono && l.behavior == behavior)
 }
 
 /// What the hand menu's Theme control shows for a room file ([`Self::of`]).
@@ -824,8 +855,8 @@ mod tests {
             [
                 B::Shards,
                 B::Tessera,
-                B::Bezel,
-                B::None,
+                B::Shards,
+                B::Shards,
                 B::Reticle,
                 B::Shards
             ]
@@ -836,16 +867,38 @@ mod tests {
                 "{theme:?}"
             );
         }
-        // Steel blue on the floor and the walls, warm white on the tables
-        // and the ceiling, amber on the rest.
+        // Steel, white and one hot color. The walls' shards untinted, so
+        // gray, the ceiling's and the tables' warm white, the floor's
+        // grid blue, the rest amber. Every shards in one color, without
+        // the effect's own hues; no other theme asks that of any look.
         for (kind, l) in Theme::Flint.looks() {
             let want = match kind {
-                KIND_FLOOR | KIND_WALL => BLUE,
+                KIND_WALL => 0,
+                KIND_FLOOR => BLUE,
                 KIND_TABLE | KIND_CEILING => WARM_WHITE,
                 _ => AMBER,
             };
             assert_eq!(l.color, want, "{}", kind_name(kind));
+            assert_eq!(l.mono, l.behavior == B::Shards, "{}", kind_name(kind));
+            // The ceiling's facets at 0.4, for the flash rule.
+            let ceiling = kind == KIND_CEILING;
+            assert_close!(l.strength, if ceiling { 0.4 } else { 1.0 });
         }
+        for theme in Theme::ALL.into_iter().filter(|t| *t != Theme::Flint) {
+            assert!(theme.looks().all(|(_, l)| !l.mono), "{theme:?}");
+        }
+        // It follows the room's theme and the look the theme gave the
+        // kind: a surface edited to another look, another theme and a
+        // room with none draw every look in its own colors.
+        let flint = Some(Theme::Flint);
+        assert!(mono(flint, KIND_WALL, B::Shards));
+        assert!(mono(flint, KIND_TABLE, B::Shards));
+        assert!(!mono(flint, KIND_WALL, B::Bezel));
+        assert!(!mono(flint, KIND_FLOOR, B::Tessera));
+        assert!(!mono(flint, KIND_FLOOR, B::Shards));
+        assert!(!mono(flint, crate::surfaces::KIND_NONE, B::Shards));
+        assert!(!mono(Some(Theme::Classic), KIND_TABLE, B::Shards));
+        assert!(!mono(None, KIND_TABLE, B::Shards));
         // Contour (board #5533): the contours on the room's three planes
         // and nowhere else, green; the rest warm white, nothing on the
         // tables and the frames, the curls at 0.4 on other surfaces.

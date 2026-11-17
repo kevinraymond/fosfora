@@ -591,6 +591,7 @@ impl Show {
                 band: behavior.default_band(),
                 strength: 1.0,
                 edges: edge_bars::Mode::Off,
+                mono: false,
             },
             None => self.theme.look(kind).expect("a named kind"),
         }
@@ -716,6 +717,7 @@ impl Show {
                     look.strength,
                     look.color,
                     Map::of(true, behavior, b.kind),
+                    look.mono,
                 ));
                 continue;
             }
@@ -736,7 +738,7 @@ impl Show {
             .collect();
         let mut joined = sky::join(&sky_faces).into_iter();
         let mut draws = Draws::default();
-        for &(i, face, kind, behavior, strength, color, map) in &ported {
+        for &(i, face, kind, behavior, strength, color, map, mono) in &ported {
             let effect = &self.effects[i];
             let (face, edges) = match map {
                 Map::Sky => joined.next().unwrap_or((face, sky::Edges::OPEN)),
@@ -751,7 +753,7 @@ impl Show {
                 continue;
             }
             let (resolution, params) = match map {
-                Map::Face => (surface_port::resolution(face.half), effect.params()),
+                Map::Face => (surface_port::resolution(face.half), effect.params_in(mono)),
                 Map::Sky => (sky::RESOLUTION, effect.params()),
                 Map::Reflection => (sky::RESOLUTION, effect.reflection_params()),
             };

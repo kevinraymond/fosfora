@@ -267,6 +267,9 @@ impl SurfaceBehavior {
     /// carry a header bar and need an up; reticle's marks are small and
     /// hop about, so they read on a small face; tessera is a floor's
     /// tiles, and a grid on any top.
+    /// Shards are also on a wall's and a ceiling's list since board #5533,
+    /// after their other ports: their cells fill a face of any size, and
+    /// a theme of facets needs them where a seated wearer looks.
     /// The contours (board #5533) come last on the lists of the room's
     /// planes, a floor, a wall and a ceiling, where the landscape runs from
     /// one face onto the next. A table, a frame and other things show too
@@ -308,6 +311,7 @@ impl SurfaceBehavior {
                 Self::Aurora,
                 Self::Fenestra,
                 Self::Bezel,
+                Self::Shards,
                 Self::Contours,
             ],
             KIND_CEILING => &[
@@ -317,6 +321,7 @@ impl SurfaceBehavior {
                 Self::Streamlines,
                 Self::Aurora,
                 Self::Astrolabe,
+                Self::Shards,
                 Self::Contours,
             ],
             KIND_FRAME => &[
@@ -1704,6 +1709,7 @@ mod tests {
                     B::Aurora,
                     B::Fenestra,
                     B::Bezel,
+                    B::Shards,
                     B::Contours,
                 ],
             ),
@@ -1716,6 +1722,7 @@ mod tests {
                     B::Streamlines,
                     B::Aurora,
                     B::Astrolabe,
+                    B::Shards,
                     B::Contours,
                 ],
             ),
@@ -1776,9 +1783,12 @@ mod tests {
         // ceiling's without astrolabe (board #5462).
         assert_eq!(B::Aurora.next_for(KIND_WALL), B::Bezel);
         assert_eq!(B::Reticle.next_for(KIND_FRAME), B::None);
-        // Board #5533: the contours last on the three planes' lists.
-        assert_eq!(B::Aurora.next_for(KIND_CEILING), B::Contours);
-        assert_eq!(B::Bezel.next_for(KIND_WALL), B::Contours);
+        // Board #5533: shards after a wall's and a ceiling's other ports,
+        // and the contours last on the three planes' lists.
+        assert_eq!(B::Aurora.next_for(KIND_CEILING), B::Shards);
+        assert_eq!(B::Bezel.next_for(KIND_WALL), B::Shards);
+        assert_eq!(B::Shards.next_for(KIND_CEILING), B::Contours);
+        assert_eq!(B::Shards.next_for(KIND_WALL), B::Contours);
         assert_eq!(B::Aurora.next_for(KIND_FLOOR), B::Contours);
         for kind in [KIND_FLOOR, KIND_WALL, KIND_CEILING] {
             assert_eq!(B::catalogue(kind).last(), Some(&B::Contours));
@@ -1821,10 +1831,13 @@ mod tests {
                 _ => list,
             };
             // The floor's ninth is aurora, the sky's reflection (board
-            // #5436), last.
+            // #5436), last; the wall's ninth is shards (board #5533).
             if kind == KIND_FLOOR {
                 assert_eq!(list.len(), 9);
                 assert_eq!(list.last(), Some(&B::Aurora));
+            } else if kind == KIND_WALL {
+                assert_eq!(list.len(), 9);
+                assert_eq!(list.last(), Some(&B::Shards));
             } else {
                 assert!(list.len() <= 8, "{list:?}");
             }
@@ -1837,8 +1850,14 @@ mod tests {
         }
         for b in B::ALL.into_iter().filter(|b| b.port().is_some()) {
             let n = lists.iter().filter(|l| l.contains(&b)).count();
-            // Aurora on walls, ceilings and, as their reflection, floors.
-            let most = if b == B::Aurora { 3 } else { 2 };
+            // Aurora on walls, ceilings and, as their reflection, floors;
+            // shards on tables, other things, walls and ceilings (board
+            // #5533).
+            let most = match b {
+                B::Aurora => 3,
+                B::Shards => 4,
+                _ => 2,
+            };
             assert!((1..=most).contains(&n), "{b:?} is on {n} lists");
         }
     }
@@ -1890,7 +1909,7 @@ mod tests {
         // A surface a saved room left on astrolabe or fenestra steps on
         // the same way (board #5462).
         assert_eq!(B::Astrolabe.next_for(KIND_FLOOR), B::Aurora);
-        assert_eq!(B::Astrolabe.next_for(KIND_CEILING), B::Contours);
+        assert_eq!(B::Astrolabe.next_for(KIND_CEILING), B::Shards);
         assert_eq!(B::Fenestra.next_for(KIND_WALL), B::Bezel);
         assert_eq!(B::Fenestra.next_for(KIND_FRAME), B::None);
         // What is offered is everything but those four.
