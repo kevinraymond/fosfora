@@ -206,9 +206,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       audio-to-photon measurement, filmed with a phone; a strobe by design, so it runs only with
     //       debug.fosfora.flashlimit 0)
     //   adb shell setprop debug.fosfora.flashlimit 0|1 (board #5451, flash.rs: the photosensitive limit every
-    //       audio-driven light goes through, at most three flashes a second; default 1, and the wearer cannot turn it
-    //       off; 0 for an A/B on the debug surface only; logs the state at launch and each change; live: polled once a
-    //       second)
+    //       audio-driven light goes through, at most three flashes a second; board #5534: the limit is the wearer's
+    //       setting, "Limit flashing" in the hand menu, on unless they turn it off, and this knob at 0 or 1 overrides
+    //       that setting while it is set, for an A/B and for unworn runs; unset, the setting rules; the log says which
+    //       of the two decided, at launch and on each change; live: polled once a second)
     //   adb shell setprop debug.fosfora.playperf lowlatency|none   (AAudio performance mode of the playback
     //       output; default lowlatency: 36 ms to the speaker on the Quest 3 against 140-215 ms for none)
     //   adb shell setprop debug.fosfora.playbuf <ms>   (playback output buffer; default 84 ms in lowlatency so the
@@ -2027,13 +2028,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #5451: the photosensitive limit (`flash.rs`), between the
     // analysis and everything the audio lights: the features, the mel
     // bands, the triggers, and the values worked out from them below (the
-    // envelopes, the bars, the key's tint, the depth light's music). Its
-    // knob is polled once a second below.
-    let mut flash_limit = crate::flash::Limiter::new(crate::flash::on_from_knob(
+    // envelopes, the bars, the key's tint, the depth light's music).
+    // Board #5534: it is on unless the wearer's saved setting turns it
+    // off; its knob at 0 or 1 overrides the setting and is polled once a
+    // second below (`sync_flash_limit`). `flash_by` is what decided.
+    let (flash_on, mut flash_by) = crate::flash::decide(
         system_prop(crate::flash::KNOB).as_deref(),
-    ));
-    info!("{}", crate::flash::line(flash_limit.on()));
-    if flash && flash_limit.on() {
+        menu_saved.limit_flashing,
+    );
+    let mut flash_limit = crate::flash::Limiter::new(flash_on);
+    info!("{}", crate::flash::line(flash_on, flash_by));
+    if flash && !crate::flash_choice::strobe_may_run(flash_on, flash_by) {
         info!(
             "debug.fosfora.flash: the beat strobe waits for {} 0",
             crate::flash::KNOB
@@ -4723,8 +4728,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 beat_env = 1.0;
             }
             if raw_beat {
-                // The strobe flashes every beat: only with the limit off.
-                if flash && !flash_limit.on() {
+                // The strobe flashes every beat: only with the limit
+                // turned off by its knob, never by the wearer's setting
+                // alone.
+                if flash && crate::flash_choice::strobe_may_run(flash_limit.on(), flash_by) {
                     flash_frames = 2;
                 }
                 if let Some(p) = &music.playback {
@@ -5724,12 +5731,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     crate::fireflies::FIREFLY_CAP
                 );
             }
-            // Board #5451: the flash limit's knob, live.
-            let now = crate::flash::on_from_knob(system_prop(crate::flash::KNOB).as_deref());
-            if now != flash_limit.on() {
-                flash_limit.set_on(now);
-                info!("{}", crate::flash::line(now));
-            }
+            // Board #5451: the flash limit's knob, live. Board #5534: over
+            // the wearer's setting.
+            sync_flash_limit(&mut flash_limit, &mut flash_by, menu_saved.limit_flashing);
             // Board #5436: the sky's knob, live; the surfaces pass logs the
             // sky's line on the next frame.
             let now = switch_now("debug.fosfora.sky").unwrap_or(true);
@@ -6155,6 +6159,23 @@ fn silence(hop: &mut fosfora_app::audio::hop::HopOutput) {
     hop.frame.mel.fill(0.0);
     hop.frame.dmfcc.fill(0.0);
     (hop.beat_fired, hop.downbeat_fired, hop.drop_fired) = (false, false, false);
+}
+
+/// Board #5534: the limiter follows the knob and the wearer's `setting`
+/// (`flash::decide`), and the log says what changed and which of the two
+/// decided. Called once a second for the knob and at once when the setting
+/// changes, so a press or a sentence takes effect on its frame.
+fn sync_flash_limit(
+    limiter: &mut crate::flash::Limiter,
+    by: &mut crate::flash::By,
+    setting: Option<bool>,
+) {
+    let (on, now_by) = crate::flash::decide(system_prop(crate::flash::KNOB).as_deref(), setting);
+    if on != limiter.on() || now_by != *by {
+        limiter.set_on(on);
+        *by = now_by;
+        info!("{}", crate::flash::line(on, now_by));
+    }
 }
 
 /// Board #5452: start the `file` or `loop` source's own clip, decoded at

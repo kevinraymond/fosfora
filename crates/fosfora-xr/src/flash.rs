@@ -92,8 +92,14 @@
 //! themes are; so is a look built on the bar's clock, which passes as the
 //! analysis has it.
 //!
-//! **The knob.** `debug.fosfora.flashlimit 0` turns it off for an A/B on
-//! the debug surface; unset or 1 it runs. The wearer has no setting for it.
+//! **On or off** (board #5534, [`decide`]). The limit is the wearer's
+//! choice, and it is on unless they turn it off: a new wearer is warned and
+//! asked before the first show (`flash_choice.rs`), and the hand menu's
+//! "Limit flashing" row and the voice change it later, saved in
+//! `hand_menu.json`. A wearer who has not answered has the limit. The
+//! knob, `debug.fosfora.flashlimit 0|1`, overrides the wearer's setting
+//! either way while it is set, for an A/B and for unworn tests; unset, the
+//! setting rules. The log says which of the two decided ([`line`]).
 
 use std::collections::VecDeque;
 
@@ -433,26 +439,50 @@ const HIT_DELTA: f32 = 0.1;
 /// through.
 pub const BEAT_PHASE_HELD: f32 = 0.999;
 
-/// The knob, `debug.fosfora.flashlimit` (1 or unset: on; 0: off, for an
-/// A/B on the debug surface only).
+/// The knob, `debug.fosfora.flashlimit`: 0 (off) or 1 (on) overrides the
+/// wearer's setting while it is set; unset or anything else, the setting
+/// rules.
 pub const KNOB: &str = "debug.fosfora.flashlimit";
 
-/// Whether the limiter runs, from the knob's value: anything but `0` is on.
-pub fn on_from_knob(value: Option<&str>) -> bool {
-    value.map(str::trim) != Some("0")
+/// What decided whether the limiter runs (board #5534).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum By {
+    /// The knob, set to 0 or 1.
+    Knob,
+    /// The wearer's saved setting.
+    Wearer,
+    /// Nothing is saved: the wearer has not chosen, so the limit is on.
+    NotAsked,
 }
 
-/// The log line for the limiter's state.
-pub fn line(on: bool) -> String {
+/// Whether the limiter runs, and what decided it: the knob's value when it
+/// is `0` or `1`, else the wearer's `setting` (`hand_menu.json`'s
+/// `limit_flashing`), else on.
+pub fn decide(knob: Option<&str>, setting: Option<bool>) -> (bool, By) {
+    match (knob.map(str::trim), setting) {
+        (Some("0"), _) => (false, By::Knob),
+        (Some("1"), _) => (true, By::Knob),
+        (_, Some(on)) => (on, By::Wearer),
+        (_, None) => (true, By::NotAsked),
+    }
+}
+
+/// The log line for the limiter's state, and what decided it.
+pub fn line(on: bool, by: By) -> String {
+    let by = match by {
+        By::Knob => format!("{KNOB} {} overrides the wearer's setting", u8::from(on)),
+        By::Wearer => "the wearer's setting".to_owned(),
+        By::NotAsked => "the wearer has not chosen".to_owned(),
+    };
     if on {
         format!(
             "flash limit: on · every audio-driven light turns at most {TURNS_PER_WINDOW} times a second \
-             (each direction at least {:.0} ms), beats {:.0} ms apart at least",
+             (each direction at least {:.0} ms), beats {:.0} ms apart at least · {by}",
             MIN_PHASE_S * 1000.0,
             BEAT_GAP_S * 1000.0
         )
     } else {
-        format!("flash limit: OFF ({KNOB} 0), the music drives the light unlimited")
+        format!("flash limit: OFF, the music drives the light unlimited · {by}")
     }
 }
 
@@ -1409,16 +1439,53 @@ mod tests {
         assert_close!(o.f[slot::RMS], 0.2);
     }
 
+    /// Board #5534: the knob at 0 or 1 overrides the wearer's setting; unset
+    /// or anything else the setting rules; with nothing saved the limit is
+    /// on. The line says which decided.
     #[test]
-    fn the_knob_and_its_lines() {
-        assert!(on_from_knob(None));
-        assert!(on_from_knob(Some("1")));
-        assert!(on_from_knob(Some("")));
-        assert!(on_from_knob(Some("yes")));
-        assert!(!on_from_knob(Some("0")));
-        assert!(!on_from_knob(Some(" 0 ")));
-        assert!(line(true).starts_with("flash limit: on"), "{}", line(true));
-        assert!(line(false).contains(KNOB), "{}", line(false));
+    fn the_knob_overrides_the_wearers_setting_and_the_line_says_which() {
+        for setting in [None, Some(true), Some(false)] {
+            assert_eq!(decide(Some("0"), setting), (false, By::Knob));
+            assert_eq!(decide(Some(" 0 "), setting), (false, By::Knob));
+            assert_eq!(decide(Some("1"), setting), (true, By::Knob));
+        }
+        for knob in [None, Some(""), Some("yes"), Some("2")] {
+            assert_eq!(decide(knob, Some(true)), (true, By::Wearer), "{knob:?}");
+            assert_eq!(decide(knob, Some(false)), (false, By::Wearer), "{knob:?}");
+            // Never asked, or asked and not answered: on.
+            assert_eq!(decide(knob, None), (true, By::NotAsked), "{knob:?}");
+        }
+        // No value of the knob and no state of the file turns it off but
+        // the two that say off.
+        for knob in [None, Some("0"), Some("1"), Some("off")] {
+            for setting in [None, Some(true), Some(false)] {
+                let (on, _) = decide(knob, setting);
+                let off = knob == Some("0") || (knob != Some("1") && setting == Some(false));
+                assert_eq!(on, !off, "{knob:?} {setting:?}");
+            }
+        }
+        assert_eq!(
+            line(true, By::NotAsked),
+            "flash limit: on · every audio-driven light turns at most 4 times a second \
+             (each direction at least 100 ms), beats 380 ms apart at least · the wearer has not chosen"
+        );
+        assert!(line(true, By::Wearer).ends_with("· the wearer's setting"));
+        assert_eq!(
+            line(false, By::Wearer),
+            "flash limit: OFF, the music drives the light unlimited · the wearer's setting"
+        );
+        assert_eq!(
+            line(false, By::Knob),
+            "flash limit: OFF, the music drives the light unlimited · \
+             debug.fosfora.flashlimit 0 overrides the wearer's setting"
+        );
+        assert!(
+            line(true, By::Knob)
+                .ends_with("debug.fosfora.flashlimit 1 overrides the wearer's setting")
+        );
+        for by in [By::Knob, By::Wearer, By::NotAsked] {
+            assert!(line(true, by).starts_with("flash limit: on"));
+        }
     }
 
     #[test]

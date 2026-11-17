@@ -36,6 +36,7 @@ pub mod faces_layer;
 pub mod fireflies;
 pub mod first_run;
 pub mod flash;
+pub mod flash_choice;
 #[cfg(all(test, not(target_os = "android")))]
 mod flash_room;
 pub mod footprints;
