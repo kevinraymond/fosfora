@@ -230,6 +230,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the music folders hold, so they can be reached on a headset that has music of its own; the launch line says so; the
     //       track is not saved, so each launch starts on the first one and the wearer's saved track is kept; default off; read at
     //       launch)
+    //   adb shell setprop debug.fosfora.tracktheme 0             (board #5533: the bundled tracks bring no theme, so a theme under test
+    //       stays through a track change; unset or 1, each bundled track brings the theme music::BUNDLED names for it when it starts:
+    //       the room's light goes dark over a second, the theme is laid, unsaved, and the new look rises; the wearer's own pick of a
+    //       theme holds until the next bundled track starts; live: polled once a second, 0 puts the room's own theme back and 1
+    //       brings the playing track's)
     //   adb shell setprop debug.fosfora.quality low|medium|high|ultra|max
     //   adb shell setprop debug.fosfora.scene 1280x720
     //   adb shell setprop debug.fosfora.effect "Flux"            (mode quad; any effect)
@@ -1236,7 +1241,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // and the row's only when no track plays at all.
     let bundled_dir = dirs.assets.join("audio");
     let bundled_clip = bundled_dir.join(crate::music::CLIP);
-    let (bundled, missing) = crate::playlist::bundled(&bundled_dir, crate::music::BUNDLED);
+    let (bundled, missing) = crate::playlist::bundled(&bundled_dir, &crate::music::bundled_files());
     for name in &missing {
         log::warn!("music: the bundled track {name} is not in the assets: skipped");
     }
@@ -2021,6 +2026,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // starts seen (a new one adapts the history).
     let mut immerse_label_busy = false;
     let mut track_starts = music.track_starts();
+    // Board #5533: a bundled track brings its theme (`music::BUNDLED`,
+    // `themes::Bringing`): the track starts seen for it, from none, so a
+    // track already on the speakers brings its own on the first frame; the
+    // change under way; and `debug.fosfora.tracktheme`, live.
+    let mut theme_starts = 0u32;
+    let mut bringing = crate::themes::Bringing::default();
+    let mut track_themes = switch_now(crate::music::TRACK_THEME_KNOB).unwrap_or(true);
+    if !track_themes {
+        info!("themes: debug.fosfora.tracktheme 0, the bundled tracks bring no theme");
+    }
     // Board #5393: roam's rules (`roam.rs`): the fireflies following the
     // head, the head's speed for immersion, and the stage floor's center
     // (x, z), under the head in roam and at the stage's origin seated.
@@ -2462,6 +2477,65 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     has_room && input.room_id.is_none(),
                     &lane_boxes,
                 );
+            }
+            // Board #5533: a bundled track brings its theme. When one goes
+            // on the speakers from its top the room's light falls to dark
+            // over a second, the theme is laid there, unsaved, and the new
+            // look rises (`themes::Bringing`); the wearer's own music
+            // brings none and puts the room's own back. A theme the wearer
+            // picked since the track started stands. The knob, live: 0
+            // puts the room's own back, 1 brings the playing track's.
+            {
+                use crate::themes::{Brought, Shown};
+                let mut change = None;
+                if frame_index.is_multiple_of(72) {
+                    let now = switch_now(crate::music::TRACK_THEME_KNOB).unwrap_or(true);
+                    if now != track_themes {
+                        track_themes = now;
+                        info!(
+                            "themes: debug.fosfora.tracktheme {}",
+                            if now {
+                                "1, a bundled track brings its theme"
+                            } else {
+                                "0, the bundled tracks bring no theme"
+                            }
+                        );
+                        change = if now {
+                            music.track_theme().map(Brought::Theme)
+                        } else {
+                            surface_lanes.brought().map(|_| Brought::Own)
+                        };
+                    }
+                }
+                let starts = music.track_starts();
+                if starts != theme_starts {
+                    theme_starts = starts;
+                    if track_themes {
+                        change = match music.track_theme() {
+                            Some(theme) => Some(Brought::Theme(theme)),
+                            None => surface_lanes.brought().map(|_| Brought::Own),
+                        };
+                    }
+                }
+                if let Some(what) = change {
+                    let shows = match what {
+                        Brought::Theme(theme) => surface_lanes.theme() == Shown::Theme(theme),
+                        Brought::Own => false,
+                    };
+                    bringing.start(what, shows, surface_lanes.picks());
+                }
+                if let Some(due) = bringing.step(dt) {
+                    if due.picks != surface_lanes.picks() {
+                        info!("themes: the wearer picked a theme since the track started: it stands");
+                    } else {
+                        match due.what {
+                            Brought::Theme(theme) => surface_lanes.bring_theme(theme),
+                            Brought::Own => {
+                                surface_lanes.put_back();
+                            }
+                        }
+                    }
+                }
             }
             // S7: hands and room as obstacles. I5: pinch gestures.
             for (h, d) in input.hands.tip_distance.iter().enumerate() {
@@ -4980,6 +5054,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     if let Some(cause) = started {
                         debug!("sonar: a sweep leaves ({cause:?})");
                     }
+                    // Board #5533: its colors are the theme's, so it goes
+                    // through dark with the surfaces when a track brings one.
+                    let depth_light = crate::depth_light::DepthLightOptions {
+                        gain: depth_light.gain * bringing.veil(),
+                        ..depth_light
+                    };
                     gfx.set_depth_light(Some(&crate::depth_light::frame(
                         &depth_light,
                         &shown_drive,
@@ -5056,9 +5136,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                         resolution,
                                         params,
                                     ),
-                                    rows: crate::immerse::lift_rows(
-                                        crate::sky::rows(rows, map, &sky, edges),
-                                        immerse_level,
+                                    rows: crate::themes::veil_rows(
+                                        crate::immerse::lift_rows(
+                                            crate::sky::rows(rows, map, &sky, edges),
+                                            immerse_level,
+                                        ),
+                                        bringing.veil(),
                                     ),
                                 }
                             })
@@ -5075,6 +5158,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     .iter()
                     .map(|slot| crate::surface_fx::rows(slot, audio, ripple.as_ref(), spectrum, t))
                     .map(|rows| crate::immerse::lift_rows(rows, immerse_level))
+                    .map(|rows| crate::themes::veil_rows(rows, bringing.veil()))
                     .collect();
                 // One budget: a ported face and a `SurfaceFx` face both
                 // count against the pass's slots, the ported ones last.
@@ -5192,7 +5276,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             edge_bars.height,
                             edge_bars.depth,
                             heights.len(),
-                            crate::edge_bars::peak_alpha(immerse_level, edge_bars.gain) * presence,
+                            crate::edge_bars::peak_alpha(immerse_level, edge_bars.gain)
+                                * presence
+                                * bringing.veil(),
                             &mut edge_outline,
                         );
                     }

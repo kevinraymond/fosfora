@@ -55,6 +55,15 @@
 //! [`RoomLanes::with_fresh_theme`]): applied as the Theme control applies
 //! it, but not saved. The room's file is written the first time something
 //! changes, and then holds the theme as if the wearer had picked it.
+//!
+//! A bundled track brings its theme (board #5533,
+//! [`RoomLanes::bring_theme`]): laid over the room as a theme is, but the
+//! room's own file is set aside in memory and nothing is written while the
+//! track's theme shows, an edit of a surface included. The wearer's own
+//! pick of a theme, by any path, takes the room back: it is laid over the
+//! room's own file and saved as always. [`RoomLanes::put_back`] shows the
+//! room's own again. So the file on disk only ever holds what the wearer
+//! chose, and a relaunch shows that.
 
 use std::path::PathBuf;
 
@@ -404,6 +413,16 @@ pub struct RoomLanes {
     /// The surfaces on a look that is not offered when the log last named
     /// them (board #5462), by UUID, so the line is said once.
     not_offered: Vec<([u8; 16], SurfaceBehavior)>,
+    /// The theme a bundled track brought (board #5533,
+    /// [`Self::bring_theme`]), in force until the wearer picks one or the
+    /// room's own is put back.
+    brought: Option<Theme>,
+    /// The room's own file, set aside while the brought theme shows. `None`
+    /// with a theme brought: it is still to lay, on the next update whose
+    /// boxes are the room's.
+    own: Option<RoomFile>,
+    /// How many themes the wearer picked ([`Self::apply_theme`]).
+    picks: u64,
 }
 
 impl RoomLanes {
@@ -422,6 +441,9 @@ impl RoomLanes {
             fresh_theme: None,
             fresh_pending: false,
             not_offered: Vec::new(),
+            brought: None,
+            own: None,
+            picks: 0,
         }
     }
 
@@ -467,6 +489,22 @@ impl RoomLanes {
                 );
                 self.revision += 1;
             }
+        }
+        // Board #5533: the theme a track brought, over the room's own file,
+        // which is set aside. In memory only.
+        if let Some(theme) = self.brought
+            && self.own.is_none()
+            && !self.fresh_pending
+            && crate::room_file::room_id(boxes.iter().map(|b| b.uuid)) == self.room
+        {
+            let own = self.theme().value();
+            self.own = Some(self.file.clone());
+            let line = self.set_theme(theme, boxes, "the track");
+            info!(
+                "room {}: {line}, not saved: the room keeps its own ({own})",
+                room_label(self.room)
+            );
+            self.revision += 1;
         }
         let key = self.key_of(boxes);
         if self.key == Some(key) {
@@ -559,6 +597,9 @@ impl RoomLanes {
     fn apply(&mut self, value: &str, boxes: &[LaneBox<'_>]) -> Result<(), String> {
         let assignments = match parse_knob(value)? {
             Knob::Clear => {
+                // The room's own is what is cleared; a theme a track
+                // brought is laid again over the fresh room.
+                self.own = None;
                 self.file.clear();
                 let saved = self.save();
                 // Board #5447: a cleared room is a fresh one, saved with no
@@ -771,12 +812,66 @@ impl RoomLanes {
         Shown::of(&self.file)
     }
 
-    /// The theme saved with the room, edited since or not, or the fresh
-    /// theme a fresh room runs before anything is saved (board #5447);
-    /// `None` with neither. The edge bars draw each kind in its mode (board
+    /// The theme the room shows by name: the one saved with it, edited
+    /// since or not, the fresh theme a fresh room runs before anything is
+    /// saved (board #5447), or the one a track brought (board #5533);
+    /// `None` with none. The edge bars draw each kind in its mode (board
     /// #5431, `themes::edge_mode`), so nothing else is saved for them.
     pub fn saved_theme(&self) -> Option<Theme> {
         self.file.theme
+    }
+
+    /// A bundled track brings `theme` (board #5533). It is laid on the
+    /// next update with the room's boxes, as [`Self::apply_theme`] lays
+    /// one, over the room's own file, which is set aside: nothing is
+    /// saved, the log says so, and whatever is edited while it shows goes
+    /// with it. A theme brought before is replaced: the new one is laid
+    /// over the room's own, never over the last track's. It stays in force
+    /// across a rescan, until the wearer picks a theme
+    /// ([`Self::apply_theme`]) or [`Self::put_back`].
+    pub fn bring_theme(&mut self, theme: Theme) {
+        self.restore_own();
+        self.brought = Some(theme);
+    }
+
+    /// The room's own look again, as it was before a track brought a
+    /// theme, and no theme in force (board #5533): the wearer's own music
+    /// took over, or the pairing was switched off. Nothing to do when no
+    /// brought theme shows. Returns whether the room changed.
+    pub fn put_back(&mut self) -> bool {
+        self.brought = None;
+        let back = self.restore_own();
+        if back {
+            info!(
+                "room {}: the track's theme leaves: the room's own again ({})",
+                room_label(self.room),
+                self.theme().value()
+            );
+        }
+        back
+    }
+
+    /// The theme a track brought that is in force (laid, or still to lay).
+    pub fn brought(&self) -> Option<Theme> {
+        self.brought
+    }
+
+    /// How many themes the wearer picked so far, by any path
+    /// ([`Self::apply_theme`]): a change of it since a track started says
+    /// the wearer chose since, and their pick stands (`themes::Due`).
+    pub fn picks(&self) -> u64 {
+        self.picks
+    }
+
+    /// The room's own file back in place of a brought theme's, if one is
+    /// set aside.
+    fn restore_own(&mut self) -> bool {
+        let Some(own) = self.own.take() else {
+            return false;
+        };
+        self.file = own;
+        self.revision += 1;
+        true
     }
 
     /// Apply `theme` (board #5415): every named kind's default takes the
@@ -790,7 +885,15 @@ impl RoomLanes {
     /// theme's name is saved with them, in one save and one log line that
     /// names `source` (the menu, voice, the knob). An edit afterwards stays
     /// and marks the theme edited ([`Self::theme`]).
+    ///
+    /// This is the wearer's pick (board #5533). Over a theme a track
+    /// brought, it is laid on the room's own file and saved as the room's
+    /// theme, and the brought one is no longer in force: the pick holds
+    /// until a track brings a theme again.
     pub fn apply_theme(&mut self, theme: Theme, boxes: &[LaneBox<'_>], source: &str) {
+        self.restore_own();
+        self.brought = None;
+        self.picks += 1;
         let line = self.set_theme(theme, boxes, source);
         self.commit(&[line]);
     }
@@ -979,9 +1082,16 @@ impl RoomLanes {
     }
 
     /// After a change: save the file, log `lines` with how the save went,
-    /// and bump the revision so the next update rebuilds the rows.
+    /// and bump the revision so the next update rebuilds the rows. While a
+    /// track's theme shows (board #5533) nothing is saved: the change is
+    /// on the brought look and goes with it, and the room's own file stays
+    /// as the wearer left it.
     fn commit(&mut self, lines: &[String]) {
-        let saved = self.save();
+        let saved = if self.own.is_some() {
+            ", not saved: on a track's theme, the room keeps its own".to_owned()
+        } else {
+            self.save()
+        };
         for line in lines {
             info!("room {}: {line}{saved}", room_label(self.room));
         }
@@ -1015,6 +1125,8 @@ impl RoomLanes {
         self.revision += 1;
         self.file = RoomFile::default();
         self.fresh_pending = false;
+        // A theme a track brought is laid again over the room just read.
+        self.own = None;
         let Some(room) = self.room else {
             info!("room -: no anchors, the built-in defaults");
             return;
@@ -2623,6 +2735,136 @@ mod tests {
             assert!(again.poll_theme_knob(Some(theme.name()), false, &boxes));
             on_theme(&again, &boxes, theme);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Board #5533: a track's theme is laid over the room and nothing is
+    /// written. The room's own theme is on disk through it, an edit made
+    /// on the brought look is not saved, and a relaunch shows the room's
+    /// own.
+    #[test]
+    fn a_tracks_theme_is_laid_and_never_saved() {
+        let (dir, boxes, id, path) = fresh_dir("brought");
+        let mut lanes = launch(&dir, id, &boxes);
+        lanes.apply_theme(Theme::Mirror, &boxes, "test");
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(lanes.picks(), 1);
+        // Brought: in force at once, laid on the next update.
+        lanes.bring_theme(Theme::Flint);
+        assert_eq!(lanes.brought(), Some(Theme::Flint));
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Mirror));
+        assert!(lanes.update(id, &boxes));
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Flint));
+        assert_eq!(lanes.saved_theme(), Some(Theme::Flint));
+        on_theme(&lanes, &boxes, Theme::Flint);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        // Not a pick.
+        assert_eq!(lanes.picks(), 1);
+        // An edit shows, marks the brought theme edited, and is not saved.
+        assert!(lanes.set_params(0, &boxes, color(5)));
+        lanes.update(id, &boxes);
+        assert_eq!(lanes.theme(), Shown::Edited(Theme::Flint));
+        assert_eq!(lanes.params_of(0, &boxes).0, 5);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        // The next track's theme is laid over the room's own, not over
+        // the last one and its edit.
+        lanes.bring_theme(Theme::Drift);
+        lanes.update(id, &boxes);
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Drift));
+        on_theme(&lanes, &boxes, Theme::Drift);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        // A relaunch shows the room's own.
+        let again = launch(&dir, id, &boxes);
+        assert_eq!(again.theme(), Shown::Theme(Theme::Mirror));
+        assert_eq!(again.brought(), None);
+        // Put back: the room's own, and edits save again.
+        assert!(lanes.put_back());
+        assert!(!lanes.put_back());
+        lanes.update(id, &boxes);
+        assert_eq!(lanes.brought(), None);
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Mirror));
+        on_theme(&lanes, &boxes, Theme::Mirror);
+        assert!(lanes.set_params(0, &boxes, color(5)));
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), saved);
+        assert_eq!(
+            launch(&dir, id, &boxes).theme(),
+            Shown::Edited(Theme::Mirror)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Board #5533: the wearer's pick over a brought theme is theirs. It
+    /// is saved as the room's theme, holds until a track brings one again,
+    /// and the brought look's edits do not ride along with it.
+    #[test]
+    fn a_pick_over_a_tracks_theme_is_saved_and_holds_until_the_next_track() {
+        let (dir, boxes, id, path) = fresh_dir("brought-pick");
+        let mut lanes = launch(&dir, id, &boxes);
+        // A fresh room under a brought theme: still nothing on disk.
+        lanes.bring_theme(Theme::Flint);
+        lanes.update(id, &boxes);
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Flint));
+        assert!(!path.exists());
+        assert!(lanes.set_params(0, &boxes, color(5)));
+        assert!(!path.exists());
+        // The swipe, from the theme the room shows.
+        let picked = lanes.step_theme(&boxes, "test", -1);
+        assert_eq!(picked, Theme::Flint.prev());
+        lanes.update(id, &boxes);
+        assert_eq!(lanes.brought(), None);
+        assert_eq!(lanes.picks(), 1);
+        assert_eq!(lanes.theme(), Shown::Theme(picked));
+        on_theme(&lanes, &boxes, picked);
+        assert_eq!(launch(&dir, id, &boxes).theme(), Shown::Theme(picked));
+        // An edit now is on the wearer's own room and is saved.
+        assert!(lanes.set_params(0, &boxes, color(5)));
+        assert_eq!(launch(&dir, id, &boxes).theme(), Shown::Edited(picked));
+        // The next track brings its theme over it, and the pick is still
+        // what is saved.
+        lanes.bring_theme(Theme::Aurora);
+        lanes.update(id, &boxes);
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Aurora));
+        assert_eq!(launch(&dir, id, &boxes).theme(), Shown::Edited(picked));
+        // The knob and the voice's path are picks too.
+        lanes.apply_theme(Theme::Tide, &boxes, "voice");
+        assert_eq!(lanes.brought(), None);
+        assert_eq!(launch(&dir, id, &boxes).theme(), Shown::Theme(Theme::Tide));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Board #5533: a theme brought before the room's surfaces are in
+    /// waits for them, over a fresh room it is laid after the fresh theme,
+    /// and another room takes it too.
+    #[test]
+    fn a_brought_theme_waits_for_the_room_and_follows_a_rescan() {
+        let (dir, boxes, id, path) = fresh_dir("brought-wait");
+        let mut lanes = RoomLanes::new(dir.clone()).with_fresh_theme(Theme::Aurora);
+        lanes.bring_theme(Theme::Flint);
+        // The room's id a frame before its surfaces: nothing laid yet.
+        lanes.update(id, &[]);
+        assert_eq!(lanes.saved_theme(), None);
+        lanes.update(id, &boxes);
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Flint));
+        on_theme(&lanes, &boxes, Theme::Flint);
+        assert!(!path.exists());
+        // Put back, the fresh room is on its fresh theme, unsaved.
+        assert!(lanes.put_back());
+        lanes.update(id, &boxes);
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Aurora));
+        assert!(!path.exists());
+        // Another room (a rescan): its own file is read, and the theme in
+        // force is laid over it.
+        lanes.bring_theme(Theme::Flint);
+        lanes.update(id, &boxes);
+        let mut other = boxes.clone();
+        other[0].uuid = uuid(42);
+        let other_id = room_of(&other);
+        assert_ne!(other_id, id);
+        lanes.update(other_id, &other);
+        assert_eq!(lanes.brought(), Some(Theme::Flint));
+        assert_eq!(lanes.theme(), Shown::Theme(Theme::Flint));
+        on_theme(&lanes, &other, Theme::Flint);
+        assert!(!room_path(&dir, other_id.unwrap()).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

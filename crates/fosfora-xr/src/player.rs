@@ -441,6 +441,19 @@ impl Music {
         self.track_starts
     }
 
+    /// The theme the track on the speakers brings (board #5533): a bundled
+    /// track's (`music::bundled_theme`, by its file's name). `None` for
+    /// the wearer's own music, whatever its files are called, for the test
+    /// clip and before anything played.
+    pub fn track_theme(&self) -> Option<crate::themes::Theme> {
+        let held = self.held.as_ref()?;
+        let track = self.playlist.track(self.playlist.index_of(&held.path)?)?;
+        if track.folder != Folder::Bundled {
+            return None;
+        }
+        crate::music::bundled_theme(held.path.file_name()?.to_str()?)
+    }
+
     /// Whether the music is on the speakers.
     pub fn playing(&self) -> bool {
         self.playback.is_some()

@@ -6,7 +6,10 @@
 //! (`audio.rs`). Board #5385: the row plays the wearer's own music
 //! folders (`playlist.rs`, `player.rs`). Board #5528: while they are
 //! empty it plays the tracks the app ships with ([`BUNDLED`]), as it
-//! plays the wearer's.
+//! plays the wearer's. Board #5533: each bundled track names a theme
+//! ([`Bundled::theme`]), which the room takes while it plays
+//! (`themes::Bringing`, `lanes::RoomLanes::bring_theme`). The wearer's own
+//! music brings none.
 //!
 //! Playing, the music is on the speakers (the tracks play through; one
 //! track, or the test clip, loops) and the analysis follows its
@@ -26,13 +29,49 @@ pub const CLIP: &str = "ember_glow_excerpt.ogg";
 /// order the Music row plays them: the playlist while the wearer's music
 /// folders hold no track (`playlist::bundled`, `playlist::listed`). A
 /// title is the file name's, by the rule for the wearer's files
-/// (`playlist::title`). A new track is a new name here and its file in
-/// `assets/xr/audio/`.
-pub const BUNDLED: &[&str] = &[
-    "Let_the_Night_Come_In.ogg",
-    "Slow_Blue.ogg",
-    "Second_Wind.ogg",
+/// (`playlist::title`). A new track is a new entry here, with the theme it
+/// brings, and its file in `assets/xr/audio/`. Nothing else names a track:
+/// replacing one is an edit of this list.
+pub const BUNDLED: &[Bundled] = &[
+    Bundled::new("Let_the_Night_Come_In.ogg", Theme::Aurora),
+    Bundled::new("Slow_Blue.ogg", Theme::Flint),
+    Bundled::new("Second_Wind.ogg", Theme::Drift),
 ];
+
+/// One track the app ships with: its file's name and the theme the room
+/// takes while it plays (board #5533).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bundled {
+    pub file: &'static str,
+    pub theme: Theme,
+}
+
+impl Bundled {
+    const fn new(file: &'static str, theme: Theme) -> Self {
+        Self { file, theme }
+    }
+}
+
+/// The bundled tracks' file names, in the list's order
+/// (`playlist::bundled` takes them).
+pub fn bundled_files() -> Vec<&'static str> {
+    BUNDLED.iter().map(|b| b.file).collect()
+}
+
+/// The theme the bundled track in the file called `file_name` brings;
+/// `None` for any other name.
+pub fn bundled_theme(file_name: &str) -> Option<Theme> {
+    BUNDLED
+        .iter()
+        .find(|b| b.file == file_name)
+        .map(|b| b.theme)
+}
+
+/// The `debug.fosfora.tracktheme` knob (board #5533): 0 and the bundled
+/// tracks bring no theme, so a theme under test stays; unset or 1 they do.
+pub const TRACK_THEME_KNOB: &str = "debug.fosfora.tracktheme";
+
+use crate::themes::Theme;
 
 /// What the analysis runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,9 +205,10 @@ mod tests {
     fn the_bundled_tracks_are_files_the_player_takes_and_the_test_clip_is_not_one() {
         use crate::playlist;
         assert!(!BUNDLED.is_empty());
-        assert!(!BUNDLED.contains(&CLIP));
-        let titles: Vec<String> = BUNDLED.iter().map(|n| playlist::title(n)).collect();
-        for (name, title) in BUNDLED.iter().zip(&titles) {
+        let files = bundled_files();
+        assert!(!files.contains(&CLIP));
+        let titles: Vec<String> = files.iter().map(|n| playlist::title(n)).collect();
+        for (name, title) in files.iter().zip(&titles) {
             assert!(playlist::is_music(std::path::Path::new(name)), "{name}");
             // A title the row shows and the voice can name, one track each.
             assert!(!crate::intent::normalize(title).is_empty(), "{name}");
@@ -177,7 +217,7 @@ mod tests {
         // Each is in the folder the APK's audio is staged from, so the
         // list and the files cannot drift apart.
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/xr/audio");
-        let (tracks, missing) = playlist::bundled(&dir, BUNDLED);
+        let (tracks, missing) = playlist::bundled(&dir, &files);
         assert_eq!(missing, Vec::<String>::new());
         assert_eq!(tracks.len(), BUNDLED.len());
         assert!(dir.join(CLIP).is_file());
@@ -187,6 +227,28 @@ mod tests {
             list.current_track().map(|t| t.title.as_str()),
             Some(titles[0].as_str())
         );
+    }
+
+    /// Board #5533: every bundled track brings a theme, found by its
+    /// file's name; no other file brings one. Nothing here names a track,
+    /// a title or how many there are.
+    #[test]
+    fn every_bundled_track_brings_a_theme_and_no_other_file_does() {
+        for b in BUNDLED {
+            assert_eq!(bundled_theme(b.file), Some(b.theme), "{}", b.file);
+            assert!(Theme::ALL.contains(&b.theme), "{}", b.file);
+        }
+        // One entry per file, so a file brings one theme.
+        let files = bundled_files();
+        for f in &files {
+            assert_eq!(files.iter().filter(|g| *g == f).count(), 1, "{f}");
+        }
+        assert_eq!(bundled_theme(CLIP), None);
+        assert_eq!(bundled_theme("a song of the wearer's.ogg"), None);
+        assert_eq!(bundled_theme(""), None);
+        // The first track is the one the app's look was made for: a fresh
+        // room starts on the theme it brings.
+        assert_eq!(BUNDLED[0].theme, Theme::Aurora);
     }
 
     #[test]

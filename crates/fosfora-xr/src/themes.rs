@@ -469,6 +469,145 @@ impl Knob {
     }
 }
 
+/// How long the room's light takes to go dark before a track's theme is
+/// laid, how long it stays dark, and how long the new look takes to come
+/// up (s). The fall and the rise are each one change of light and are more
+/// than a second apart whatever the look's brightness, so the change adds
+/// at most one transition to any second the flash rule counts (`flash.rs`).
+pub const BRING_OUT_S: f32 = 1.0;
+pub const BRING_DARK_S: f32 = 0.25;
+pub const BRING_IN_S: f32 = 1.5;
+
+/// What a change of the room's look at a track's start comes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Brought {
+    /// The theme a bundled track brings (`music::Bundled::theme`).
+    Theme(Theme),
+    /// The room's own look again: the wearer's music took over.
+    Own,
+}
+
+/// A change that is due: what to lay, and the count of the wearer's own
+/// picks when the track started ([`Bringing::start`]'s `picks`). A pick
+/// made since then stands, and the change is dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Due {
+    pub what: Brought,
+    pub picks: u64,
+}
+
+/// A bundled track brings its theme (board #5533): the change of the
+/// room's look when a track starts, as a fade through dark instead of a
+/// cut. The room's light falls to nothing over [`BRING_OUT_S`] from the
+/// track's first frame, the theme is laid while it is dark, and after
+/// [`BRING_DARK_S`] the new look rises over [`BRING_IN_S`]. So the song
+/// that ends keeps its look to its last note, and the wearer sees the room
+/// go dark as the new song begins and come back changed. A room that
+/// already shows the theme is laid at once with no fade: nothing changes
+/// to the eye. Plain numbers; `app.rs` starts it at a track's start, steps
+/// it once a frame, multiplies every lit surface's light by [`Self::veil`]
+/// and lays what [`Self::step`] hands back.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bringing {
+    /// The light's share, 0 to 1.
+    veil: f32,
+    phase: BringPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BringPhase {
+    Idle,
+    /// Laid on the next step with the light as it is: the room shows the
+    /// look already.
+    Now(Due),
+    /// Going dark, to lay this.
+    Out(Due),
+    /// Dark for this many seconds more.
+    Dark(f32),
+    /// Coming up.
+    In,
+}
+
+impl Default for Bringing {
+    fn default() -> Self {
+        Self {
+            veil: 1.0,
+            phase: BringPhase::Idle,
+        }
+    }
+}
+
+impl Bringing {
+    /// A track started and the room's look goes to `what`. `shows`: the
+    /// room shows that look already, so with no change under way it is
+    /// laid on the next step with no fade. `picks`: the count of the
+    /// wearer's own picks now. A start while another change runs takes
+    /// over from where the light is.
+    pub fn start(&mut self, what: Brought, shows: bool, picks: u64) {
+        let due = Due { what, picks };
+        self.phase = if shows && self.phase == BringPhase::Idle {
+            BringPhase::Now(due)
+        } else {
+            BringPhase::Out(due)
+        };
+    }
+
+    /// `dt` seconds on: the look to lay now, if one is due.
+    pub fn step(&mut self, dt: f32) -> Option<Due> {
+        let dt = dt.max(0.0);
+        match self.phase {
+            BringPhase::Idle => None,
+            BringPhase::Now(due) => {
+                self.phase = BringPhase::Idle;
+                Some(due)
+            }
+            BringPhase::Out(due) => {
+                self.veil = (self.veil - dt / BRING_OUT_S).max(0.0);
+                if self.veil > 0.0 {
+                    return None;
+                }
+                self.phase = BringPhase::Dark(BRING_DARK_S);
+                Some(due)
+            }
+            BringPhase::Dark(left) => {
+                let left = left - dt;
+                self.phase = if left > 0.0 {
+                    BringPhase::Dark(left)
+                } else {
+                    BringPhase::In
+                };
+                None
+            }
+            BringPhase::In => {
+                self.veil = (self.veil + dt / BRING_IN_S).min(1.0);
+                if self.veil >= 1.0 {
+                    self.phase = BringPhase::Idle;
+                }
+                None
+            }
+        }
+    }
+
+    /// The share of its light every lit surface draws at now, 0 to 1.
+    pub fn veil(&self) -> f32 {
+        self.veil
+    }
+
+    /// Whether a change is under way.
+    pub fn busy(&self) -> bool {
+        self.phase != BringPhase::Idle
+    }
+}
+
+/// A lit face's uniform rows (`surface_fx::rows` or `surface_port::rows`,
+/// after `immerse::lift_rows`) with its peak alpha at `veil` of what it
+/// was ([`Bringing::veil`]).
+pub fn veil_rows<const N: usize>(mut rows: [[f32; 4]; N], veil: f32) -> [[f32; 4]; N] {
+    const { assert!(N > crate::immerse::PEAK_ROW) };
+    rows[crate::immerse::PEAK_ROW][3] *= veil.clamp(0.0, 1.0);
+    rows
+}
+
 /// The themes' names for a reply or a warning, in the cycle's order:
 /// "classic, drift, … or flint" ([`Theme::name`]) or with `titles`
 /// "Classic, Drift, … or Flint".
@@ -905,5 +1044,114 @@ mod tests {
             late.poll(Some("drift"), false, drift),
             KnobPoll::Apply(Theme::Drift)
         );
+    }
+
+    /// Board #5533: a track's theme comes through dark. The light falls
+    /// for a second from the track's start, the look is laid once, dark,
+    /// and the light is back after the hold and the rise.
+    #[test]
+    fn a_tracks_theme_is_laid_in_the_dark_and_once() {
+        let dt = 1.0 / 72.0;
+        let mut b = Bringing::default();
+        assert_close!(b.veil(), 1.0);
+        assert!(!b.busy());
+        assert_eq!(b.step(dt), None);
+        let what = Brought::Theme(Theme::Flint);
+        b.start(what, false, 3);
+        let (mut laid, mut laid_at, mut t) = (Vec::new(), 0.0, 0.0f32);
+        let mut dark = 0.0;
+        let mut last = b.veil();
+        let mut turned_up = false;
+        while b.busy() {
+            let due = b.step(dt);
+            t += dt;
+            if let Some(due) = due {
+                // Laid with no light on the room.
+                assert_close!(b.veil(), 0.0);
+                laid.push(due);
+                laid_at = t;
+            }
+            if b.veil() <= 0.0 {
+                dark += dt;
+            }
+            // Down, then up: never back down.
+            turned_up |= b.veil() > last;
+            assert!(!turned_up || b.veil() >= last);
+            last = b.veil();
+            assert!(t < 10.0);
+        }
+        assert_eq!(laid, [Due { what, picks: 3 }]);
+        assert!((laid_at - BRING_OUT_S).abs() < 2.0 * dt, "{laid_at}");
+        assert!(dark >= BRING_DARK_S, "{dark}");
+        let whole = BRING_OUT_S + BRING_DARK_S + BRING_IN_S;
+        assert!((t - whole).abs() < 4.0 * dt, "{t}");
+        assert_close!(b.veil(), 1.0);
+        // The fall's last tenth of the light and the rise's first tenth
+        // are more than a second apart: the brightest look's two changes
+        // never share a window of the flash rule.
+        let apart = 0.9 * BRING_OUT_S + BRING_DARK_S + 0.1 * BRING_IN_S;
+        assert!(apart > 1.0, "{apart}");
+    }
+
+    /// A look the room shows already is laid on the next step, the light
+    /// as it is. A track that starts while a change runs takes over from
+    /// where the light is, and only its look is laid.
+    #[test]
+    fn a_shown_look_is_laid_at_once_and_a_new_start_takes_over() {
+        let dt = 1.0 / 72.0;
+        let mut b = Bringing::default();
+        let aurora = Brought::Theme(Theme::Aurora);
+        b.start(aurora, true, 0);
+        assert!(b.busy());
+        assert_eq!(
+            b.step(dt),
+            Some(Due {
+                what: aurora,
+                picks: 0
+            })
+        );
+        assert_close!(b.veil(), 1.0);
+        assert!(!b.busy());
+        // Half way down for Flint, the next track starts: the room's own.
+        b.start(Brought::Theme(Theme::Flint), false, 0);
+        for _ in 0..36 {
+            assert_eq!(b.step(dt), None);
+        }
+        let mid = b.veil();
+        assert!(mid > 0.4 && mid < 0.6, "{mid}");
+        b.start(Brought::Own, false, 1);
+        let mut laid = Vec::new();
+        let mut steps = 0;
+        while b.busy() {
+            // The light goes on down from where it was.
+            let before = b.veil();
+            if let Some(due) = b.step(dt) {
+                laid.push(due);
+            }
+            if laid.is_empty() {
+                assert!(b.veil() < before);
+            }
+            steps += 1;
+            assert!(steps < 1000);
+        }
+        assert_eq!(
+            laid,
+            [Due {
+                what: Brought::Own,
+                picks: 1
+            }]
+        );
+        // During the rise, a shown look does not skip the fade's end: the
+        // new start goes down again from where the light is.
+        b.start(Brought::Theme(Theme::Flint), false, 1);
+        while b.step(dt).is_none() {}
+        for _ in 0..40 {
+            b.step(dt);
+        }
+        let rising = b.veil();
+        assert!(rising > 0.0 && rising < 1.0, "{rising}");
+        b.start(aurora, true, 1);
+        b.step(dt);
+        assert!(b.veil() < rising);
     }
 }
