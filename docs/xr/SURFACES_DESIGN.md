@@ -1628,9 +1628,20 @@ and its cost seated are still to take.
 
 **Why.** Worn on Aurora, the flashing was too much for someone with
 photosensitive epilepsy. In a headset the picture fills the view, so this is
-a safety requirement, not a taste setting: it holds for every theme and
-every behavior, today's and any added later, whatever the song does. The
-wearer cannot turn it off.
+a safety requirement, not a taste setting: while the limit is on it holds
+for every theme and every behavior, today's and any added later, whatever
+the song does.
+
+**The wearer's choice** (board #5534). The limit costs the show ("Keeping
+the show" below), so it is the wearer's setting, and it is on unless they
+turn it off. A new wearer is warned that the show flashes and asked, before
+anything flashes, whether to limit it; a wearer who does not answer has the
+limit. The hand menu's "Limit flashing" row and the spoken "limit flashing"
+and "full show" change it later. It is saved in `hand_menu.json` as
+`"limit_flashing"`. `XR_DESIGN.md`, "The flash question", has the card and
+its rules. Everything below describes the app with the limit on. With it
+off the music drives the light as the analysis has it, and nothing here is
+promised.
 
 **The rule** (WCAG 2.3.1, three flashes or below threshold). No more than
 three general flashes and no more than three red flashes in any one-second
@@ -1811,12 +1822,16 @@ failing on any region over three:
 `the_looks_own_motion_never_flashes`, and
 `the_dumped_songs_stay_within_three_flashes` (`FOSFORA_FLASH_DUMPS`).
 
-**The knob.** `debug.fosfora.flashlimit 0` turns the limit off for an A/B on
-the debug surface; unset or 1 it runs. Read at launch and polled once a
-second; the log says `flash limit: on · every audio-driven light turns at
-most 4 times a second (each direction at least 100 ms), beats 380 ms apart at
-least`, or `flash limit: OFF (debug.fosfora.flashlimit 0), the music drives
-the light unlimited`, at launch and on each change.
+**The knob.** `debug.fosfora.flashlimit 0|1` overrides the wearer's setting
+while it is set: 0 turns the limit off for an A/B, 1 turns it on whatever is
+saved. Unset, the setting rules, and with nothing saved the limit is on
+(`flash::decide`). Read at launch and polled once a second; the log says
+`flash limit: on · every audio-driven light turns at most 4 times a second
+(each direction at least 100 ms), beats 380 ms apart at least`, or `flash
+limit: OFF, the music drives the light unlimited`, and then which decided:
+`· the wearer's setting`, `· the wearer has not chosen`, or `·
+debug.fosfora.flashlimit 0 overrides the wearer's setting`. At launch and
+on each change.
 
 **Not yet.** The device: the worn look of each theme with the limit on, its
 cost (a few hundred values a frame on the CPU, nothing on the GPU), and a
