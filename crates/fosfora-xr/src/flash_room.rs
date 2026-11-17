@@ -152,18 +152,35 @@ pub mod slot {
 /// fourth, the bar clock at the pulse's rate up to 240 BPM. The key is C major, sure
 /// of itself: the key's tint is red, which takes Aurora's low curtains to
 /// a saturated red. The loudness stays up, so the music counts as playing.
+/// [`Pulse::hits`] is the same train with each pulse short, as a drum's
+/// hit is: the levels at 1 for [`HIT_S`] of each cycle.
 pub struct Pulse {
     pub hz: f64,
     pub secs: f64,
+    /// The share of each cycle the levels are at 1.
+    on: f64,
     last: Option<u64>,
 }
+
+/// How long a hit of [`Pulse::hits`] lasts (s): two frames.
+pub const HIT_S: f64 = 2.0 / FPS;
 
 impl Pulse {
     pub fn new(hz: f64, secs: f64) -> Self {
         Self {
             hz,
             secs,
+            on: 0.5,
             last: None,
+        }
+    }
+
+    /// Short hits at `hz`: what lets a bar fall furthest between two
+    /// rises, since a bar rises at once and falls by time.
+    pub fn hits(hz: f64, secs: f64) -> Self {
+        Self {
+            on: (HIT_S * hz).min(0.5),
+            ..Self::new(hz, secs)
         }
     }
 }
@@ -200,7 +217,7 @@ impl Source for Pulse {
     fn at(&mut self, t: f64, _dt: f64) -> HopAt {
         let cycles = t * self.hz;
         let k = cycles.floor() as u64;
-        let level = if cycles.fract() < 0.5 { 1.0 } else { 0.0 };
+        let level = if cycles.fract() < self.on { 1.0 } else { 0.0 };
         let beat = self.last.is_none_or(|l| k > l);
         self.last = Some(k);
         let mut f = AudioFeatures::default();
@@ -533,11 +550,18 @@ struct Show {
     /// band, nothing on the rest, and no edge bars (a hand edit's worst).
     every: Option<SurfaceBehavior>,
     part: Part,
+    /// The edge bars' mode: each kind in its theme's, or one forced on
+    /// every kind as the Edges control forces it.
+    edges: Choice,
+    /// Whether the edge bars' heights follow the analysis
+    /// (`edge_bars::Heights`, board #5532).
+    bars_free: bool,
     scene: Scene,
     effects: Vec<Effect>,
     limiter: Limiter,
     ripple: Ripple,
     canvas: Canvas,
+    edge_heights: edge_bars::Heights,
     pick: WallPick,
     history: History,
     presence: Presence,
@@ -560,11 +584,14 @@ impl Show {
             theme,
             every,
             part,
+            edges: Choice::Theme,
+            bars_free: false,
             scene: scene(),
             effects,
             limiter: Limiter::new(limit),
             ripple: Ripple::default(),
             canvas: Canvas::new(DEFAULT_BARS, 1.0),
+            edge_heights: edge_bars::Heights::new(DEFAULT_BARS),
             pick: WallPick::default(),
             history: History::default(),
             presence: Presence::default(),
@@ -781,8 +808,15 @@ impl Show {
             .map(|rows| crate::immerse::lift_rows(rows, LEVEL))
             .collect();
         // The edge bars, each kind in its theme's mode.
+        // The edge bars' heights: the limit's, or the analysis's own
+        // (board #5532), from the mel bands as they came.
+        let limited = heights;
+        let bars = self
+            .edge_heights
+            .step(dt, self.bars_free, &hop.mel, &limited);
+        let heights = bars.now.to_vec();
         let presence = self.presence.step(dt, true, f.loudness_m);
-        self.history.step(dt, &heights);
+        self.history.step(dt, bars.past);
         self.outline.clear();
         if presence > 0.0 {
             let shapes: Vec<Shape> = self
@@ -797,7 +831,7 @@ impl Show {
                     look: Some(edge_bars::Look {
                         color: surface_color(look.color, b.kind, audio.key_tint),
                         fade: 1.0,
-                        mode: Choice::Theme.mode(look.edges),
+                        mode: self.edges.mode(look.edges),
                     }),
                 })
                 .collect();
@@ -1377,7 +1411,29 @@ fn run_with(
     limit: bool,
     source: &mut dyn Source,
 ) -> Found {
-    let mut show = Show::new(theme, every, part, limit, effects());
+    let show = Show::new(theme, every, part, limit, effects());
+    run_show(gpu, show, source)
+}
+
+/// `part` of `theme` behind the limiter with the edge bars as `edges` has
+/// them (the theme's modes, or one forced on every kind) and their heights
+/// following the analysis when `bars_free` (board #5532).
+fn run_edges(
+    gpu: &Gpu,
+    theme: Theme,
+    part: Part,
+    edges: Choice,
+    bars_free: bool,
+    source: &mut dyn Source,
+) -> Found {
+    let mut show = Show::new(theme, None, part, true, effects());
+    (show.edges, show.bars_free) = (edges, bars_free);
+    run_show(gpu, show, source)
+}
+
+/// `show` over `source`, every region counted.
+fn run_show(gpu: &Gpu, mut show: Show, source: &mut dyn Source) -> Found {
+    let (theme, part, limit) = (show.theme, show.part, show.limiter.on());
     let mut counters = vec![Counter::new(); REGIONS];
     let dt = 1.0 / FPS;
     let frames = (source.duration() * FPS).floor() as usize;
@@ -2044,13 +2100,15 @@ fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
 
 // ---- The bars against the analysis (board #5532) -------------------------
 
-/// The spectrum's bars over a source, frame by frame, two ways: as the
-/// analysis makes them (the canvas on the mel bands as they come) and as
-/// the limiter shows them (the canvas on the limited mel bands, followed,
-/// in `app.rs`'s order).
+/// The spectrum's bars over a source, frame by frame, three ways: as the
+/// analysis makes them (the canvas on the mel bands as they come), as the
+/// limiter shows them (the canvas on the limited mel bands, followed, in
+/// `app.rs`'s order), and as the edge bars draw them free
+/// (`edge_bars::Heights`).
 struct BarRun {
     raw: Vec<[f32; DEFAULT_BARS]>,
     shown: Vec<[f32; DEFAULT_BARS]>,
+    free: Vec<[f32; DEFAULT_BARS]>,
     /// Beats the analysis fired, and those the limiter let through.
     beats: (u32, u32),
     /// The direction's turns.
@@ -2060,12 +2118,14 @@ struct BarRun {
 fn bar_run(source: &mut dyn Source) -> BarRun {
     use crate::flash::{Triggers, follower};
     let mut limiter = Limiter::new(true);
-    let mut free = Canvas::new(DEFAULT_BARS, 1.0);
+    let mut analyzed = Canvas::new(DEFAULT_BARS, 1.0);
     let mut limited = Canvas::new(DEFAULT_BARS, 1.0);
+    let mut heights = edge_bars::Heights::new(DEFAULT_BARS);
     let (mut beat_env, mut downbeat_env) = (0.0f32, 0.0f32);
     let mut run = BarRun {
         raw: Vec::new(),
         shown: Vec::new(),
+        free: Vec::new(),
         beats: (0, 0),
         turns: 0,
     };
@@ -2097,15 +2157,20 @@ fn bar_run(source: &mut dyn Source) -> BarRun {
         downbeat_env = surface_fx::downbeat_step(downbeat_env, gate.downbeat, dt);
         limiter.follow(follower::BEAT_ENV, beat_env);
         limiter.follow(follower::DOWNBEAT_ENV, downbeat_env);
-        free.update(dt, &hop.mel);
+        analyzed.update(dt, &hop.mel);
         limited.update(dt, &mel);
         let mut shown = [0.0; DEFAULT_BARS];
         shown.copy_from_slice(limited.heights());
         limiter.follow_all(follower::BARS, &mut shown);
         limiter.follow(follower::BAR_GLOW, limited.glow());
-        let mut raw = [0.0; DEFAULT_BARS];
-        raw.copy_from_slice(free.heights());
-        run.raw.push(raw);
+        let take = |v: &[f32]| {
+            let mut out = [0.0; DEFAULT_BARS];
+            out.copy_from_slice(v);
+            out
+        };
+        run.raw.push(take(analyzed.heights()));
+        run.free
+            .push(take(heights.step(dt, true, &hop.mel, &shown).now));
         run.shown.push(shown);
     }
     run
@@ -2168,6 +2233,9 @@ struct BarStats {
     /// share it never made.
     late: f64,
     lost: f64,
+    /// The share of raw rises on whose own frame the shown bar is at the
+    /// raw bar's height or over it.
+    there: f64,
     /// The mean correlation between two different bars' heights, raw and
     /// shown, and between their changes from frame to frame.
     alike: (f64, f64),
@@ -2186,7 +2254,7 @@ fn bar_stats(raw: &[[f32; DEFAULT_BARS]], shown: &[[f32; DEFAULT_BARS]], delta: 
     let raws: Vec<Vec<f32>> = (0..DEFAULT_BARS).map(|b| bar(raw, b)).collect();
     let showns: Vec<Vec<f32>> = (0..DEFAULT_BARS).map(|b| bar(shown, b)).collect();
     let mut delays = Vec::new();
-    let (mut all, mut late, mut lost) = (0usize, 0usize, 0usize);
+    let (mut all, mut late, mut lost, mut there) = (0usize, 0usize, 0usize, 0usize);
     let second = FPS as usize;
     for b in 0..DEFAULT_BARS {
         let a = rises(raws[b].iter().copied(), delta);
@@ -2194,6 +2262,7 @@ fn bar_stats(raw: &[[f32; DEFAULT_BARS]], shown: &[[f32; DEFAULT_BARS]], delta: 
         for (k, &at) in a.iter().enumerate() {
             let until = a.get(k + 1).map_or(at + second, |&n| n.min(at + second));
             all += 1;
+            there += usize::from(showns[b][at] >= raws[b][at] - 1e-4);
             match s.iter().find(|&&n| n + 2 >= at && n < until) {
                 Some(&n) => {
                     let ms = n.saturating_sub(at) as f64 / FPS * 1000.0;
@@ -2231,12 +2300,14 @@ fn bar_stats(raw: &[[f32; DEFAULT_BARS]], shown: &[[f32; DEFAULT_BARS]], delta: 
     let cells = (raw.len() * DEFAULT_BARS) as f64;
     let share =
         |test: fn(f32) -> bool| raw.iter().flatten().filter(|&&h| test(h)).count() as f64 / cells;
+    let of_all = |n: usize| n as f64 / all.max(1) as f64;
     BarStats {
         rises: all,
         median_ms: pct(0.5),
         p95_ms: pct(0.95),
-        late: late as f64 / all.max(1) as f64,
-        lost: lost as f64 / all.max(1) as f64,
+        late: of_all(late),
+        lost: of_all(lost),
+        there: of_all(there),
         alike: (pairs(&raws), pairs(&showns)),
         alike_moves: (pairs(&raw_moves), pairs(&shown_moves)),
         tracks: raws
@@ -2271,23 +2342,25 @@ fn dumps() -> Vec<(String, std::path::PathBuf)> {
 }
 
 /// The bars of the dumped songs as the analysis makes them against the
-/// bars the limiter shows: the table of board #5532. No GPU; nothing runs
-/// without the dumps.
+/// bars the limiter shows and the edge bars' free ones: the tables of
+/// board #5532. No GPU; nothing runs without the dumps.
 #[test]
 #[ignore = "needs song dumps"]
 fn the_bars_of_the_dumped_songs_against_the_analysis() {
     eprintln!(
-        "| song | beats fired | let through | turns a second | raw rises | delay median ms | p95 ms | over 50 ms or never | never | bars alike raw | shown | moves alike raw | shown | shown tracks raw | raw at the top | at the bottom |"
+        "| song | beats fired | let through | turns a second | raw rises | limited: delay median ms | p95 ms | over 50 ms or never | never | there on the frame | free: delay median ms | p95 ms | over 50 ms or never | never | there on the frame |"
     );
-    eprintln!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    eprintln!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    let mut alike = Vec::new();
     for (name, path) in dumps() {
         let mut dump = Dump::read(&path).expect("a dump");
         let secs = dump.duration();
         let run = bar_run(&mut dump);
         for delta in [0.1, 0.3] {
             let s = bar_stats(&run.raw, &run.shown, delta);
+            let f = bar_stats(&run.raw, &run.free, delta);
             eprintln!(
-                "| {name} ({delta}) | {} | {} | {:.1} | {} | {:.0} | {:.0} | {:.0} % | {:.0} % | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.0} % | {:.0} % |",
+                "| {name} ({delta}) | {} | {} | {:.1} | {} | {:.0} | {:.0} | {:.0} % | {:.0} % | {:.0} % | {:.0} | {:.0} | {:.0} % | {:.0} % | {:.0} % |",
                 run.beats.0,
                 run.beats.1,
                 f64::from(run.turns) / secs,
@@ -2296,14 +2369,505 @@ fn the_bars_of_the_dumped_songs_against_the_analysis() {
                 s.p95_ms,
                 100.0 * s.late,
                 100.0 * s.lost,
-                s.alike.0,
-                s.alike.1,
-                s.alike_moves.0,
-                s.alike_moves.1,
-                s.tracks,
-                100.0 * s.pinned.0,
-                100.0 * s.pinned.1,
+                100.0 * s.there,
+                f.median_ms,
+                f.p95_ms,
+                100.0 * f.late,
+                100.0 * f.lost,
+                100.0 * f.there,
             );
+            if delta < 0.2 {
+                alike.push(format!(
+                    "| {name} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.0} % | {:.0} % |",
+                    s.alike.0,
+                    s.alike.1,
+                    f.alike.1,
+                    s.alike_moves.0,
+                    s.alike_moves.1,
+                    f.alike_moves.1,
+                    s.tracks,
+                    f.tracks,
+                    100.0 * s.pinned.0,
+                    100.0 * s.pinned.1,
+                ));
+            }
         }
     }
+    eprintln!(
+        "\n| song | bars alike: raw | limited | free | moves alike: raw | limited | free | tracks its raw bar: limited | free | raw at the top | at the bottom |"
+    );
+    eprintln!("|---|---|---|---|---|---|---|---|---|---|---|");
+    for row in alike {
+        eprintln!("{row}");
+    }
+}
+
+/// A song made up for the tests: a steady kick at 124 BPM on every level
+/// the looks read (a pulse train), under mel bands that each take hits of
+/// their own, three bands to a bar, from 1 to 6 a second, 40 ms long,
+/// 28 dB over what lies between them.
+struct OwnHits {
+    kick: Pulse,
+}
+
+impl OwnHits {
+    fn new(secs: f64) -> Self {
+        Self {
+            kick: Pulse::hits(124.0 / 60.0, secs),
+        }
+    }
+}
+
+impl Source for OwnHits {
+    fn duration(&self) -> f64 {
+        self.kick.duration()
+    }
+
+    fn at(&mut self, t: f64, dt: f64) -> HopAt {
+        let mut hop = self.kick.at(t, dt);
+        for (k, m) in hop.mel.iter_mut().enumerate() {
+            let group = (k / 3) as f64;
+            let hz = 1.0 + (group * 7.0) % 11.0 * 0.5;
+            let hit = (t * hz + group * 0.37).fract() < 0.04 * hz;
+            *m = if hit { 0.85 } else { 0.5 };
+        }
+        hop
+    }
+}
+
+/// The reason for the knob, and what it buys (board #5532): behind the
+/// limiter a bar shows a good share of its own hits late or not at all;
+/// free, it is at the analysis's height on the frame of every hit, and
+/// where it shows the rise it shows it on that frame.
+#[test]
+fn free_bars_rise_on_the_frame_of_their_own_hits() {
+    let run = bar_run(&mut OwnHits::new(30.0));
+    let limited = bar_stats(&run.raw, &run.shown, 0.1);
+    let free = bar_stats(&run.raw, &run.free, 0.1);
+    eprintln!("limited: {limited:?}\nfree: {free:?}");
+    assert!(limited.rises > 1000, "{}", limited.rises);
+    // The kick is 124 BPM: every other beat goes through.
+    assert!(run.beats.1 * 3 < run.beats.0 * 2, "{:?}", run.beats);
+    // Limited: more than a third of the rises come over 50 ms late or
+    // never, and the bars move more alike than the music has them.
+    assert!(limited.late > 0.33, "{}", limited.late);
+    assert!(limited.there < 0.9, "{}", limited.there);
+    assert!(limited.alike_moves.1 > limited.alike_moves.0 + 0.1);
+    // Free: at the hit's height on its frame, every time, and the rises
+    // it shows it shows on that frame.
+    assert!(free.there > 0.9999, "{}", free.there);
+    assert!(free.p95_ms < 1e-9, "{free:?}");
+    // A free bar falls at half the speed, so a hit that lands before the
+    // bar is a tenth under it shows a smaller rise or none: about one in
+    // ten at these rates.
+    assert!(free.late < 0.15 && free.lost < 0.15, "{free:?}");
+    assert!((free.alike_moves.1 - free.alike_moves.0).abs() < 0.1);
+    assert!(free.tracks > 0.9 && free.tracks > limited.tracks + 0.1);
+}
+
+// ---- The edge bars' own light, counted on their Rust copy ----------------
+
+/// Where a ray of a counted region meets the edge bars: a strip at a point
+/// along its edge and off it (m), or a tunnel's quad at a world point, with
+/// a ray's worth of the tunnel's depth there (m).
+#[derive(Debug, Clone, Copy)]
+enum BarHit {
+    Strip(usize, f32, f32),
+    Tunnel(usize, Vec3, f32),
+}
+
+/// Where the ray from `eye` along `ray` meets `strip`: m along its edge
+/// from the low end and m off it, as the vertex stage hands them to the
+/// fragment; `None` off the strip.
+fn strip_hit(strip: &edge_bars::Strip, eye: Vec3, ray: Vec3) -> Option<(f32, f32)> {
+    let [c0, c1, _, c3] = strip.corners;
+    let along = (c1 - c0).try_normalize()?;
+    let side = c3 - c0;
+    let off = (side - along * side.dot(along)).try_normalize()?;
+    let normal = along.cross(off);
+    let t = (c0 - eye).dot(normal) / ray.dot(normal);
+    if !t.is_finite() || t <= 0.0 {
+        return None;
+    }
+    let p = eye + ray * t - c0;
+    let far = strip.height * edge_bars::REACH;
+    let (s, d) = (p.dot(along), p.dot(off));
+    let miter = strip.inset * d / far.max(1e-6);
+    ((0.0..=far).contains(&d) && s >= miter && s <= strip.length - miter).then_some((s, d))
+}
+
+/// Where the ray from `eye` along `ray` meets `tunnel`'s quad (lifted off
+/// its face as the vertex stage lifts it), and how deep in the tunnel the
+/// ray lands; `None` off the quad.
+fn tunnel_point(tunnel: &edge_bars::Tunnel, eye: Vec3, ray: Vec3) -> Option<(Vec3, f32)> {
+    let on = tunnel.center + tunnel.normal * edge_bars::LIFT_M;
+    let t = (on - eye).dot(tunnel.normal) / ray.dot(tunnel.normal);
+    if !t.is_finite() || t <= 0.0 {
+        return None;
+    }
+    let p = eye + ray * t;
+    let frame = |q: Vec3| {
+        let q = q - tunnel.center;
+        Vec3::new(
+            q.dot(tunnel.axes[0]),
+            q.dot(tunnel.axes[1]),
+            q.dot(tunnel.normal),
+        )
+    };
+    let local = frame(p);
+    if local.x.abs() > tunnel.half[0] || local.y.abs() > tunnel.half[1] {
+        return None;
+    }
+    let low = if tunnel.low { 1.0 } else { -1.0 };
+    let hit = edge_bars::tunnel_hit(tunnel.half, tunnel.depth, low, frame(eye), local);
+    Some((p, hit.depth))
+}
+
+/// Rays along a counted region's side for the bars' count.
+const BAR_SIDE: usize = 8;
+/// The regions the bars' count keeps: those the bars light most.
+const BAR_REGIONS: usize = 32;
+
+/// The harness's room outlined in `mode` on every kind, in white (brighter
+/// than any color a bar takes) at immersion level 1, where the bars are
+/// most opaque, and the regions of the cube's view the bars light most,
+/// each ray's hits in the order they draw. Nothing hides a bar here: a
+/// strip behind the table counts as if the table were not there.
+fn bar_view(mode: edge_bars::Mode) -> BarView {
+    let scene = scene();
+    let shapes: Vec<Shape> = scene
+        .boxes
+        .iter()
+        .map(|b| Shape {
+            center: b.center,
+            rot: b.rot,
+            half: b.half,
+            look: Some(edge_bars::Look {
+                color: [1.0; 3],
+                fade: 1.0,
+                mode,
+            }),
+        })
+        .collect();
+    let mut outline = Outline::default();
+    edge_bars::outline(
+        &shapes,
+        scene.eye,
+        edge_bars::HEIGHT_FRACTION,
+        edge_bars::DEPTH_FRACTION,
+        DEFAULT_BARS,
+        edge_bars::peak_alpha(LEVEL, 1.0),
+        &mut outline,
+    );
+    // Every bar at full height, to find the regions they light most.
+    let mut rows = Vec::new();
+    let full = [1.0; DEFAULT_BARS];
+    let mut history = History::default();
+    for _ in 0..edge_bars::RUNGS * 8 {
+        history.step(edge_bars::HISTORY_STEP_S, &full);
+    }
+    edge_bars::rows(&full, &history, &outline, &mut rows);
+    let half = (CELL_DEG as f32 / 2.0).to_radians();
+    let step = 2.0 * half / BAR_SIDE as f32;
+    let at = |k: usize| -half + step * (k as f32 + 0.5);
+    let mut regions = Vec::new();
+    for r in 0..REGIONS {
+        let per = (CELLS * CELLS) as usize;
+        let (_, forward, up) = FACES[r / per];
+        let (cx, cy) = ((r % per) % CELLS as usize, (r % per) / CELLS as usize);
+        let mid = |k: usize| ((k as u32 * STEP_DEG + CELL_DEG / 2) as f32 - 45.0).to_radians();
+        let right = forward.cross(up);
+        let c = (forward + right * mid(cx).tan() - up * mid(cy).tan()).normalize();
+        let u = c.cross(up).try_normalize().unwrap_or(right);
+        let v = u.cross(c);
+        let dir = |a: f32, b: f32| (c + u * a.tan() + v * b.tan()).normalize();
+        let rays: Vec<Vec<BarHit>> = (0..BAR_SIDE * BAR_SIDE)
+            .map(|n| {
+                let (a, b) = (at(n % BAR_SIDE), at(n / BAR_SIDE));
+                let ray = dir(a, b);
+                let strips = outline.strips.iter().enumerate().filter_map(|(k, s)| {
+                    strip_hit(s, scene.eye, ray).map(|(s, d)| BarHit::Strip(k, s, d))
+                });
+                let tunnels = outline.tunnels.iter().enumerate().filter_map(|(k, t)| {
+                    let (p, z) = tunnel_point(t, scene.eye, ray)?;
+                    // The next ray over lands this much deeper or
+                    // shallower: the ray's footprint along the depth.
+                    let px = tunnel_point(t, scene.eye, dir(a + step, b + step))
+                        .map_or(0.01, |(_, z1)| (z1 - z).abs().max(1e-4));
+                    Some(BarHit::Tunnel(k, p, px))
+                });
+                strips.chain(tunnels).collect()
+            })
+            .collect();
+        let lit = bar_light(&rows, &outline, scene.eye, &rays);
+        regions.push((lit, r, rays));
+    }
+    regions.sort_by(|a, b| b.0.total_cmp(&a.0));
+    regions.truncate(BAR_REGIONS);
+    (
+        outline,
+        regions.into_iter().map(|(_, r, rays)| (r, rays)).collect(),
+    )
+}
+
+/// A region's mean light from the edge bars alone, over black: each ray's
+/// strips and tunnels blended in the order they draw, premultiplied, on
+/// the shaders' Rust copies (`edge_bars::alpha_at`, `tunnel_alpha_at`).
+fn bar_light(rows: &[[f32; 4]], outline: &Outline, eye: Vec3, rays: &[Vec<BarHit>]) -> f32 {
+    let mut sum = 0.0;
+    for hits in rays {
+        let mut light = 0.0;
+        for hit in hits {
+            let (alpha, color) = match *hit {
+                BarHit::Strip(k, s, d) => {
+                    (edge_bars::alpha_at(rows, k, s, d), outline.strips[k].color)
+                }
+                BarHit::Tunnel(k, p, px) => (
+                    edge_bars::tunnel_alpha_at(rows, k, eye, p, px),
+                    outline.tunnels[k].color,
+                ),
+            };
+            light = light * (1.0 - alpha) + crate::flash::luminance(color) * alpha;
+        }
+        sum += light.clamp(0.0, 1.0);
+    }
+    sum / rays.len() as f32
+}
+
+/// A mode's outline and the regions its bars light most ([`bar_view`]).
+type BarView = (Outline, Vec<(usize, Vec<Vec<BarHit>>)>);
+
+/// The edge bars alone as `view` has them over `source`, their heights
+/// free and the strips' falling `release` heights a second: the worst
+/// region's transitions.
+fn bar_count(view: &BarView, release: f32, source: &mut dyn Source) -> Worst {
+    let (outline, regions) = view;
+    let eye = scene().eye;
+    let mut heights = edge_bars::Heights::falling(DEFAULT_BARS, release);
+    let mut history = History::default();
+    let mut counters = vec![Counter::new(); regions.len()];
+    let mut rows = Vec::new();
+    let dt = 1.0 / FPS;
+    for n in 0..(source.duration() * FPS).floor() as usize {
+        let t = n as f64 / FPS;
+        let hop = source.at(t, dt);
+        let bars = heights.step(dt as f32, true, &hop.mel, &[]);
+        history.step(dt as f32, bars.past);
+        edge_bars::rows(bars.now, &history, outline, &mut rows);
+        for ((_, rays), counter) in regions.iter().zip(&mut counters) {
+            counter.push(t, [bar_light(&rows, outline, eye, rays); 3]);
+        }
+    }
+    counters
+        .iter()
+        .fold(Worst::default(), |w, c| w.max(c.worst()))
+}
+
+/// The edge bars' own light with their heights free (board #5532), in
+/// each mode on every surface of the room, in white at immersion level 1,
+/// on the pulse trains and on hits from 1.5 to 6 a second, on the
+/// shaders' Rust copies: no region the bars light passes three flashes a
+/// second on the face or standing, or one in. In white the strips reach
+/// the three on hits 2.25 to 2.5 times a second, which is the hits' own
+/// rate; faster hits leave a bar too little time to fall for a region to
+/// count them. The whole picture in the themes' colors, with the themes
+/// behind it, is counted on the GPU
+/// (`the_edge_bars_with_free_heights_stay_within_three_flashes`).
+#[test]
+fn free_edge_bars_alone_stay_within_three_flashes() {
+    eprintln!("| source | face | standing | in |");
+    eprintln!("|---|---|---|---|");
+    let mut failed = Vec::new();
+    let views = BAR_MODES.map(bar_view);
+    for (what, make, hz) in bar_trains() {
+        let worst =
+            [0, 1, 2].map(|k| bar_count(&views[k], edge_bars::FREE_RELEASE_PER_S, &mut make(hz)));
+        eprintln!(
+            "| {what} | {:.1} | {:.1} | {:.1} |",
+            worst[0].general_flashes(),
+            worst[1].general_flashes(),
+            worst[2].general_flashes()
+        );
+        for (mode, w) in BAR_MODES.iter().zip(worst) {
+            let most = if *mode == edge_bars::Mode::In {
+                2
+            } else {
+                crate::flash::MAX_TRANSITIONS
+            };
+            if w.general > most || w.red > 0 {
+                failed.push(format!("{what} {}: {w:?}", mode.name()));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:?}");
+}
+
+/// Why the strips' free bars fall at half the wall spectrum's speed: at
+/// its speed, hits three or more times a second on every band take a
+/// region beside a strip past three flashes a second.
+#[test]
+fn free_strips_falling_as_fast_as_the_wall_spectrum_pass_three_flashes() {
+    let fast = crate::canvas::RELEASE_PER_S;
+    let view = bar_view(edge_bars::Mode::Face);
+    let worst = [3.0, 3.25, 3.5]
+        .map(|hz| bar_count(&view, fast, &mut Pulse::hits(hz, 6.0)))
+        .into_iter()
+        .fold(Worst::default(), Worst::max);
+    assert!(!worst.passes(), "{worst:?}");
+}
+
+/// A train of [`bar_trains`]: its name, what makes it and its rate.
+type Train = (String, fn(f64) -> Pulse, f64);
+
+/// The trains the edge bars' count runs on: the pulse trains every look is
+/// counted on, and hits at the rates where a free bar swings furthest
+/// between three and six times a second.
+fn bar_trains() -> Vec<Train> {
+    let mut out: Vec<Train> = Vec::new();
+    for hz in [4.0, 8.0, 12.0, 16.0] {
+        out.push((format!("pulse {hz} Hz"), |hz| Pulse::new(hz, 6.0), hz));
+    }
+    for hz in [
+        1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 4.0, 5.0, 6.0,
+    ] {
+        out.push((format!("hits {hz} Hz"), |hz| Pulse::hits(hz, 6.0), hz));
+    }
+    out
+}
+
+/// The edge bars' modes a count forces on every kind, as the Edges control
+/// does.
+const BAR_MODES: [edge_bars::Mode; 3] = [
+    edge_bars::Mode::Face,
+    edge_bars::Mode::Standing,
+    edge_bars::Mode::In,
+];
+
+/// What a count's edges are called in its table and in
+/// `FOSFORA_FLASH_BARS`: `theme`, or the forced mode's name.
+fn edges_name(edges: Choice) -> &'static str {
+    match edges {
+        Choice::Theme => "theme",
+        Choice::Force(mode) => mode.name(),
+    }
+}
+
+/// `theme` whole over the source `make` makes, behind the limiter, the
+/// edge bars as `edges` has them, their heights limited then free: the row
+/// printed, both runs returned.
+fn limited_and_free(
+    gpu: &Gpu,
+    what: &str,
+    theme: Theme,
+    part: Part,
+    edges: Choice,
+    make: &mut dyn FnMut() -> Box<dyn Source>,
+) -> [Found; 2] {
+    let found = [false, true]
+        .map(|bars_free| run_edges(gpu, theme, part, edges, bars_free, make().as_mut()));
+    let [limited, free] = found;
+    eprintln!(
+        "| {what} | {} | {} | {} | {:.1} / {:.1} ({}) | {:.1} / {:.1} ({}) | {} |",
+        theme.name(),
+        edges_name(edges),
+        part.name(),
+        limited.worst.general_flashes(),
+        limited.worst.red_flashes(),
+        limited.failing,
+        free.worst.general_flashes(),
+        free.worst.red_flashes(),
+        free.failing,
+        cell(&free)
+    );
+    found
+}
+
+/// The edge bars alone, and each theme whole, with each mode forced on
+/// every kind and the bars' heights following the analysis (board #5532),
+/// behind the limiter, on the pulse trains and the hit trains: the bars
+/// limited then free. `FOSFORA_FLASH_BARS=<mode>` runs one mode.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn the_edge_bars_with_free_heights_stay_within_three_flashes() {
+    let gpu = Gpu::new(&effects());
+    let only = std::env::var("FOSFORA_FLASH_BARS").ok();
+    let mut failed = Vec::new();
+    eprintln!("| source | theme | edges | part | limited | free | free, worst |");
+    eprintln!("|---|---|---|---|---|---|---|");
+    for mode in BAR_MODES {
+        if only.as_ref().is_some_and(|o| o != mode.name()) {
+            continue;
+        }
+        let alone = if mode == edge_bars::Mode::In {
+            Part::Tunnels
+        } else {
+            Part::Strips
+        };
+        for (what, make, hz) in bar_trains() {
+            for theme in Theme::ALL {
+                for part in [alone, Part::All] {
+                    let [_, free] = limited_and_free(
+                        &gpu,
+                        &what,
+                        theme,
+                        part,
+                        Choice::Force(mode),
+                        &mut || Box::new(make(hz)),
+                    );
+                    if !free.worst.passes() {
+                        failed.push(format!(
+                            "{what} {} {} {}",
+                            theme.name(),
+                            mode.name(),
+                            part.name()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failed.is_empty(), "over three flashes: {failed:?}");
+}
+
+/// The songs dumped into `FOSFORA_FLASH_DUMPS`, every theme whole (or those
+/// `FOSFORA_FLASH_THEMES` names), behind the limiter, the edge bars in the
+/// theme's modes and in each mode forced on every kind (or the one
+/// `FOSFORA_FLASH_BARS` names: `theme`, `face`, `stand`, `in`), their
+/// heights limited then free (board #5532). Nothing runs without the
+/// directory.
+#[test]
+#[ignore = "needs a GPU adapter and song dumps"]
+fn the_dumped_songs_with_free_edge_bars_stay_within_three_flashes() {
+    let songs = dumps();
+    if songs.is_empty() {
+        return;
+    }
+    let themes: Option<Vec<String>> = std::env::var("FOSFORA_FLASH_THEMES")
+        .ok()
+        .map(|v| v.split(',').map(str::to_owned).collect());
+    let only = std::env::var("FOSFORA_FLASH_BARS").ok();
+    let gpu = Gpu::new(&effects());
+    let mut failed = Vec::new();
+    eprintln!("| source | theme | edges | part | limited | free | free, worst |");
+    eprintln!("|---|---|---|---|---|---|---|");
+    let all = std::iter::once(Choice::Theme).chain(BAR_MODES.map(Choice::Force));
+    for edges in all.filter(|&e| only.as_ref().is_none_or(|o| o == edges_name(e))) {
+        for (name, path) in &songs {
+            for theme in Theme::ALL {
+                if themes
+                    .as_ref()
+                    .is_some_and(|o| !o.iter().any(|n| n == theme.name()))
+                {
+                    continue;
+                }
+                let [_, free] = limited_and_free(&gpu, name, theme, Part::All, edges, &mut || {
+                    Box::new(Dump::read(path).expect("a dump"))
+                });
+                if !free.worst.passes() {
+                    failed.push(format!("{name} {} {}", theme.name(), edges_name(edges)));
+                }
+            }
+        }
+    }
+    assert!(failed.is_empty(), "over three flashes: {failed:?}");
 }
