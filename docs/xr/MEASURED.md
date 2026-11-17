@@ -3995,3 +3995,47 @@ In: none. In white the strips sit on the three.
 Not measured: anything on the headset or worn. The knob changes no shader
 and no buffer. At 1 it adds two 24-bar canvases to the frame's CPU work.
 
+
+## Flint, Contour and the tracks' themes on the headset (boards #5533, #5531, #5534)
+
+Quest 3, unworn, seated, the saved room replayed (23 surfaces,
+`debug.fosfora.anchors replay`), `debug.fosfora.begin 1`, Immersion full,
+72 Hz, governor off, the flash limit on, the first bundled track playing,
+debug APK of f1a2cad, 1 to 9 minutes after a reboot, battery 36 to 40 C.
+The theme by `debug.fosfora.theme` with `debug.fosfora.tracktheme 0`, so the
+track does not change it. The last 40 one-second `VrApi` lines of each run.
+
+| Theme | App, median / p90 / max (ms) | Stale | PSS |
+|---|---|---|---|
+| Aurora | 9.41 / 9.57 / 9.63 | 0 | 544 MB |
+| Flint | 5.13 / 5.26 / 5.29 | 0 | 549 MB |
+| Contour | 4.47 / 4.59 / 4.64 | 0 | 546 MB |
+| Aurora again | 8.88 / 9.05 / 9.21 | 0 | 567 MB |
+
+Flint here has its ceiling at 0.4; the cap that followed (0.6 while the
+flash limit is on) was not measured on the headset.
+
+The tracks' themes, in the log, with no theme knob: "Let the Night Come In"
+lays Aurora (`theme aurora (the track)`); "next song" plays "Turn the Walls
+to Stone" and lays Flint (App 5.64 ms median over 28 s); "play high meadow"
+plays "High Meadow" and lays Contour (5.01 ms over 36 s). A spoken "theme
+mirror" during a track holds, and the next track lays its own theme again.
+No error line and no panic in any run.
+
+The same build before the reboot, 16 hours up (debug eb08e0c, 40 s each):
+with the limit off 8.61 / 9.44 / 10.00 ms and 195 stale frames, with it on
+8.92 / 9.92 / 10.26 and 173, with the edge bars' heights free
+(`debug.fosfora.barsfree 1`) 8.51 / 9.09 / 9.33 and 97. After the reboot
+every run counted none, so the stale frames were the uptime's, as before
+(see "Frame rate in a worn sitting after 29 h of uptime, and after a
+reboot").
+
+In that first run the first launch showed the flash question's six lines;
+a spoken "menu" under it answered "Pick one first"; "full show" saved
+`"limit_flashing":false` and turned the limit off; "menu" before the begin
+answered "Pinch to begin first"; "limit flashing" turned the limit on while
+the show ran; "edit room on" and "off" logged `reach: on with Edit room` and
+`reach: off with Edit room`; and the second launch asked nothing.
+
+Not measured: anything worn. The question answered by hand, the fist that
+holds the voice window, and the begin pinch cannot be made unworn.
