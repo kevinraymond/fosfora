@@ -25,14 +25,20 @@
 //! `debug.fosfora.flashask 1` asks it again on an install that has
 //! answered ([`Ask::at_launch`]).
 //!
+//! **The card** ([`card_text`], board #5538). The warning, a blank line,
+//! how to answer, the two answers, and a last line that counts the
+//! seconds down and names what happens when they run out
+//! ([`countdown_line`], [`Ask::left_s`]). Until then nothing on the card
+//! said that it would answer for the wearer after a minute, or with what.
+//!
 //! **Answering by hand** ([`over`]). The two answers sit at the two ends
-//! of the card's last line. The wearer puts a hand over one, as they see
+//! of the answers' line. The wearer puts a hand over one, as they see
 //! it, and pinches. The app reads the line from the head through the
 //! pinching fingers to the card: left of the gap between the answers is
 //! "Limit flashing", right of it "Full show", with a dead band between
 //! them. Either hand answers either way. A pinch answers only when its
 //! hand has been over the same answer for [`DWELL_S`], and by then the
-//! card's fifth line names that answer ("Pinch to choose Full show"), so
+//! line over the answers names that answer ("Pinch to choose Full show"), so
 //! the wearer reads what the pinch will do before making it. A hand at
 //! rest in the lap, a hand at the headset's strap and a pinch in passing
 //! are over neither answer or have not dwelt, and answer nothing.
@@ -42,8 +48,8 @@
 //! the card for a hand 32 cm out, toward the side of that eye. The gap
 //! between the answers and the dead band are sized so a hand that covers
 //! any part of one answer for either eye never reads as the other
-//! ([`REACH_MIN_M`]); at worst it reads as neither, and the fifth line
-//! does not change.
+//! ([`REACH_MIN_M`]); at worst it reads as neither, and the line over the
+//! answers does not change.
 //!
 //! **The pinch that answers** does nothing else ([`wait_input`]): on a
 //! frame the question is up the wait is handed no card and no start
@@ -108,10 +114,12 @@ impl Answer {
 
 /// The warning, four lines as the card shows them.
 pub const WARNING: &str = "This show has flashing lights\nthat follow the music. They can\ntrigger seizures in people\nwith photosensitive epilepsy.";
-/// How to answer, the card's fifth line while no hand is over an answer.
+/// How to answer, the line over the answers while no hand is over one.
 pub const HOW: &str = "Put a hand over one and pinch:";
-/// The spaces between the two answers on the card's last line: the widest
-/// gap the line holds at the card's text size.
+/// The spaces between the two answers on their line: the widest gap the
+/// line holds at the card's text size. The countdown has a line of its
+/// own for that reason: beside "Limit flashing" it would halve the gap,
+/// and a hand on one answer could then read as the other for one eye.
 pub const GAP_SPACES: usize = 18;
 /// The label for a spoken "menu" while the question is up: the hand menu
 /// does not come while the show waits.
@@ -140,7 +148,18 @@ pub const SIDE_HALF_W: f32 = 1.75;
 pub const ABOVE_LINES: f32 = 2.0;
 pub const BELOW_LINES: f32 = 3.0;
 
-/// The card's last line: the two answers, the gap between them.
+/// The countdown, the card's last line (board #5538): the seconds left
+/// before the question answers itself, and with what. `limit` is what
+/// stands when nobody answers: the limit on a first run, where nothing is
+/// saved, and the saved choice when `debug.fosfora.flashask` asks again.
+pub fn countdown_line(left_s: u32, limit: bool) -> String {
+    format!(
+        "No answer in {left_s} s: {}",
+        Answer::from_limit(limit).words()
+    )
+}
+
+/// The answers' line: the two answers, the gap between them.
 pub fn answers_line() -> String {
     format!(
         "{}{}{}",
@@ -150,12 +169,15 @@ pub fn answers_line() -> String {
     )
 }
 
-/// The question card's words: the warning, then how to answer, then the
-/// answers. The fifth line names the answer a pinch would give once a
+/// The question card's words: the warning, a blank line, how to answer,
+/// the answers, and with `countdown` (the seconds left and what stands
+/// when they run out, [`Ask::left_s`], [`Ask::unanswered_limit`]) the
+/// countdown under them. The line over the answers names the answer a
+/// pinch would give once a
 /// hand has dwelt over it (`over`, from [`Ask::armed`]). With `no_hands`
 /// (no hand tracked for `label::HANDS_WAIT_S`) it says to put the
 /// controllers down, in the controllers label's own words.
-pub fn card_text(over: Option<Answer>, no_hands: bool) -> String {
+pub fn card_text(over: Option<Answer>, no_hands: bool, countdown: Option<(u32, bool)>) -> String {
     let how = match over {
         Some(answer) => format!("Pinch to choose {}", answer.words()),
         None if no_hands => {
@@ -164,7 +186,12 @@ pub fn card_text(over: Option<Answer>, no_hands: bool) -> String {
         }
         None => HOW.to_owned(),
     };
-    format!("{WARNING}\n{how}\n{}", answers_line())
+    let mut text = format!("{WARNING}\n\n{how}\n{}", answers_line());
+    if let Some((left_s, limit)) = countdown {
+        text.push('\n');
+        text.push_str(&countdown_line(left_s, limit));
+    }
+    text
 }
 
 /// The answer the hand at `point` (the pinch point, between the thumb's
@@ -189,11 +216,18 @@ pub fn over(head: Vec3, card: &Billboard, laid: &Layout, point: Vec3) -> Option<
     }
     let on_card = head + to_hand * (to_card / ahead) - card.center;
     let (x, y) = (on_card.dot(card.right), on_card.dot(card.up));
-    // The texture's pixels in meters, and the answers' line on it: the
-    // last line, [`LINE_PX`] a line from the top.
+    // The texture's pixels in meters, and the answers' line on it,
+    // [`LINE_PX`] a line from the top: the line that is the answers (the
+    // countdown may follow it), else the last.
     let m_per_px = 2.0 * card.half_w / LABEL_TEX[0] as f32;
     let lines = laid.lines.len();
-    let line_y = (0.5 * tex_h(lines) as f32 - (LINE_PX * lines as u32) as f32) * m_per_px;
+    let answers = answers_line();
+    let nth = laid
+        .lines
+        .iter()
+        .rposition(|l| *l == answers)
+        .map_or(lines, |i| i + 1);
+    let line_y = (0.5 * tex_h(lines) as f32 - (LINE_PX * nth as u32) as f32) * m_per_px;
     let line = LINE_PX as f32 * m_per_px;
     if y > line_y + ABOVE_LINES * line || y < line_y - BELOW_LINES * line {
         return None;
@@ -283,6 +317,9 @@ pub struct AskInput {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ask {
     asking: bool,
+    /// What stands when nobody answers: the saved choice, the limit on
+    /// when nothing is saved.
+    unanswered_limit: bool,
     /// How long the card has shown (s).
     shown_s: f32,
     /// The answer each hand is over, and for how long (s).
@@ -299,6 +336,7 @@ impl Ask {
     pub fn at_launch(saved: Option<bool>, begin_knob: bool, again: bool) -> Self {
         Self {
             asking: (saved.is_none() || again) && !begin_knob,
+            unanswered_limit: saved.unwrap_or(true),
             shown_s: 0.0,
             dwell: [(None, 0.0); 2],
         }
@@ -308,6 +346,20 @@ impl Ask {
     /// "Pinch to begin" waits behind it.
     pub fn asking(&self) -> bool {
         self.asking
+    }
+
+    /// Board #5538: the whole seconds left before the question answers
+    /// itself ([`ASK_MAX_S`], counted only while the card shows), for the
+    /// card's countdown: 60 at first, 1 through the last second.
+    pub fn left_s(&self) -> u32 {
+        (ASK_MAX_S - self.shown_s).max(0.0).ceil() as u32
+    }
+
+    /// What stands when nobody answers, for the countdown's words: the
+    /// limit on a first run, the saved choice when the question is asked
+    /// again.
+    pub fn unanswered_limit(&self) -> bool {
+        self.unanswered_limit
     }
 
     /// The launch's log line.
@@ -414,7 +466,7 @@ mod tests {
     use super::*;
     use crate::first_run::{Begun, HandEdges, HeldPinches, Wait, start_gesture};
     use crate::gesture::{Gesture, Gestures, PinchInput};
-    use crate::label::{LINES_FONT_PX, MAX_LINES, layout};
+    use crate::label::{LINES_FONT_PX, MAX_LINES, TEX_LINES, layout};
     use glam::Quat;
 
     const DT: f32 = 1.0 / 72.0;
@@ -425,7 +477,7 @@ mod tests {
     fn card() -> (Billboard, Layout) {
         let rot = Quat::from_rotation_y(0.4) * Quat::from_rotation_x(0.5);
         let pose = crate::voice::Follow::centered(rot).billboard(HEAD, rot);
-        (pose, layout(&card_text(None, false)))
+        (pose, layout(&card_text(None, false, Some((60, true)))))
     }
 
     /// Where the answers are on the card, in meters right of its center:
@@ -436,7 +488,13 @@ mod tests {
         let w = |text: &str| crate::text_width::em(text) * laid.px * m_per_px;
         let half = 0.5 * w(&answers_line());
         let n = laid.lines.len();
-        let y = (0.5 * tex_h(n) as f32 - (LINE_PX * n as u32) as f32) * m_per_px;
+        let nth = laid
+            .lines
+            .iter()
+            .position(|l| *l == answers_line())
+            .expect("the answers' line")
+            + 1;
+        let y = (0.5 * tex_h(n) as f32 - (LINE_PX * nth as u32) as f32) * m_per_px;
         (
             [
                 [-half, -half + w(Answer::Limit.words())],
@@ -458,35 +516,74 @@ mod tests {
     #[test]
     fn the_card_warns_asks_and_names_both_answers_at_the_cards_size() {
         assert_eq!(
-            card_text(None, false),
+            card_text(None, false, Some((60, true))),
             "This show has flashing lights\n\
              that follow the music. They can\n\
              trigger seizures in people\n\
              with photosensitive epilepsy.\n\
+             \n\
              Put a hand over one and pinch:\n\
-             Limit flashing                  Full show"
+             Limit flashing                  Full show\n\
+             No answer in 60 s: Limit flashing"
         );
-        // Every state of the card: six lines, each as written and none
+        // Every state of the card: eight lines, each as written and none
         // wrapped, at the size the voice's help card and the talk hint
-        // have, so the answers stay where they are when the fifth line
-        // changes.
-        let fifths = [
+        // have, so the answers stay where they are when the line over
+        // them changes and as the seconds count down. A blank line sets
+        // the warning apart from the question.
+        let sixths = [
             (None, false, "Put a hand over one and pinch:"),
             (None, true, "Put the controllers down."),
             (Some(Answer::Limit), false, "Pinch to choose Limit flashing"),
             (Some(Answer::Limit), true, "Pinch to choose Limit flashing"),
             (Some(Answer::Full), false, "Pinch to choose Full show"),
         ];
-        for (over, no_hands, fifth) in fifths {
-            let text = card_text(over, no_hands);
-            let laid = layout(&text);
-            assert_eq!(laid.lines, text.split('\n').collect::<Vec<_>>(), "{text}");
-            assert_eq!(laid.lines.len(), MAX_LINES);
-            assert_close!(laid.px, LINES_FONT_PX);
-            assert_eq!(laid.lines[4], fifth);
-            assert_eq!(laid.lines[5], answers_line());
-            assert!(text.starts_with(WARNING));
+        for (over, no_hands, sixth) in sixths {
+            for left_s in [60, 45, 10, 9, 1] {
+                let text = card_text(over, no_hands, Some((left_s, true)));
+                let laid = layout(&text);
+                assert_eq!(laid.lines, text.split('\n').collect::<Vec<_>>(), "{text}");
+                assert_eq!(laid.lines.len(), TEX_LINES);
+                assert_close!(laid.px, LINES_FONT_PX);
+                assert_eq!(laid.lines[4], "");
+                assert_eq!(laid.lines[5], sixth);
+                assert_eq!(laid.lines[6], answers_line());
+                assert_eq!(laid.lines[7], countdown_line(left_s, true));
+                assert!(text.starts_with(WARNING));
+            }
         }
+        // The countdown says how long is left and what the wearer gets
+        // when it runs out: the limit on a first run, the saved choice
+        // when the question is asked again.
+        assert_eq!(
+            countdown_line(45, true),
+            "No answer in 45 s: Limit flashing"
+        );
+        assert_eq!(countdown_line(1, false), "No answer in 1 s: Full show");
+        let mut ask = Ask::at_launch(None, false, false);
+        assert_eq!((ask.left_s(), ask.unanswered_limit()), (60, true));
+        ask.step(0.5, SHOWN);
+        assert_eq!(ask.left_s(), 60);
+        ask.step(0.6, SHOWN);
+        assert_eq!(ask.left_s(), 59);
+        ask.step(58.4, SHOWN);
+        assert_eq!(ask.left_s(), 1);
+        // Under another label the seconds do not run.
+        let covered = AskInput {
+            shown: false,
+            ..SHOWN
+        };
+        ask.step(30.0, covered);
+        assert_eq!(ask.left_s(), 1);
+        assert!(!Ask::at_launch(Some(false), false, true).unanswered_limit());
+        assert!(Ask::at_launch(Some(true), false, true).unanswered_limit());
+        // Without the countdown (the log's line) the card ends on the
+        // answers, and a hand reads the same there.
+        let plain = card_text(None, false, None);
+        assert!(plain.ends_with(&answers_line()));
+        assert_eq!(layout(&plain).lines.len(), TEX_LINES - 1);
+        // The card is the one label taller than the others.
+        const { assert!(TEX_LINES > MAX_LINES) };
         // The warning says what flashes, what it can do and to whom.
         for said in [
             "flashing lights",

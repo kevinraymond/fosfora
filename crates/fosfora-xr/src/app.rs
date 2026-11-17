@@ -4754,22 +4754,36 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // of the view and follows the head as the voice label
                 // does.
                 // Board #5534: while the flash question is open the card
-                // is the question, its fifth line naming the answer a hand
-                // has dwelt over.
+                // is the question, the line over the answers naming the
+                // one a hand has dwelt over. Board #5538: its last line
+                // counts the seconds down. `card_key` is the card without
+                // the countdown, so the log has a line when the words
+                // change and not one a second.
                 card_ready = scan_label.now().is_none();
                 let card = wait.card_up(card_ready).then(|| {
                     let no_hands = hands_hint_on && hands_hint.under_card();
                     if flash_ask.asking() {
-                        crate::flash_choice::card_text(flash_ask.armed(), no_hands)
+                        let (armed, left) = (flash_ask.armed(), flash_ask.left_s());
+                        let limit = flash_ask.unanswered_limit();
+                        (
+                            crate::flash_choice::card_text(armed, no_hands, Some((left, limit))),
+                            crate::flash_choice::card_text(armed, no_hands, None),
+                        )
                     } else {
-                        crate::first_run::card_text(no_hands)
+                        let text = crate::first_run::card_text(no_hands);
+                        (text.clone(), text)
                     }
                 });
+                let (card, card_key) = match card {
+                    Some((text, key)) => (Some(text), Some(key)),
+                    None => (None, None),
+                };
                 match (&card, card_shown) {
                     (Some(text), shown) => {
-                        if card_laid.0 != *text {
+                        let key = card_key.as_deref().unwrap_or(text);
+                        if card_laid.0 != key {
                             info!("first run: the card reads \"{}\"", text.replace('\n', " | "));
-                            card_laid = (text.clone(), crate::label::layout(text).lines.len());
+                            card_laid = (key.to_owned(), crate::label::layout(text).lines.len());
                         }
                         if shown {
                             card_follow.step(head_rot, dt, card_laid.1);

@@ -2069,7 +2069,7 @@ What a wearer can meet, in the order of a first launch:
 | It finds the room | Loading your room | same | 3 s |
 | It finds none, roam goes on | No room here: roaming. Rescan from the hand menu | same | 6 s |
 | The wearer said no to spatial data | Fosfora can't see the room. Allow spatial data in Settings, then restart Fosfora. | same | 6 s |
-| The scan's label has gone, and the wearer has not chosen whether to limit flashing | This show has flashing lights that follow the music. They can trigger seizures in people with photosensitive epilepsy. Put a hand over one and pinch: Limit flashing / Full show | 1 m ahead, at the center of the view | until the wearer answers, 60 s at most |
+| The scan's label has gone, and the wearer has not chosen whether to limit flashing | This show has flashing lights that follow the music. They can trigger seizures in people with photosensitive epilepsy. Put a hand over one and pinch: Limit flashing / Full show. No answer in 60 s: Limit flashing (counting down) | 1 m ahead, at the center of the view | until the wearer answers, 60 s at most |
 | The question is answered or has had its time (on a later launch, the scan's label has gone) | Pinch to begin | same | until the wearer begins, 60 s at most |
 | The music first plays, no label up | Sit back and relax | 1.2 m ahead, level | 4 s, then the show |
 | No hand tracked since the launch, 4 s after the scan's label | Put the controllers down. Fosfora uses your hands. | under the begin card while the show waits, else 1.2 m ahead, level | until a hand is tracked; alone, 10 s at most |
@@ -2194,7 +2194,7 @@ not run on the headset yet.
    on their own rhythm, with no music to lift them.
 2. **The flash question**, on a launch where the wearer has not chosen
    (board #5534). When the scan's label has gone the card at the center
-   of the view reads, on six lines: **"This show has flashing lights"**,
+   of the view reads, on eight lines with a blank one after the warning and a countdown last (board #5538): **"This show has flashing lights"**,
    **"that follow the music. They can"**, **"trigger seizures in
    people"**, **"with photosensitive epilepsy."**, **"Put a hand over one
    and pinch:"** and, at the two ends of the last line, **"Limit
@@ -2269,9 +2269,21 @@ asked before anything flashes. The rules are `flash_choice.rs`.
   no music plays, the looks get silence and no sweep starts: nothing the
   audio drives lights while the card is up.
 - **The words** are in "What the wearer meets" above: four lines of
-  warning, one line that says how to answer, and the two answers named
-  for what the wearer gets. All six lines draw at 64 px, the size of the
-  voice's help card, and no state of the card moves the answers.
+  warning, a blank line, one line that says how to answer, the two
+  answers named for what the wearer gets, and the countdown. The lines
+  draw at 64 px, the size of the voice's help card, and no state of the
+  card moves the answers.
+- **Room to read, and the countdown** (board #5538). Worn, the six lines
+  packed together were "cramped and hard to read", and nothing on the
+  card said it would answer for the wearer after a minute. The card is
+  eight lines now, the only label taller than six (`label::TEX_LINES`,
+  `label::line_cap`): the blank line sets the warning apart from the
+  question, and the last line counts down, a second at a time, and names
+  what stands when it runs out: **"No answer in 45 s: Limit flashing"**
+  (`flash_choice::countdown_line`). The seconds run only while the card
+  is the label showing. The countdown has a line of its own. Beside
+  "Limit flashing" it would halve the gap between the answers, and a hand
+  on one answer could then read as the other for one eye.
 - **Answering by hand.** The wearer holds a hand over one answer, as they
   see it, and pinches. The app reads the line from the head through the
   pinching fingers to the card (`flash_choice::over`). Left of the gap
@@ -2281,7 +2293,7 @@ asked before anything flashes. The rules are `flash_choice.rs`.
   answer, so one hand is enough. The hand has to be 32 to 90 cm from the
   head.
 - **Not by accident.** A pinch answers only when its hand has been over
-  the same answer for 0.3 s (`DWELL_S`). By then the fifth line names that
+  the same answer for 0.3 s (`DWELL_S`). By then the line over the answers names that
   answer, so the wearer reads what the pinch will do before making it. A
   hand at rest in the lap, a hand at the headset, a pinch in passing and
   the other hand's pinch answer nothing. A hand that slides from one
@@ -2291,7 +2303,7 @@ asked before anything flashes. The rules are `flash_choice.rs`.
   app reads by up to 7 cm on the card. The 10 cm gap between the answers
   and the dead band are sized so that a hand covering any part of one
   answer, for either eye, never reads as the other. At worst it reads as
-  neither and the fifth line does not change.
+  neither and the line over the answers does not change.
 - **The pinch that answers does nothing else.** While the question is up
   the wait is handed no card and no start gesture
   (`flash_choice::wait_input`), and the wait begins on a pinch closing. So

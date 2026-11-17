@@ -102,7 +102,8 @@
 //! a hint under it, or "what can I say"'s five examples): the text's
 //! `\n`s are lines, and the label grows down and up from its center by
 //! [`LINE_PX`] of the texture a line ([`tex_h`], [`Billboard::with_lines`]),
-//! up to [`MAX_LINES`].
+//! up to [`MAX_LINES`], or [`TEX_LINES`] for a text written with that
+//! many lines of its own ([`line_cap`]).
 //!
 //! **The surface labels** (board #5378, `surface_labels.rs`) put every
 //! surface's name on the surface in this label's look, from one atlas
@@ -129,9 +130,23 @@ pub const LABEL_TEX: [u32; 2] = [1024, 192];
 pub const LINE_PX: u32 = 96;
 /// The most lines a label shows; a longer text's last ones are dropped.
 pub const MAX_LINES: usize = 6;
-/// The texture's height, for [`MAX_LINES`] (px); a label of fewer lines
+/// The most lines the texture holds (board #5538). A text written with
+/// more lines of its own than [`MAX_LINES`] shows up to this many
+/// ([`line_cap`]): the flash question's card, with the warning, the
+/// question and the countdown and a blank line between them, where six
+/// lines had them packed together. Every other label keeps
+/// [`MAX_LINES`], which is what keeps the voice's label clear of the
+/// scan's.
+pub const TEX_LINES: usize = 8;
+/// The texture's height, for [`TEX_LINES`] (px); a label of fewer lines
 /// shows its top [`tex_h`].
-pub const LABEL_TEX_H_MAX: u32 = tex_h(MAX_LINES);
+pub const LABEL_TEX_H_MAX: u32 = tex_h(TEX_LINES);
+
+/// The most lines `text` may show: [`MAX_LINES`], or as many as it was
+/// written with, up to [`TEX_LINES`].
+pub fn line_cap(text: &str) -> usize {
+    (text.split('\n').count()).clamp(MAX_LINES, TEX_LINES)
+}
 
 /// The texture's height a label of `lines` lines shows (px): a line's
 /// pitch each, and one more for the margins, [`LABEL_TEX`]'s height for
@@ -139,8 +154,8 @@ pub const LABEL_TEX_H_MAX: u32 = tex_h(MAX_LINES);
 pub const fn tex_h(lines: usize) -> u32 {
     let lines = if lines == 0 {
         1
-    } else if lines > MAX_LINES {
-        MAX_LINES
+    } else if lines > TEX_LINES {
+        TEX_LINES
     } else {
         lines
     };
@@ -225,19 +240,20 @@ pub fn layout(text: &str) -> Layout {
         }
     }
     let widest = |lines: &[String]| lines.iter().map(|l| em(l)).fold(0.0, f32::max);
+    let cap = line_cap(text);
     let mut px = TWO_LINES_FONT_PX;
     while px >= MIN_FONT_PX {
         let lines = wrap(text, TEXT_W_PX / px);
         let n = lines.len();
-        if n <= MAX_LINES && px <= font_cap(n) && widest(&lines) * px <= TEXT_W_PX {
+        if n <= cap && px <= font_cap(n) && widest(&lines) * px <= TEXT_W_PX {
             let px = (TEXT_W_PX / widest(&lines)).min(font_cap(n));
             return Layout { lines, px };
         }
         px -= SIZE_STEP_PX;
     }
     let mut lines = wrap(text, TEXT_W_PX / MIN_FONT_PX);
-    if lines.len() > MAX_LINES {
-        lines.truncate(MAX_LINES);
+    if lines.len() > cap {
+        lines.truncate(cap);
         if let Some(last) = lines.last_mut() {
             last.push('\u{2026}');
         }
@@ -1178,8 +1194,19 @@ mod tests {
         assert_eq!(tex_h(0), LABEL_TEX[1]);
         assert_eq!(tex_h(2), 288);
         assert_eq!(tex_h(5), 576);
-        assert_eq!(tex_h(MAX_LINES), LABEL_TEX_H_MAX);
-        assert_eq!(tex_h(MAX_LINES + 3), LABEL_TEX_H_MAX);
+        assert_eq!(tex_h(TEX_LINES), LABEL_TEX_H_MAX);
+        assert_eq!(tex_h(TEX_LINES + 3), LABEL_TEX_H_MAX);
+        // Board #5538: a text written with more lines of its own than
+        // MAX_LINES shows them, up to the texture's; a text that only
+        // wraps long keeps MAX_LINES.
+        assert_eq!(line_cap("one line"), MAX_LINES);
+        assert_eq!(line_cap("1\n2\n3\n4\n5\n6"), MAX_LINES);
+        assert_eq!(line_cap("1\n2\n3\n4\n5\n6\n7"), 7);
+        assert_eq!(line_cap("1\n2\n3\n4\n5\n6\n7\n8\n9\n10"), TEX_LINES);
+        assert_eq!(layout("1\n2\n3\n4\n5\n6\n7\n8").lines.len(), 8);
+        let ten = layout("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+        assert_eq!(ten.lines.len(), TEX_LINES);
+        assert!(ten.lines[TEX_LINES - 1].ends_with('\u{2026}'));
         assert_eq!(lines("desk: amber"), ["desk: amber"]);
         assert_eq!(
             lines("Didn't catch that: \"x\"\nTry \"next effect\""),
