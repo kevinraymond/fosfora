@@ -318,6 +318,14 @@ tracks the app ships with (board #5528).
   playlist and player as the wearer's files, so everything below holds for
   them: the title from the file name, `<` and `>`, the voice, playing
   through, the saved track, the decode on the music thread.
+- **Each bundled track brings its theme** (board #5533,
+  `SURFACES_DESIGN.md`, Themes). The list that names a track names its
+  theme: Aurora with the first, Flint with the second, Contour with the
+  third. When a bundled track starts, the room's light falls to dark over
+  a second, the theme is laid, and the new look rises. It is not saved,
+  and a theme the wearer picks holds until the next bundled track starts.
+  The wearer's own music brings no theme. `debug.fosfora.tracktheme 0`
+  turns it off.
 - **Your music wins.** When a scan finds a track in either folder (at
   launch, when the permission arrives, on "scan my music"), the playlist is
   the wearer's tracks only, and no bundled track is in it. When the folders

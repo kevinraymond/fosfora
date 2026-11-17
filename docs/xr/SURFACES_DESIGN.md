@@ -1415,9 +1415,11 @@ room first, so each theme has to look complete there.
 audio band, a strength and, since board #5431, how the edge bars draw that
 kind's edges. The module is plain data: the table, lookup by
 name, the next theme in the cycle, what a room file shows, and the knob's
-launch rule. No theme adds a shader or a behavior. Every pairing below is
-on its kind's own list (`SurfaceBehavior::catalogue`), so none of the
-pairings first proposed needed changing.
+launch rule. The first six add no shader and no behavior. Contour came
+with its own look, the contours, which is in the catalogue like any other
+(below). Every pairing is on its kind's own list
+(`SurfaceBehavior::catalogue`), so none of the pairings first proposed
+needed changing.
 
 **The five.** Each cell is behavior, color, band, strength. Classic,
 Drift and Tide draw the edge bars on the face for every kind; Aurora's
@@ -1469,6 +1471,66 @@ walls and the ceiling fill the view, so that is where the tunnels are. The
 floor keeps the rings with the bars on its face, as a pit under a seated
 wearer's feet is left for the owner to ask for. Warm white on the walls and
 the ceiling, blue on the rest, the floor's rings included.
+
+**Flint and Contour** (board #5533). Two more themes, made so that each
+bundled track can bring a look of its own (below). The owner's words for
+them were "hardness and angles" and "gentle rolling and topographic
+scenery". They come after Mirror in the cycle.
+
+| kind | Flint | Contour |
+| --- | --- | --- |
+| table | shards, warm white, rms, 1, edges standing | none, warm white, rms, 1, edges on the face |
+| floor | tessera, blue, rms, 1, edges on the face | contours, green, rms, 1, edges off |
+| wall | bezel, blue, rms, 1, edges on the face | contours, green, rms, 1, edges off |
+| ceiling | none, warm white, rms, 1, edges on the face | contours, green, rms, 1, edges off |
+| frame | reticle, amber, rms, 1, edges on the face | none, warm white, rms, 1, edges on the face |
+| other | shards, amber, rms, 1, edges standing | curls, warm white, rms, 0.4, edges on the face |
+
+*Flint* is built from the catalogue's angular looks, each chosen for what
+it does on a drum. The eight dumped songs (110 to 185 BPM; none is rock,
+and the two nearest the rock track's 104 BPM are at 110 and 115) have a
+kick every 0.2 to 0.65 s whose level halves in 70 to 150 ms, and a snare
+that reads as a high onset with little kick.
+
+- **Tables and other surfaces: shards.** Its cell edges are lit by
+  `1 + 2 bass + 3 kick`, so they sit near 3 between kicks and jump to 4.0
+  to 4.7 on one, then fall back with the kick. A snare's onset (0.6 to
+  0.8) shifts the cell centers by a fifth of a cell and does not brighten
+  them: the cells crack on the snare and flash on the kick. Sustained
+  energy shows as the cells' fill, which follows the rms and never drops
+  out. Warm white on the tables, amber on the rest.
+- **The floor: tessera.** A grid of tiles that opens from the center over
+  four bars. Its lines carry a hit that decays across each beat
+  (`exp(-6 x beat phase)`) and a harder one on the bar. It reads the bar's
+  clock, not the kick, so it holds its pulse through a passage with no
+  drums. Steel blue.
+- **The walls: bezel.** Corner brackets, an inset rule, tick marks and
+  faint scanlines across the whole wall, so every wall is ruled with
+  straight lines. Its stroke thickens on the beat and the bar and falls
+  back, and its corner meters ride four bands, so the guitar's sustained
+  energy stands in them as held bars. Steel blue.
+- **Frames: the reticle.** Crosshairs that take a new place every bar,
+  with a bracket that closes on each beat. Amber, the one hot color.
+- **The ceiling: nothing**, with its outline on the face in warm white.
+  Nothing on its list is angular but the two looks held back.
+- **Edges.** On the face for the floor, the walls, the ceiling and the
+  frames, so the room's own corners are lit lines. Standing on tables and
+  other surfaces: a fence of spikes on each rim.
+
+Tried and left out: prism, the other angular look on a table's and a
+floor's list. It turns and swells with the bass, which is the opposite of
+a hit that cuts off, and before the limiter it is the catalogue's hardest
+flasher (12 to 16 general flashes a second on the dumped songs, against
+shards' 2.5 to 4). Bezel on frames was left for the reticle, since the walls
+already carry bezel. Astrolabe and fenestra are held back and were not
+considered.
+
+*Contour* is the contours on the room's three planes, one landscape in
+green rising to warm white, with the edge bars off there as on Aurora's
+sky, so no bar cuts the land at a corner. Tables and frames run nothing
+and keep their outline on the face in warm white, which reads against the
+green lines where a tunnel's rungs would not. Other surfaces run the
+curls at 0.4: small closed rings beside the map's.
 
 **The edges per kind.** The edge bars draw each shape in its kind's mode
 under the room's saved theme (`themes::edge_mode`), edited since or not: a
@@ -1548,8 +1610,8 @@ change.
 **The control.** "Theme" over the theme's name ("Drift", "Drift*",
 "custom") in the right half of the music row's right cell, with Voice in
 the left half, in both layouts (debug panel on and off). Each press steps
-to the next theme (Classic, Drift, Tide, Aurora, Mirror, Classic; from
-custom, to Classic) and applies it once the frame's boxes are in, as All: none does.
+to the next theme (Classic, Drift, Tide, Aurora, Mirror, Flint, Contour,
+Classic; from custom, to Classic) and applies it once the frame's boxes are in, as All: none does.
 It works with the ray and the pinch like every other cell. Adding a row
 would push the debug panel's fullest block into its header, and every full
 cell holds a control the wearer reaches for, so the control shares a cell
@@ -1565,14 +1627,17 @@ to aurora", "change the theme to tide", "use the classic theme" name a
 theme. "next theme", "another theme", "change the theme" step it as a
 press does. The reply names the theme it came to ("theme: Aurora"). A name
 no theme has replies with the list: No theme called "sunset": Classic,
-Drift, Tide, Aurora or Mirror. "mirror theme" and "set the theme to
-mirror" work through the same grammar, with no new phrase. The word
+Drift, Tide, Aurora, Mirror, Flint or Contour. "mirror theme", "theme
+flint" and "set the theme to contour" work through the same grammar, with
+no new phrase: the grammar asks `Theme::from_name`, so a theme added to
+the table is named by voice at once. The on-device model has no part in
+it. Its actions have no theme, so a theme is the grammar's alone. The word
 "theme" has to start or end the sentence,
 so "drift" or "aurora" alone keep meaning what they did. The agent's
 actions have no theme, and an unknown theme is not forwarded to it.
 
 **The knob.** `debug.fosfora.theme <name>` (classic, drift, tide, aurora,
-mirror) is polled once a second after the lanes' update and applies that theme
+mirror, flint, contour) is polled once a second after the lanes' update and applies that theme
 when its value changes, once. At launch, a value naming the room's own
 theme, edited or not, applies nothing, so a value left over from an
 earlier run neither rewrites the room nor wipes an edit. Like the menu, it
@@ -1586,14 +1651,69 @@ adb shell setprop debug.fosfora.theme drift     # then capture
 adb shell setprop debug.fosfora.theme tide      # then capture
 adb shell setprop debug.fosfora.theme aurora    # then capture
 adb shell setprop debug.fosfora.theme mirror    # then capture
+adb shell setprop debug.fosfora.theme flint     # then capture
+adb shell setprop debug.fosfora.theme contour   # then capture
 adb shell setprop debug.fosfora.theme '""'
 ```
+
+With the bundled tracks playing, set `debug.fosfora.tracktheme 0` first,
+or the next track brings its own theme over the one under test.
 
 or one launch per theme with `scripts/xr/gpu-stages.sh --with
 "music=1;gov=0" --cond "classic=theme=classic" --cond "drift=theme=drift"
 --cond "tide=theme=tide" --cond "aurora=theme=aurora" --cond
 "mirror=theme=mirror" --only "classic,drift,tide,aurora,mirror"`. Back up
 `rooms/` first: the room ends on the last theme.
+
+**A bundled track brings its theme** (board #5533, `music::BUNDLED`,
+`themes::Bringing`, `RoomLanes::bring_theme`). Each track the app ships
+with names a theme in the one list that names the track. Today the first
+brings Aurora, the second Flint and the third Contour. Replacing a track
+is an edit of that list, and nothing else names a track.
+
+- **Only the bundled tracks.** The wearer's own music brings no theme.
+  When it takes over from the bundled tracks, the room's own look comes
+  back.
+- **Never saved.** When a track's theme is laid, the room's own file is
+  set aside in memory and nothing is written while the track's theme
+  shows. An edit of a surface made on it shows at once, is not saved, and
+  goes when the next theme comes. The file on disk holds only what the
+  wearer chose, so a relaunch shows the room's own theme until the first
+  bundled track starts.
+- **The wearer's pick is theirs.** A theme picked by the menu, the swipe,
+  the voice or the knob is laid over the room's own file and saved, as
+  always. It holds until the next bundled track starts. It does not hold
+  for the rest of the session: one stray swipe would then turn the pairing
+  off with no way back short of a relaunch.
+- **Through dark, not a cut.** From the new track's first frame the
+  room's light falls to nothing (every lit face, the edge bars and the
+  depth light). The theme is laid while it is dark, and after 0.25 s the
+  new look rises. The song that ends keeps its look to its last note,
+  whatever the immersion level is doing by then, and the wearer sees the
+  room go dark as the new song begins and come back changed. A room that
+  already shows the theme is laid at once with no fade.
+- **The fade keeps to the flash limit's direction** (`themes::Turn`). It
+  falls only in frames where the limiter lets the lights fall, 1 s of
+  them in all, and waits through a rise. It rises only where they may
+  rise: on a hit, so the new look comes up with the first beats, 0.3 s of
+  rising frames in all. With the direction still for a second (quiet or
+  steady music, or the limiter off) it runs on its own clock, 1 s down and
+  1.5 s up. A fade on its own clock was built first and measured: it put
+  one more change of light into a second the music had already filled,
+  and Aurora's red curtains on the 4 Hz pulse train went from 3 flashes to
+  3.5 while they rose. Keeping to the direction, the three changes between
+  the bundled tracks' themes stay at 2.5 general and 3 red at worst on the
+  four pulse trains, which is Aurora's own figure there
+  (`a_tracks_theme_coming_stays_within_three_flashes`).
+- **`debug.fosfora.tracktheme 0`** turns the pairing off, live: the room's
+  own look comes back through the same fade, and a theme under test stays
+  through a track change. Set to 1 again it brings the playing track's.
+
+Logs: `room <id>: theme flint (the track): … , not saved: the room keeps
+its own (Mirror)`; an edit under it ends `, not saved: on a track's theme,
+the room keeps its own`; `room <id>: the track's theme leaves: the room's
+own again (Mirror)`; `themes: the wearer picked a theme since the track
+started: it stands`.
 
 **Logs.** Loading a room: `room <id>: theme drift`, `theme drift, edited
 since`, `no theme saved: starts on aurora, saved once something changes`
@@ -1623,6 +1743,70 @@ pulse on the walls and the ceiling, the curls on the floor), then Classic
 (about 1 ms, as in D2a). A theme does not pick the world effect. Since
 board #5431 it does pick the edge bars' mode per kind; Mirror's worn look
 and its cost seated are still to take.
+
+## The contours (Nov 16, board #5533)
+
+**Why.** The owner asked for "gentle rolling and topographic scenery"
+with the classical track. Nothing in the catalogue draws land, and every
+look so far starts its own picture on each face, Aurora's sky aside.
+
+**The look** (`surface_fx.rs`, behavior 16, `contours`). Contour lines,
+as on a topographic map, over one landscape that fills the room.
+
+- **One landscape.** The land is a height field in world space: three
+  sines of the fragment's position, two of them with their phase bent by
+  another sine, so the hills are not a grid. Every face samples it where
+  it stands. A line that reaches a wall's edge goes on across the next
+  wall, the floor or the ceiling, and no face fades toward its edges. Each
+  face's quad is lifted 2 cm off its surface, so at a corner the two quads
+  are 2.8 cm apart, and across that gap the height changes by under half
+  the step between two lines.
+- **Lines.** A line runs where the height crosses a multiple of 0.125
+  (the land runs from -1 to 1). The distance to it in meters is the
+  height's distance over the slope along the face, from the field's own
+  gradient, so a line is 6 mm wide on a steep slope and on a gentle one,
+  softened over a pixel. Every fifth line is an index line.
+- **Scenery.** The color runs from the surface's own on low land to warm
+  white on high land.
+- **Gentle.** The land drifts on its own clock, a few centimeters a
+  second, and the beat does not speed it up. The music reaches it only
+  through values that glide (`Terrain`): the band's level over 1.5 s and
+  the bass over 0.8 s. The level raises the land by up to two line steps,
+  so the lines spread outward from the peaks like a tide over a map. It
+  also lights the lines between the index lines (none under a level of
+  0.15, all by 0.6, at 0.6 of an index line's light) and widens every
+  line from 0.6 of its width to all of it. The bass swells the relief by
+  up to 12 %. On a downbeat, at most once in 12 s and only with the level
+  over 0.25, one faint line sets out from the low land and climbs to the
+  peaks over 7 s, fading in and out. From one frame to the next the level
+  moves a line by under 2 % of the step between two lines.
+
+**Cost.** A fragment costs ten sines and cosines, five dot products of
+three, one normalize and three smoothsteps. No texture read, no hash, no
+loop, and the gradient costs no sine the height did not need. The
+streamlines cost eight lattice hashes off a line and sixteen on one. So
+a contour fragment should cost what a streamlines fragment costs or
+less. Not measured on the headset yet. Drift, with the streamlines on
+every wall, cost 0.1 ms of App over the saved room, and Aurora, with a
+ported effect on the walls, the ceiling and the floor, 0.4 ms
+(`MEASURED.md`, Themes). Contour lights the same three kinds of plane as
+Aurora with a cheaper fragment, so expect between the two.
+
+**In the catalogue.** Last on the lists of a floor, a wall and a ceiling,
+where the land runs from one face onto the next. A table, a frame and
+other things show too small a piece of it to read as land; the knob still
+puts it there. The room file and the knob call it `contours`, and so does
+the voice ("every wall contours"): the grammar's vocabulary is built from
+the offered list. The hosted agent's instruction describes it and its
+room lists carry it. The on-device model does not offer it: its
+candidates come from its spec, which was written before the look, and the
+grammar's direct command is enough. Its band is the rms by default and
+the Band row changes it; the color row sets the low land's color.
+
+**Flashes.** The look maps the level to a position as well as to light,
+which is outside the limiter's proof, so it is measured as the themes
+are. Without the limiter it stays at half a flash a second on the pulse
+trains: nothing in it can jump.
 
 ## Photosensitive safety (Nov 14, board #5451)
 
@@ -1757,6 +1941,8 @@ key on C so Aurora's tint is red (6 s each):
 | Tide | 3 / 0 -> 2.5 / 0 | 2.5 / 0 -> 2 / 0 | 3.5 / 0 -> 2.5 / 0 | 4 / 0 -> 2.5 / 0 |
 | Aurora | 4.5 / 4.5 -> 2.5 / 3 | 8.5 / 8.5 -> 2.5 / 2.5 | 12.5 / 12.5 -> 2.5 / 2.5 | 16.5 / 16 -> 2.5 / 2.5 |
 | Mirror | 4.5 / 0 -> 2.5 / 0 | 8 / 0 -> 2.5 / 0 | 0.5 / 0 -> 2.5 / 0 | 0.5 / 0 -> 3 / 0 |
+| Flint | 4.5 / 0 -> 2.5 / 0.5 | 8.5 / 0 -> 2.5 / 0.5 | 12.5 / 0 -> 2 / 0.5 | 16.5 / 0 -> 1.5 / 0.5 |
+| Contour | 0.5 / 0 -> 2 / 0 | 0.5 / 0 -> 1.5 / 0 | 0.5 / 0 -> 1.5 / 0 | 0.5 / 0 -> 0.5 / 0 |
 
 Each behavior alone on every surface that offers it, no edge bars, the worst
 of the four pulse trains, off -> on: the rings 16 -> 3, the wall spectrum 8
@@ -1765,6 +1951,10 @@ Aurora 16.5 -> 2.5, prism 21 -> 2.5, shards 16.5 -> 1, astrolabe 16 -> 1.5,
 bezel 11 -> 1.5, fenestra 10.5 -> 2, reticle 6 -> 1.5, tessera 15 -> 1.5.
 With the music held still (every level at 0.3, then 0.8, no beat) every
 theme stays at 1 or under, limited or not.
+
+Flint and Contour (board #5533) were measured on Nov 16, after the five.
+Contour's own light hardly moves; what the limiter leaves it is the edge
+bars on its table.
 
 The same runs over real songs (`the_dumped_songs_stay_within_three_flashes`,
 eight tracks, fast ones and dense hi-hats among them) read dumps kept
