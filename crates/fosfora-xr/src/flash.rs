@@ -126,17 +126,22 @@
 //!
 //! Measured (`flash_room.rs`), in the room of the measurement at immersion
 //! level 1, each mode forced on every surface. The strips alone, on the
-//! face or standing: in the themes' colors they count hits up to 2 a
-//! second and nothing faster, 2 flashes; in white, brighter than any color
-//! a bar takes and with nothing in front of them, hits up to 2.75 a
-//! second, 3 flashes. The tunnels alone: half a flash. Each theme whole,
-//! on pulse trains from 4 to 16 a second and trains of short hits from 1.5
-//! to 6: never over three, and never over the most it counts with the
-//! bars limited. At the wall spectrum's fall speed, hits three or more
-//! times a second took a region beside a strip to 3.5 and 4 flashes, which
-//! is why the strips' bars fall at half of it. The tunnels' rungs keep
-//! bars that fall at the wall spectrum's speed: a rung is a small share of
-//! its face and the tunnels count the same either way.
+//! face or standing, count hits up to 2 a second in the themes' colors and
+//! nothing faster, which is 2 flashes. In white, brighter than any color a
+//! bar takes and with nothing in front of them, they count hits up to 2.75
+//! a second, which is 3. The tunnels alone count half a flash. Each theme
+//! whole, on pulse trains from 4 to 16 a second and trains of short hits
+//! from 1.5 to 6, is never over three and never over the most it counts
+//! with the bars limited. On the eleven songs no theme is over three, in
+//! its own edge modes or with any mode forced. In the themes' own modes
+//! and with the tunnels forced, no run counts more free than limited. With
+//! strips forced on every surface, six runs of 110 count half a flash
+//! more, and five of those are Aurora going from 2.5 to 3, the worst case.
+//! At the wall spectrum's fall speed, hits three or more times a second
+//! took a region beside a strip to 3.5 and 4 flashes, which is why the
+//! strips' bars fall at half of it. The tunnels' rungs keep bars that fall
+//! at the wall spectrum's speed, since a rung is a small share of its face
+//! and the tunnels count the same either way.
 //!
 //! Not covered at 1: a room that puts a tall strip nearer the eye than the
 //! measured one does, so that its bars fill more of a region, and

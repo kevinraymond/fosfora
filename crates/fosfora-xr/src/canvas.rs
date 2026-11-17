@@ -30,7 +30,9 @@
 //! below [`MIN_TOP`]: a band far under the rest, or near silence, does not
 //! stretch its noise over the wall, and silence (0) shows nothing. A bar's
 //! height rises at once and falls at [`RELEASE_PER_S`] wall heights per
-//! second, by time, so 72 and 90 Hz behave alike.
+//! second, by time, so 72 and 90 Hz behave alike. The edge bars' free
+//! heights are canvases with a fall speed of their own
+//! ([`Canvas::release`], `edge_bars::Heights`).
 //!
 //! **The look.** The floor ripple's family: premultiplied warm white, peak
 //! alpha 0.25 (times `canvasgain`), light on the real wall rather than paint

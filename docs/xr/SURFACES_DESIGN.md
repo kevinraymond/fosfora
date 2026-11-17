@@ -1716,7 +1716,9 @@ shapes with the music (every port but Aurora) reads its levels gliding over
 0.5 s, so prism's zoom swells with the bass instead of snapping. And in busy
 passages the curtains, the streaks and the curls drift at half speed. The
 edge bars follow the turns too, so they step with them: 0.5 flashes a second
-before on the pulse trains, up to 2.5 now, within the rule.
+before on the pulse trains, up to 2.5 now, within the rule. Worn, that
+stepping read as bars out of time with the music, and
+`debug.fosfora.barsfree` is for it (the edge bars' heights, below).
 
 **What it does not cover.**
 - *The real room* behind the passthrough: the limit dims nothing it does not
@@ -1785,6 +1787,92 @@ on embers does. The floor's cycle is now the rings, the streamlines, the
 curls, tessera, prism, aurora; the wall's ends at aurora and bezel; the
 ceiling's at aurora; the frame's at bezel and reticle.
 
+**The edge bars' heights (Nov 16, board #5532).** Worn, the bars along the
+room's edges did not seem to be in time with the music. They were in time
+with the limiter. Replayed on eleven songs, a bar behind the limiter never
+shows 41 to 76 % of the rises the analysis makes on its band and shows the
+rest up to 264 to 417 ms late (the 95th percentile). On the frame of a hit it
+is where the analysis has it 30 to 62 % of the time. Different bars also
+move more alike than the music has them, and at 124 BPM a third of the beats
+go through. The analysis is not late: on a click track the mel bands rise
+within a hop of the click and of the beat it fires. The numbers are in
+`MEASURED.md`, "The edge bars against the music".
+
+`debug.fosfora.barsfree`, read at launch, says what the edge bars' heights
+read. At 0, the default, nothing changes: they are the spectrum's bars as the
+limiter shows them. At 1 the edge bars keep bars of their own on the mel
+bands as the analysis made them (`edge_bars::Heights`), so each bar is at the
+analysis's height on the frame of its own hits. Only the heights are free.
+The wall spectrum's bars and glow, the mel bands every look reads, the
+features and the triggers stay behind the limiter, and the edge bars read
+nothing else of the music. The default is one constant,
+`flash::BARS_FREE_DEFAULT`.
+
+Free heights are outside the proof above, so they are bounded and measured
+instead. A bar rises at once and only its fall takes time, so the fall speed
+bounds how fast the strips can dim a region of the view. Free, the strips'
+bars fall at 1.25 of the tallest bar's height a second
+(`edge_bars::FREE_RELEASE_PER_S`), half the wall spectrum's 2.5. At 2.5,
+short hits three or more times a second on every band took a region beside a
+strip to 3.5 and 4 flashes a second. At 1.5 the strips alone reached exactly
+three. At 1.25 they stay at two in the themes' colors. The tunnels' rungs
+keep bars that fall at 2.5, since a rung is a small share of its face and
+the tunnels alone count half a flash either way.
+
+What the wearer gets at 1:
+
+- *On the face and standing.* Every bar rises on its own hits, on their
+  frame, and falls at half the speed it did: a full bar takes 0.8 s to come
+  down, not 0.4. On a band that is hit fast the bar rides higher and swings
+  less. On the eleven songs 18 to 40 % of the rises of a tenth or more show
+  as less than a tenth for that reason, against the 41 to 76 % the limiter
+  never shows.
+- *In.* The rim and every rung follow the analysis. A hit starts at the rim
+  on its frame and travels in a rung every 60 ms, as the tunnel was designed,
+  where at 0 it starts on the limiter's turns.
+- *Both.* The bars stop moving together, and stop landing on every other
+  beat above 120 BPM.
+
+Counted on the GPU as above, each mode forced on every surface as the Edges
+control forces it, on the four pulse trains and on twelve trains of short
+hits (two frames long, 1.5 to 6 a second, what lets a bar fall furthest
+between two rises). The worst flashes a second, general / red, over the five
+themes and the sixteen trains, the heights limited then free:
+
+| edges on every surface | the bars alone | each theme whole |
+| --- | --- | --- |
+| on the face | 2.5 / 0 -> 2 / 0 | 3 / 3 -> 3 / 3 |
+| standing | 2.5 / 0 -> 2 / 0 | 3 / 3 -> 3 / 3 |
+| in | 0.5 / 0 -> 0.5 / 0 | 3 / 2.5 -> 3 / 2.5 |
+
+Of the 240 runs of a whole theme, four count half a flash more with the
+heights free than limited (2 to 2.5) and eleven count half a flash less. The
+threes are the ones the themes already count with the bars limited: 16 Hz
+pulses on Classic, Drift and Mirror, and Aurora's red on the 4 Hz pulses and
+on hits at 2 and 4 a second.
+
+The same on real songs
+(`the_dumped_songs_with_free_edge_bars_stay_within_three_flashes`): the
+three bundled tracks and the eight kept outside the repo, each theme whole,
+in the theme's own edge modes and with each mode forced on every surface,
+220 runs each way. None is over three, limited or free. In the themes' own
+modes, and with the tunnels on every surface, the free heights never count
+more than the limited ones. With strips forced on every surface they count
+half a flash more in six runs. Five of those are Aurora going from 2.5 to 3:
+its sky surfaces then carry strips in the key's tint over the sky. That is
+the worst case at 1, and it sits on the three.
+
+In `cargo test`, with no GPU, the bars' own light is counted on the shaders'
+Rust copies in white, brighter than any color a bar takes, with nothing in
+front of the bars: the strips reach three flashes on hits 2.25 to 2.75 times
+a second and count nothing faster, and the tunnels count none.
+
+Not covered at 1: a room that puts a tall strip nearer the eye than the
+measured one does, so its bars fill more of a region, and `edgebarsgain` or
+`edgebarsheight` turned up. In white the strips' count sits on the three
+with nothing to spare. So the default stays 0 until both settings have been
+worn, and the fall speed is the number to lower if a room needs more room.
+
 **Tests.** In `cargo test` (`flash.rs`, no GPU), the count:
 `a_square_wave_flashes_at_its_rate_and_three_a_second_pass`,
 `small_and_bright_changes_are_not_flashes`,
@@ -1809,14 +1897,27 @@ failing on any region over three:
 `every_part_alone_stays_within_three_flashes_on_the_pulse_trains`,
 `every_behavior_on_every_surface_stays_within_three_flashes`,
 `the_looks_own_motion_never_flashes`, and
-`the_dumped_songs_stay_within_three_flashes` (`FOSFORA_FLASH_DUMPS`).
+`the_dumped_songs_stay_within_three_flashes` (`FOSFORA_FLASH_DUMPS`). For
+the edge bars' heights (board #5532), in `cargo test`:
+`edge_bars::the_heights_are_the_limits_or_free_the_analysis_own`, and in
+`flash_room.rs` `free_bars_rise_on_the_frame_of_their_own_hits`,
+`free_edge_bars_alone_stay_within_three_flashes` and
+`free_strips_falling_as_fast_as_the_wall_spectrum_pass_three_flashes`. On a
+GPU: `the_edge_bars_with_free_heights_stay_within_three_flashes` and, with
+the dumps, `the_dumped_songs_with_free_edge_bars_stay_within_three_flashes`.
+With the dumps and no GPU,
+`the_bars_of_the_dumped_songs_against_the_analysis` prints the bars' timing
+tables.
 
 **The knob.** `debug.fosfora.flashlimit 0` turns the limit off for an A/B on
 the debug surface; unset or 1 it runs. Read at launch and polled once a
 second; the log says `flash limit: on · every audio-driven light turns at
 most 4 times a second (each direction at least 100 ms), beats 380 ms apart at
 least`, or `flash limit: OFF (debug.fosfora.flashlimit 0), the music drives
-the light unlimited`, at launch and on each change.
+the light unlimited`, at launch and on each change. The line ends with the
+edge bars' heights: `the edge bars' heights limited (debug.fosfora.barsfree
+0)`, or `the edge bars' heights follow the analysis, falling 1.25 heights a
+second (debug.fosfora.barsfree 1)`. That knob is read at launch only.
 
 **Not yet.** The device: the worn look of each theme with the limit on, its
 cost (a few hundred values a frame on the CPU, nothing on the GPU), and a

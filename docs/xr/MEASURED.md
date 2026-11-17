@@ -3835,3 +3835,160 @@ median, 456 MHz and 72 fps throughout:
 
 So 0.15 ms at its worst and under 0.05 ms with the music. Not measured:
 anything worn, and the look.
+
+## The edge bars against the music (board #5532)
+
+Desktop, Nov 16. Worn, the spectrum's bars along the room's edges did not
+seem to be in time with the music. The audio chain was aligned in that
+sitting (output latency 119 to 120 ms on every line of the log, the tap
+delayed 43 ms to match, no xruns), so this looks at what happens between
+the analysis and the bars.
+
+**How.** `flash_room.rs`, `the_bars_of_the_dumped_songs_against_the_analysis`,
+no GPU. A song's analysis, dumped hop by hop by the core's own analyzer, is
+replayed at 72 frames a second through three sets of 24 bars: the canvas on
+the mel bands as the analysis made them, the canvas behind the flash limit
+as `app.rs` runs it (the bars at `debug.fosfora.barsfree 0`), and the edge
+bars' free heights (`barsfree 1`). A rise is a bar going up a tenth of its
+height from its last low. For each rise the analysis makes, the shown bar's
+rise is looked for from two frames before it until the bar's next rise, or a
+second. The songs are the three bundled tracks and eight more kept outside
+the repo, fast ones and dense hi-hats among them, 54 minutes of music in
+all.
+
+**Behind the limit (`barsfree 0`).**
+
+| Song | Beats fired, let through | Rises | Never shown | Late by over 50 ms, or never | Delay of those shown, median and 95th percentile | At the analysis's height on the rise's frame |
+|---|---|---|---|---|---|---|
+| Let the Night Come In (124 BPM) | 407, 134 | 13,784 | 52 % | 78 % | 56 ms, 278 ms | 46 % |
+| Second Wind | 410, 72 | 14,446 | 61 % | 76 % | 28 ms, 264 ms | 40 % |
+| Slow Blue | 434, 169 | 8,085 | 41 % | 67 % | 28 ms, 375 ms | 41 % |
+| Eight more | 5 to 41 % let through | 13,864 to 48,072 | 52 to 76 % | 71 to 86 % | 14 to 69 ms, 292 to 417 ms | 30 to 62 % |
+
+The limiter's direction turned 3.6 to 3.9 times a second on every song, of
+the 4 it may: the turns are spent all the time. With rises of three tenths
+or more the picture is the same (36 to 80 % never shown).
+
+**How alike the bars move.** The mean correlation between two different
+bars, of their heights and of their changes from frame to frame, and
+between a bar as the analysis has it and the same bar shown:
+
+| Song | Heights alike: analysis, limited, free | Changes alike: analysis, limited, free | A bar against its own: limited, free |
+|---|---|---|---|
+| Let the Night Come In | 0.47, 0.52, 0.46 | 0.44, 0.61, 0.39 | 0.69, 0.91 |
+| Second Wind | 0.48, 0.50, 0.48 | 0.45, 0.58, 0.40 | 0.69, 0.92 |
+| Slow Blue | 0.43, 0.51, 0.46 | 0.46, 0.52, 0.46 | 0.70, 0.90 |
+| Eight more | 0.34 to 0.59, 0.48 to 0.69, 0.35 to 0.61 | 0.27 to 0.59, 0.54 to 0.70, 0.25 to 0.54 | 0.53 to 0.86, 0.91 to 0.98 |
+
+So the limiter is the cause. A bar behind it keeps the limiter's time: on
+the track that was playing, half the rises never show, a third of the beats
+go through, and the bars' changes are more alike than the music makes them
+(0.61 against 0.44).
+
+**What else it could have been.**
+
+- *A clock offset in the analysis.* A click track at 120 BPM through the
+  same analyzer: the mel bands rise a median 8 ms after the click (4 to 13),
+  the onset and the kick 7 ms, and the beat fires 1 ms before it (7 before
+  to 4 after). The bars and the beat are within a hop of each other, and
+  the beat is the one the filmed test put 6 to 12 ms from the click.
+- *The bars' normalization.* A bar is at the top of its strip for 2 to 9 %
+  of its frames and at the bottom for 6 to 33 %. The bars are not pinned.
+- *The bars' fall* (2.5 heights a second) and *the tunnel's history* (a rung
+  every 60 ms, 0.54 s to the last) do what they were designed to do. The
+  rim is this frame's.
+- *The bar to band mapping* moves no bar in time.
+
+**With the heights free (`barsfree 1`).** The same replay, the edge bars'
+own bars against the analysis's:
+
+| Song | At the analysis's height on the rise's frame | Never shown as a tenth | Late by over 50 ms, or never | Delay of those shown, median and 95th percentile |
+|---|---|---|---|---|
+| Let the Night Come In | 100 % | 27 % | 37 % | 14 ms, 111 ms |
+| Second Wind | 100 % | 28 % | 35 % | 14 ms, 83 ms |
+| Slow Blue | 100 % | 18 % | 29 % | 14 ms, 125 ms |
+| Eight more | 100 % | 19 % to 40 % | 28 to 47 % | 14 ms, 56 to 125 ms |
+
+A free bar is at the analysis's height on the frame of every rise. It falls
+at half the speed (1.25 heights a second, for the flash count below), so it
+has less far to come back up: a rise that is a tenth for the analysis's bar
+is under a tenth for it 18 to 40 % of the time, and crosses the tenth a frame
+later at the median. That is the price of the fall speed, not a delay. In
+`cargo test`, on made-up bands that each take hits of their own
+(`free_bars_rise_on_the_frame_of_their_own_hits`), the delay is 0 at the
+95th percentile.
+
+**The flash count with the heights free.** `flash_room.rs` on an RTX 4090,
+the room, the eye, the regions and the rule as in "Photosensitive safety"
+(`SURFACES_DESIGN.md`), behind the limiter, immersion 1. The worst flashes a
+second in any region, general / red.
+
+Pulse trains at 4, 8, 12 and 16 Hz and short hits (two frames) at 1.5, 1.75,
+2, 2.25, 2.5, 2.75, 3, 3.25, 3.5, 4, 5 and 6 a second, each mode forced on
+every surface, the worst of the five themes and the sixteen trains
+(`the_edge_bars_with_free_heights_stay_within_three_flashes`, 480 runs each
+way):
+
+| Edges on every surface | The bars alone, limited | The bars alone, free | Each theme whole, limited | Each theme whole, free |
+|---|---|---|---|---|
+| On the face | 2.5 / 0 | 2.0 / 0 | 3.0 / 3.0 | 3.0 / 3.0 |
+| Standing | 2.5 / 0 | 2.0 / 0 | 3.0 / 3.0 | 3.0 / 3.0 |
+| In | 0.5 / 0 | 0.5 / 0 | 3.0 / 2.5 | 3.0 / 2.5 |
+
+The worst case is the one the themes already have with the bars limited:
+16 Hz pulses on Classic, Drift and Mirror (3.0 general), and Aurora's red
+(3.0 on the 4 Hz pulses and on hits at 2 and 4 a second). Free, the strips
+alone count hits up to 2 a second and nothing faster. Of the 240 whole-theme
+runs, four count half a flash more free than limited (2.0 to 2.5) and
+eleven half a flash less.
+
+The strips' fall speed, on the face on every surface, the same sixteen
+trains, the bars alone and each theme whole:
+
+| The free strips fall at | The bars alone | Each theme whole |
+|---|---|---|
+| 2.5 heights a second, the wall spectrum's | 4.0, over three on 7 of 80 runs | 4.0, over three on 8 of 80 |
+| 2.0 | 3.5, over on 1 | 3.5, over on 1 |
+| 1.5 | 3.0 | 3.0 |
+| 1.25, as built | 2.0 | 3.0 |
+| 1.0 | 2.0 | 3.0 |
+
+The eleven songs, each theme whole
+(`the_dumped_songs_with_free_edge_bars_stay_within_three_flashes`, 220 runs
+each way). No run is over three, limited or free:
+
+| Edges | Runs | Worst, limited | Worst, free | Free counts more | Free counts less | Runs at 3.0: limited, free |
+|---|---|---|---|---|---|---|
+| Each kind in its theme's mode | 55 | 3.0 / 2.5 | 3.0 / 2.5 | 0 | 2 | 14, 14 |
+| On the face on every surface | 55 | 3.0 / 2.5 | 3.0 / 2.5 | 3 | 2 | 11, 14 |
+| Standing on every surface | 55 | 3.0 / 2.5 | 3.0 / 2.5 | 3 | 1 | 11, 13 |
+| In on every surface | 55 | 3.0 / 2.5 | 3.0 / 2.5 | 0 | 2 | 10, 9 |
+
+Every difference is half a flash. The six runs that count more free are
+Aurora with strips forced on every surface, 2.5 to 3.0 general, on Second
+Wind (on the face), on Slow Blue and on one of the other eight (both ways),
+and Drift standing on Slow Blue, 2.0 to 2.5. No theme names standing, and
+Aurora names no strips: its sky surfaces have no edge bars and the rest go
+in. So the worst case with the heights free is Aurora with the Edges control
+putting strips on every surface, which then lie in the key's tint over the
+sky: 3.0, on the three.
+
+The bundled tracks in each theme's own modes, general flashes, limited ->
+free (no red on any):
+
+| Track | Classic | Drift | Tide | Aurora | Mirror |
+|---|---|---|---|---|---|
+| Let the Night Come In | 3.0 -> 3.0 | 2.5 -> 2.5 | 2.5 -> 2.5 | 3.0 -> 3.0 | 2.5 -> 2.5 |
+| Second Wind | 3.0 -> 3.0 | 2.5 -> 2.5 | 2.5 -> 2.5 | 2.5 -> 2.5 | 2.5 -> 2.5 |
+| Slow Blue | 3.0 -> 3.0 | 2.5 -> 2.0 | 2.5 -> 2.5 | 3.0 -> 3.0 | 2.0 -> 2.0 |
+
+The bars' own light with no GPU, in `cargo test`
+(`free_edge_bars_alone_stay_within_three_flashes`): the shaders' Rust
+copies, every bar in white, nothing in front of a bar, the 32 regions the
+bars light most. On the face and standing: 2.0 flashes on hits at 1.5 to 2
+a second, 3.0 at 2.25 to 2.75, none from 3 up and none on the pulse trains.
+In: none. In white the strips sit on the three.
+
+Not measured: anything on the headset or worn. The knob changes no shader
+and no buffer. At 1 it adds two 24-bar canvases to the frame's CPU work.
+

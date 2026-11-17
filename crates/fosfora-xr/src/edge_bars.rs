@@ -59,6 +59,16 @@
 //! is [`HEIGHT_FRACTION`] of the face's smaller side, 2 to 20 cm
 //! ([`max_height`]), so a 40 cm box and a 4 m wall read alike.
 //!
+//! **What the heights read** ([`Heights`], board #5532). By default the
+//! wall spectrum's bars as the flash limit shows them (`flash.rs`), which
+//! move together, in steps a few times a second. With
+//! `debug.fosfora.barsfree 1`, read at launch, the edge bars keep bars of
+//! their own on the mel bands as the analysis made them: each bar rises on
+//! its own hits, on their frame. The strips' bars then fall at
+//! [`FREE_RELEASE_PER_S`], half the wall spectrum's speed, which keeps the
+//! strips within the flash rule; the bars the tunnels' rungs keep fall at
+//! the wall spectrum's.
+//!
 //! **The look.** The wall spectrum's (`surface_fx.rs`, `spectrum_light`):
 //! brightest at the tip, a cap line, soft sides, premultiplied. The top's
 //! softness and the cap are fractions of the tallest bar ([`TOP_SOFT`],
