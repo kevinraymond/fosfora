@@ -32,11 +32,12 @@
 //! phase held), the mel bands, and the values the frame works out from
 //! them before they light anything (the beat and downbeat envelopes, the
 //! spectrum's bars and glow, the key's tint, the depth light's music:
-//! [`follower`]). It holds the guarantee in one rule: every value it lets
-//! through moves in one shared direction at a time. In a rise any value may
-//! go up or hold, none may go down; in a fall the other way round. The
-//! direction turns at most [`TURNS_PER_WINDOW`] times in any second, and
-//! each direction lasts [`MIN_PHASE_S`] at least.
+//! [`follower`]). One thing may read around it, behind a knob: the edge
+//! bars' heights (below). It holds the guarantee in one rule: every value
+//! it lets through moves in one shared direction at a time. In a rise any
+//! value may go up or hold, none may go down; in a fall the other way
+//! round. The direction turns at most [`TURNS_PER_WINDOW`] times in any
+//! second, and each direction lasts [`MIN_PHASE_S`] at least.
 //!
 //! **Why that holds the count.** A look's light in a region goes up with
 //! the levels it reads: more bass, a brighter curtain; more onset, a
@@ -84,16 +85,78 @@
 //! A delayed copy of the light (the edge bars' tunnel shows the bars of the
 //! last 0.6 s, rung by rung) and light a beat set going (a ring far from
 //! where it started) follow the turns only where they start; they are
-//! bounded by the beats that go through and measured. So is a bar's tip:
+//! bounded by the beats that go through and measured (with the edge bars'
+//! heights free the rungs keep the free bars, below). So is a bar's tip:
 //! a bar is brightest at its top, with a cap line, so a region the tip
 //! rises through sees a little light pass. A look that maps the music to a
 //! hue or a position rather than to light, so that more of the music can
 //! mean less light, is outside the proof and has to be measured as the
 //! themes are; so is a look built on the bar's clock, which passes as the
-//! analysis has it.
+//! analysis has it. And the edge bars' heights when they are free, which
+//! do not pass through here at all (next).
 //!
-//! **The knob.** `debug.fosfora.flashlimit 0` turns it off for an A/B on
-//! the debug surface; unset or 1 it runs. The wearer has no setting for it.
+//! **The edge bars' heights** (board #5532, [`BARS_KNOB`]). Behind the
+//! limiter a bar keeps the limiter's time, not the music's. On the eleven
+//! songs measured, 41 to 76 % of the rises a bar makes never show, the
+//! ones that do wait up to 264 to 417 ms (the 95th percentile), and at 124
+//! BPM a third of the beats go through (`MEASURED.md`). Along the room's
+//! edges that reads as bars out of time with the music. So
+//! `debug.fosfora.barsfree`, read at launch, says what the edge bars'
+//! heights read ([`bars_free_from_knob`]; unset, [`BARS_FREE_DEFAULT`]).
+//!
+//! At 0 they read the spectrum's bars as the limiter shows them, and
+//! everything above holds for the edge bars as it is written.
+//!
+//! At 1 they read bars of their own, made from the mel bands as the
+//! analysis has them (`edge_bars::Heights`). A bar is at the analysis's
+//! height on the frame of each of its own hits, whatever the direction,
+//! so the guarantee above does not cover the edge bars' light: it is
+//! bounded and measured instead. Only the heights are free. The edge bars
+//! read nothing else of the music, and the wall spectrum's bars and glow,
+//! the features, the mel bands every look reads and the triggers stay
+//! behind the limiter as they are at 0.
+//!
+//! Bounded: a bar on an edge is a thin strip, at most 0.12 of its face's
+//! smaller side and 2 to 20 cm tall. It rises at once and falls at
+//! `edge_bars::FREE_RELEASE_PER_S`, 1.25 of the tallest bar's height a
+//! second, half the wall spectrum's speed. A region dims only as fast as
+//! its bars fall, so the faster a band is hit, the less its bars change
+//! the light of a region, and past some rate the change is under the
+//! rule's tenth and counts for nothing.
+//!
+//! Measured (`flash_room.rs`), in the room of the measurement at immersion
+//! level 1, each mode forced on every surface. The strips alone, on the
+//! face or standing, count hits up to 2 a second in the themes' colors and
+//! nothing faster, which is 2 flashes. In white, brighter than any color a
+//! bar takes and with nothing in front of them, they count hits up to 2.75
+//! a second, which is 3. The tunnels alone count half a flash. Each theme
+//! whole, on pulse trains from 4 to 16 a second and trains of short hits
+//! from 1.5 to 6, is never over three and never over the most it counts
+//! with the bars limited. On the eleven songs no theme is over three, in
+//! its own edge modes or with any mode forced. In the themes' own modes
+//! and with the tunnels forced, no run counts more free than limited. With
+//! strips forced on every surface, six runs of 110 count half a flash
+//! more, and five of those are Aurora going from 2.5 to 3, the worst case.
+//! At the wall spectrum's fall speed, hits three or more times a second
+//! took a region beside a strip to 3.5 and 4 flashes, which is why the
+//! strips' bars fall at half of it. The tunnels' rungs keep bars that fall
+//! at the wall spectrum's speed, since a rung is a small share of its face
+//! and the tunnels count the same either way.
+//!
+//! Not covered at 1: a room that puts a tall strip nearer the eye than the
+//! measured one does, so that its bars fill more of a region, and
+//! `debug.fosfora.edgebarsgain` or `edgebarsheight` turned up. The white
+//! count sits on the three with nothing to spare. That is why the default
+//! stays 0 until both have been worn.
+//!
+//! **On or off** (board #5534, [`decide`]). The limit is the wearer's
+//! choice, and it is on unless they turn it off: a new wearer is warned and
+//! asked before the first show (`flash_choice.rs`), and the hand menu's
+//! "Limit flashing" row and the voice change it later, saved in
+//! `hand_menu.json`. A wearer who has not answered has the limit. The
+//! knob, `debug.fosfora.flashlimit 0|1`, overrides the wearer's setting
+//! either way while it is set, for an A/B and for unworn tests; unset, the
+//! setting rules. The log says which of the two decided ([`line`]).
 
 use std::collections::VecDeque;
 
@@ -433,18 +496,56 @@ const HIT_DELTA: f32 = 0.1;
 /// through.
 pub const BEAT_PHASE_HELD: f32 = 0.999;
 
-/// The knob, `debug.fosfora.flashlimit` (1 or unset: on; 0: off, for an
-/// A/B on the debug surface only).
+/// The knob, `debug.fosfora.flashlimit`: 0 (off) or 1 (on) overrides the
+/// wearer's setting while it is set; unset or anything else, the setting
+/// rules.
 pub const KNOB: &str = "debug.fosfora.flashlimit";
 
-/// Whether the limiter runs, from the knob's value: anything but `0` is on.
-pub fn on_from_knob(value: Option<&str>) -> bool {
-    value.map(str::trim) != Some("0")
+/// What decided whether the limiter runs (board #5534).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum By {
+    /// The knob, set to 0 or 1.
+    Knob,
+    /// The wearer's saved setting.
+    Wearer,
+    /// Nothing is saved: the wearer has not chosen, so the limit is on.
+    NotAsked,
 }
 
-/// The log line for the limiter's state.
-pub fn line(on: bool) -> String {
-    if on {
+/// Whether the limiter runs, and what decided it: the knob's value when it
+/// is `0` or `1`, else the wearer's `setting` (`hand_menu.json`'s
+/// `limit_flashing`), else on.
+pub fn decide(knob: Option<&str>, setting: Option<bool>) -> (bool, By) {
+    match (knob.map(str::trim), setting) {
+        (Some("0"), _) => (false, By::Knob),
+        (Some("1"), _) => (true, By::Knob),
+        (_, Some(on)) => (on, By::Wearer),
+        (_, None) => (true, By::NotAsked),
+    }
+}
+
+/// The edge bars' heights' knob, `debug.fosfora.barsfree` (board #5532,
+/// the module docs): 0 the bars as the limiter shows them, 1 bars of their
+/// own that follow the analysis (`edge_bars::Heights`). Read at launch.
+pub const BARS_KNOB: &str = "debug.fosfora.barsfree";
+/// What the edge bars' heights do with the knob unset: limited. The one
+/// place to change once both have been worn.
+pub const BARS_FREE_DEFAULT: bool = false;
+
+/// Whether the edge bars' heights follow the analysis, from the knob's
+/// value: `1` yes, `0` no, anything else [`BARS_FREE_DEFAULT`].
+pub fn bars_free_from_knob(value: Option<&str>) -> bool {
+    match value.map(str::trim) {
+        Some("1") => true,
+        Some("0") => false,
+        _ => BARS_FREE_DEFAULT,
+    }
+}
+
+/// The log line: the limiter's state, what decided it (board #5534), and
+/// the edge bars' heights.
+pub fn line(on: bool, by: By, bars_free: bool) -> String {
+    let limit = if on {
         format!(
             "flash limit: on · every audio-driven light turns at most {TURNS_PER_WINDOW} times a second \
              (each direction at least {:.0} ms), beats {:.0} ms apart at least",
@@ -452,8 +553,24 @@ pub fn line(on: bool) -> String {
             BEAT_GAP_S * 1000.0
         )
     } else {
-        format!("flash limit: OFF ({KNOB} 0), the music drives the light unlimited")
-    }
+        "flash limit: OFF, the music drives the light unlimited".to_owned()
+    };
+    let by = match by {
+        By::Knob => format!("{KNOB} {} overrides the wearer's setting", u8::from(on)),
+        By::Wearer => "the wearer's setting".to_owned(),
+        By::NotAsked => "the wearer has not chosen".to_owned(),
+    };
+    let bars = if bars_free {
+        format!(
+            "the edge bars' heights follow the analysis, falling {} heights a second ({BARS_KNOB} 1)",
+            crate::edge_bars::FREE_RELEASE_PER_S
+        )
+    } else if on {
+        format!("the edge bars' heights limited ({BARS_KNOB} 0)")
+    } else {
+        format!("the edge bars' heights as the wall spectrum's ({BARS_KNOB} 0)")
+    };
+    format!("{limit} · {by} · {bars}")
 }
 
 /// The audio's triggers this frame.
@@ -1409,16 +1526,76 @@ mod tests {
         assert_close!(o.f[slot::RMS], 0.2);
     }
 
+    /// Board #5534: the knob at 0 or 1 overrides the wearer's setting; unset
+    /// or anything else the setting rules; with nothing saved the limit is
+    /// on. The line says which decided.
     #[test]
-    fn the_knob_and_its_lines() {
-        assert!(on_from_knob(None));
-        assert!(on_from_knob(Some("1")));
-        assert!(on_from_knob(Some("")));
-        assert!(on_from_knob(Some("yes")));
-        assert!(!on_from_knob(Some("0")));
-        assert!(!on_from_knob(Some(" 0 ")));
-        assert!(line(true).starts_with("flash limit: on"), "{}", line(true));
-        assert!(line(false).contains(KNOB), "{}", line(false));
+    fn the_knob_overrides_the_wearers_setting_and_the_line_says_which() {
+        for setting in [None, Some(true), Some(false)] {
+            assert_eq!(decide(Some("0"), setting), (false, By::Knob));
+            assert_eq!(decide(Some(" 0 "), setting), (false, By::Knob));
+            assert_eq!(decide(Some("1"), setting), (true, By::Knob));
+        }
+        for knob in [None, Some(""), Some("yes"), Some("2")] {
+            assert_eq!(decide(knob, Some(true)), (true, By::Wearer), "{knob:?}");
+            assert_eq!(decide(knob, Some(false)), (false, By::Wearer), "{knob:?}");
+            // Never asked, or asked and not answered: on.
+            assert_eq!(decide(knob, None), (true, By::NotAsked), "{knob:?}");
+        }
+        // No value of the knob and no state of the file turns it off but
+        // the two that say off.
+        for knob in [None, Some("0"), Some("1"), Some("off")] {
+            for setting in [None, Some(true), Some(false)] {
+                let (on, _) = decide(knob, setting);
+                let off = knob == Some("0") || (knob != Some("1") && setting == Some(false));
+                assert_eq!(on, !off, "{knob:?} {setting:?}");
+            }
+        }
+        // The line: the limit, what decided it, the edge bars' heights.
+        assert_eq!(
+            line(true, By::NotAsked, false),
+            "flash limit: on · every audio-driven light turns at most 4 times a second \
+             (each direction at least 100 ms), beats 380 ms apart at least · the wearer has not chosen · \
+             the edge bars' heights limited (debug.fosfora.barsfree 0)"
+        );
+        assert!(line(true, By::Wearer, false).contains("least · the wearer's setting · the edge"));
+        assert_eq!(
+            line(false, By::Wearer, false),
+            "flash limit: OFF, the music drives the light unlimited · the wearer's setting · \
+             the edge bars' heights as the wall spectrum's (debug.fosfora.barsfree 0)"
+        );
+        assert!(line(false, By::Knob, false).starts_with(
+            "flash limit: OFF, the music drives the light unlimited · \
+             debug.fosfora.flashlimit 0 overrides the wearer's setting · "
+        ));
+        assert!(
+            line(true, By::Knob, false)
+                .contains(" · debug.fosfora.flashlimit 1 overrides the wearer's setting · ")
+        );
+        for by in [By::Knob, By::Wearer, By::NotAsked] {
+            for bars in [false, true] {
+                let (on, off) = (line(true, by, bars), line(false, by, bars));
+                assert!(on.starts_with("flash limit: on"), "{on}");
+                assert!(off.starts_with("flash limit: OFF"), "{off}");
+                // Only the knob's override names the knob.
+                assert_eq!(off.contains(KNOB), by == By::Knob, "{off}");
+                let value = format!("{BARS_KNOB} {}", u8::from(bars));
+                assert!(on.ends_with(&format!("({value})")), "{on}");
+                assert!(off.ends_with(&format!("({value})")), "{off}");
+            }
+        }
+        assert!(line(true, By::Wearer, false).contains("heights limited"));
+        assert!(
+            line(true, By::Wearer, true)
+                .contains("follow the analysis, falling 1.25 heights a second")
+        );
+        // The edge bars' heights: the knob's 0 or 1, else the default.
+        assert!(bars_free_from_knob(Some("1")));
+        assert!(bars_free_from_knob(Some(" 1 ")));
+        assert!(!bars_free_from_knob(Some("0")));
+        for other in [None, Some(""), Some("yes"), Some("2")] {
+            assert_eq!(bars_free_from_knob(other), BARS_FREE_DEFAULT, "{other:?}");
+        }
     }
 
     #[test]

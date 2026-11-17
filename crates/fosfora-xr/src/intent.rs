@@ -269,6 +269,11 @@ pub enum Intent {
     /// The pinch that begins the show (board #5452, `first_run.rs`):
     /// "begin" or "start" while the show waits for the wearer.
     Begin,
+    /// The hand menu's "Limit flashing" toggle (board #5534,
+    /// `flash_choice.rs`): the photosensitive limit on ("limit flashing")
+    /// or off ("full show"). While the question card is up it is the
+    /// answer.
+    FlashLimit(bool),
     /// "Credits" (board #4198): the short credits card ([`CREDITS`]) on the
     /// card "what can I say" uses, staying as long. The licenses in full
     /// are the APK's `NOTICE` (`docs/xr/RELEASE.md`).
@@ -468,6 +473,30 @@ const RECENTER: [&str; 6] = [
     "re center cloud",
     "re center particles",
     "re center",
+];
+/// Board #5534: the flash limit on and off, as [`normalize`] leaves them
+/// ("limit the flashing" is "limit flashing", "don't" is "dont"). The
+/// first of each are the question card's two answers
+/// (`flash_choice::Answer::words`).
+const FLASH_LIMIT_ON: [&str; 9] = [
+    "limit flashing",
+    "limit flashing on",
+    "limit flashes",
+    "limit flashing lights",
+    "flash limit on",
+    "on flash limit",
+    "less flashing",
+    "reduce flashing",
+    "stop flashing",
+];
+const FLASH_LIMIT_OFF: [&str; 7] = [
+    "full show",
+    "limit flashing off",
+    "flash limit off",
+    "off flash limit",
+    "dont limit flashing",
+    "stop limiting flashing",
+    "no flash limit",
 ];
 /// Board #5459: the hand menu opened ahead of the wearer and closed, as
 /// [`normalize`] leaves them ("open the menu" is "open menu").
@@ -984,6 +1013,9 @@ fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
     if any(ts, &BEGIN) {
         return Some(Intent::Begin);
     }
+    if let Some(on) = flash_limit(ts) {
+        return Some(Intent::FlashLimit(on));
+    }
     if any(ts, &MENU_OPEN) {
         return Some(Intent::Menu(true));
     }
@@ -1050,6 +1082,23 @@ fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
         return Some(t);
     }
     effect(ts, vocab).map(Intent::Effect)
+}
+
+/// Board #5534: the flash limit on ([`FLASH_LIMIT_ON`]) or off
+/// ([`FLASH_LIMIT_OFF`]), a leading "turn", "switch" or "set" dropped
+/// ("turn the flash limit off", "turn off the flash limit").
+fn flash_limit(ts: &[&str]) -> Option<bool> {
+    let ts = match ts {
+        ["turn" | "switch" | "set", rest @ ..] => rest,
+        _ => ts,
+    };
+    if any(ts, &FLASH_LIMIT_ON) {
+        Some(true)
+    } else if any(ts, &FLASH_LIMIT_OFF) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// Board #5453: the Edges control's stops: "edges theme", "edges off",
@@ -1568,6 +1617,9 @@ fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
         "menu",
         // Board #4198: last, so every line before keeps its place.
         "credits",
+        // Board #5534: the menu's Limit flashing row, after it for the
+        // same reason.
+        "limit flashing",
     ]
     .map(str::to_owned)
     .to_vec();
@@ -2018,7 +2070,29 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         Intent::Voice(false) => VOICE_OFF_REPLY.to_owned(),
         // Once the show is on the app answers `BEGUN_REPLY` instead.
         Intent::Begin => BEGIN_REPLY.to_owned(),
+        Intent::FlashLimit(on) => flash_limit_reply(on).to_owned(),
     }
+}
+
+/// Board #5534: the label once the flash limit is set by voice, the hand
+/// menu's row in the replies' lower case: "limit flashing on", "limit
+/// flashing off".
+pub fn flash_limit_reply(on: bool) -> &'static str {
+    if on {
+        "limit flashing on"
+    } else {
+        "limit flashing off"
+    }
+}
+
+/// Whether `sentence` answers the flash question (board #5534), and how,
+/// whatever the room holds: the `debug.fosfora.say` knob feeds such a
+/// sentence without waiting for the room's anchors, as it does one that
+/// begins the show.
+pub fn answers_flash(sentence: &str) -> Option<bool> {
+    let words = normalize(sentence);
+    let ts: Vec<&str> = words.iter().map(String::as_str).collect();
+    flash_limit(&ts)
 }
 
 /// Board #5452: the label for a spoken "begin" while the show waits, and
@@ -2642,6 +2716,90 @@ mod tests {
             value: "on".to_owned(),
         };
         assert!(Intent::from_json(&action, &v).is_err());
+    }
+
+    /// Board #5534: the flash limit on and off by voice, in the card's two
+    /// answers and the menu row's words, beside the phrases that share
+    /// their words; not the agent's.
+    #[test]
+    fn limit_flashing_and_full_show() {
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        check(
+            &v,
+            &[
+                ("Limit flashing.", Intent::FlashLimit(true)),
+                ("Limit the flashing", Intent::FlashLimit(true)),
+                ("Limit flashing on", Intent::FlashLimit(true)),
+                ("Turn the flash limit on.", Intent::FlashLimit(true)),
+                ("Turn on the flash limit", Intent::FlashLimit(true)),
+                ("Less flashing, please.", Intent::FlashLimit(true)),
+                ("Stop flashing!", Intent::FlashLimit(true)),
+                ("Full show.", Intent::FlashLimit(false)),
+                ("The full show", Intent::FlashLimit(false)),
+                ("Limit flashing off", Intent::FlashLimit(false)),
+                ("Turn off the flash limit.", Intent::FlashLimit(false)),
+                ("Don't limit flashing", Intent::FlashLimit(false)),
+                // The phrases the grammar had keep their meaning.
+                ("Start the show.", Intent::Begin),
+                ("Stop.", Intent::Music(false)),
+                ("Stop roaming.", Intent::Roam(false)),
+                (
+                    "Lights off.",
+                    Intent::Immersion(ImmersionStep::To(crate::immerse::Depth::Full)),
+                ),
+            ],
+        );
+        // The question card's two answers, as written on it
+        // (`flash_choice::Answer::words`), are the first of each list.
+        for (words, on) in [("Limit flashing", true), ("Full show", false)] {
+            assert_eq!(parse(words, &v), Ok(Intent::FlashLimit(on)), "{words}");
+            assert_eq!(answers_flash(words), Some(on));
+        }
+        assert_eq!(FLASH_LIMIT_ON[0], "limit flashing");
+        assert_eq!(FLASH_LIMIT_OFF[0], "full show");
+        // The menu row's words, said as they read.
+        for on in [true, false] {
+            assert_eq!(
+                parse(crate::flash_choice::row_label(on), &v),
+                Ok(Intent::FlashLimit(on))
+            );
+        }
+        for said in [
+            "",
+            "begin",
+            "show",
+            "full",
+            "flashing",
+            "limit",
+            "next theme",
+        ] {
+            assert_eq!(answers_flash(said), None, "{said}");
+        }
+        assert_eq!(reply(&Intent::FlashLimit(true), &v), "limit flashing on");
+        assert_eq!(reply(&Intent::FlashLimit(false), &v), "limit flashing off");
+        // With another command in the sentence, both apply.
+        let clauses = parse_clauses("Limit flashing and begin.", &v);
+        let outcomes: Vec<_> = clauses.into_iter().map(|c| c.outcome).collect();
+        assert_eq!(outcomes, [Ok(Intent::FlashLimit(true)), Ok(Intent::Begin)]);
+        // "What can I say" offers the safe direction only.
+        let pool = shown_pool(&v);
+        assert!(pool.iter().any(|p| p == "limit flashing"));
+        assert!(!pool.iter().any(|p| answers_flash(p) == Some(false)));
+        // Not the agent's: no reply of a model turns the limit off.
+        for (kind, value) in [
+            ("flash_limit", "off"),
+            ("limit_flashing", "off"),
+            ("full_show", ""),
+            ("flash_limit", "on"),
+        ] {
+            let action = AgentAction {
+                kind: kind.to_owned(),
+                target: String::new(),
+                value: value.to_owned(),
+            };
+            assert!(Intent::from_json(&action, &v).is_err(), "{kind}");
+        }
     }
 
     /// Board #5452: the show begun by voice, beside the phrases that start
@@ -4170,6 +4328,9 @@ mod tests {
             Intent::Theme(_) => unreachable!("the agent's actions have no theme"),
             Intent::Menu(_) => unreachable!("the agent's actions have no menu"),
             Intent::Begin => unreachable!("the agent's actions have no begin"),
+            Intent::FlashLimit(_) => {
+                unreachable!("the agent's actions have no flash limit")
+            }
             Intent::Credits => unreachable!("the agent's actions have no credits"),
             Intent::Edges(_) | Intent::Agent(_) | Intent::Voice(_) => {
                 unreachable!("the agent's actions have no edges, agent or voice")

@@ -206,9 +206,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       audio-to-photon measurement, filmed with a phone; a strobe by design, so it runs only with
     //       debug.fosfora.flashlimit 0)
     //   adb shell setprop debug.fosfora.flashlimit 0|1 (board #5451, flash.rs: the photosensitive limit every
-    //       audio-driven light goes through, at most three flashes a second; default 1, and the wearer cannot turn it
-    //       off; 0 for an A/B on the debug surface only; logs the state at launch and each change; live: polled once a
-    //       second)
+    //       audio-driven light goes through, at most three flashes a second; board #5534: the limit is the wearer's
+    //       setting, "Limit flashing" in the hand menu, on unless they turn it off, and this knob at 0 or 1 overrides
+    //       that setting while it is set, for an A/B and for unworn runs; unset, the setting rules; the log says which
+    //       of the two decided, at launch and on each change; live: polled once a second)
+    //   adb shell setprop debug.fosfora.flashask 1     (board #5534, flash_choice.rs: the flash question again this launch, on
+    //       an install that has answered it, for a capture or a worn check of the card; an answer is saved over the old
+    //       one, no answer leaves the file as it was; debug.fosfora.begin 1 still skips it; read at launch)
+    //   adb shell setprop debug.fosfora.barsfree 0|1   (board #5532, flash.rs: what the edge bars' heights read. 0, the
+    //       default: the bars as the flash limit shows them, in steps a few times a second. 1: bars of their own that
+    //       follow the analysis, each rising on its own hits and falling 1.25 heights a second; the wall spectrum and
+    //       everything else stay behind the limit. Read at launch, logged in the flash limit's line)
     //   adb shell setprop debug.fosfora.playperf lowlatency|none   (AAudio performance mode of the playback
     //       output; default lowlatency: 36 ms to the speaker on the Quest 3 against 140-215 ms for none)
     //   adb shell setprop debug.fosfora.playbuf <ms>   (playback output buffer; default 84 ms in lowlatency so the
@@ -426,7 +434,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       card and no wait for the wearer, for unworn runs and measurements; the music and the opening start as they did before the
     //       card; unset, every launch waits for a pinch, a spoken "begin" or 60 s of the card; read at launch and polled once a second
     //       while the show waits, so setting it also begins a launch that is waiting; logged `first run: the show begins (...)`;
-    //       board #5531: while the show waits the hand menu does not come, by the palm or by voice, and nothing is thrown or lifted)
+    //       board #5531: while the show waits the hand menu does not come, by the palm or by voice, and nothing is thrown or lifted;
+    //       board #5534: it skips the flash question too and saves no answer, so the limit is on unless the file or the
+    //       flashlimit knob says otherwise; set while the question is up, it ends the question the same way)
     //   adb shell setprop debug.fosfora.hints 1                  (board #5452: the first run's three hints again this launch: what
     //       hand_menu.json saved as taught is left out, and the hints show without a hand having been tracked, so they can be captured
     //       unworn; a hint made or given up in such a launch is saved, and the file then holds only what that launch taught; read at
@@ -1646,6 +1656,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         immerse: immerse_knob.map_or(menu_saved.immerse, crate::immerse::Depth::nearest),
         roam: roam.now(),
         edges: edge_bars.choice,
+        // Board #5534: on until the wearer turns it off.
+        flash_limit: menu_saved.limit_flashing.unwrap_or(true),
     };
     // Board #5420: the hand menu's Edges control holds its choice over the
     // knob's until the knob's own value changes (board #5431: the theme's
@@ -1728,6 +1740,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .is_none()
         .then(|| crate::canvas::Canvas::new(canvas_bars, 1.0));
     let mut edge_presence = crate::edge_bars::Presence::default();
+    // Board #5532: the heights the edge bars draw, the limit's or their
+    // own on the analysis (`debug.fosfora.barsfree`).
+    let mut edge_heights = crate::edge_bars::Heights::new(canvas_bars);
     let mut edge_history = crate::edge_bars::History::default();
     let mut edge_outline = crate::edge_bars::Outline::default();
     let mut edge_rows: Vec<[f32; 4]> = Vec::new();
@@ -1847,6 +1862,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut begin_knob = debug_prop("debug.fosfora.begin").as_deref() == Some("1");
     let mut spoken_begin = false;
     let mut begin_pinch = crate::first_run::HeldPinches::default();
+    // Board #5534: the flash question (`flash_choice.rs`), the first card
+    // of a launch where the wearer has not chosen, before "Pinch to
+    // begin". `spoken_flash` is a spoken answer, taken on the next frame
+    // as `spoken_begin` is. `question_pose` is the question card's pose
+    // and layout while it is the label showing, which the hands answer
+    // against on the next frame.
+    let flashask_knob = debug_prop("debug.fosfora.flashask").as_deref() == Some("1");
+    let mut flash_ask =
+        crate::flash_choice::Ask::at_launch(menu_saved.limit_flashing, begin_knob, flashask_knob);
+    info!(
+        "{}",
+        flash_ask.launch_line(menu_saved.limit_flashing, begin_knob, flashask_knob)
+    );
+    let mut spoken_flash: Option<crate::flash_choice::Answer> = None;
+    let mut question_pose: Option<(crate::label::Billboard, crate::label::Layout)> = None;
     let mut card_ready = false;
     let mut card_follow = crate::voice::Follow::centered(glam::Quat::IDENTITY);
     let mut card_shown = false;
@@ -2032,13 +2062,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #5451: the photosensitive limit (`flash.rs`), between the
     // analysis and everything the audio lights: the features, the mel
     // bands, the triggers, and the values worked out from them below (the
-    // envelopes, the bars, the key's tint, the depth light's music). Its
-    // knob is polled once a second below.
-    let mut flash_limit = crate::flash::Limiter::new(crate::flash::on_from_knob(
+    // envelopes, the bars, the key's tint, the depth light's music).
+    // Board #5534: it is on unless the wearer's saved setting turns it
+    // off; its knob at 0 or 1 overrides the setting and is polled once a
+    // second below (`sync_flash_limit`). `flash_by` is what decided.
+    let (flash_on, mut flash_by) = crate::flash::decide(
         system_prop(crate::flash::KNOB).as_deref(),
-    ));
-    info!("{}", crate::flash::line(flash_limit.on()));
-    if flash && flash_limit.on() {
+        menu_saved.limit_flashing,
+    );
+    let mut flash_limit = crate::flash::Limiter::new(flash_on);
+    // Board #5532: whether the edge bars' heights follow the analysis
+    // instead (`edge_bars::Heights`), read once, here.
+    let bars_free =
+        crate::flash::bars_free_from_knob(system_prop(crate::flash::BARS_KNOB).as_deref());
+    info!("{}", crate::flash::line(flash_on, flash_by, bars_free));
+    if flash && !crate::flash_choice::strobe_may_run(flash_on, flash_by) {
         info!(
             "debug.fosfora.flash: the beat strobe waits for {} 0",
             crate::flash::KNOB
@@ -2631,16 +2669,64 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .map(|h| input.hands.pinch_began[h] && !panel_up && !swallowed[h]),
                     thumb_tap: input.micro.tap,
                 };
+                // Board #5534: while the flash question is up the begin
+                // card is not, so the wait is handed no card and no start
+                // gesture: the pinch that answers does not begin the show.
+                let asking = flash_ask.asking();
                 let begun = wait.step(
                     dt,
-                    crate::first_run::WaitInput {
-                        ready: card_ready,
-                        gesture: crate::first_run::start_gesture(&edges),
-                        spoken: spoken_begin,
-                        music: music.wanted(),
-                        knob: begin_knob,
-                    },
+                    crate::flash_choice::wait_input(
+                        asking,
+                        crate::first_run::WaitInput {
+                            ready: card_ready,
+                            gesture: crate::first_run::start_gesture(&edges),
+                            spoken: spoken_begin,
+                            music: music.wanted(),
+                            knob: begin_knob,
+                        },
+                    ),
                 );
+                // The question: a pinch with its hand over an answer, as
+                // the wearer sees the card, a spoken answer, its own 60 s,
+                // or the show begun another way. Only an answer is saved;
+                // without one the limit stays on.
+                if asking {
+                    let head = glam::Vec3::from(input.head);
+                    let over = [0, 1].map(|h| {
+                        let (card, laid) = question_pose.as_ref()?;
+                        let point = glam::Vec3::from(input.hands.pinch_point[h]?);
+                        crate::flash_choice::over(head, card, laid, point)
+                    });
+                    let outcome = flash_ask.step(
+                        dt,
+                        crate::flash_choice::AskInput {
+                            shown: question_pose.is_some(),
+                            over,
+                            pinch_began: edges.pinch_began,
+                            spoken: spoken_flash,
+                            begun: begun.is_some(),
+                        },
+                    );
+                    if let Some(outcome) = outcome {
+                        info!("{}", outcome.line());
+                        if let Some(answer) = outcome.answer() {
+                            menu_saved.limit_flashing = Some(answer.limits());
+                            save_hand_menu(&menu_file, menu_saved);
+                            controls.flash_limit = answer.limits();
+                            sync_flash_limit(
+                                &mut flash_limit,
+                                &mut flash_by,
+                                menu_saved.limit_flashing,
+                                bars_free,
+                            );
+                        }
+                        // The pinch that answered ticks, as the one that
+                        // begins does; a spoken answer already sounded.
+                        if let crate::flash_choice::Outcome::Hand { .. } = outcome {
+                            crate::ui_sound::play(crate::ui_sound::Cue::Press);
+                        }
+                    }
+                }
                 if let Some(why) = begun {
                     info!("{}", why.line());
                     let clip = launch_clip.take();
@@ -2664,6 +2750,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             spoken_begin = false;
+            spoken_flash = None;
             // While the show waits no pinch is a gesture: nothing is
             // thrown and the cloud stays where it is. Board #5531: nor is
             // a pinch closed during the wait, until it opens.
@@ -2977,6 +3064,32 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     Action::SetDebug(on) => {
                         menu_saved.debug = on;
                         save_hand_menu(&menu_file, menu_saved);
+                    }
+                    // Board #5534: the Limit flashing toggle or a spoken
+                    // "limit flashing" / "full show": the wearer's
+                    // setting, saved, and the limiter follows on this
+                    // frame unless its knob overrides. A wearer who sets
+                    // it here has chosen and is not asked at a launch.
+                    Action::SetFlashLimit(on) => {
+                        menu_saved.limit_flashing = Some(on);
+                        save_hand_menu(&menu_file, menu_saved);
+                        controls.flash_limit = on;
+                        info!(
+                            "flash limit: the wearer set \"{}\" (saved)",
+                            crate::flash_choice::row_label(on)
+                        );
+                        sync_flash_limit(
+                            &mut flash_limit,
+                            &mut flash_by,
+                            menu_saved.limit_flashing,
+                            bars_free,
+                        );
+                        if flash_by == crate::flash::By::Knob {
+                            info!(
+                                "flash limit: {} is set and still overrides the wearer's setting",
+                                crate::flash::KNOB
+                            );
+                        }
                     }
                     // Board #3751, V4: the Voice toggle, saved; the model
                     // loads on the first turn on (a launch with it off
@@ -4150,8 +4263,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // for the anchors, so it works with no room.
             if frame_index.is_multiple_of(72) {
                 let say = system_prop("debug.fosfora.say");
-                let begins =
-                    wait.waiting() && say.as_deref().is_some_and(crate::intent::asks_to_begin);
+                // Board #5534: nor does one that answers the flash
+                // question.
+                let begins = wait.waiting()
+                    && say.as_deref().is_some_and(|said| {
+                        crate::intent::asks_to_begin(said)
+                            || (flash_ask.asking() && crate::intent::answers_flash(said).is_some())
+                    });
                 if let Some(said) =
                     say_knob.poll(say.as_deref(), has_room && input.room_id.is_none() && !begins)
                 {
@@ -4205,10 +4323,24 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 crate::intent::BEGUN_REPLY.to_owned()
                             };
                         }
+                        // Board #5534: while the flash question is up, a
+                        // spoken "limit flashing" or "full show" is its
+                        // answer, taken on the next frame. After it the
+                        // same words are the menu row's press.
+                        if let crate::intent::Intent::FlashLimit(on) = *intent
+                            && flash_ask.asking()
+                        {
+                            spoken_flash = Some(crate::flash_choice::Answer::from_limit(on));
+                            return crate::intent::flash_limit_reply(on).to_owned();
+                        }
                         // Board #5531: nor does the voice bring the menu
                         // while the show waits.
                         if *intent == crate::intent::Intent::Menu(true) && !wait.live().menu {
-                            return crate::first_run::menu_waits_reply();
+                            return if flash_ask.asking() {
+                                crate::flash_choice::MENU_WAITS.to_owned()
+                            } else {
+                                crate::first_run::menu_waits_reply()
+                            };
                         }
                         hidden_reply(surface, intent).unwrap_or_else(|| {
                             apply_intent(
@@ -4552,9 +4684,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // while no hand has been tracked. It floats at the center
                 // of the view and follows the head as the voice label
                 // does.
+                // Board #5534: while the flash question is open the card
+                // is the question, its fifth line naming the answer a hand
+                // has dwelt over.
                 card_ready = scan_label.now().is_none();
                 let card = wait.card_up(card_ready).then(|| {
-                    crate::first_run::card_text(hands_hint_on && hands_hint.under_card())
+                    let no_hands = hands_hint_on && hands_hint.under_card();
+                    if flash_ask.asking() {
+                        crate::flash_choice::card_text(flash_ask.armed(), no_hands)
+                    } else {
+                        crate::first_run::card_text(no_hands)
+                    }
                 });
                 match (&card, card_shown) {
                     (Some(text), shown) => {
@@ -4599,6 +4739,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // label, and the voice's and the editor's cover it (its
                 // hold counts only while it shows).
                 immerse_label_busy = shown.is_some();
+                // Board #5534: the question card's pose and layout while
+                // it is the label showing, for the hands' answer on the
+                // next frame. Under another label it takes no pinch and
+                // its 60 s do not count.
+                question_pose = card
+                    .as_deref()
+                    .filter(|_| flash_ask.asking() && shown.is_none())
+                    .map(|text| {
+                        (
+                            card_follow.billboard(head, head_rot),
+                            crate::label::layout(text),
+                        )
+                    });
                 // Board #5452: the begin card where the opening's message
                 // will be, while the show waits. Board #5461: the
                 // controllers label after the message, so it never holds
@@ -4759,7 +4912,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             // Board #5451: the flash limit, before anything reads the
             // audio: the triggers it lets through, the features and the
-            // mel bands it limits. Everything below reads this hop.
+            // mel bands it limits. Everything below reads this hop, but
+            // the edge bars' heights when they are free (board #5532),
+            // which read the mel bands as the analysis made them.
+            let mel_analyzed = hop.frame.mel;
             let raw_beat = hop.beat_fired;
             let gate = flash_limit.begin(
                 dt,
@@ -4805,8 +4961,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 beat_env = 1.0;
             }
             if raw_beat {
-                // The strobe flashes every beat: only with the limit off.
-                if flash && !flash_limit.on() {
+                // The strobe flashes every beat: only with the limit
+                // turned off by its knob, never by the wearer's setting
+                // alone.
+                if flash && crate::flash_choice::strobe_may_run(flash_limit.on(), flash_by) {
                     flash_frames = 2;
                 }
                 if let Some(p) = &music.playback {
@@ -5376,12 +5534,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         music.analysis.is_some() || live_audio.is_some(),
                         f.loudness_m,
                     );
-                    let heights = if canvas.is_some() || edge_canvas.is_some() {
+                    let limited = if canvas.is_some() || edge_canvas.is_some() {
                         &shown_bars[..]
                     } else {
                         &[][..]
                     };
-                    edge_history.step(dt, heights);
+                    // Board #5532: the limit's bars, or free the edge bars'
+                    // own on the analysis.
+                    let bars = edge_heights.step(dt, bars_free, &mel_analyzed, limited);
+                    let heights = bars.now;
+                    edge_history.step(dt, bars.past);
                     // Board #5431: each shape in its kind's mode under the
                     // room's saved theme, or the mode forced on every kind.
                     let edge_theme = surface_lanes.saved_theme();
@@ -5837,12 +5999,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     crate::fireflies::FIREFLY_CAP
                 );
             }
-            // Board #5451: the flash limit's knob, live.
-            let now = crate::flash::on_from_knob(system_prop(crate::flash::KNOB).as_deref());
-            if now != flash_limit.on() {
-                flash_limit.set_on(now);
-                info!("{}", crate::flash::line(now));
-            }
+            // Board #5451: the flash limit's knob, live. Board #5534: over
+            // the wearer's setting.
+            sync_flash_limit(
+                &mut flash_limit,
+                &mut flash_by,
+                menu_saved.limit_flashing,
+                bars_free,
+            );
             // Board #5436: the sky's knob, live; the surfaces pass logs the
             // sky's line on the next frame.
             let now = switch_now("debug.fosfora.sky").unwrap_or(true);
@@ -6270,6 +6434,26 @@ fn silence(hop: &mut fosfora_app::audio::hop::HopOutput) {
     (hop.beat_fired, hop.downbeat_fired, hop.drop_fired) = (false, false, false);
 }
 
+/// Board #5534: the limiter follows the knob and the wearer's `setting`
+/// (`flash::decide`), and the log says what changed and which of the two
+/// decided, with the edge bars' heights as the launch read them
+/// (`bars_free`, board #5532). Called once a second for the knob and at
+/// once when the setting changes, so a press or a sentence takes effect on
+/// its frame.
+fn sync_flash_limit(
+    limiter: &mut crate::flash::Limiter,
+    by: &mut crate::flash::By,
+    setting: Option<bool>,
+    bars_free: bool,
+) {
+    let (on, now_by) = crate::flash::decide(system_prop(crate::flash::KNOB).as_deref(), setting);
+    if on != limiter.on() || now_by != *by {
+        limiter.set_on(on);
+        *by = now_by;
+        info!("{}", crate::flash::line(on, now_by, bars_free));
+    }
+}
+
 /// Board #5452: start the `file` or `loop` source's own clip, decoded at
 /// launch, when the wearer begins the show. The Music row takes it over
 /// and starts on "Music: stop". `loop` keeps its analysis on the
@@ -6683,6 +6867,11 @@ fn apply_intent(
         Intent::Voice(on) => {
             controls.voice = on;
             actions.push(Action::SetVoice(on));
+        }
+        // Board #5534: the Limit flashing toggle's press, by voice.
+        Intent::FlashLimit(on) => {
+            controls.flash_limit = on;
+            actions.push(Action::SetFlashLimit(on));
         }
         _ => {}
     }

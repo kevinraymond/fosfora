@@ -14,6 +14,7 @@
 //!
 //! - The hand menu without its developer rows: the Debug panel and the
 //!   Pitcher toggles, and the "All: none" cell (`panel_grid::menu`). The
+//!   Limit flashing row stays (board #5534): it is the wearer's setting. The
 //!   debug panel stays off whatever `hand_menu.json` saved, and the file
 //!   keeps that flag ([`debug_panel`]). The voice commands that reach the
 //!   hidden rows do nothing there ([`voice_reaches`]).
@@ -395,6 +396,10 @@ mod tests {
             Intent::Recenter,
             Intent::Rescan,
             Intent::Roam(true),
+            // Board #5534: the flash limit is the wearer's setting, on
+            // both surfaces, either way.
+            Intent::FlashLimit(true),
+            Intent::FlashLimit(false),
         ] {
             assert!(voice_reaches(Surface::Developer, &shown));
             assert!(voice_reaches(Surface::Release, &shown));

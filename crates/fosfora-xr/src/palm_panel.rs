@@ -806,7 +806,8 @@ impl PalmPanel {
 /// unless saved otherwise). Board #5393: the wearer's Roam choice, and
 /// whether the app has asked for Space Setup, both off unless saved on.
 /// Board #5452: the first run's hints the wearer has been taught, none
-/// unless saved. A missing or broken file is the defaults.
+/// unless saved. Board #5534: the wearer's flash limit setting, absent
+/// until they choose. A missing or broken file is the defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuFile {
     pub debug: bool,
@@ -825,6 +826,11 @@ pub struct MenuFile {
     /// The first run's hints the wearer has been taught (board #5452,
     /// `first_run::Hints`): those never show again.
     pub taught: crate::first_run::Taught,
+    /// The "Limit flashing" setting (board #5534, `flash_choice.rs`): the
+    /// photosensitive limit on or off, as the wearer chose. `None` until
+    /// they answer the question or change the row: they have not been
+    /// asked, and the limit is on (`flash::decide`).
+    pub limit_flashing: Option<bool>,
 }
 
 impl Default for MenuFile {
@@ -837,6 +843,7 @@ impl Default for MenuFile {
             roam: false,
             space_setup_asked: false,
             taught: crate::first_run::Taught::default(),
+            limit_flashing: None,
         }
     }
 }
@@ -845,7 +852,8 @@ impl MenuFile {
     /// The file's text read leniently: a field that is missing or not a
     /// boolean keeps its default; an `agent` that is missing or names no
     /// pick is no saved choice; an `immerse` that is missing or names no
-    /// depth is full; a `taught` that is missing has taught no hint.
+    /// depth is full; a `taught` that is missing has taught no hint; a
+    /// `limit_flashing` that is missing or not a boolean is no choice.
     pub fn parse(json: &str) -> Self {
         let value = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default();
         let field = |name: &str, default: bool| {
@@ -870,6 +878,9 @@ impl MenuFile {
             roam: field("roam", d.roam),
             space_setup_asked: field("space_setup_asked", d.space_setup_asked),
             taught: crate::first_run::Taught::from_json(value.get("taught")),
+            limit_flashing: value
+                .get(crate::flash_choice::FIELD)
+                .and_then(serde_json::Value::as_bool),
         }
     }
 
@@ -877,7 +888,8 @@ impl MenuFile {
     /// with `"agent":"local"` (`anthropic`, `openai`, `off`) once picked,
     /// `"roam":true` and `"space_setup_asked":true` only while true, and
     /// `"taught":["swipe","talk","palm"]` with the hints taught, once one
-    /// is.
+    /// is, and `"limit_flashing":true` or `false` once the wearer has
+    /// chosen.
     pub fn to_json(self) -> String {
         let mut json = serde_json::json!({
             "debug": self.debug,
@@ -896,6 +908,9 @@ impl MenuFile {
         let taught = self.taught.names();
         if !taught.is_empty() {
             json["taught"] = taught.into();
+        }
+        if let Some(on) = self.limit_flashing {
+            json[crate::flash_choice::FIELD] = on.into();
         }
         json.to_string()
     }
@@ -1078,6 +1093,7 @@ mod tests {
                 roam: true,
                 space_setup_asked: false,
                 taught,
+                limit_flashing: None,
             }
         );
         let saved = file.to_json();
@@ -1140,6 +1156,68 @@ mod tests {
             MenuFile::parse(r#"{"taught": "all"}"#).taught,
             Taught::default()
         );
+    }
+
+    /// Board #5534: the flash limit setting round-trips either way, is
+    /// written only once the wearer has chosen, and a file from before the
+    /// field, or with something else in it, is no choice.
+    #[test]
+    fn the_menu_file_saves_the_flash_limit_once_chosen_and_reads_no_choice_when_absent() {
+        for choice in [Some(true), Some(false)] {
+            let file = MenuFile {
+                limit_flashing: choice,
+                voice: false,
+                ..MenuFile::default()
+            };
+            let json = file.to_json();
+            assert!(
+                json.contains(&format!(r#""limit_flashing":{}"#, choice.unwrap())),
+                "{json}"
+            );
+            assert_eq!(MenuFile::parse(&json), file, "{json}");
+        }
+        // Not chosen: the field is not written, and the file reads back as
+        // not chosen.
+        let json = MenuFile::default().to_json();
+        assert!(!json.contains("limit_flashing"), "{json}");
+        assert_eq!(MenuFile::parse(&json).limit_flashing, None);
+        // Files written before the field, as the app saved them: every
+        // field they have still loads, and the wearer has not been asked.
+        for json in [
+            r#"{"debug":false,"voice":true}"#,
+            r#"{"agent":"local","debug":false,"immerse":"black","roam":true,"space_setup_asked":true,"taught":["swipe","talk","palm"],"voice":false}"#,
+            "",
+            "not json",
+        ] {
+            assert_eq!(MenuFile::parse(json).limit_flashing, None, "{json}");
+        }
+        let old = MenuFile::parse(
+            r#"{"agent":"local","debug":false,"immerse":"black","roam":true,"space_setup_asked":true,"taught":["swipe","talk","palm"],"voice":false}"#,
+        );
+        assert_eq!(old.taught, crate::first_run::Taught::ALL);
+        assert_eq!(old.immerse, crate::immerse::Depth::Black);
+        assert!(old.roam && old.space_setup_asked && !old.voice);
+        // A mistyped field is no choice, never an "off".
+        for json in [
+            r#"{"limit_flashing":"off"}"#,
+            r#"{"limit_flashing":0}"#,
+            r#"{"limit_flashing":null}"#,
+            r#"{"limit_flashing":"false"}"#,
+        ] {
+            assert_eq!(MenuFile::parse(json).limit_flashing, None, "{json}");
+        }
+        // The choice beside the other fields.
+        let file = MenuFile::parse(r#"{"debug":true,"limit_flashing":false,"voice":true}"#);
+        assert_eq!(file.limit_flashing, Some(false));
+        assert!(file.debug && file.voice);
+        // What the limiter does with each state of the file, the knob
+        // unset: on unless the wearer turned it off.
+        use crate::flash::{By, decide};
+        assert_eq!(
+            decide(None, MenuFile::default().limit_flashing),
+            (true, By::NotAsked)
+        );
+        assert_eq!(decide(None, file.limit_flashing), (false, By::Wearer));
     }
 
     const HEAD: Vec3 = Vec3::new(0.0, 1.6, 0.0);

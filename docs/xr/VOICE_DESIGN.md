@@ -1564,6 +1564,40 @@ first run"). The pinch that begins the show has a spoken form.
 
 Tests (`intent.rs`): `begin_the_show`.
 
+## Limit flashing by voice (board #5534)
+
+The photosensitive flash limit is the wearer's setting, on unless they
+turn it off (`XR_DESIGN.md`, "The flash question"). Its two states have a
+spoken form each, named as the question card names its answers.
+
+| Said | Does | Reply |
+|---|---|---|
+| "limit flashing", "limit the flashing", "limit flashing on", "flash limit on", "turn on the flash limit", "less flashing", "reduce flashing", "stop flashing" | turns the limit on | limit flashing on |
+| "full show", "limit flashing off", "flash limit off", "turn off the flash limit", "don't limit flashing", "stop limiting flashing", "no flash limit" | turns the limit off | limit flashing off |
+
+- **In the grammar** as `Intent::FlashLimit`, matched whole like the
+  menu's phrases, so "start the show", "stop" and "stop roaming" keep
+  their meaning. "Turn", "switch" or "set" may lead.
+- **While the question card is up** the sentence is its answer, saved as a
+  pinch on the card would be. The window opens with a thumb tap or a
+  fist, as anywhere else. The card does not name the spoken way, for the
+  reason the begin card does not.
+- **After it** the sentence is the hand menu's Limit flashing row
+  (`Action::SetFlashLimit`): it takes effect on its frame and is saved.
+  Turning the limit off does not ask twice.
+- **"Menu" under the question** answers "Pick one first", as it answers
+  "Pinch to begin first" under the begin card.
+- **Not the agent's.** Its actions have no flash limit, so no reply of a
+  model turns the limit off. A sentence about flashing that the grammar
+  misses can still go to the agent, which then has nothing to do it with.
+- **"What can I say"** lists "limit flashing" among the menu's examples,
+  and never the sentence that turns the limit off.
+- **Unworn.** `debug.fosfora.say 'limit flashing'` or `'full show'`
+  answers the question and is fed without waiting for the room's anchors
+  while the question is up.
+
+Tests (`intent.rs`): `limit_flashing_and_full_show`.
+
 ## The effects are gone (board #5470)
 
 The app had three cloud effects, Flux Cloud, Embers and Flock, and the

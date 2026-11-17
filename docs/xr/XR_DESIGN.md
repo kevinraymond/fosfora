@@ -830,6 +830,19 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     the whole edge while music plays, so the outline stays when a band
     is at zero. In silence (immersion's quiet) nothing draws. The look is
     the wall spectrum's: brightest at the tip, a cap line, soft sides.
+  - **What the heights read (board #5532).** By default the bars as the
+    flash limit shows them, which move together in steps a few times a
+    second and land on every other beat above 120 BPM. Worn, that read as
+    bars out of time with the music. With `debug.fosfora.barsfree 1`,
+    read at launch, the edge bars keep bars of their own on the mel bands
+    as the analysis made them (`edge_bars::Heights`): each bar rises on
+    its own hits, on their frame. The strips' bars then fall at 1.25
+    heights a second, half the wall spectrum's speed, which is what
+    keeps the strips within three flashes a second. The tunnels' rungs
+    keep bars that fall at the wall spectrum's speed. The wall spectrum
+    and everything else stay behind the limit. `SURFACES_DESIGN.md`,
+    "Photosensitive safety", has the reasoning and the counts, and
+    `MEASURED.md` the timing on real songs.
   - **The scale rule.** The tallest bar is `edgebarsheight` (default
     0.12) of the face's smaller side, clamped to 2 to 20 cm, so a 40 cm
     box and a 4 m wall read alike: 4.8 cm on the box, 20 cm on the wall.
@@ -953,7 +966,8 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     to 4, default 1), `edgebarsheight` (0 to 0.5, default 0.12) and
     `edgebarsdepth` (0 to 2, default 0.6). The `edge bars:` log lines give
     the state at launch, each change, the mode per kind when it changes,
-    and what is outlined.
+    and what is outlined. `barsfree` (0 or 1, default 0) is read at launch
+    only and logged at the end of the `flash limit:` line.
   - **What it does not do.** It is a layer over every shape, not a lane
     behavior: the lanes keep drawing, and no room file or lane format
     changes. Off, the frame is what it was, with no strips, no buffer
@@ -1116,8 +1130,9 @@ a row of clumps all the way down. What else changed is how they move.
   the room. The caption names the new theme ("Aurora"). The first run's
   swipe hint keeps its words and is taught by a swipe that changed the
   theme.
-- **The hand menu** has no effect row. It is six rows, five on the release
-  surface.
+- **The hand menu** has no effect row. It was six rows, five on the
+  release surface, until the Limit flashing row went in at the top (board
+  #5534): seven and six.
 - **The Particles toggle** hides the fireflies and the hand particles,
   with Edit room on too. The sim steps on, so on shows them as they would
   have been.
@@ -1359,6 +1374,11 @@ at most every 0.75 s, and the sweep's own floor is 0.7 s whatever asks,
 the test knob included. So a place sees a line pass at most twice in any
 second, and each pass is one rise and one fall: two flashes at most from
 the sweeps, on a surface that faces the wearer and lights all at once.
+
+The limit is the wearer's setting since board #5534, on unless they turn
+it off ("The first run" below). With it off the downbeats and `buildup`
+reach the sweep as the analysis has them. The sweep's own 0.7 s floor
+does not depend on the limit, so the two passes a second still hold.
 
 `flash_room.rs` counts it on the depth light's Rust copy (which the GPU
 test holds to the shader), behind the limiter as `app.rs` runs it: 10
@@ -1944,6 +1964,17 @@ release surface's five and eight (244 and 364). Recenter and Rescan are the
 top row. The debug panel is 11 and 14 rows and its header keeps one row of
 headroom. The bottom rows are where they were.
 
+**Since board #5534.** The Limit flashing toggle is the top row, on both
+surfaces: one button across the row that reads "Limit flashing: on" or
+"Limit flashing: off" (`flash_choice::row_label`). It is the wearer's
+photosensitive setting ("The first run" below, and `SURFACES_DESIGN.md`,
+"Photosensitive safety"). A press changes it at once and saves it in
+`hand_menu.json` as `"limit_flashing"`; nothing confirms an off. The menu
+is seven rows, ten with Edit room on (324 and 444 points), and the release
+surface's six and nine (284 and 404). The debug panel is 12 and 15 rows,
+which uses the header's last row of headroom. The row went in at the top,
+so the rows a wearer already reaches for are where they were.
+
 ### The hand menu: summon and stay (board #5459)
 
 The app is used lying back in a chair. The menu used to live on the left
@@ -2027,7 +2058,8 @@ What a wearer can meet, in the order of a first launch:
 | It finds the room | Loading your room | same | 3 s |
 | It finds none, roam goes on | No room here: roaming. Rescan from the hand menu | same | 6 s |
 | The wearer said no to spatial data | Fosfora can't see the room. Allow spatial data in Settings, then restart Fosfora. | same | 6 s |
-| The scan's label has gone | Pinch to begin | 1 m ahead, at the center of the view | until the wearer begins, 60 s at most |
+| The scan's label has gone, and the wearer has not chosen whether to limit flashing | This show has flashing lights that follow the music. They can trigger seizures in people with photosensitive epilepsy. Put a hand over one and pinch: Limit flashing / Full show | 1 m ahead, at the center of the view | until the wearer answers, 60 s at most |
+| The question is answered or has had its time (on a later launch, the scan's label has gone) | Pinch to begin | same | until the wearer begins, 60 s at most |
 | The music first plays, no label up | Sit back and relax | 1.2 m ahead, level | 4 s, then the show |
 | No hand tracked since the launch, 4 s after the scan's label | Put the controllers down. Fosfora uses your hands. | under the begin card while the show waits, else 1.2 m ahead, level | until a hand is tracked; alone, 10 s at most |
 | Music `<` or `>` with no songs, the bundled tracks missing too | No songs on the headset. Put them in its Music folder. | 1 m out, 20 degrees above the view | 4.8 s |
@@ -2135,6 +2167,11 @@ each gesture is taught once, when there is room on the label for it. The
 rules are `first_run.rs`, plain data tested on the desktop; `app.rs`
 feeds them once a frame.
 
+Since board #5534 a new wearer is also warned that the show flashes and
+asked, before anything flashes, whether to limit it. That is "The flash
+question" below (`flash_choice.rs`); like the rest of this section it has
+not run on the headset yet.
+
 ### What the wearer meets
 
 1. **The launch, as before.** The permission dialog, then "Scanning the
@@ -2144,29 +2181,43 @@ feeds them once a frame.
    time constant `WAIT_S` 0.5 s). No music plays. The looks get silence in
    place of the audio, so no surface pulses. The fireflies drift and glow
    on their own rhythm, with no music to lift them.
-2. **The card.** When the scan's label has gone, a card sits at the
+2. **The flash question**, on a launch where the wearer has not chosen
+   (board #5534). When the scan's label has gone the card at the center
+   of the view reads, on six lines: **"This show has flashing lights"**,
+   **"that follow the music. They can"**, **"trigger seizures in
+   people"**, **"with photosensitive epilepsy."**, **"Put a hand over one
+   and pinch:"** and, at the two ends of the last line, **"Limit
+   flashing"** and **"Full show"**. The wearer holds a hand over one of
+   the two, as they see it, and the fifth line changes to **"Pinch to
+   choose Limit flashing"** or **"Pinch to choose Full show"**. A pinch
+   then answers, with the press cue, and the card gives way to the next
+   one. "The flash question" below has the rules.
+3. **The card.** When the scan's label has gone, or the question is
+   over, a card sits at the
    center of the view, 1 m ahead and 0.4 m wide: **"Pinch to begin"**.
    It follows the head the way the voice label does
    (`voice::Follow::centered`), so it is in view lying back and never
    rigid on the head.
-3. **No hands.** If no hand has been tracked for 4 s with the card up,
+4. **No hands.** If no hand has been tracked for 4 s with the card up,
    the controllers line goes under it: **"Put the controllers down.
    Fosfora uses your hands."** It stays while no hand is tracked and goes
    with the first one. It does not show on its own while the show waits.
-4. **The begin.** A pinch closing on either hand begins the show. It
+   On the question card the fifth line reads **"Put the controllers
+   down."** instead.
+5. **The begin.** A pinch closing on either hand begins the show. It
    ticks (the press cue) and does nothing else (board #5531): it throws
    no burst, and no drag, no hold and no tap come from that pinch until
    it opens. The card goes, the music
    starts (the track was decoded during the wait), and the opening runs:
    **"Sit back and relax"** for 4 s at the wait's 0.25, then the glide to
    0.35 over 3 s.
-5. **The swipe hint.** Once the label has been free for 5 s with the show
+6. **The swipe hint.** Once the label has been free for 5 s with the show
    on (about 9 s after the pinch), ahead of the view and 10 degrees under
    the line of sight: **"Swipe your thumb"** over **"along your finger"**.
    The wearer swipes, the theme steps with its tick, and the caption
    names it: **"Mirror"**. Then **"Got it"** for 2.5 s with the
    understood cue.
-6. **The talk hint**, 5 s of free label later, only with voice on and the
+7. **The talk hint**, 5 s of free label later, only with voice on and the
    microphone allowed (board #5531; until then the tap hint, "Tap your
    thumb to talk."): **"Make a fist, say a command,"** over **"then open
    your hand."**, **"Or tap thumb on index finger."** and **"Try: what
@@ -2175,12 +2226,108 @@ feeds them once a frame.
    with something said in it answers the hint. "Got it" waits 3 s for the
    label and is dropped behind an answer that stays longer, and its cue
    never plays into an open microphone.
-7. **The palm hint**, last: **"Left palm to your face"** over **"for the
+8. **The palm hint**, last: **"Left palm to your face"** over **"for the
    menu. It stays there."** The palm brings the menu, then "Got it" and
    the cue.
 
 A hint that has been in view for 20 s gives up. Made or given up, it is
 saved as taught and never shows again on that install.
+
+### The flash question (board #5534)
+
+The app limits how fast its light may flash: at most three flashes a
+second, whatever the music does (`flash.rs`, and `SURFACES_DESIGN.md`,
+"Photosensitive safety"). The limit costs the show: fast beats land at
+half time and the light moves in steps. So the limit is the wearer's
+choice. It is on unless they turn it off, and a new wearer is warned and
+asked before anything flashes. The rules are `flash_choice.rs`.
+
+- **The setting.** "Limit flashing", on or off, saved in `hand_menu.json`
+  as `"limit_flashing": true` or `false`. A file without the field means
+  the wearer has not chosen: the limit is on, and the next launch asks.
+- **When it is asked.** On a launch with nothing saved, as the first
+  card, before "Pinch to begin". The show is still waiting behind it, so
+  no music plays, the looks get silence and no sweep starts: nothing the
+  audio drives lights while the card is up.
+- **The words** are in "What the wearer meets" above: four lines of
+  warning, one line that says how to answer, and the two answers named
+  for what the wearer gets. All six lines draw at 64 px, the size of the
+  voice's help card, and no state of the card moves the answers.
+- **Answering by hand.** The wearer holds a hand over one answer, as they
+  see it, and pinches. The app reads the line from the head through the
+  pinching fingers to the card (`flash_choice::over`). Left of the gap
+  between the answers is "Limit flashing" and right of it is "Full show",
+  with a 6 cm dead band between them. Each answer reaches about 15 cm
+  past the card's end, two lines up and three lines down. Either hand gives either
+  answer, so one hand is enough. The hand has to be 32 to 90 cm from the
+  head.
+- **Not by accident.** A pinch answers only when its hand has been over
+  the same answer for 0.3 s (`DWELL_S`). By then the fifth line names that
+  answer, so the wearer reads what the pinch will do before making it. A
+  hand at rest in the lap, a hand at the headset, a pinch in passing and
+  the other hand's pinch answer nothing. A hand that slides from one
+  answer to the other starts its 0.3 s again.
+- **Which eye.** The app reads the head, and the wearer looks with an eye
+  about 3 cm to one side of it. For a hand 32 cm out that moves what the
+  app reads by up to 7 cm on the card. The 10 cm gap between the answers
+  and the dead band are sized so that a hand covering any part of one
+  answer, for either eye, never reads as the other. At worst it reads as
+  neither and the fifth line does not change.
+- **The pinch that answers does nothing else.** While the question is up
+  the wait is handed no card and no start gesture
+  (`flash_choice::wait_input`), and the wait begins on a pinch closing. So
+  the pinch that answered has to open and close again to begin the show.
+  It throws nothing: every pinch of the wait is held back until it opens.
+- **Answering by voice.** "Limit flashing" or "full show", in a voice
+  window opened by the thumb tap or the fist as anywhere else
+  (`VOICE_DESIGN.md`, "Limit flashing by voice"). It answers whether the
+  card shows or not.
+- **Nobody answers.** The question waits 60 s (`ASK_MAX_S`), counted only
+  while the card is the label showing. Then it counts as no answer: the
+  limit stays on, nothing is saved, and "Pinch to begin" comes up with its
+  own 60 s. The next launch asks again. Nobody chose, and a wearer who was
+  not ready for the card should still get the choice. The cost falls on a
+  wearer who can neither pinch nor speak: their show starts after two
+  minutes instead of one, on every launch.
+- **The show begun another way** while the question is up (a spoken
+  "begin", "play" by voice, `debug.fosfora.begin 1` set live) ends it the
+  same way: the limit on, nothing saved, asked again.
+- **After the answer** the card reads "Pinch to begin" and the first run
+  goes on as before.
+- **Changing it later.** The hand menu's top row ("Limit flashing: on")
+  and the same two sentences by voice. Either takes effect on its frame
+  and is saved. Turning the limit off does not ask twice. A wearer who
+  sets it from the menu has chosen and is not asked at a launch.
+- **The knob.** `debug.fosfora.flashlimit 0|1` overrides the setting while
+  it is set, for an A/B and for unworn runs. Unset, the setting rules.
+  The log says which decided, at launch and on each change: `flash limit:
+  on · … · the wearer's setting`, `· the wearer has not chosen`, or `·
+  debug.fosfora.flashlimit 0 overrides the wearer's setting`. The edge
+  bars' heights (`barsfree`) end the line after it. The
+  measurement strobe (`debug.fosfora.flash 1`) still needs the knob at 0.
+  The wearer's "Limit flashing: off" alone never starts it.
+- **The log.** `flash question: asked before the begin, nothing is saved`
+  at launch, or `not asked, the wearer's setting is saved (Limit flashing:
+  on)`, or `not asked (debug.fosfora.begin 1), nothing saved by this
+  launch`. Then how it ended: `"Full show", the limit off (saved) by a
+  pinch on the right hand`, `"Limit flashing", the limit on (saved) by
+  voice`, `nobody answered in 60 s: the limit stays on, nothing saved,
+  asked again next launch`.
+
+What was considered and left out for the hands' answer:
+
+- **Which hand pinches** (left for one answer, right for the other). The
+  wait can read it today, but a wearer with one hand could give only one
+  answer.
+- **A pinch against a held pinch, or one pinch against two.** A hand at
+  rest can hold a pinch and tracking can flicker one into two, and the
+  accident would be one of the answers.
+- **The hand menu's ray or fingertip on a panel.** The menu's pointer is
+  the right hand's only, and a second panel needs drawing that can't be
+  checked without the headset.
+- **A ray from the hand to the card.** The label draws no beam or cursor,
+  so the wearer could not see what the ray is on. With a hand over the
+  answer the hand itself is the cursor.
 
 ### The rules
 
@@ -2254,6 +2401,9 @@ saved as taught and never shows again on that install.
 | One hand | Either hand pinches, swipes, taps and makes the fist that talks. The palm hint asks for the left hand; a wearer without it lets it give up after 20 s, and "menu" by voice opens the menu with no palm. |
 | Can't hold a fist | The thumb tap opens the voice window and needs no held pose. The talk hint says so. |
 | Can't pinch | With a thumb tap or a fist the voice window opens and "begin" starts the show. With no gesture at all, the 60 s. |
+| Can't pinch, at the flash question | "Limit flashing" or "full show" by voice. With no gesture at all, its 60 s: the limit stays on, and the question comes back at the next launch. |
+| One hand, at the flash question | Either hand reaches both answers. |
+| Controllers in hand, at the flash question | The fifth line says to put them down. Left alone, its 60 s, then the begin card as above. |
 
 A spoken "begin" needs the voice window open, and the window still opens
 with a thumb tap or a fist. The app does not listen by itself while
@@ -2263,9 +2413,24 @@ it waits, so the card names the pinch only.
 
 - `debug.fosfora.begin 1`: no card and no wait. `sweep.sh`, `soak.sh`,
   `gpu-stages.sh` and `worn-ab.sh` set it, so their runs start the show
-  as they did. It is also polled while the show waits.
+  as they did. It is also polled while the show waits. It skips the flash
+  question too and saves no answer, so those runs keep the limit on
+  unless the file or `debug.fosfora.flashlimit` says otherwise. Set while
+  the question is up, it ends the question unanswered.
 - `debug.fosfora.say 'begin'` begins a waiting show, and is fed without
-  waiting for the room's anchors.
+  waiting for the room's anchors. Under the flash question it begins the
+  show and leaves the question unanswered.
+- `debug.fosfora.say 'limit flashing'` or `'full show'` answers the flash
+  question, and is fed without waiting for the room's anchors while the
+  question is up.
+- `debug.fosfora.flashask 1`: the flash question again this launch, on an
+  install that has answered. An answer is saved over the old one. No
+  answer leaves the file as it was. Read at launch.
+- `debug.fosfora.flashlimit 0|1` overrides the saved setting and does not
+  touch the question: a launch with nothing saved still asks.
+- `debug.fosfora.hints 1`, `handshint 0`, `swipe` and `voicetap` do
+  nothing to the question. With `handshint 0` its fifth line never reads
+  "Put the controllers down."
 - `debug.fosfora.hints 1`: the hints again this launch. The saved state
   is left out and the hints show with no hand tracked. A hint made or
   given up in such a launch is saved, and the file then holds only what
@@ -2300,7 +2465,25 @@ The tests (`first_run.rs`):
 `the_taught_hints_round_trip_through_their_names`,
 `the_events_log_what_happened`,
 `the_swipe_caption_names_the_new_theme` and
-`the_swipe_hint_is_taught_by_a_swipe_that_changed_the_theme`. Beside them:
+`the_swipe_hint_is_taught_by_a_swipe_that_changed_the_theme`. The flash
+question's (`flash_choice.rs`):
+`the_card_warns_asks_and_names_both_answers_at_the_cards_size`,
+`the_setting_s_words_say_what_it_does_now`,
+`a_hand_over_an_answer_reads_as_that_answer`,
+`a_hand_at_rest_at_the_face_or_past_the_card_is_over_neither`,
+`whichever_eye_the_wearer_looks_with_a_hand_on_one_answer_is_never_the_other`,
+`the_question_is_asked_when_nothing_is_saved_and_never_with_the_begin_knob`,
+`either_hand_alone_gives_either_answer_with_a_pinch_over_it`,
+`a_pinch_answers_nothing_by_accident`,
+`a_spoken_answer_answers_whether_the_card_shows_or_not`,
+`nobody_answers_the_limit_stays_on_and_nothing_is_saved`,
+`the_pinch_that_answers_does_not_begin_the_show_or_throw`,
+`under_the_question_the_wait_has_no_card_and_no_start_gesture` and
+`the_strobe_runs_only_with_the_limit_off_by_its_knob`; with them
+`flash.rs`'s `the_knob_overrides_the_wearers_setting_and_the_line_says_which`,
+`palm_panel.rs`'s `the_menu_file_saves_the_flash_limit_once_chosen_and_reads_no_choice_when_absent`,
+`intent.rs`'s `limit_flashing_and_full_show` and `panel_grid.rs`'s menu
+tests. Beside them:
 `immerse.rs`'s `the_room_is_dim_and_still_while_the_show_waits_and_the_opening_runs_from_there`,
 `palm_panel.rs`'s `the_menu_file_saves_the_hints_taught_and_reads_none_when_absent`
 and `held_back_the_menu_does_not_come_and_nothing_from_the_hold_is_read_after`,
@@ -2320,6 +2503,26 @@ controllers test.
   text in `label.rs`'s `draw`, which paints the label's texture.
 - Whether "Got it" over the palm menu is readable with the menu up.
 - Whether 5 s between hints and 20 s each feel right during a first song.
+
+The flash question, none of it worn yet:
+
+- Whether six lines at 64 px read comfortably at 1 m, seated and lying
+  back, and whether the warning reads as a warning.
+- Whether "Put a hand over one and pinch:" is enough for a wearer who has
+  never used their hands in the headset.
+- Whether a hand held over an answer lands on it: with the right eye
+  alone, with the left, and with both.
+- Whether the fifth line changing is noticed before the pinch.
+- Whether 0.3 s over an answer feels instant, and whether a pinch made
+  too early is tried again without confusion.
+- Whether the card stays still enough under a raised hand, since it
+  follows the head.
+- Whether a fist made to talk, with the hand in view over an answer,
+  reads as a pinch there.
+- Whether a pinch right after the answer begins the show before "Pinch
+  to begin" has been read.
+- Whether "Limit flashing: off" from the menu, mid-song, is a jolt that
+  wants a warning of its own.
 
 ## Android manifest essentials
 

@@ -7,9 +7,11 @@
 //! on the palm).
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
-//! turned more to the ceiling is a hold instead, `palm_panel.rs`): six
-//! rows on the developer surface (`panel_grid::menu`), Recenter and Rescan
-//! beside Roam on top (board #4192, #5393; the world effect's `<` `>` row
+//! turned more to the ceiling is a hold instead, `palm_panel.rs`): seven
+//! rows on the developer surface (`panel_grid::menu`), the Limit flashing
+//! toggle on top (board #5534: the photosensitive limit, the wearer's
+//! setting, `flash_choice.rs`), Recenter and Rescan
+//! beside Roam under it (board #4192, #5393; the world effect's `<` `>` row
 //! was over them until the three cloud effects went, board #5470), the
 //! Agent control beside
 //! Immersion (board #3776, #5384), the particle pitcher's on/off toggle
@@ -23,7 +25,7 @@
 //! Edit room on, three more rows under the editor's (board #3472, D3):
 //! the color, the band and the strength of the surface under the beam,
 //! each stepped with `<` and `>`, the menu growing upward to hold them.
-//! The release surface (board #4204, `release.rs`) shows five rows, the
+//! The release surface (board #4204, `release.rs`) shows six rows, the
 //! menu without the pitcher's and the debug panel's row and without "All:
 //! none", the rows closed up, and never the debug panel.
 //! With debug on the same quad grows upward into the debug
@@ -36,6 +38,7 @@
 //! depth perception, and a ray jitters): rows 1.7 cm tall at the bottom of
 //! the panel, picked by the pointer's height alone, then by its side: a
 //! wide row (a surface row's `<` `>`) has a left and a right half, the
+//! Limit flashing row is one button across, the
 //! others two cells
 //! side by side, each with a left and a right half where it has two
 //! actions (-/+); `panel_grid.rs` holds the layout and the hit test. The
@@ -160,6 +163,10 @@ pub struct Controls {
     /// board #5420): the theme's mode per kind, or one forced on every
     /// kind (board #5431). The app sets it; a press only asks.
     pub edges: crate::edge_bars::Choice,
+    /// The photosensitive flash limit as the wearer set it (the hand
+    /// menu's Limit flashing toggle, saved in `hand_menu.json`; board
+    /// #5534): on until they turn it off.
+    pub flash_limit: bool,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -215,6 +222,8 @@ pub enum Action {
     /// The spoken "menu" (true: open, parked ahead of the wearer) or "close
     /// the menu" (board #5459). No row asks for it.
     Menu(bool),
+    /// The hand menu's Limit flashing toggle changed (saved; board #5534).
+    SetFlashLimit(bool),
 }
 
 impl Controls {
@@ -248,6 +257,8 @@ enum Target {
     PrevTrack,
     NextTrack,
     ToggleVoice,
+    /// The Limit flashing toggle (board #5534).
+    ToggleFlashLimit,
     /// The Agent control: the next provider in its cycle.
     CycleAgent,
     AllNone,
@@ -803,6 +814,10 @@ impl Hud {
                 controls.voice = !controls.voice;
                 actions.push(Action::SetVoice(controls.voice));
             }
+            Some(Target::ToggleFlashLimit) => {
+                controls.flash_limit = !controls.flash_limit;
+                actions.push(Action::SetFlashLimit(controls.flash_limit));
+            }
             // The app switches and sets `controls.agent` (the cycle
             // depends on what the headset has); with nothing to pick the
             // press does nothing.
@@ -921,6 +936,8 @@ enum Control<'a> {
         right: (Target, &'a str),
         middle: String,
     },
+    /// One action across the row (board #5534: the Limit flashing toggle).
+    Button(Target, &'a str),
     /// Two cells side by side (`None`: an empty one).
     Pair([Option<Cell<'a>>; 2]),
     /// Text across the row, no target: a status.
@@ -987,6 +1004,7 @@ impl Control<'_> {
     fn target(&self, hit: grid::Hit, end: Option<bool>) -> Option<Target> {
         match self {
             Self::Wide { left, right, .. } => Some(if hit.col == 1 { right.0 } else { left.0 }),
+            Self::Button(t, _) => Some(*t),
             Self::Text(_) => None,
             Self::Pair(cells) => match cells[hit.col].as_ref()? {
                 Cell::Stepper { index, .. } => Some(Target::Step(*index, hit.right)),
@@ -1042,6 +1060,7 @@ impl Rows<'_> {
                         PALETTE.text,
                     );
                 }
+                Control::Button(t, label) => self.button(painter, row, *t, label, on.is_some()),
                 Control::Text(text) => label(painter, row, text),
                 Control::Pair(cells) => {
                     for (col, cell) in cells.iter().enumerate() {
@@ -1515,6 +1534,7 @@ fn panel_ui(
     while let Some(left) = steppers.next() {
         block.push(Control::Pair([Some(left), steppers.next()]));
     }
+    block.push(flash_row(controls.flash_limit));
     block.push(recenter_row(view.room, controls.roam));
     block.push(agent_row(controls.agent, controls.immerse));
     block.push(menu_row(true, controls.pitcher));
@@ -1553,6 +1573,7 @@ fn menu_ui(
         .iter()
         .filter_map(|row| {
             Some(match *row {
+                grid::MenuRow::Flash => flash_row(controls.flash_limit),
                 grid::MenuRow::Recenter => recenter_row(view.room, controls.roam),
                 grid::MenuRow::Agent => agent_row(controls.agent, controls.immerse),
                 grid::MenuRow::Developer => menu_row(false, controls.pitcher),
@@ -1651,9 +1672,24 @@ fn music_row<'a>(
     ])
 }
 
+/// The Limit flashing toggle (board #5534), the menu's top row in both
+/// layouts and on both surfaces, under the steppers in the debug panel:
+/// the photosensitive limit as the wearer set it, "Limit flashing: on" or
+/// "Limit flashing: off" (`flash_choice::row_label`), one button across
+/// the row. A press changes it at once and saves it; nothing confirms an
+/// off. It went in at the top as the Recenter and the Agent rows did, so
+/// no row the wearer already reaches for moved (the quad keeps its bottom
+/// edge and grows upward). It has the row to itself, so no control shares
+/// a cell with it that a press meant for the other half could land on.
+/// The state is in the words, not a color.
+fn flash_row(on: bool) -> Control<'static> {
+    Control::Button(Target::ToggleFlashLimit, crate::flash_choice::row_label(on))
+}
+
 /// Recenter the fireflies around the wearer, and with the room on Rescan
-/// the room beside it, over the agent's row in both layouts: the menu's
-/// top row, under the steppers in the debug panel. It was the debug panel's alone
+/// the room beside it, over the agent's row in both layouts: under the
+/// Limit flashing row (the menu's top row until board #5534), under the
+/// steppers in the debug panel. It was the debug panel's alone
 /// until board #4192: the scan label sends a wearer whose room was not
 /// found to the hand menu ("No room found. Rescan from the hand menu"),
 /// and with the debug panel off the menu had no Rescan to find. It went
