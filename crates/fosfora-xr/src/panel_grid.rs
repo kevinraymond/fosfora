@@ -8,8 +8,9 @@
 //! quad shows (the whole panel with debug on, the menu strip without), the
 //! bottom row [`MARGIN`] above that edge in both, so the row under the
 //! pointer stays there when debug toggles. Rows are [`ROW_H`] tall with
-//! [`ROW_GAP`] between them. A row is wide (a left and a right action:
-//! a surface row's `<` `>`) or a pair of cells, one per column, each about
+//! [`ROW_GAP`] between them. A row is wide (a left and a right action,
+//! a surface row's `<` `>`, or one action across it, the Limit flashing
+//! toggle) or a pair of cells, one per column, each about
 //! half the width with its own -/+ end boxes ([`END_BOX_W`]) or one
 //! action. The pointer picks a row by its height alone (a row owns half
 //! the gap above and below it, so the rows tile the block), a column by
@@ -39,7 +40,9 @@ pub const END_BOX_W: f32 = 40.0;
 /// The room a status cell's text keeps from each end (points; `hud.rs`).
 pub const STATUS_PAD: f32 = 4.0;
 /// The hand menu's rows with Edit room off on the developer surface, in
-/// both layouts at the bottom of the block: Recenter and Rescan (in the
+/// both layouts at the bottom of the block: the Limit flashing toggle
+/// (board #5534, the wearer's photosensitive setting, on both surfaces),
+/// over Recenter and Rescan (in the
 /// menu since board #4192, so the scan label's "Rescan from the hand menu"
 /// has a row to find; since board #5393 the two share the left cell and
 /// Roam has the right one), over the agent's provider (board #3776), over
@@ -47,8 +50,9 @@ pub const STATUS_PAD: f32 = 4.0;
 /// over the particles' (step 2c), over the music's (board #3472). The
 /// release surface (board #4204) leaves out the pitcher and debug row
 /// ([`menu`]). Board #5470: the world effect's `<` `>` row, which was on
-/// top, went with the effects it stepped, so the menu is one row shorter.
-pub const MENU_ROWS: usize = 6;
+/// top, went with the effects it stepped, so the menu was one row shorter
+/// until the Limit flashing row took that place.
+pub const MENU_ROWS: usize = 7;
 /// The rows Edit room adds under its own (board #3472, D3): the pointed
 /// surface's color, band and strength.
 pub const SURFACE_ROWS: usize = 3;
@@ -56,6 +60,9 @@ pub const SURFACE_ROWS: usize = 3;
 /// One row of the hand menu (`hud.rs` paints each).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuRow {
+    /// The Limit flashing toggle, one action across the row (board
+    /// #5534).
+    Flash,
     /// Recenter and Rescan, a half each, beside Roam.
     Recenter,
     /// The Agent control beside the Immersion control.
@@ -79,10 +86,13 @@ pub enum MenuRow {
 /// The hand menu's rows on `surface`, top to bottom. The release surface
 /// (board #4204) leaves out the developer row (Pitcher and Debug panel)
 /// and the "All: none" half, whose cell the edge bars' control fills: the
-/// rows close up and no cell or half stands empty.
+/// rows close up and no cell or half stands empty. The Limit flashing row
+/// is on both (board #5534): it is a wearer's setting, not a developer's.
+/// It went in at the top as the Recenter and the Agent rows did, so no row
+/// the wearer already reaches for moved.
 pub fn menu(surface: Surface, editing: bool) -> Vec<MenuRow> {
     let developer = surface.developer();
-    let mut rows = vec![MenuRow::Recenter, MenuRow::Agent];
+    let mut rows = vec![MenuRow::Flash, MenuRow::Recenter, MenuRow::Agent];
     if developer {
         rows.push(MenuRow::Developer);
     }
@@ -129,15 +139,16 @@ pub const MIN_FONT: f32 = 12.0;
 /// hands, reach, gesture, anchor and audio) needs above the controls, with
 /// room to spare: about 250 points in the texture dumps. 300 since the
 /// Agent row (board #3776), the most that leaves room for the fullest
-/// block (320 before).
+/// block (320 before). Board #5534: the Limit flashing row fills that
+/// block again, as the effect's row did until board #5470.
 pub const HEADER_H: f32 = 300.0;
 /// The debug panel's -/+ steppers (`STEPPERS` in `hud.rs`, which checks
 /// the count), two to a row.
 pub const STEPPERS: usize = 10;
 /// The most rows the debug panel shows: the steppers' pair rows, then the
-/// menu's rows (Recenter and Rescan, Agent, Pitcher and Debug, Edit room
-/// and its status, with Edit room on the surface's Color, Band and
-/// Strength, Particles and All: none, Music and Voice).
+/// menu's rows (Limit flashing, Recenter and Rescan, Agent, Pitcher and
+/// Debug, Edit room and its status, with Edit room on the surface's Color,
+/// Band and Strength, Particles and All: none, Music and Voice).
 pub const fn debug_rows(editing: bool) -> usize {
     STEPPERS.div_ceil(2) + menu_rows(Surface::Developer, editing)
 }
@@ -471,31 +482,31 @@ mod tests {
         // (board #3472); with Edit room on, the surface's three rows under
         // its own (D3). The Agent row (board #3776) added one. Recenter
         // and Rescan joining the menu (board #4192) added none: the panel
-        // had them. The effect row's going (board #5470) took one away, so
-        // the header now has one row of headroom over the fullest block
-        // and no more.
-        assert_eq!(debug_rows(false), 11);
-        assert_eq!(debug_rows(true), 14);
+        // had them. The effect row's going (board #5470) took one away,
+        // and the Limit flashing row (board #5534) took its place, so the
+        // header has no row of headroom over the fullest block.
+        assert_eq!(debug_rows(false), 12);
+        assert_eq!(debug_rows(true), 15);
         for editing in [false, true] {
             assert!(block_top(PANEL_H, debug_rows(editing)) >= MARGIN + HEADER_H);
         }
-        assert!(block_top(PANEL_H, debug_rows(true) + 1) >= MARGIN + HEADER_H);
-        assert!(block_top(PANEL_H, debug_rows(true) + 2) < MARGIN + HEADER_H);
-        // The hand menu: a title over six rows (Recenter and Rescan on top
-        // since board #4192, the Agent row under them since board #3776;
-        // the effect's row was over them until board #5470), or nine with
-        // Edit room on, 40 points taller for each past the first. No row
-        // or font shrinks for them.
+        assert!(block_top(PANEL_H, debug_rows(true) + 1) < MARGIN + HEADER_H);
+        // The hand menu: a title over seven rows (Limit flashing on top
+        // since board #5534, Recenter and Rescan under it since board
+        // #4192, the Agent row under them since board #3776; the effect's
+        // row was on top until board #5470), or ten with Edit room on, 40
+        // points taller for each past the first. No row or font shrinks
+        // for them.
         let dev = Surface::Developer;
-        assert_eq!((menu_rows(dev, false), menu_rows(dev, true)), (6, 9));
-        assert_close!(menu_h(menu_rows(dev, false)), 284.0);
-        assert_close!(menu_h(menu_rows(dev, true)), 404.0);
+        assert_eq!((menu_rows(dev, false), menu_rows(dev, true)), (7, 10));
+        assert_close!(menu_h(menu_rows(dev, false)), 324.0);
+        assert_close!(menu_h(menu_rows(dev, true)), 444.0);
         // The release surface (board #4204): one row fewer, 40 points
         // shorter.
         let rel = Surface::Release;
-        assert_eq!((menu_rows(rel, false), menu_rows(rel, true)), (5, 8));
-        assert_close!(menu_h(menu_rows(rel, false)), 244.0);
-        assert_close!(menu_h(menu_rows(rel, true)), 364.0);
+        assert_eq!((menu_rows(rel, false), menu_rows(rel, true)), (6, 9));
+        assert_close!(menu_h(menu_rows(rel, false)), 284.0);
+        assert_close!(menu_h(menu_rows(rel, true)), 404.0);
         for editing in [false, true] {
             for surface in [dev, rel] {
                 let n = menu_rows(surface, editing);
@@ -550,6 +561,11 @@ mod tests {
         }
         for on in [true, false] {
             whole.push(crate::room_edit::particles_label(on));
+        }
+        // Board #5534: the Limit flashing toggle has its row to itself,
+        // and its words fit a cell too.
+        for on in [true, false] {
+            whole.push(crate::flash_choice::row_label(on));
         }
         for text in whole {
             fits(text, FONT_BUTTON, cell_w());
@@ -611,6 +627,7 @@ mod tests {
         assert_eq!(
             menu(Surface::Developer, false),
             [
+                Flash,
                 Recenter,
                 Agent,
                 Developer,
@@ -622,6 +639,7 @@ mod tests {
         assert_eq!(
             menu(Surface::Developer, true),
             [
+                Flash,
                 Recenter,
                 Agent,
                 Developer,
@@ -640,14 +658,23 @@ mod tests {
         use MenuRow::*;
         // Board #4204: no Pitcher or Debug panel row, no "All: none" half;
         // the rows under the gone one move up a row and the edge bars'
-        // control takes the whole cell.
+        // control takes the whole cell. Board #5534: the Limit flashing
+        // row is the wearer's, so the release menu has it, on top.
         assert_eq!(
             menu(Surface::Release, false),
-            [Recenter, Agent, Edit, Cloud { all_none: false }, Music]
+            [
+                Flash,
+                Recenter,
+                Agent,
+                Edit,
+                Cloud { all_none: false },
+                Music
+            ]
         );
         assert_eq!(
             menu(Surface::Release, true),
             [
+                Flash,
                 Recenter,
                 Agent,
                 Edit,

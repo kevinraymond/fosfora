@@ -1642,6 +1642,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         immerse: immerse_knob.map_or(menu_saved.immerse, crate::immerse::Depth::nearest),
         roam: roam.now(),
         edges: edge_bars.choice,
+        // Board #5534: on until the wearer turns it off.
+        flash_limit: menu_saved.limit_flashing.unwrap_or(true),
     };
     // Board #5420: the hand menu's Edges control holds its choice over the
     // knob's until the knob's own value changes (board #5431: the theme's
@@ -2918,6 +2920,27 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     Action::SetDebug(on) => {
                         menu_saved.debug = on;
                         save_hand_menu(&menu_file, menu_saved);
+                    }
+                    // Board #5534: the Limit flashing toggle or a spoken
+                    // "limit flashing" / "full show": the wearer's
+                    // setting, saved, and the limiter follows on this
+                    // frame unless its knob overrides. A wearer who sets
+                    // it here has chosen and is not asked at a launch.
+                    Action::SetFlashLimit(on) => {
+                        menu_saved.limit_flashing = Some(on);
+                        save_hand_menu(&menu_file, menu_saved);
+                        controls.flash_limit = on;
+                        info!(
+                            "flash limit: the wearer set \"{}\" (saved)",
+                            crate::flash_choice::row_label(on)
+                        );
+                        sync_flash_limit(&mut flash_limit, &mut flash_by, menu_saved.limit_flashing);
+                        if flash_by == crate::flash::By::Knob {
+                            info!(
+                                "flash limit: {} is set and still overrides the wearer's setting",
+                                crate::flash::KNOB
+                            );
+                        }
                     }
                     // Board #3751, V4: the Voice toggle, saved; the model
                     // loads on the first turn on (a launch with it off
@@ -6591,6 +6614,11 @@ fn apply_intent(
         Intent::Voice(on) => {
             controls.voice = on;
             actions.push(Action::SetVoice(on));
+        }
+        // Board #5534: the Limit flashing toggle's press, by voice.
+        Intent::FlashLimit(on) => {
+            controls.flash_limit = on;
+            actions.push(Action::SetFlashLimit(on));
         }
         _ => {}
     }
