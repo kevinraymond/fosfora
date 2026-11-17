@@ -2,14 +2,14 @@
 
 ## Bundled tracks
 
-`Let_the_Night_Come_In.ogg`, `Slow_Blue.ogg` and `Second_Wind.ogg` were made for this
-app with YuE2 (https://github.com/multimodal-art-projection/YuE, model `m-a-p/YuE2-3B`
-with the `m-a-p/YuE2-Vae` decoder), run locally. The style prompts and the lyrics of
-"Let the Night Come In" were written for this app. "Slow Blue" and "Second Wind" are
-instrumental. Each file is the model's output with the level lowered, 1 dB for "Let the
-Night Come In" and "Second Wind" and 2 dB for "Slow Blue", encoded with
-`ffmpeg -af volume=-1dB -ar 48000 -ac 2 -c:a libvorbis -q:a 5` (`volume=-2dB` for
-"Slow Blue").
+`Let_the_Night_Come_In.ogg`, `Turn_the_Walls_to_Stone.ogg` and `High_Meadow.ogg` were
+made for this app with YuE2 (https://github.com/multimodal-art-projection/YuE, model
+`m-a-p/YuE2-3B` with the `m-a-p/YuE2-Vae` decoder), run locally. The style prompts and
+the lyrics of "Let the Night Come In" and "Turn the Walls to Stone" were written for
+this app. "High Meadow" is instrumental. Each file is the model's output with its level
+changed to bring the three to about the same loudness (-1 dB for "Let the Night Come
+In", -2.5 dB for "Turn the Walls to Stone", +1.5 dB for "High Meadow"), encoded with
+`ffmpeg -af volume=<level>dB -ar 48000 -ac 2 -c:a libvorbis -q:a 5`.
 
 The YuE2 weights are licensed CC BY-NC 4.0 with an additional permission (2026-09-16)
 that lets individual creators publish and distribute what they generate; the outputs are

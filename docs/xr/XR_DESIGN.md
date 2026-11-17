@@ -310,8 +310,8 @@ the wearer's own files. While the music folders are empty it plays the
 tracks the app ships with (board #5528).
 
 - **With no music of your own.** The app ships full tracks, each with a
-  build, a drop and a breakdown: "Let the Night Come In", "Slow Blue" and
-  "Second Wind" (`assets/xr/audio/`, CC0, staged into the APK). While both
+  build, a drop and a breakdown: "Let the Night Come In", "Turn the Walls
+  to Stone" and "High Meadow" (`assets/xr/audio/`, CC0, staged into the APK). While both
   folders hold no track the app can read, they are the playlist. Their
   order is one list in the code (`music::BUNDLED`), the first track first,
   not the folder's order or the alphabet's. They go through the same
@@ -401,8 +401,8 @@ tracks the app ships with (board #5528).
   so the measurement scripts get the same clip whatever the folders hold.
 - **The log.** At launch, `music: 14 tracks (12 in Music, 2 in the app
   folder) · resuming "<title>"`. With empty folders, `music: no tracks in
-  the music folders · bundled: "Let the Night Come In", "Slow Blue",
-  "Second Wind" · playing "Let the Night Come In"`. With the knob the line
+  the music folders · bundled: "Let the Night Come In", "Turn the Walls
+  to Stone", "High Meadow" · playing "Let the Night Come In"`. With the knob the line
   starts `music: debug.fosfora.bundled 1 over 14 tracks (...)`. With no
   track at all, `music: no tracks found and no bundled track, playing the
   test clip (put files in Music/)`. A scan that changes the playlist's

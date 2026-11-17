@@ -3729,7 +3729,10 @@ Quest 3, unworn, seated, the saved room replayed
 (`debug.fosfora.anchors replay`), `debug.fosfora.begin 1`, Immersion full
 (`debug.fosfora.immerse 1`), debug APK of 45080af, 10 h after a reboot.
 The headset has 7 tracks of its own in `Music/`, so the bundled tracks are
-reached with `debug.fosfora.bundled 1`.
+reached with `debug.fosfora.bundled 1`. The second and third tracks measured
+here and in "The edge bars against the music" ("Slow Blue", "Second Wind")
+were later replaced by "Turn the Walls to Stone" and "High Meadow" (board
+#5533); the numbers below are for the tracks as named.
 
 **The playlist.** Without the knob the launch line is `music: 7 tracks (7
 in Music, 0 in the app folder) · "<title>", stopped`: the headset's own
