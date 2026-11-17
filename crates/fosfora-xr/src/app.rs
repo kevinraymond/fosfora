@@ -383,9 +383,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the APK's debuggable flag decides. Release: no Debug panel, Pitcher or "All: none" in the hand menu, the saved debug
     //       panel ignored, transcripts out of the log, no debug/anchors.json; read at launch)
     //   adb shell setprop debug.fosfora.hudtest 1                (diagnostic: the debug panel parked ahead of the view, untracked, for a screencap)
-    //   adb shell setprop debug.fosfora.menustay 0|1             (board #5459: 1 = the left palm summons the hand menu and it stays in the air, closing
-    //       after 3 s with no pointer on it, on a pinch away from it, or on "close the menu"; "menu" parks it ahead; 0 = it lives on
-    //       the palm, as before; default 1, polled once a second)
+    //   adb shell setprop debug.fosfora.menustay 0|1             (board #5459, #5539: 1 = the left palm shows the hand menu and hides it at once; the spoken
+    //       "menu" parks it ahead in the air, closing after 3 s with no pointer on it, on a pinch away from it, or on "close the menu";
+    //       0 = it lives on the palm with no place in the air, as before #5459; default 1, polled once a second)
     //   adb shell setprop debug.fosfora.menuidle 5               (board #5459: seconds the menu stays in the air with no pointer on it, 0.5 to 60,
     //       in place of the default 3; polled once a second, "" back to the default)
     //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: the hands extend Go-Go style past a comfortable reach. Board
@@ -1546,7 +1546,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     );
     let mut hud = (hud_test || mr.hands && session.has_hands())
         .then(|| Hud::new(&mut gfx, debug_on, surface));
-    // Board #5459: the menu stays in the air once the palm summons it.
+    // Board #5459, #5539: the palm shows and hides the menu; "menu" parks it in the air.
     let mut menu_stay = switch_now("debug.fosfora.menustay").unwrap_or(true);
     let mut menu_idle: Option<f32> = None;
     info!("{}", crate::palm_panel::knob_line(menu_stay));

@@ -1,10 +1,11 @@
 //! The hand menu and the debug panel: an egui UI rendered into a texture
 //! that `Gfx` draws on a quad above the left palm (`palm_panel.rs` places
 //! it and turns the right hand's ray or fingertip into a pointer). Board
-//! #5459: the palm summons the menu and it then stays in the air until it
-//! closes by itself, or the spoken "menu" parks it ahead
-//! (`palm_panel.rs`, "Summon and stay"; `debug.fosfora.menustay 0` keeps it
-//! on the palm).
+//! #5539: the palm shows the menu and hides it at once; the spoken "menu"
+//! parks it ahead, where it stays until it closes by itself
+//! (`palm_panel.rs`, "The palm shows it and hides it";
+//! `debug.fosfora.menustay 0` is the menu on the palm with no place in
+//! the air).
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
 //! turned more to the ceiling is a hold instead, `palm_panel.rs`): seven
@@ -433,10 +434,10 @@ impl Hud {
     /// its pinch, and its index fingertip for a poke. Returns what the
     /// panel does with the pointer this frame (default when hidden).
     ///
-    /// Board #5459: with `stay` (`debug.fosfora.menustay`) the menu stays
-    /// in the air once the palm lets it go, and closes by itself: `dt`
-    /// seconds count toward the idle close, and the left hand's pinch is
-    /// read for the pinch away.
+    /// Board #5459, #5539: with `stay` (`debug.fosfora.menustay`) the
+    /// spoken "menu" has its place in the air, and the menu closes by
+    /// itself: `dt` seconds count toward the idle close in the air and
+    /// toward a lost hand's grace on the palm.
     pub fn place(
         &mut self,
         gfx: &Gfx,

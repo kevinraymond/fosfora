@@ -1853,8 +1853,8 @@ beyond raw tip distance, and a proposal. Steps 1, 3 and 5 are built (see
   **cycles the pointed surface's behavior**, its hold **applies it to the
   kind**, its drag is swallowed (a short one counts as a tap), and the left
   hand keeps the world vocabulary. While the hand menu shows (the left palm
-  summons it; since board #5459 it stays in the air, "The hand menu: summon
-  and stay" below), the right hand's pinches are the menu's: a ray pinch
+  shows it and hides it, "The hand menu: the palm shows it and hides it"
+  below), the right hand's pinches are the menu's: a ray pinch
   clicks or drags on the panel, a fingertip pokes it.
 - **The poses** (`pose.rs`, with 0.1 s dwell and hysteresis): fist (finger
   curl under 55 mm), palm up (normal within 37° of up), open; hands together
@@ -1981,36 +1981,41 @@ surface's six and nine (284 and 404). The debug panel is 12 and 15 rows,
 which uses the header's last row of headroom. The row went in at the top,
 so the rows a wearer already reaches for are where they were.
 
-### The hand menu: summon and stay (board #5459)
+### The hand menu: the palm shows it and hides it (board #5459, #5539)
 
-The app is used lying back in a chair. The menu used to live on the left
-palm and hide when the palm turned away, so every press needed both arms
-raised for as long as it took, and nothing in the menu worked with one
-hand. Now the palm summons the menu and the menu stays in the world
-(`palm_panel.rs`, "Summon and stay"; `hud.rs`). Knob
+The app is used lying back in a chair. The menu first lived on the left
+palm and hid when the palm turned away, so nothing in it worked with one
+hand. Board #5459 let the palm summon it and leave it in the air, where
+it closed after a few idle seconds. Worn, that read as a mistake: the
+menu was still up after the hand had gone, and nothing said why (board
+#5539). So the palm shows the menu and hides it again, at once, and the
+place in the air is kept for the wearer who asks for the menu by voice
+(`palm_panel.rs`, "The palm shows it and hides it"; `hud.rs`). Knob
 `debug.fosfora.menustay 0|1`, default 1, polled once a second and logged
-on each change. 0 is the menu on the palm as it was, so the two can be
-compared worn in one sitting.
+on each change. 0 is the menu on the palm with no place in the air.
 
 - **Summon.** The left palm turning to the face (cosine to the head over
   0.6, and facing the head at least as much as the ceiling) shows the menu
   at the palm, and it follows the palm as before. Showing the palm again
   later brings it back to the palm from wherever it is, at once; a pointer
   on it holds it still until the pointer leaves.
-- **Stay.** The palm turning away (cosine under 0.3, or facing the ceiling
-  0.1 more than the head) or the hand dropping out of tracking leaves the
-  menu where it is. It turns to face the wearer once, then holds still,
-  and the right hand's beam or fingertip works it as before.
+- **Hide.** The palm turning away (cosine under 0.3, or facing the ceiling
+  0.1 more than the head) hides the menu on that frame. A hand that drops
+  out of tracking hides it 0.25 s later (`LOST_GRACE_S`), so a frame or
+  two of lost tracking does not blink it. A pointer on the menu holds it,
+  still, for the press, since the left hand is often lost behind the right
+  one then; it goes when the pointer leaves. The log reads `hand menu
+  hidden (the palm turned away)`.
 - **The spoken open.** "Menu" or "open the menu" (also "show the menu",
   "bring up the menu", "hand menu") parks it 45 cm ahead of the head along
-  the view and 5 cm below, facing it, with no palm, so one hand works it.
-  "What can I say" lists "open the menu" on its first page.
+  the view and 5 cm below, facing it, with no palm, and there it stays, so
+  one hand works it. The wearer asked for it by name, so it is no surprise
+  that it is up. "What can I say" lists "open the menu" on its first page.
 - **The closes.** There is no new row. In the air, no pointer on it for
-  8 s closes it; on the palm the count never runs. A pinch that starts
+  3 s closes it (`IDLE_S`; it was 8 s at first); on the palm the count never runs. A pinch that starts
   away from it closes it: the right hand's ray landing outside the panel
   grown by half its size (1.5 times its half extents) or missing it. The
-  left hand's pinch never closes it, since that hand is on its way down
-  after summoning the menu. The closing pinch is masked from the
+  left hand's pinch never closes it. The closing pinch is masked from the
   gesture machine until it is released, so it does nothing else. A pinch
   that just misses a row, inside that margin, does nothing and the menu
   stays. "Close the menu" (also "hide the menu", "menu off") closes it. A
@@ -2074,7 +2079,7 @@ What a wearer can meet, in the order of a first launch:
 | Room editor: a first hold | desk: hold again for all tables -> curls | at the surface | the arm's 2.5 s |
 | A voice reply or miss | theme: Aurora, Didn't catch that… | the voice window's place | its own time or its reading time |
 | A thumb swipe stepped the theme | Aurora | the voice window's place | its reading time |
-| A first run hint, the show on for 45 s and the label free for 5 s | Left palm to your face for the menu. It stays there. | the voice window's place | until the gesture is made, 20 s at most |
+| A first run hint, the show on for 45 s and the label free for 5 s | Left palm to your face shows the menu. Away hides it. | the voice window's place | until the gesture is made, 20 s at most |
 | The hint's gesture was made | Got it | same | 2.5 s |
 | The session ends on an error | Fosfora stopped: the session was lost | 1.2 m ahead, level | 4 s, then the app exits |
 
@@ -2225,7 +2230,7 @@ not run on the headset yet.
    teaches itself.
 7. **The palm hint**, first, once the label has been free for 5 s, ahead
    of the view and 10 degrees under the line of sight: **"Left palm to
-   your face"** over **"for the menu. It stays there."** The palm brings
+   your face"** over **"shows the menu. Away hides it."** The palm brings
    the menu, then **"Got it"** for 2.5 s with the understood cue. The
    menu changes nothing in the room.
 8. **The talk hint**, 5 s of free label later, only with voice on and the
