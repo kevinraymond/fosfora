@@ -1300,7 +1300,32 @@ its reason.
 - **The tap** is unchanged. It opens a window that needs no held pose,
   closes 0.8 s after the wearer stops talking, at 6 s, or on a second
   tap, which is its "done" for a wearer who does not want to wait. A tap
-  does nothing to a fist window and a fist nothing to a tap window.
+  does nothing to a fist window and a fist nothing to a tap window, but
+  for the next rule.
+- **A tap from a closing fist is the fist's.** Closing a fist puts the
+  thumb on the index, and the runtime can report a thumb tap before the
+  fist has lasted its dwell. The tap opens its window as ever. If the hand
+  that tapped is a fist 0.3 s later (`TAKEOVER_S`), it was a fist all
+  along: the window becomes that fist's, with the hold's rules, and the
+  label gains "Open your hand when done" (`Event::Gripped`). A tap whose
+  hand is open again by then, or was never a fist, or is the other hand's,
+  is a tap as before. The time is from the log: where both were logged,
+  the same hand's tap came 49 to 119 ms before the frame the fist's dwell
+  completed (six fists) and 4 and 23 ms after it (two). 0.3 s is two and a
+  half times the longest lead. A tap window cannot close on quiet before
+  0.6 s, so the takeover is always decided first.
+- **A closing fist swipes nothing.** The same motion drags the thumb
+  along the index, and the runtime can report a thumb swipe, which stepped
+  the theme. A swipe is now held back 0.15 s
+  (`microgestures::SWIPE_HOLD_S`, `SwipeGate`) and dropped if its hand is
+  a fist by then: the pose reader says so, or its fingers are curled under
+  the fist's 0.055 m. A swipe from a hand that stays open steps the theme
+  as before, 0.15 s later. Two fists swiped in the Nov 16 session. One
+  hand was already a fist when its swipe fired, and the other read as one
+  at most 0.11 s after. The 25 swipes the sessions recorded that were
+  meant kept the swiping hand's curl at 0.066 m or more for the second
+  they fired in and the second after, so none would have been dropped
+  (`every_recorded_swipe_that_was_meant_still_goes_through`).
 
 What the numbers rest on. The recorded sessions log each hand's curl as a
 range once a second, not per frame, so no flicker has been measured. The
@@ -1355,22 +1380,29 @@ opened)`, `(quiet 0.8 s at 0.004)`, `(fist out of view 6 s)` or `(20 s)`.
 A dropped window reads `voice: window dropped after 0.62 s (a fist too
 short to be meant) · 0.50 s of audio · peak … · rms … · nothing
 transcribed`, or `(nothing said)`. Every fist window also logs its hold:
-`voice: right fist held 3.21 s · 2 gaps forgiven, longest 0.06 s`.
+`voice: right fist held 3.21 s · 2 gaps forgiven, longest 0.06 s`. A
+window a tap opened and a fist took logs `voice: the window is the left
+fist's (a fist 0.3 s after its tap)`.
 
 ### Known, and to judge worn
 
-- Closing a fist can make the runtime's thumb tap fire first. The window
-  is then a tap window: it shows "Listening…" without the second line and
-  closes 0.8 s after the wearer stops talking, the fist still closed. In
-  the Nov 16 session the same hand's tap fired within 25 ms of a fist's
-  window opening twice, and 5 of the 7 tap windows opened in a second
-  where that hand's curl dipped under the fist's threshold. Twice a thumb
-  swipe stepped the theme within 0.4 s before a fist's window opened.
+- The takeover and the swipe's hold each rest on one session: eight fists
+  with a tap, two with a swipe. The log now says when either was not
+  enough. A swipe that went through and whose hand was a fist within 0.5 s
+  logs `microgesture: the left hand was a fist 0.21 s after its swipe went
+  through (held back 0.15 s)`. A dropped swipe logs `-> nothing (the hand
+  was a fist 0.08 s after it)`. A takeover logs `voice: the window is the
+  left fist's (a fist 0.3 s after its tap)`.
+- For the first 0.3 s after such a tap the label reads "Listening…"
+  alone, then gains its second line.
+- Every swipe acts 0.15 s later than it did. Whether that is felt is for
+  the worn pass.
 - A held fist cannot be made unworn. The state machine is tested on the
   desktop (`voice.rs`): hold and release, a flicker inside the grace, a
   curled hand, tracking lost while held, the tail, an instant fist, a
   silent hold and a resting fist, the ceiling, either hand and both, the
-  pinch, and the tap as it was.
+  pinch, the tap as it was, and a tap from a closing fist in either
+  order.
 
 ## Feedback where the wearer looks, and every control said (board #5453)
 

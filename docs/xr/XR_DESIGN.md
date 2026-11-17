@@ -524,9 +524,14 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   takes (board #5470; until then it stepped the world effect); nothing
   while a pointer is on the hand menu
   (board #5459; with `debug.fosfora.menustay 0`, while it is up), nothing
-  from the right hand in Edit room. Forward and backward are logged and
-  reserved; the thumb tap opens the voice window (board #3751, V4, the
-  Voice bullet below). The decision (`consume`) is plain data with desktop
+  from the right hand in Edit room. A swipe acts 0.15 s after it fires
+  and is dropped if its hand is a fist by then (board #5531,
+  `microgestures::SwipeGate`): a hand closing into a fist drags the thumb
+  along the index, and that stepped the theme. Forward and backward are
+  logged and reserved; the thumb tap opens the voice window (board #3751,
+  V4, the Voice bullet below), and a tap from a hand closing into a fist
+  gives that fist's window (`VOICE_DESIGN.md`, "The fist holds the
+  window"). The decision (`consume`) is plain data with desktop
   tests. Knob `debug.fosfora.micro 0|1`, default 1; 0 creates no action set.
 - **Voice (board #3751, `VOICE_DESIGN.md`, "V1 as built" to "V4 as built").** A fist on
   either hand holds a voice window open (board #5531: it opens under the
