@@ -1582,7 +1582,11 @@ mod tests {
         ));
         assert_eq!(arm.lines.len(), 2);
         assert_close!(arm.px, TWO_LINES_FONT_PX);
-        let theme = "No theme called \"blue sky\": Classic, Drift, Tide, Aurora or Mirror";
+        let theme = format!(
+            "No theme called \"blue sky\": {}",
+            crate::themes::listed(true)
+        );
+        let theme = theme.as_str();
         let miss = laid(theme);
         assert_eq!(miss.lines.len(), 3, "{miss:?}");
         assert_eq!(miss.lines[0], "No theme called \"blue sky\":");

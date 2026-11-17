@@ -3091,7 +3091,10 @@ mod tests {
         };
         assert_eq!(
             miss_text(&miss),
-            "No theme called \"sunset\": Classic, Drift, Tide, Aurora or Mirror"
+            format!(
+                "No theme called \"sunset\": {}",
+                crate::themes::listed(true)
+            )
         );
         // Not the agent's to take: the reply stands.
         assert!(!crate::agent::forwards(&miss.reason));
@@ -3140,6 +3143,8 @@ mod tests {
         );
         // "next theme" names the one it stepped to.
         assert_eq!(say("Next theme.", &mut lanes).label, "theme: Mirror");
+        // Round the cycle's end to Classic, and on.
+        lanes.apply_theme(Theme::ALL[Theme::ALL.len() - 1], &boxes, "test");
         assert_eq!(say("next theme", &mut lanes).label, "theme: Classic");
         assert_eq!(say("next theme", &mut lanes).label, "theme: Drift");
         assert_eq!(lanes.theme(), Shown::Theme(Theme::Drift));
@@ -3151,7 +3156,10 @@ mod tests {
         let r = say("Theme sunset.", &mut lanes);
         assert_eq!(
             r.label,
-            "No theme called \"sunset\": Classic, Drift, Tide, Aurora or Mirror"
+            format!(
+                "No theme called \"sunset\": {}",
+                crate::themes::listed(true)
+            )
         );
         assert_close!(r.seconds, MISS_S);
         assert_eq!(lanes.theme(), Shown::Theme(Theme::Tide));

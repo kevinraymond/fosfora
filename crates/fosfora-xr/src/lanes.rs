@@ -2351,26 +2351,22 @@ mod tests {
     #[test]
     fn the_control_steps_through_the_themes_and_wraps() {
         let (dir, boxes, _, mut lanes) = fresh("theme-cycle");
-        let seen: Vec<Theme> = (0..6).map(|_| lanes.next_theme(&boxes, "test")).collect();
-        assert_eq!(
-            seen,
-            [
-                Theme::Drift,
-                Theme::Tide,
-                Theme::Aurora,
-                Theme::Mirror,
-                Theme::Classic,
-                Theme::Drift
-            ]
-        );
+        // Round the whole cycle from Classic and one step on: every theme
+        // in the cycle's order, then Classic and Drift again.
+        let n = Theme::ALL.len();
+        let seen: Vec<Theme> = (0..=n).map(|_| lanes.next_theme(&boxes, "test")).collect();
+        let want: Vec<Theme> = (1..=n + 1).map(|i| Theme::ALL[i % n]).collect();
+        assert_eq!(seen, want);
+        assert_eq!(seen[n - 1], Theme::Classic);
         on_theme(&lanes, &boxes, Theme::Drift);
-        // A thumb swipe left steps back the same way, wrapping at Classic,
-        // and a swipe right is the control's press.
+        // A thumb swipe left steps back the same way, wrapping at Classic
+        // to the cycle's last, and a swipe right is the control's press.
         let back: Vec<Theme> = (0..3)
             .map(|_| lanes.step_theme(&boxes, "test", -1))
             .collect();
-        assert_eq!(back, [Theme::Classic, Theme::Mirror, Theme::Aurora]);
-        on_theme(&lanes, &boxes, Theme::Aurora);
+        assert_eq!(back, [Theme::Classic, Theme::ALL[n - 1], Theme::ALL[n - 2]]);
+        on_theme(&lanes, &boxes, Theme::ALL[n - 2]);
+        lanes.apply_theme(Theme::Aurora, &boxes, "test");
         assert_eq!(lanes.step_theme(&boxes, "test", 1), Theme::Mirror);
         on_theme(&lanes, &boxes, Theme::Mirror);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2459,10 +2455,15 @@ mod tests {
     #[test]
     fn a_saved_classic_stays_classic_by_the_control_the_swipe_and_the_knob() {
         let (dir, boxes, id, path) = fresh_dir("fresh-classic");
-        // The control's press from Aurora: Mirror, then Classic.
+        // The control's presses from Aurora: Mirror first, and round the
+        // cycle's end to Classic.
         let mut lanes = launch(&dir, id, &boxes);
-        assert_eq!(lanes.next_theme(&boxes, "test"), Theme::Mirror);
-        assert_eq!(lanes.next_theme(&boxes, "test"), Theme::Classic);
+        let aurora = Theme::ALL.iter().position(|t| *t == Theme::Aurora).unwrap();
+        let seen: Vec<Theme> = (aurora..Theme::ALL.len())
+            .map(|_| lanes.next_theme(&boxes, "test"))
+            .collect();
+        assert_eq!(seen.first(), Some(&Theme::Mirror));
+        assert_eq!(seen.last(), Some(&Theme::Classic));
         // Saved by name, so "Classic was picked" is not "nothing was".
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();

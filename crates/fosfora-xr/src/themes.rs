@@ -21,7 +21,7 @@
 //! shader: each is built from the catalogue (`SurfaceBehavior::catalogue`),
 //! every pairing on its kind's own list.
 //!
-//! The five. The four first ones color by one rule: the room's planes
+//! The six. The four first ones color by one rule: the room's planes
 //! (walls, floor, ceiling) one color, what stands in it (tables, frames,
 //! other) the other, so a table reads against the floor and a frame
 //! against its wall. Classic, Drift and Tide keep the edge bars on the
@@ -52,6 +52,18 @@
 //!   tunnel of light; the floor keeps the rings with the bars on its face,
 //!   so nothing opens under a seated wearer's feet. Warm white on the walls
 //!   and the ceiling, blue on the rest.
+//! - **Flint** (board #5533): hardness and angles, for music with drums
+//!   and distortion. Every look is one of the catalogue's angular ones,
+//!   each of which hits with the drums and falls back within a beat. The
+//!   floor is tessera's grid of tiles, the walls bezel's brackets, rules
+//!   and scanlines, both steel blue with their edge bars on the face, so
+//!   the room's own corners are lit lines. The ceiling runs nothing and
+//!   keeps its outline, warm white. Tables are shards, warm white: cells
+//!   whose edges jump with the kick. Frames take the reticle and other
+//!   surfaces shards, both amber, the one hot color. Tables and other
+//!   surfaces stand their edge bars up, a fence of spikes on each rim.
+//!   Prism is angular too and was left out: it turns and swells, and it
+//!   is the catalogue's hardest flasher before the limiter.
 //!
 //! Every band is the behavior's own ([`SurfaceBehavior::default_band`]):
 //! the rms for the flows, the bass for the rings and the pulse, as Drift
@@ -70,6 +82,7 @@ use crate::surfaces::{
 const BLUE: u32 = 1;
 const VIOLET: u32 = 2;
 const WARM_WHITE: u32 = 3;
+const AMBER: u32 = 4;
 const TEAL: u32 = 6;
 const ROSE: u32 = 7;
 
@@ -143,16 +156,18 @@ pub enum Theme {
     Tide,
     Aurora,
     Mirror,
+    Flint,
 }
 
 impl Theme {
     /// Every theme, in the cycle's order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Classic,
         Self::Drift,
         Self::Tide,
         Self::Aurora,
         Self::Mirror,
+        Self::Flint,
     ];
 
     /// The name the room file, the knob and the log use.
@@ -163,6 +178,7 @@ impl Theme {
             Self::Tide => "tide",
             Self::Aurora => "aurora",
             Self::Mirror => "mirror",
+            Self::Flint => "flint",
         }
     }
 
@@ -174,6 +190,7 @@ impl Theme {
             Self::Tide => "Tide",
             Self::Aurora => "Aurora",
             Self::Mirror => "Mirror",
+            Self::Flint => "Flint",
         }
     }
 
@@ -185,16 +202,16 @@ impl Theme {
             .find(|t| t.name().eq_ignore_ascii_case(name))
     }
 
-    /// The next theme in the cycle, wrapping: Classic, Drift, Tide,
-    /// Aurora, Mirror, Classic.
+    /// The next theme in the cycle ([`Self::ALL`]'s order), wrapping from
+    /// the last to Classic.
     #[must_use]
     pub fn next(self) -> Self {
         let i = Self::ALL.iter().position(|&t| t == self).unwrap_or(0);
         Self::ALL[(i + 1) % Self::ALL.len()]
     }
 
-    /// The theme before this one in the cycle, wrapping: Classic, Mirror,
-    /// Aurora, Tide, Drift, Classic.
+    /// The theme before this one in the cycle, wrapping from Classic to
+    /// the last.
     #[must_use]
     pub fn prev(self) -> Self {
         let n = Self::ALL.len();
@@ -247,6 +264,17 @@ impl Theme {
                 KIND_CEILING => look(B::None, WARM_WHITE, BAND_RMS, 1.0, Mode::In),
                 KIND_FRAME => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
                 _ => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
+            },
+            // Board #5533: the angular looks, steel blue on the room's
+            // planes, warm white on the tables and the ceiling's outline,
+            // amber on the rest.
+            Self::Flint => match kind {
+                KIND_TABLE => look(B::Shards, WARM_WHITE, BAND_RMS, 1.0, Mode::Standing),
+                KIND_FLOOR => look(B::Tessera, BLUE, BAND_RMS, 1.0, face),
+                KIND_WALL => look(B::Bezel, BLUE, BAND_RMS, 1.0, face),
+                KIND_CEILING => look(B::None, WARM_WHITE, BAND_RMS, 1.0, face),
+                KIND_FRAME => look(B::Reticle, AMBER, BAND_RMS, 1.0, face),
+                _ => look(B::Shards, AMBER, BAND_RMS, 1.0, Mode::Standing),
             },
         })
     }
@@ -360,9 +388,10 @@ impl Shown {
     }
 
     /// The theme a thumb swipe left applies: the one before the one it
-    /// names (edited or not), Mirror from custom, the end of the cycle.
+    /// names (edited or not), the cycle's last from custom.
     pub fn prev(self) -> Theme {
-        self.theme().map_or(Theme::Mirror, Theme::prev)
+        self.theme()
+            .map_or_else(|| Theme::Classic.prev(), Theme::prev)
     }
 
     /// The theme one step along the cycle from the one it names: forward
@@ -440,9 +469,9 @@ impl Knob {
     }
 }
 
-/// The themes' names for a reply or a warning: "classic, drift, tide,
-/// aurora or mirror" ([`Theme::name`]) or with `titles` "Classic, Drift,
-/// Tide, Aurora or Mirror".
+/// The themes' names for a reply or a warning, in the cycle's order:
+/// "classic, drift, … or flint" ([`Theme::name`]) or with `titles`
+/// "Classic, Drift, … or Flint".
 pub fn listed(titles: bool) -> String {
     let names: Vec<&str> = Theme::ALL
         .iter()
@@ -500,7 +529,7 @@ mod tests {
         }
         // The built-in defaults (a room file nobody wrote) run Classic.
         assert!(Theme::Classic.runs_in(&RoomFile::default()));
-        for theme in [Theme::Drift, Theme::Tide, Theme::Aurora, Theme::Mirror] {
+        for theme in Theme::ALL.into_iter().filter(|t| *t != Theme::Classic) {
             assert!(!theme.runs_in(&RoomFile::default()), "{theme:?}");
         }
     }
@@ -577,6 +606,35 @@ mod tests {
             };
             assert_eq!(l.color, want, "{}", kind_name(kind));
         }
+        // Flint (board #5533): the angular looks alone, and no look that
+        // is held back for flashing.
+        assert_eq!(
+            behaviors(Theme::Flint),
+            [
+                B::Shards,
+                B::Tessera,
+                B::Bezel,
+                B::None,
+                B::Reticle,
+                B::Shards
+            ]
+        );
+        for theme in Theme::ALL {
+            assert!(
+                theme.looks().all(|(_, l)| l.behavior.offered()),
+                "{theme:?}"
+            );
+        }
+        // Steel blue on the floor and the walls, warm white on the tables
+        // and the ceiling, amber on the rest.
+        for (kind, l) in Theme::Flint.looks() {
+            let want = match kind {
+                KIND_FLOOR | KIND_WALL => BLUE,
+                KIND_TABLE | KIND_CEILING => WARM_WHITE,
+                _ => AMBER,
+            };
+            assert_eq!(l.color, want, "{}", kind_name(kind));
+        }
         // Every band the behavior's own: Drift's rms, but the bass where
         // the behavior's default is the bass.
         for theme in Theme::ALL {
@@ -595,7 +653,7 @@ mod tests {
     fn names_and_the_cycle() {
         assert_eq!(
             Theme::ALL.map(Theme::name),
-            ["classic", "drift", "tide", "aurora", "mirror"]
+            ["classic", "drift", "tide", "aurora", "mirror", "flint"]
         );
         for t in Theme::ALL {
             assert_eq!(Theme::from_name(t.name()), Some(t));
@@ -621,6 +679,7 @@ mod tests {
                 Theme::Tide,
                 Theme::Aurora,
                 Theme::Mirror,
+                Theme::Flint,
                 Theme::Classic
             ]
         );
@@ -633,6 +692,7 @@ mod tests {
         assert_eq!(
             seen,
             [
+                Theme::Flint,
                 Theme::Mirror,
                 Theme::Aurora,
                 Theme::Tide,
@@ -650,23 +710,33 @@ mod tests {
         assert_eq!(Shown::Theme(Theme::Drift).step(1), Theme::Tide);
         assert_eq!(Shown::Theme(Theme::Drift).step(-1), Theme::Classic);
         assert_eq!(Shown::Edited(Theme::Aurora).step(-1), Theme::Tide);
-        assert_eq!(Shown::Theme(Theme::Classic).prev(), Theme::Mirror);
-        assert_eq!(Shown::Theme(Theme::Mirror).step(1), Theme::Classic);
+        let last = Theme::ALL[Theme::ALL.len() - 1];
+        assert_eq!(last, Theme::Flint);
+        assert_eq!(Shown::Theme(Theme::Classic).prev(), last);
+        assert_eq!(Shown::Theme(last).step(1), Theme::Classic);
         assert_eq!(Shown::Custom.step(1), Theme::Classic);
-        assert_eq!(Shown::Custom.step(-1), Theme::Mirror);
+        assert_eq!(Shown::Custom.step(-1), last);
         // The control's press: the next after the one shown, edited or
-        // not; custom starts the cycle. Mirror comes after Aurora.
+        // not; custom starts the cycle. Mirror comes after Aurora, and
+        // Flint after Mirror.
         assert_eq!(Shown::Theme(Theme::Drift).next(), Theme::Tide);
         assert_eq!(Shown::Edited(Theme::Aurora).next(), Theme::Mirror);
-        assert_eq!(Shown::Theme(Theme::Mirror).next(), Theme::Classic);
+        assert_eq!(Shown::Theme(Theme::Mirror).next(), Theme::Flint);
+        assert_eq!(Shown::Theme(last).next(), Theme::Classic);
         assert_eq!(Shown::Custom.next(), Theme::Classic);
         // The words.
         assert_eq!(Shown::Theme(Theme::Drift).label(), "Theme: Drift");
         assert_eq!(Shown::Edited(Theme::Drift).label(), "Theme: Drift*");
         assert_eq!(Shown::Custom.label(), "Theme: custom");
         assert_eq!(Shown::Edited(Theme::Classic).value(), "Classic*");
-        assert_eq!(listed(true), "Classic, Drift, Tide, Aurora or Mirror");
-        assert_eq!(listed(false), "classic, drift, tide, aurora or mirror");
+        assert_eq!(
+            listed(true),
+            "Classic, Drift, Tide, Aurora, Mirror or Flint"
+        );
+        assert_eq!(
+            listed(false),
+            "classic, drift, tide, aurora, mirror or flint"
+        );
     }
 
     #[test]
@@ -719,6 +789,18 @@ mod tests {
             assert_eq!(l.behavior == B::Rings, floor, "{}", kind_name(kind));
             assert_eq!(l.behavior == B::None, !floor, "{}", kind_name(kind));
         }
+        // Flint (board #5533): the bars on the face of the room's planes
+        // and of the frames, standing on what has a rim.
+        for (kind, l) in Theme::Flint.looks() {
+            let rim = [KIND_TABLE, crate::surfaces::KIND_OTHER].contains(&kind);
+            let want = if rim { Mode::Standing } else { Mode::Face };
+            assert_eq!(l.edges, want, "{}", kind_name(kind));
+        }
+        assert!(
+            Theme::Flint
+                .summary()
+                .contains("table shards@1.00 warm white rms edges stand")
+        );
         // The room's theme decides; with none saved (fresh or custom),
         // every kind on the face.
         for (kind, _) in KIND_NAMES {

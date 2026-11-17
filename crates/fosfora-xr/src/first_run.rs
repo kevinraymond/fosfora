@@ -996,11 +996,11 @@ mod tests {
             assert_close!(laid.px, crate::label::FONT_PX);
         }
         // The theme a swipe came to is the one named: right from Tide is
-        // Aurora, left from Classic wraps to Mirror.
+        // Aurora, left from Classic wraps to the cycle's last.
         assert_eq!(swipe_caption(Shown::Theme(Theme::Tide).step(1)), "Aurora");
         assert_eq!(
             swipe_caption(Shown::Theme(Theme::Classic).step(-1)),
-            "Mirror"
+            Theme::ALL[Theme::ALL.len() - 1].title()
         );
     }
 

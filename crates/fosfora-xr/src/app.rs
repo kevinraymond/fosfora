@@ -439,7 +439,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       5 green, 6 teal, 7 rose, 8 the key's tint), band 0..3 (rms, bass, mid, high), e.g. "table=curls:5:2@0.8"; "clear" drops
     //       every assignment and the theme, so the room is fresh again and runs Aurora, saved only once something changes
     //       (board #5447); live: polled once a second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
-    //   adb shell setprop debug.fosfora.theme drift                (board #5415, themes.rs: classic, drift, tide, aurora or mirror, the whole room's
+    //   adb shell setprop debug.fosfora.theme drift                (board #5415, themes.rs: classic, drift, tide, aurora, mirror or flint, the whole room's
     //       look as the hand menu's Theme control sets it, every surface and kind default, hand assignments included; writes the saved
     //       room as the control does; live: polled once a second, applied once when the value changes, after the room's anchors are in;
     //       at launch a value naming the room's own theme (edited since or not, or the Aurora a fresh room runs) applies nothing; to

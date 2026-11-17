@@ -366,40 +366,30 @@ mod tests {
             consume(&swipe(1, s), false, false, true).map(|step| shown.step(step))
         };
         let mut shown = Shown::Theme(Theme::Classic);
+        // Round the cycle and one step on, to Drift: every theme in the
+        // cycle's order.
+        let n = Theme::ALL.len();
         let mut right = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..=n {
             let t = swiped(shown, Swipe::Right).expect("a right swipe steps");
             right.push(t);
             shown = Shown::Theme(t);
         }
-        assert_eq!(
-            right,
-            [
-                Theme::Drift,
-                Theme::Tide,
-                Theme::Aurora,
-                Theme::Mirror,
-                Theme::Classic,
-                Theme::Drift
-            ]
-        );
+        let want: Vec<Theme> = (1..=n + 1).map(|i| Theme::ALL[i % n]).collect();
+        assert_eq!(right, want);
+        assert_eq!(right[..3], [Theme::Drift, Theme::Tide, Theme::Aurora]);
+        assert_eq!(right[n - 1..], [Theme::Classic, Theme::Drift]);
+        // And back from Drift, wrapping at Classic to the cycle's last.
         let mut left = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..=n {
             let t = swiped(shown, Swipe::Left).expect("a left swipe steps");
             left.push(t);
             shown = Shown::Theme(t);
         }
-        assert_eq!(
-            left,
-            [
-                Theme::Classic,
-                Theme::Mirror,
-                Theme::Aurora,
-                Theme::Tide,
-                Theme::Drift,
-                Theme::Classic
-            ]
-        );
+        let want: Vec<Theme> = (0..=n).map(|i| Theme::ALL[(n - i) % n]).collect();
+        assert_eq!(left, want);
+        assert_eq!(left[0], Theme::Classic);
+        assert_eq!(left[n], Theme::Classic);
         // The same step as the menu's Theme control and the spoken "next
         // theme" take, from an edited theme and from a custom room too.
         for shown in [
