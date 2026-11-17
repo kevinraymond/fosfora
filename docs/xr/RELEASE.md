@@ -218,10 +218,16 @@ VRC.Quest.Packaging checks; the live manifest is
 | `minSdkVersion` 29, `targetSdkVersion` 32 | `build.gradle.kts` | present |
 | APK Signature Scheme v2 (v1-only is refused) | release signing config | v1 and v2 |
 | `android:screenOrientation="landscape"` on the activity | manifest | present |
+| `android:installLocation="auto"` on the manifest (absent means `internalOnly`, which is refused) | manifest | present |
+| `<meta-data android:name="com.oculus.vr.focusaware" android:value="true"/>` on the activity | manifest | present |
+| A Vulkan or a GLES version: `<uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true"/>` (Vulkan 1.1) | manifest | present |
 
-The page's sample also sets `android:installLocation="auto"` on the manifest
-and `android:resizeableActivity="false"` on the activity, without calling
-them required; neither is set here.
+The last three are refused at upload when missing. `ovr-platform-util
+upload-quest-build --validate` runs that check and uploads nothing, so run
+it before the first upload of a build whose manifest changed.
+
+The page's sample also sets `android:resizeableActivity="false"` on the
+activity, without calling it required; it is not set here.
 
 ## Upload
 

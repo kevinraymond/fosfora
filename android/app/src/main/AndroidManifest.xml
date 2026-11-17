@@ -1,10 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Native OpenXR app for Meta Quest; see "Android manifest essentials" in
      docs/xr/XR_DESIGN.md. Package id / namespace live in build.gradle.kts. -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<!-- installLocation "auto": Meta's upload check refuses any other value, and
+     the default when the attribute is absent (docs/xr/RELEASE.md). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    android:installLocation="auto">
 
     <!-- Required by Meta for every Quest OpenXR app. -->
     <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1" />
+    <!-- The renderer is Vulkan only (wgpu). Meta's upload check refuses a
+         manifest that names neither a Vulkan nor a GLES version; 0x00401000
+         is Vulkan 1.1. -->
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
     <uses-feature android:name="oculus.software.handtracking" android:required="false" />
     <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="true" />
 
@@ -66,6 +73,10 @@
             android:exported="true">
             <!-- NativeActivity loads lib<lib_name>.so: the fosfora-xr cdylib. -->
             <meta-data android:name="android.app.lib_name" android:value="fosfora_xr" />
+            <!-- Focus aware: the app keeps drawing while a system overlay
+                 (the universal menu) has the wearer's input. Meta's upload
+                 check requires the tag. -->
+            <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
