@@ -417,7 +417,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.begin 1                  (board #5452, first_run.rs: the show begins at once, with no "Pinch to begin"
     //       card and no wait for the wearer, for unworn runs and measurements; the music and the opening start as they did before the
     //       card; unset, every launch waits for a pinch, a spoken "begin" or 60 s of the card; read at launch and polled once a second
-    //       while the show waits, so setting it also begins a launch that is waiting; logged `first run: the show begins (...)`)
+    //       while the show waits, so setting it also begins a launch that is waiting; logged `first run: the show begins (...)`;
+    //       board #5531: while the show waits the hand menu does not come, by the palm or by voice, and nothing is thrown or lifted)
     //   adb shell setprop debug.fosfora.hints 1                  (board #5452: the first run's three hints again this launch: what
     //       hand_menu.json saved as taught is left out, and the hints show without a hand having been tracked, so they can be captured
     //       unworn; a hint made or given up in such a launch is saved, and the file then holds only what that launch taught; read at
@@ -1807,13 +1808,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // wearer behind a card at the center of view; three gestures are
     // taught once per install as the wearer makes them, on a label ahead
     // of the view; a thumb swipe's caption names the theme it stepped to.
-    // `begin_pinch` is the pinch that began the show, which does nothing
-    // more than its burst until it opens. `hint_made` collects the taught
+    // `begin_pinch` holds back every pinch closed during the wait, the one
+    // that began the show included, until it opens (board #5531).
+    // `hint_made` collects the taught
     // gestures made this frame, in `first_run::Hint::ALL`'s order.
     let mut wait = crate::first_run::Wait::default();
     let mut begin_knob = debug_prop("debug.fosfora.begin").as_deref() == Some("1");
     let mut spoken_begin = false;
-    let mut begin_pinch = [false; 2];
+    let mut begin_pinch = crate::first_run::HeldPinches::default();
     let mut card_ready = false;
     let mut card_follow = crate::voice::Follow::centered(glam::Quat::IDENTITY);
     let mut card_shown = false;
@@ -2490,10 +2492,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // The panel first. While it is up its pinches are its own: no
             // cloud gestures from either hand (a pinch that just missed a
             // row moved the cloud), except one already in progress.
+            // Board #5531: while the show waits for the wearer the menu is
+            // held back, and the palm does not bring it.
+            let menu_live = wait.live().menu;
             let panel_up = hud.as_mut().is_some_and(|h| {
                 h.record(&input.perf);
                 if hud_test {
                     h.place_parked(&gfx, input.head, input.head_rot);
+                    false
+                } else if !menu_live {
+                    h.hold(&gfx, &input.hands, input.head);
                     false
                 } else {
                     h.place(&gfx, &input.hands, (input.head, input.head_rot), menu_stay, dt);
@@ -2515,15 +2523,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             palm_was = on_palm;
             // Board #5452: the show waits for the wearer (`first_run::Wait`).
-            // The start gesture begins it with the card up, unless the
-            // pinch is the menu's. A spoken begin, the wearer's own play
-            // and the knob begin it whatever shows. The music starts here,
-            // as the launch started it before there was a card.
-            for h in 0..2 {
-                if !input.hands.pinching[h] {
-                    begin_pinch[h] = false;
-                }
-            }
+            // The start gesture begins it with the card up. A spoken
+            // begin, the wearer's own play and the knob begin it whatever
+            // shows. The music starts here, as the launch started it
+            // before there was a card.
             if wait.waiting() {
                 if frame_index.is_multiple_of(72) {
                     begin_knob |= switch_now("debug.fosfora.begin") == Some(true);
@@ -2557,22 +2560,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     } else if music_at_launch {
                         music.play_at_launch();
                     }
-                    // The pinch that began the show ticks and throws its
-                    // burst, as a pinch and release does, and nothing
-                    // else: no gesture reads it until it opens.
-                    if let crate::first_run::Begun::Gesture { hand } = why {
-                        begin_pinch[hand] = true;
+                    // The pinch that began the show ticks, and nothing
+                    // else (board #5531): it throws nothing, and no
+                    // gesture reads it until it opens (`begin_held`).
+                    if let crate::first_run::Begun::Gesture { .. } = why {
                         crate::ui_sound::play(crate::ui_sound::Cue::Press);
-                        if !(controls.edit_room && hand == 1) {
-                            tapped = Some(hand);
-                        }
                     }
                 }
             }
             spoken_begin = false;
             // While the show waits no pinch is a gesture: nothing is
-            // thrown and the cloud stays where it is.
-            let held_back = [0, 1].map(|h| swallowed[h] || wait.waiting() || begin_pinch[h]);
+            // thrown and the cloud stays where it is. Board #5531: nor is
+            // a pinch closed during the wait, until it opens.
+            let begin_held = begin_pinch.step(input.hands.pinching, wait.waiting());
+            let held_back = [0, 1].map(|h| swallowed[h] || begin_held[h]);
             let pinches = [0, 1].map(|h| PinchInput {
                 pinching: input.hands.pinching[h]
                     && !(panel_up && gestures.owner() != Some(h))
@@ -2699,7 +2700,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     micro.swipe[1] = swipe.or(micro.swipe[1]);
                 }
                 // Board #5452: while the show waits a swipe steps nothing.
-                if wait.waiting() {
+                if !wait.live().swipes {
                     for h in 0..2 {
                         if let Some(s) = micro.swipe[h].take() {
                             info!(
@@ -3595,10 +3596,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // pinch point, the lift at the far palm.
                 let tap = tapped.take();
                 // Board #5452: not while the show waits for the wearer.
-                // The pinch that begins it is past the wait by here, so
-                // its burst is thrown.
+                // Board #5531: the pinch that begins it is no tap, so it
+                // throws nothing.
                 let instruments =
-                    world && !wait.waiting() && !POSE_EFFECTS.contains(&world_effect);
+                    world && wait.live().instruments && !POSE_EFFECTS.contains(&world_effect);
                 let (instrument_rows, pour_row) = if instruments {
                     let head = glam::Vec3::from(input.head);
                     // The far pinch point of this frame's throw, if any: a
@@ -4007,6 +4008,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             } else {
                                 crate::intent::BEGUN_REPLY.to_owned()
                             };
+                        }
+                        // Board #5531: nor does the voice bring the menu
+                        // while the show waits.
+                        if *intent == crate::intent::Intent::Menu(true) && !wait.live().menu {
+                            return crate::first_run::menu_waits_reply();
                         }
                         hidden_reply(surface, intent).unwrap_or_else(|| {
                             apply_intent(

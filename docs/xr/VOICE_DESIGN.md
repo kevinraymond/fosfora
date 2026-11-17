@@ -1358,6 +1358,11 @@ first run"). The pinch that begins the show has a spoken form.
   phrases, so "start editing", "start roaming" and "start the music" keep
   their meaning. "Play", "play music" and a song by name begin the show
   too, since the music starting is a begin.
+- **"Menu" waits for the begin** (board #5531). While the show waits,
+  "menu" and "open the menu" bring nothing and the label reads "Pinch to
+  begin first" (`first_run::menu_waits_reply`), as the left palm brings
+  nothing then. Every other sentence applies as it does once the show is
+  on.
 - **Not hands-free.** The window still opens with a thumb tap or the left
   fist. The card reads "Pinch to begin" and does not name the spoken way,
   since a wearer who said it with no window open would get no answer.

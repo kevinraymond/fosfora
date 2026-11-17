@@ -506,6 +506,23 @@ impl Hud {
         self.touch
     }
 
+    /// Board #5531: the menu held back for this frame, in place of
+    /// [`Self::place`], while the show waits for the wearer: not drawn,
+    /// and the palm does not bring it (`PalmPanel::hold`).
+    pub fn hold(&mut self, gfx: &Gfx, hands: &crate::input::HandsFrame, head: [f32; 3]) {
+        let palm = hands.palm[0].map(|(p, q)| (Vec3::from(p), Quat::from_array(q)));
+        self.placement
+            .hold(palm, Vec3::from(head), hands.pinching[1]);
+        self.touch = Touch::default();
+        gfx.set_panel_pose(None);
+        gfx.set_beam(crate::gfx::BEAM_PANEL, None);
+        if self.shown_logged {
+            self.shown_logged = false;
+            log::info!("hand menu hidden (the show waits for the wearer)");
+        }
+        self.at_logged = At::Hidden;
+    }
+
     /// Whether the panel is showing this frame.
     pub fn shown(&self) -> bool {
         self.shown_logged

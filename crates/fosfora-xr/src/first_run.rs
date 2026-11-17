@@ -7,10 +7,14 @@
 //! permission's labels have gone, a card at the center of view says
 //! "Pinch to begin" ([`card_text`]). Until the show begins the music does
 //! not play, the looks get silence in place of the audio, the room is
-//! dimmed to `immerse::WAIT_LEVEL` and a pinch, a drag and a thumb swipe do
-//! nothing. The show begins ([`Begun`]) when the wearer makes the start
+//! dimmed to `immerse::WAIT_LEVEL` and the hands do one thing, begin the
+//! show ([`Live`], board #5531): a pinch, a drag and a thumb swipe do
+//! nothing, nothing is thrown or lifted, and the hand menu does not come.
+//! A pinch closed during the wait, the one that begins the show included,
+//! is no gesture until it opens ([`HeldPinches`]). The show begins
+//! ([`Begun`]) when the wearer makes the start
 //! gesture with the card up, says "begin" (`intent::Intent::Begin`),
-//! starts the music from the hand menu or by voice, or when the card has
+//! starts the music by voice, or when the card has
 //! been up [`WAIT_MAX_S`] and nobody answered it, so nobody is stuck in
 //! front of it. `debug.fosfora.begin 1` begins at once, for unworn runs.
 //!
@@ -85,7 +89,8 @@ pub enum Begun {
     Knob,
     /// A spoken "begin".
     Spoken,
-    /// The wearer started the music, from the hand menu or by voice.
+    /// The wearer started the music, by voice: the hand menu and its
+    /// Music row do not come while the show waits (board #5531).
     Music,
     /// The start gesture, on this hand (0 left, 1 right).
     Gesture { hand: usize },
@@ -179,6 +184,73 @@ impl Wait {
         };
         self.begun = why;
         why
+    }
+
+    /// What the hands may do now, apart from beginning the show.
+    pub fn live(&self) -> Live {
+        let on = !self.waiting();
+        Live {
+            menu: on,
+            pinches: on,
+            swipes: on,
+            instruments: on,
+        }
+    }
+}
+
+/// What the hands may do, apart from beginning the show (board #5531).
+/// While the show waits they do one thing, begin it, so every field is
+/// off. Every way to begin ([`Begun`]) turns them all on together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Live {
+    /// The hand menu: the left palm and the spoken "menu" bring it, and it
+    /// shows.
+    pub menu: bool,
+    /// A pinch is a tap, a drag or a hold.
+    pub pinches: bool,
+    /// A thumb swipe steps the theme.
+    pub swipes: bool,
+    /// The hand instruments: a tap throws, an open palm lifts, the pitcher
+    /// pours.
+    pub instruments: bool,
+}
+
+/// The label for a spoken "menu" while the show waits (board #5531): the
+/// card's words and "first".
+pub fn menu_waits_reply() -> String {
+    format!("{} first", card_text(false))
+}
+
+/// The pinches the begin holds back, per hand (left, right; board #5531).
+/// A pinch that was closed while the show waited is no gesture until it
+/// opens: the pinch that begins the show, and one held through a begin
+/// that came another way (the 60 s, the knob, a spoken begin). Its release
+/// is no tap, so it throws nothing and presses nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldPinches {
+    held: [bool; 2],
+    was_waiting: bool,
+}
+
+impl Default for HeldPinches {
+    fn default() -> Self {
+        Self {
+            held: [false; 2],
+            was_waiting: true,
+        }
+    }
+}
+
+impl HeldPinches {
+    /// This frame, after [`Wait::step`]: whether each hand is `pinching`,
+    /// and whether the show still waits. Returns the hands whose pinch no
+    /// gesture may read: both while the show waits, then each hand that
+    /// has not opened since.
+    pub fn step(&mut self, pinching: [bool; 2], waiting: bool) -> [bool; 2] {
+        let from_the_wait = waiting || self.was_waiting;
+        self.held = [0, 1].map(|h| pinching[h] && (from_the_wait || self.held[h]));
+        self.was_waiting = waiting;
+        self.held.map(|held| waiting || held)
     }
 }
 
@@ -616,6 +688,123 @@ mod tests {
             Begun::Music.line(),
             "first run: the show begins (the wearer started the music)"
         );
+    }
+
+    /// Board #5531.
+    #[test]
+    fn before_the_begin_the_hands_only_begin_and_every_begin_opens_everything() {
+        let off = Live {
+            menu: false,
+            pinches: false,
+            swipes: false,
+            instruments: false,
+        };
+        let on = Live {
+            menu: true,
+            pinches: true,
+            swipes: true,
+            instruments: true,
+        };
+        // Under the scan's label and with the card up alike.
+        let mut wait = Wait::default();
+        assert_eq!(wait.live(), off);
+        assert_eq!(wait_for(&mut wait, 5.0, WaitInput::default()), None);
+        assert_eq!(wait.live(), off);
+        assert_eq!(wait_for(&mut wait, 10.0, READY), None);
+        assert_eq!(wait.live(), off);
+        // The pinch, the 60 s, the knob, a spoken begin and the music open
+        // the same things.
+        let pinch = WaitInput {
+            gesture: Some(1),
+            ..READY
+        };
+        let knob = WaitInput {
+            knob: true,
+            ..READY
+        };
+        let spoken = WaitInput {
+            spoken: true,
+            ..READY
+        };
+        let music = WaitInput {
+            music: true,
+            ..READY
+        };
+        for (input, secs) in [
+            (pinch, DT),
+            (READY, WAIT_MAX_S + 1.0),
+            (knob, DT),
+            (spoken, DT),
+            (music, DT),
+        ] {
+            let mut wait = Wait::default();
+            let why = wait_for(&mut wait, secs, input);
+            assert!(why.is_some(), "{input:?}");
+            assert_eq!(wait.live(), on, "{why:?}");
+        }
+        assert_eq!(menu_waits_reply(), "Pinch to begin first");
+    }
+
+    /// The gestures `pinching` makes over the frames of a wait that ends
+    /// on frame `begins`, with the held pinches kept from the machine as
+    /// `app.rs` keeps them.
+    fn gestures_through_a_begin(
+        frames: &[[bool; 2]],
+        begins: usize,
+    ) -> Vec<crate::gesture::Gesture> {
+        use crate::gesture::{Gestures, PinchInput};
+        let mut held = HeldPinches::default();
+        let mut gestures = Gestures::default();
+        let mut out = Vec::new();
+        for (i, pinching) in frames.iter().enumerate() {
+            let back = held.step(*pinching, i < begins);
+            let hands = [0, 1].map(|h| PinchInput {
+                pinching: pinching[h] && !back[h],
+                point: Some([0.0, 1.0, -0.4]),
+            });
+            out.extend(gestures.step(hands, DT));
+        }
+        out
+    }
+
+    /// Board #5531.
+    #[test]
+    fn the_pinch_that_begins_throws_nothing_and_its_release_is_no_tap() {
+        use crate::gesture::Gesture;
+        const OPEN: [bool; 2] = [false, false];
+        const RIGHT: [bool; 2] = [false, true];
+        const LEFT: [bool; 2] = [true, false];
+        // A pinch before the card, released: nothing. Then the pinch that
+        // begins (it closes on frame 6, the show's first), held 10 frames
+        // and released: no tap, so no throw and no press. The next pinch
+        // on that hand is a tap again.
+        let mut frames = vec![OPEN, RIGHT, RIGHT, OPEN, OPEN, OPEN];
+        frames.extend([RIGHT; 10]);
+        frames.extend([OPEN; 3]);
+        assert_eq!(gestures_through_a_begin(&frames, 6), []);
+        frames.extend([RIGHT, RIGHT, OPEN]);
+        assert_eq!(
+            gestures_through_a_begin(&frames, 6),
+            [Gesture::Tap { hand: 1 }]
+        );
+        // A pinch closed during the wait and still closed when the show
+        // begins by itself is held the same way. Its release is nothing.
+        let mut frames = vec![OPEN, LEFT, LEFT, LEFT, LEFT, LEFT, OPEN, OPEN];
+        assert_eq!(gestures_through_a_begin(&frames, 3), []);
+        // The other hand, open at the begin, is free at once.
+        frames.splice(4..6, [[true, true], LEFT]);
+        assert_eq!(
+            gestures_through_a_begin(&frames, 3),
+            [Gesture::Tap { hand: 1 }]
+        );
+        // While the show waits both hands are held back, pinching or not.
+        // After it, only a hand that has not opened since.
+        let mut held = HeldPinches::default();
+        assert_eq!(held.step(OPEN, true), [true, true]);
+        assert_eq!(held.step(RIGHT, false), [false, true]);
+        assert_eq!(held.step(RIGHT, false), [false, true]);
+        assert_eq!(held.step(OPEN, false), [false, false]);
+        assert_eq!(held.step(RIGHT, false), [false, false]);
     }
 
     #[test]

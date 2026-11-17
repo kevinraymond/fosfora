@@ -2101,9 +2101,9 @@ feeds them once a frame.
    Fosfora uses your hands."** It stays while no hand is tracked and goes
    with the first one. It does not show on its own while the show waits.
 4. **The begin.** A pinch closing on either hand begins the show. It
-   ticks (the press cue) and throws its burst where the hand points, as a
-   pinch and release always does, and nothing else: no drag, no hold and
-   no tap come from that pinch until it opens. The card goes, the music
+   ticks (the press cue) and does nothing else (board #5531): it throws
+   no burst, and no drag, no hold and no tap come from that pinch until
+   it opens. The card goes, the music
    starts (the track was decoded during the wait), and the opening runs:
    **"Sit back and relax"** for 4 s at the wait's 0.25, then the glide to
    0.35 over 3 s.
@@ -2129,19 +2129,32 @@ saved as taught and never shows again on that install.
 ### The rules
 
 - **Every launch waits**, not only the first. Until the begin a pinch, a
-  drag, a thumb swipe and the hand instruments do nothing. The hand menu
-  and the voice window work as always.
+  drag, a thumb swipe and the hand instruments do nothing.
+- **Before the begin the hands do one thing, begin** (board #5531,
+  `first_run::Live`). The hand menu does not come: the left palm does not
+  bring it (`PalmPanel::hold`), a spoken "menu" answers "Pinch to begin
+  first", and it is not drawn. Nothing is thrown, lifted or poured. A
+  palm turned to the face during the wait is not read when the show
+  begins: it brings the menu once it has turned away and back. Every way
+  to begin opens all of it together, the 60 s and the knob as the pinch
+  does.
+- **A pinch from the wait is no gesture** (`first_run::HeldPinches`).
+  The pinch that begins the show, and one that was closed when the show
+  began another way, is held back until it opens. Its release is no tap,
+  so it throws nothing, presses no menu row and changes no surface in the
+  editor.
+- **Still live before the begin.** The voice window opens with a thumb
+  tap or the left fist, and what is said there applies, the menu aside.
+  A thumb swipe is read and steps nothing. With Edit room turned on by
+  voice the editor's beam and labels show, and its pinches do nothing.
 - **Ways to begin** (`first_run::Begun`): the pinch with the card up; a
   spoken "begin" or "start" (`VOICE_DESIGN.md`); the wearer starting the
-  music from the hand menu or by voice; the card unanswered for 60 s
+  music by voice; the card unanswered for 60 s
   (`WAIT_MAX_S`), so nobody is stuck in front of it; and
   `debug.fosfora.begin 1`. The log says which: `first run: the show
   begins (a pinch on the right hand)`, `(a spoken begin)`, `(the wearer
   started the music)`, `(nobody answered the card in 60 s)`,
   `(debug.fosfora.begin 1)`.
-- **The pinch presses nothing.** While the hand menu is up its pinches
-  are its own, and a pinch that closes the menu from away from it is
-  swallowed, as before. Neither begins the show.
 - **The start gesture is in one place**: `first_run::start_gesture` and
   the card's word `START_WORD`.
 - **The music.** A launch used to start the music itself. It now starts
@@ -2160,8 +2173,9 @@ saved as taught and never shows again on that install.
   still holding the controllers doesn't use them up.
 - **Taught by doing.** A swipe that steps the theme, a thumb tap that
   opens a voice window or the palm bringing the menu, made before its
-  hint, saves that hint as taught and it never shows. The thumb tap and
-  the palm count during the wait too.
+  hint, saves that hint as taught and it never shows. The thumb tap
+  counts during the wait too. The palm does not, since it brings nothing
+  then.
 - **The fist is not taught.**
 - **Saved** in `hand_menu.json` as `"taught":["swipe","tap","palm"]`,
   written once one is taught. A file from before has taught none.
@@ -2211,6 +2225,8 @@ The tests (`first_run.rs`):
 `the_start_gesture_is_a_pinch_on_either_hand`,
 `a_spoken_begin_the_music_and_the_knob_begin_without_the_card`,
 `nobody_is_stuck_the_show_begins_by_itself_after_a_minute`,
+`before_the_begin_the_hands_only_begin_and_every_begin_opens_everything`,
+`the_pinch_that_begins_throws_nothing_and_its_release_is_no_tap`,
 `the_card_names_the_pinch_and_the_controllers`,
 `every_hint_is_two_lines_at_the_two_line_size`,
 `the_hints_show_in_order_one_at_a_time_a_few_seconds_apart`,
@@ -2224,7 +2240,8 @@ The tests (`first_run.rs`):
 `the_swipe_caption_names_the_new_theme` and
 `the_swipe_hint_is_taught_by_a_swipe_that_changed_the_theme`. Beside them:
 `immerse.rs`'s `the_room_is_dim_and_still_while_the_show_waits_and_the_opening_runs_from_there`,
-`palm_panel.rs`'s `the_menu_file_saves_the_hints_taught_and_reads_none_when_absent`,
+`palm_panel.rs`'s `the_menu_file_saves_the_hints_taught_and_reads_none_when_absent`
+and `held_back_the_menu_does_not_come_and_nothing_from_the_hold_is_read_after`,
 `voice.rs`'s `a_centered_label_sits_on_the_line_of_sight_and_follows_the_same_way`,
 `intent.rs`'s `begin_the_show`, and the under-card rule in `label.rs`'s
 controllers test.
