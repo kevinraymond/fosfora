@@ -1440,7 +1440,7 @@ Fosfora: MIT or Apache 2.0
 whisper.cpp, Whisper
 Voice model: from Ettin
 ONNX Runtime, OpenXR
-Music: Ember Glow, oglsdl
+Music: made with YuE2
 Licenses: the NOTICE file
 ```
 
