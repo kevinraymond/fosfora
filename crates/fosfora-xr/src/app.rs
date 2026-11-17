@@ -375,7 +375,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the palm, as before; default 1, polled once a second)
     //   adb shell setprop debug.fosfora.menuidle 5               (board #5459: seconds the menu stays in the air with no pointer on it, 0.5 to 60,
     //       in place of the default 3; polled once a second, "" back to the default)
-    //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: hands' sim spheres extend Go-Go style past a comfortable reach; default on in mr/world)
+    //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: the hands extend Go-Go style past a comfortable reach. Board
+    //       #5531: 1 = only while Edit room is on, where the far hand, its ghost and its beam are as they were; with Edit room off each
+    //       hand is its real hand, and turning the editor on or off glides the extension out or back in about 0.2 s; 0 = never;
+    //       default 1 in mr/world)
     //   adb shell setprop debug.fosfora.reachat 0.30             (reach: shoulder-to-palm distance, m, within which the hand is 1:1)
     //   adb shell setprop debug.fosfora.reachgain 40             (reach: quadratic gain, 1/m; 40 puts a 0.52 m palm at 2.5 m, capped at 3 m)
     //   The next seven were the cloud effects' (Flock's hand poses and Embers' surface emitters) and change nothing since board
@@ -1085,7 +1088,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(if world { WORLD_HAND_KICK } else { MR_HAND_KICK });
     // Seated reach (board #3308): Go-Go arm extension of the hands' sim
-    // spheres, on by default wherever hands are obstacles.
+    // spheres, on by default wherever hands are obstacles. Board #5531:
+    // on is only while the room editor is on (`reach::live`).
     let reach_on = toggle("debug.fosfora.reach", mixed);
     let reach_threshold = debug_prop("debug.fosfora.reachat")
         .and_then(|v| v.parse::<f32>().ok())
@@ -1648,6 +1652,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut gpu_window = crate::governor::GpuWindow::default();
     let mut gov_logged_period: Option<f32> = None;
     let mut reach = crate::reach::Reach::new(reach_threshold, reach_gain);
+    // Board #5531: live only while the room editor is on, set per frame.
+    reach.live = false;
+    info!(
+        "reach: {}",
+        if reach_on {
+            "only while Edit room is on"
+        } else {
+            "off"
+        }
+    );
     // This frame's reach per hand, and the furthest (real, virtual) since
     // the last log line.
     let mut reach_now: [Option<crate::reach::HandReach>; 2] = [None; 2];
@@ -3169,6 +3183,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let mut offsets = [glam::Vec3::ZERO; 2];
                 reach.threshold = controls.reach_threshold;
                 reach.gain = controls.reach_gain;
+                // Board #5531: only while the room editor is on. Off, the
+                // extension glides back and the offsets are zero, so each
+                // hand is its real hand below: no ghost, no beam, and the
+                // throw from the real pinch.
+                let reach_live = crate::reach::live(reach_on, edit_on);
+                if reach_live != reach.live {
+                    reach.live = reach_live;
+                    info!(
+                        "reach: {} with Edit room",
+                        if reach_live { "on" } else { "off" }
+                    );
+                }
                 for h in 0..2 {
                     reach_now[h] = reach_on
                         .then(|| {
@@ -5748,7 +5774,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 // Seated reach: each hand's furthest real and virtual
                 // shoulder-to-palm distance this second.
-                if reach_on && reach_max.iter().any(|m| m.0 > 0.0) {
+                if reach.live && reach_max.iter().any(|m| m.0 > 0.0) {
                     info!(
                         "reach: L {:.2} -> {:.2} m · R {:.2} -> {:.2} m (1:1 within {:.2}, gain {:.1})",
                         reach_max[0].0,

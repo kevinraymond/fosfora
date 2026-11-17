@@ -40,6 +40,9 @@ shows where the hand acts. Poses read on the real hand pick the behavior
 at the far hand (board #3314: fist scares, open hand parts, palm up or
 two closing hands hold a group). Every candidate below assumes both.
 
+*Board #5531: those effects are gone, and the reach is now live only
+while Edit room is on. See `XR_DESIGN.md`, "The hand instruments".*
+
 ## Four candidates
 
 Each is one effect on the existing plumbing (`render_world`, the aux

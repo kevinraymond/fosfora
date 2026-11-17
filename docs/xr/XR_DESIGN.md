@@ -1661,7 +1661,8 @@ the hand instruments.*
 
 ### The hand instruments
 
-- **What.** Two instruments on the Go-Go far hand and the poses: a pinch
+- **What.** Two instruments on the hand (the Go-Go far hand while Edit
+  room is on, "The reach" below) and the poses: a pinch
   tap throws a burst that flies to where the hand points and bursts on the
   surface it hits, and an open palm held still, facing down, lifts the
   particles lying under it toward the palm. They were built on the Flux
@@ -1671,6 +1672,34 @@ the hand instruments.*
   moves the world effect's home is the anchor drag, as before. Host module
   `crates/fosfora-xr/src/instruments.rs` (the ray cast, the flights, the
   lift and the rows, host-tested).
+- **The reach** (board #5531, `reach::live`). The Go-Go far hand was
+  made for particle effects that are gone, so it is live only while Edit
+  room is on. With the editor off each hand is its real hand: no offset,
+  no ghost, no beam from the wrist, and the throw, the lift and the
+  pitcher act at the real pinch and palm. With the editor on the reach
+  is as it was, for both hands. `debug.fosfora.reach 0` still turns it
+  off everywhere, and 1 now means "with Edit room". Turning the editor
+  on or off with an arm stretched does not jump: the extension glides
+  through the reach's own low-pass (0.05 s), 63% of the way in 0.05 s
+  and 95% in 0.15 s. From a full stretch (1.94 m of extension) the ghost
+  is gone in 0.22 s and the hand is exactly the real hand in 0.39 s. The
+  log says `reach: on with Edit room` and `reach: off with Edit room`.
+  Tests (`reach.rs`): `the_reach_is_live_only_while_the_room_is_edited`,
+  `turning_the_editor_on_or_off_with_an_arm_stretched_does_not_jump`.
+- **What the reach is worth, in numbers**
+  (`without_the_reach_the_same_arm_aims_about_a_meter_lower_on_a_wall_3_m_away`).
+  The editor's ray and the throw's run from the head through the pinch
+  point, so both are a line of sight with or without the reach. Seated,
+  the right arm at a full stretch level with the shoulder, a wall 3 m
+  ahead: the ray lands 0.96 m up the wall with the reach and 0.05 m up
+  without, 1.14 m apart. Raised 20 degrees: 2.03 m and 1.06 m. A
+  centimeter of hand to the side moves the aim 6 cm either way. Without
+  the reach the wearer aims by holding the pinch over the target, at eye
+  height for a point at eye height. A throw from the level arm hits the
+  foot of that wall after 2.75 m and 0.46 s, where the far hand hit it
+  0.96 m up after 0.55 m. A hand low in front lands its throw on the
+  floor 1.04 m ahead, against 1.39 m with the reach. A hand within 0.30 m
+  of the shoulder throws the same either way.
 - **Instrument rows.** Three rows appended after Murmur's hand lanes,
   170..173 (`XR_AUX_INSTRUMENTS`, `XR_AUX_INSTRUMENT_ROWS` in
   `flux_xr_sim.wgsl`; the upload is now 173 rows, `WORLD_AUX_ROWS` in

@@ -11,6 +11,16 @@
 //! result decides what follows the far hand (the sim's obstacle spheres)
 //! and what stays on the real one (occlusion, pinch gestures, the panel).
 //!
+//! Board #5531: the reach is live only while the room editor is on
+//! ([`live`], [`Reach::live`]). It was made for particle effects that are
+//! gone, and the editor's far ray is what still uses it. With the editor
+//! off each hand is its real hand: no offset, so no ghost and no beam, and
+//! a throw leaves from the real pinch. Turning the editor on or off with
+//! an arm stretched does not jump: the extension glides out or back in
+//! through the same low-pass (63% in 0.05 s, 95% in 0.15 s), and going off
+//! it ends at exactly zero once it is under [`SETTLED_M`], about 0.4 s
+//! after a full stretch.
+//!
 //! The quadratic multiplies the palm's motion by `1 + 2 * gain * (d -
 //! threshold)` (about 9x near a full stretch at the defaults), tracking
 //! jitter included, so the shoulder and the extension are low-passed, by
@@ -35,6 +45,16 @@ const SHOULDER_DOWN_M: f32 = 0.20;
 /// (the torso does not turn with every glance), the extension quickly.
 const SHOULDER_TAU_S: f32 = 0.15;
 const EXTENSION_TAU_S: f32 = 0.05;
+/// A reach that is going off ends here (m): under it the extension is
+/// zero, so the hand is exactly the real hand and not a millimeter off it.
+const SETTLED_M: f32 = 0.001;
+
+/// Whether the reach extends the hands (board #5531): only while the room
+/// editor is on (`editing`), and never with `debug.fosfora.reach 0`
+/// (`knob` false).
+pub fn live(knob: bool, editing: bool) -> bool {
+    knob && editing
+}
 
 /// The Go-Go mapping from the real shoulder-to-palm distance to the
 /// virtual one.
@@ -70,6 +90,9 @@ pub struct HandReach {
 pub struct Reach {
     pub threshold: f32,
     pub gain: f32,
+    /// Board #5531: whether the hands extend ([`live`]). Off, the
+    /// extension glides back to none and the hands are the real hands.
+    pub live: bool,
     shoulder: [Option<Vec3>; 2],
     /// Smoothed extra distance per hand (virtual minus real).
     extra: [f32; 2],
@@ -80,6 +103,7 @@ impl Reach {
         Self {
             threshold,
             gain,
+            live: true,
             shoulder: [None; 2],
             extra: [0.0; 2],
         }
@@ -111,8 +135,15 @@ impl Reach {
         };
         let to_palm = palm - s;
         let d = to_palm.length();
-        let extra = extend(d, self.threshold, self.gain) - d;
+        let extra = if self.live {
+            extend(d, self.threshold, self.gain) - d
+        } else {
+            0.0
+        };
         self.extra[h] += (extra - self.extra[h]) * blend(EXTENSION_TAU_S);
+        if !self.live && self.extra[h] < SETTLED_M {
+            self.extra[h] = 0.0;
+        }
         let dir = to_palm.normalize_or_zero();
         Some(HandReach {
             offset: dir * self.extra[h],
@@ -222,6 +253,169 @@ mod tests {
         // Part way there, and the same at both rates.
         assert!(a > 1.0 && a < 1.9, "{a}");
         assert!((a - b).abs() < 1e-3, "{a} vs {b}");
+    }
+
+    /// The right palm `d` m from the right shoulder, straight ahead of
+    /// it and `pitch_deg` above level, with the head at [`HEAD`].
+    fn stretched(d: f32, pitch_deg: f32) -> Vec3 {
+        let shoulder = Vec3::new(0.15, 1.0, 0.0);
+        shoulder + Quat::from_rotation_x(pitch_deg.to_radians()) * Vec3::NEG_Z * d
+    }
+
+    /// `r` held at `palm` for `secs`: the last frame's reach.
+    fn hold(r: &mut Reach, palm: Vec3, secs: f32) -> HandReach {
+        let mut last = None;
+        for _ in 0..(secs / DT).round() as usize {
+            last = r.update(1, Some(palm), HEAD, Quat::IDENTITY, DT);
+        }
+        last.expect("tracked")
+    }
+
+    /// Board #5531.
+    #[test]
+    fn the_reach_is_live_only_while_the_room_is_edited() {
+        assert!(live(true, true));
+        assert!(!live(true, false), "the editor off");
+        assert!(!live(false, true) && !live(false, false), "the knob at 0");
+        // Not live, a full stretch is the real hand from the first frame:
+        // no offset at all, so no ghost, no beam, and the real pinch.
+        let palm = stretched(0.52, 0.0);
+        let mut r = Reach::new(THRESHOLD_M, GAIN);
+        r.live = false;
+        for _ in 0..144 {
+            let hand = r
+                .update(1, Some(palm), HEAD, Quat::IDENTITY, DT)
+                .expect("t");
+            assert_eq!(hand.offset, Vec3::ZERO);
+            assert_close!(hand.virtual_m, hand.real_m);
+        }
+        // Live, as before: 2.46 m from the same stretch.
+        r.live = true;
+        assert!((hold(&mut r, palm, 1.0).virtual_m - 2.456).abs() < 0.01);
+    }
+
+    /// Board #5531: the editor turned off, or on, with the arm at a full
+    /// stretch. The extension is 1.94 m there, and it never moves by more
+    /// than a quarter of what is left in one frame.
+    #[test]
+    fn turning_the_editor_on_or_off_with_an_arm_stretched_does_not_jump() {
+        let palm = stretched(0.52, 0.0);
+        let mut r = Reach::new(THRESHOLD_M, GAIN);
+        let full = hold(&mut r, palm, 1.0).offset.length();
+        assert!((full - 1.936).abs() < 0.01, "{full}");
+        // Off: it glides back in, 63% in 0.05 s and 95% in 0.15 s.
+        r.live = false;
+        let mut last = full;
+        let mut at = Vec::new();
+        for _ in 0..36 {
+            let now = hold(&mut r, palm, DT).offset.length();
+            // The last step is the settle, a millimeter or so.
+            let step = last - now;
+            assert!(
+                now <= last && step <= (0.25 * last).max(2.0 * SETTLED_M),
+                "{last} -> {now}"
+            );
+            at.push(now);
+            last = now;
+        }
+        // 4 frames are 0.056 s, 11 frames 0.153 s.
+        assert!((at[3] / full - 0.33).abs() < 0.02, "{}", at[3] / full);
+        assert!(at[10] / full < 0.05, "{}", at[10] / full);
+        // Under the ghost's 3 cm by 0.22 s, and exactly the real hand on
+        // the 28th frame, 0.39 s.
+        assert!(at[15] < 0.03, "{}", at[15]);
+        assert!(at[26] > 0.0 && at[27] == 0.0, "{} {}", at[26], at[27]);
+        assert_eq!(hold(&mut r, palm, DT).offset, Vec3::ZERO);
+        // On again: it glides out from the real hand the same way.
+        r.live = true;
+        let mut last = 0.0;
+        for _ in 0..36 {
+            let now = hold(&mut r, palm, DT).offset.length();
+            assert!(now >= last && now - last <= 0.25 * (full - last) + 1e-4);
+            last = now;
+        }
+        assert!((last - full).abs() < 0.01, "{last}");
+    }
+
+    /// Board #5531, for the owner's decision: what the reach is worth to
+    /// the room editor's ray and to the throw. A seated wearer, the right
+    /// arm at a full stretch (0.52 m), a wall 3 m ahead and the floor. The
+    /// ray is from the head through the pinch point either way, so it is a
+    /// line of sight: without the reach the same arm aims about a meter
+    /// lower and to the side, and a centimeter of hand moves the aim as
+    /// far.
+    #[test]
+    fn without_the_reach_the_same_arm_aims_about_a_meter_lower_on_a_wall_3_m_away() {
+        use crate::instruments::{Flight, RayBox, cast};
+        use crate::surfaces::{KIND_FLOOR, KIND_WALL};
+        let wall = RayBox {
+            center: Vec3::new(0.0, 1.25, -3.02),
+            rot: Quat::IDENTITY,
+            half: Vec3::new(10.0, 10.0, 0.02),
+            kind: KIND_WALL,
+        };
+        let floor = RayBox {
+            center: Vec3::new(0.0, -0.02, 0.0),
+            rot: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            half: Vec3::new(10.0, 10.0, 0.02),
+            kind: KIND_FLOOR,
+        };
+        let far = |palm: Vec3| palm + hold(&mut Reach::new(THRESHOLD_M, GAIN), palm, 2.0).offset;
+        // The editor's ray on the wall alone, as high or low as it lands.
+        let aim = |pinch: Vec3| {
+            let ray = crate::room_edit::Ray::through(HEAD, pinch).expect("a ray");
+            cast(ray.origin, ray.dir, &[wall], 20.0)
+                .expect("the wall")
+                .point
+        };
+        let near = |p: Vec3, x: f32, y: f32| (p.x - x).abs() < 0.01 && (p.y - y).abs() < 0.01;
+        // The arm level with the shoulder: 0.96 m up the wall with the
+        // reach, 0.05 m without, 1.14 m apart.
+        let palm = stretched(0.52, 0.0);
+        let (on, off) = (aim(far(palm)), aim(palm));
+        assert!(near(on, 0.18, 0.96) && near(off, 0.87, 0.05), "{on} {off}");
+        assert!((on.distance(off) - 1.14).abs() < 0.01);
+        // Raised 20 degrees: 2.03 m and 1.06 m, 1.21 m apart.
+        let raised = stretched(0.52, 20.0);
+        let (on, off) = (aim(far(raised)), aim(raised));
+        assert!(near(on, 0.19, 2.03) && near(off, 0.92, 1.06), "{on} {off}");
+        assert!((on.distance(off) - 1.21).abs() < 0.01);
+        // A centimeter of hand to the side moves the aim 6 cm either way.
+        let side = palm + Vec3::X * 0.01;
+        let moved = (
+            aim(far(side)).distance(aim(far(palm))),
+            aim(side).distance(aim(palm)),
+        );
+        assert!(
+            (moved.0 - 0.058).abs() < 0.003 && (moved.1 - 0.058).abs() < 0.003,
+            "{moved:?}"
+        );
+        // The throw from the same poses. Level: the wall 0.96 m up after
+        // 0.55 m with the reach, its foot after 2.75 m without.
+        let boxes = [wall, floor];
+        let throw = |pinch: Vec3| Flight::aim(HEAD, pinch, &boxes).expect("a flight");
+        let (on, off) = (throw(far(palm)), throw(palm));
+        assert!(near(on.to, 0.18, 0.96) && near(off.to, 0.87, 0.05));
+        assert!((on.from.distance(on.to) - 0.55).abs() < 0.01);
+        assert!((off.from.distance(off.to) - 2.75).abs() < 0.01);
+        assert!((off.duration_s - 0.46).abs() < 0.01, "{}", off.duration_s);
+        // A hand low in front (0.40 m out, 30 degrees down): the floor
+        // 1.39 m ahead with the reach, 1.04 m ahead without.
+        let low = stretched(0.40, -30.0);
+        let (on, off) = (throw(far(low)), throw(low));
+        assert!(
+            (on.to.z + 1.39).abs() < 0.01 && on.to.y.abs() < 1e-3,
+            "{}",
+            on.to
+        );
+        assert!(
+            (off.to.z + 1.04).abs() < 0.01 && off.to.y.abs() < 1e-3,
+            "{}",
+            off.to
+        );
+        // A hand at rest by the body throws the same either way.
+        let rest = Vec3::new(0.2, 0.9, -0.2);
+        assert_eq!(far(rest), rest);
     }
 
     #[test]
