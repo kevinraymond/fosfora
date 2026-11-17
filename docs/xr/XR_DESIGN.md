@@ -528,10 +528,11 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   reserved; the thumb tap opens the voice window (board #3751, V4, the
   Voice bullet below). The decision (`consume`) is plain data with desktop
   tests. Knob `debug.fosfora.micro 0|1`, default 1; 0 creates no action set.
-- **Voice (board #3751, `VOICE_DESIGN.md`, "V1 as built" to "V4 as built").** The left fist
-  toggles a voice window (board #5380: a fist opens it, the next fist or
-  20 s closes it), and (V4) a thumb tap on either hand opens one that
-  closes on silence; the transcription shows on the label. The
+- **Voice (board #3751, `VOICE_DESIGN.md`, "V1 as built" to "V4 as built").** A fist on
+  either hand holds a voice window open (board #5531: it opens under the
+  fist and what was said is sent when that hand opens, or at 20 s), and
+  (V4) a thumb tap on either hand opens one that closes on silence. The
+  answer shows on the label. The
   hand menu's Voice toggle (the Music row's right cell) turns it on and
   off, saved in `hand_menu.json`. The Agent row (board #3776, under the
   effect's) picks the agent's provider among what the headset has (local,
@@ -1820,8 +1821,8 @@ beyond raw tip distance, and a proposal. Steps 1, 3 and 5 are built (see
   curl under 55 mm), palm up (normal within 37° of up), open; hands together
   under 0.30 m. Murmur's hand behaviors read them; the Flux lift reads an
   open far palm held still, facing down. With voice on (board #3751, V4)
-  the left fist toggles the voice window everywhere, so Murmur sees an
-  open left hand and only the right fist is a predator; with voice off,
+  a fist on either hand holds the voice window everywhere (board #5531),
+  so Murmur sees open hands and no fist is a predator. With voice off,
   either fist is.
 
 ### Where the vocabulary collides
@@ -2152,11 +2153,14 @@ feeds them once a frame.
    The wearer swipes, the theme steps with its tick, and the caption
    names it: **"Mirror"**. Then **"Got it"** for 2.5 s with the
    understood cue.
-6. **The tap hint**, 5 s of free label later, only with voice on, the
-   microphone allowed and the microgestures there: **"Tap your thumb to
-   talk."** over **"Try: what can I say"**. The tap opens the voice
-   window, and its own sound and "Listening…" are the answer: "Got it"
-   waits 3 s for the label and is dropped behind a window, and its cue
+6. **The talk hint**, 5 s of free label later, only with voice on and the
+   microphone allowed (board #5531; until then the tap hint, "Tap your
+   thumb to talk."): **"Make a fist, say a command,"** over **"then open
+   your hand."**, **"Or tap thumb on index finger."** and **"Try: what
+   can I say"**. A fist opens the voice window and holds it, and the
+   label reads "Listening…" over "Open your hand when done". A window
+   with something said in it answers the hint. "Got it" waits 3 s for the
+   label and is dropped behind an answer that stays longer, and its cue
    never plays into an open microphone.
 7. **The palm hint**, last: **"Left palm to your face"** over **"for the
    menu. It stays there."** The palm brings the menu, then "Got it" and
@@ -2210,14 +2214,19 @@ saved as taught and never shows again on that install.
   no microgestures) is passed over without being saved, and shows in a
   later run. No hint shows before a hand has been tracked, so a wearer
   still holding the controllers doesn't use them up.
-- **Taught by doing.** A swipe that steps the theme, a thumb tap that
-  opens a voice window or the palm bringing the menu, made before its
-  hint, saves that hint as taught and it never shows. The thumb tap
-  counts during the wait too. The palm does not, since it brings nothing
-  then.
-- **The fist is not taught.**
-- **Saved** in `hand_menu.json` as `"taught":["swipe","tap","palm"]`,
-  written once one is taught. A file from before has taught none.
+- **Taught by doing.** A swipe that steps the theme, a voice window with
+  something said in it or the palm bringing the menu, made before its
+  hint, saves that hint as taught and it never shows. Talking counts
+  during the wait too. The palm does not, since it brings nothing then.
+- **The talk hint teaches the fist** (board #5531, `VOICE_DESIGN.md`, "The
+  fist holds the window"): "Make a fist, say a command," over "then open
+  your hand.", "Or tap thumb on index finger." and "Try: what can I say".
+  Until then the hint taught only the thumb tap and nothing taught the
+  fist. A fist or a tap that opened a window nobody spoke in does not
+  answer it.
+- **Saved** in `hand_menu.json` as `"taught":["swipe","talk","palm"]`,
+  written once one is taught. A file from before has taught none, and a
+  file with the old `tap` has not been taught the fist.
 - **The caption** (`first_run::swipe_caption`): every thumb swipe that
   steps the theme names the new one for its reading time, where the voice
   label floats: "Aurora", as the menu's Theme control shows it.
@@ -2226,14 +2235,15 @@ saved as taught and never shows again on that install.
 
 | Wearer | What happens |
 |---|---|
-| Voice off | The tap hint is passed over. The swipe and the palm are taught. |
+| Voice off | The talk hint is passed over. The swipe and the palm are taught. |
 | Microphone denied | The same card and hints. A fist or a tap still shows "The microphone isn't allowed" as before. |
 | Controllers in hand | No hand is tracked, so after 4 s the card says to put them down. A pinch then begins. Left alone, the show begins by itself after 60 s, and the hints wait for a hand. |
-| One hand | Either hand pinches, swipes and taps. The palm hint asks for the left hand; a wearer without it lets it give up after 20 s, and "menu" by voice opens the menu with no palm. |
-| Can't pinch | With a thumb tap or a left fist the voice window opens and "begin" starts the show. With no gesture at all, the 60 s. |
+| One hand | Either hand pinches, swipes, taps and makes the fist that talks. The palm hint asks for the left hand; a wearer without it lets it give up after 20 s, and "menu" by voice opens the menu with no palm. |
+| Can't hold a fist | The thumb tap opens the voice window and needs no held pose. The talk hint says so. |
+| Can't pinch | With a thumb tap or a fist the voice window opens and "begin" starts the show. With no gesture at all, the 60 s. |
 
 A spoken "begin" needs the voice window open, and the window still opens
-with a thumb tap or the left fist. The app does not listen by itself while
+with a thumb tap or a fist. The app does not listen by itself while
 it waits, so the card names the pinch only.
 
 ### Checking it unworn

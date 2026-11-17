@@ -35,8 +35,8 @@ only in who turns words into actions.
 
 ```
 mic (AAudio, VOICE_RECOGNITION preset)
-  → voice window (a left fist opens it and the next closes it, or a thumb
-    tap on the index opens it)
+  → voice window (a fist on either hand holds it open, or a thumb tap on
+    the index opens it)
   → 16 kHz mono buffer, 1 to 20 s
   → speech to text on the headset (Whisper tiny.en or base.en)
   → the sentence
@@ -61,27 +61,27 @@ is on (`permissions.rs`), with the same pickup as the mic source.
 
 An open microphone that transcribes everything is wrong for a room with
 other people in it, costs CPU all the time, and makes the wearer wonder
-what was heard. The window opens on a gesture and closes on the next one,
-on silence, or at a cap. Candidates, in the vocabulary of the gesture map
+what was heard. The window opens on a gesture and closes when the gesture
+ends, on silence, or at a cap. Candidates, in the vocabulary of the gesture map
 (`XR_DESIGN.md`, "Hands: the gesture vocabulary"):
 
-- **The left fist.** Already a pose (`pose.rs`, Murmur's hold). In Flux
+- **A fist.** Already a pose (`pose.rs`, Murmur's hold). In Flux
   effects it is unassigned. Clear to see and hard to make by accident. It
-  toggles the window (board #5380): a fist opens it, and the next fist
-  closes it, or 20 s does. The hand has to open between the two. There is
-  no quiet closer, so a pause mid-sentence does not cut the window off.
-  Until Nov 12 the window was open only while the fist was held, and closed
-  on release or at 6 s. Kevin, worn: "make it so making a fist is like a
-  toggle: turn listening on/off, instead of a one-shot thing".
+  holds the window (board #5531): the window is open while the fist is
+  closed, and opening the hand sends what was said. Either hand. There is
+  no quiet closer while the fist is in view, so a pause mid-sentence does
+  not cut the window off. The fist has been a hold (V1), a toggle (board
+  #5380, Nov 12) and a hold again. "The fist holds the window" below has
+  the rules and why.
 - **A thumb tap on the index** (`XR_META_hand_tracking_microgestures`, the
   `tap_thumb` action is wired and reserved). Starts a window that closes
   on silence or at 6 s. Lighter than a fist; needs the tap to be learned.
 
-Recommendation: the fist to open and the next fist to close, with the
-thumb tap as a second opener once the fist has proven itself worn. While
-the window is open the in-world label reads "Listening…" with the
-microphone's level as a bar under it, so the wearer sees the microphone
-is live.
+Recommendation: the fist held for as long as the wearer talks, with the
+thumb tap as the way that needs no held pose. While the window is open
+the in-world label reads "Listening…" with the microphone's level as a
+bar under it, so the wearer sees the microphone is live. Under a fist it
+also says how to finish.
 
 ### Speech to text on the headset
 
@@ -182,7 +182,8 @@ agent is the grammar's consumer with a model in front of it.
 
 - Window open: "Listening…" on the label 1 m ahead of the view, a little
   under the line of sight, the mic's level as a thin bar under it (the
-  wearer sees the headset hears). Both stay up the whole time the window
+  wearer sees the headset hears). Under a fist a second line reads "Open
+  your hand when done". Both stay up the whole time the window
   is open, up to 20 s for a fist window. An agent reply that lands while a
   window is open goes to the log, not the label. The label follows the
   head loosely and never sits at the hand ("Feedback where the wearer
@@ -744,7 +745,8 @@ logs the threshold, and each close its cause: `voice: window closed after
 2.40 s (quiet 0.8 s at 0.004)`, `(release)`, `(6 s)`, `(second tap)`.
 A fist held through a tap window has to open before it presses again.
 Board #5380 later made the fist a toggle with a 20 s cap ("The fist
-toggles the window" below).
+toggles the window" below), and board #5531 a hold again, on either hand
+("The fist holds the window").
 
 **The meter.** While a window is open, a thin bar under "Listening…"
 whose length is the level, log-scaled over 40 dB (`voice::meter_width`:
@@ -1177,6 +1179,10 @@ dev.fosfora.xr cat files/voice/window-001.wav" > window-001.wav`.
 
 ## The fist toggles the window (board #5380)
 
+*Replaced by board #5531, "The fist holds the window" below. Kept for the
+history. The 20 s cap, the label that stays up and the agent reply that
+skips it are still as written here.*
+
 Kevin wore the voice path on Nov 12 and asked for the fist to toggle
 listening instead of holding the window open. The rules, in `PushToTalk`:
 
@@ -1214,6 +1220,157 @@ capture buffer reserves room for 20 s of 48 kHz stereo (7.7 MB) when a
 window opens. A long window takes longer to transcribe, and that is still
 to measure worn. The decode still stops at 64 tokens, about 45 words in
 one window.
+
+## The fist holds the window (board #5531)
+
+Worn on a fresh install on Nov 16, the toggle confused. A fist started the
+listening and a second fist stopped it, and nothing said so. The hint said
+"Tap your thumb to talk" and did not say on what. Of the 22 windows that
+session opened, 11 closed with nothing said in them. The wearer's own
+words for what it should be: "make a fist to start listening, say a
+command, and release your fist". So the fist is a hold again, the words
+say the whole gesture, and either hand makes it, since a wearer may have
+only one.
+
+### Why the first hold failed, and what handles it now
+
+V1's hold closed the window on the first frame the pose reader said the
+hand was no fist, and at 6 s. Worn on Nov 11 and 12 it read as a one-shot
+thing: a window of 0.75 s with 0.64 s of near silence in it, "Listening…"
+at the palm where the fist hid it, and nothing that said to keep the fist
+closed while speaking. The toggle answered that by taking the hold away.
+What made the hold fail is handled one by one:
+
+| Then | Now |
+|---|---|
+| One frame of an open reading closed the window | The hand has to read open for 0.5 s (`RELEASE_S`), and a fist seen again inside that keeps the window |
+| A tracking dropout was an opened hand | A lost hand is not an opened hand. The window goes on under the tap's rule until the fist is back or the wearer stops talking |
+| The clip ended the instant the hand moved | The microphone records through those 0.5 s |
+| The window closed at 6 s whatever was being said | 20 s (`FIST_MAX_S`), from the toggle |
+| "Listening…" sat at the palm, behind the fist | Ahead of the view since board #5453, and under a fist it says "Open your hand when done" |
+| Nothing taught the fist | The talk hint teaches it first, in the wearer's own three steps |
+
+### The rules
+
+In `PushToTalk` (`voice.rs`). Each number is a named constant there with
+its reason.
+
+- **A fist on either hand opens the window** once it has lasted 0.15 s
+  (`DWELL_S`), on top of the pose reader's own 0.1 s. That hand holds it.
+  The other hand changes nothing while it is open: a fist it makes is
+  ignored and has to open before it counts. Both closing on the same
+  frame open one window, the right hand's, as the right hand wins the
+  other gestures' ties.
+- **Opening that hand ends it.** The hand has to read open for 0.5 s
+  (`RELEASE_S`): 0.2 s to tell an opened hand from a glitch (`GRACE_S`,
+  twice the pose reader's dwell) and 0.3 s more for the last word
+  (`TAIL_S`). A fist seen again anywhere inside the 0.5 s keeps the
+  window. All of it is recorded, so the word said as the hand opens is in
+  the clip.
+- **The hold reads the curl, not only the pose.** While a window is open
+  its hand counts as closed whenever the fingers are curled (under
+  `pose::FIST_OFF_M`), whatever the pose reader calls it
+  (`voice::Hand::Curled`). The reader gives palm up over a fist, comes
+  back from a dropout as an open hand for its dwell, and a fist can pinch.
+  None of those is an opened hand. A curled hand never opens a window.
+- **A pinching hand opens nothing** (`voice::hands`). A pinch with the
+  other fingers tucked in curls the hand like a fist, and the right hand
+  pinches to press the menu and to edit the room.
+- **The hand leaves the cameras.** Lying back with the hands low, a fist
+  drops out of tracking. From the loss on the window is a tap window: 0.8 s
+  of quiet after speech closes it and sends it (`QUIET_S`, counted from
+  the loss), and so does 6 s out of view (`LOST_MAX_S`). The fist back in
+  view holds it again. A hand that comes back open ends it as ever. That
+  fist does not open the next window until it has been seen open.
+- **Nothing said, nothing sent** (`Event::Dropped`). A fist window in
+  which no frame reached the quiet level is not transcribed, so nothing
+  can run. It goes when the hand opens, or at 6 s under a fist still
+  closed (`SILENT_S`, the time a tap window waits for speech). A hand at
+  rest in a fist costs one "Listening…" of 6 s, and that fist opens
+  nothing more until it has opened.
+- **An instant's fist, nothing sent.** A window whose fist was held under
+  0.3 s (`MIN_HOLD_S`) is dropped whatever the microphone heard: a hand
+  that closed picking something up while the wearer was talking to
+  someone.
+- **A long hold** closes at 20 s (`FIST_MAX_S`) and is sent. The closing
+  notes play, "…" shows, then the answer. The fist still held opens
+  nothing until it has opened.
+- **The microphone** is as it was: the same stream, opened and closed
+  with the window, the same clip to the same model.
+- **The tap** is unchanged. It opens a window that needs no held pose,
+  closes 0.8 s after the wearer stops talking, at 6 s, or on a second
+  tap, which is its "done" for a wearer who does not want to wait. A tap
+  does nothing to a fist window and a fist nothing to a tap window.
+
+What the numbers rest on. The recorded sessions log each hand's curl as a
+range once a second, not per frame, so no flicker has been measured. The
+grace rests on the pose reader's dwell. The tail and the least hold are
+guesses to judge worn. Each fist window logs the gaps it forgave (below),
+so the first worn sitting gives the numbers to tune them. What the
+sessions do show, over 64 minutes worn: the left hand was out of tracking
+for a whole second in 0 to 4% of seconds, in runs of 1 to 8 s. A held
+loose fist read up to 0.070 m of curl, right at the release threshold. In
+silent windows the microphone peaked at 0.0009 to 0.0028 with music
+playing, against 0.11 to 0.27 with speech, so the quiet level of 0.01
+tells them apart. The right hand's curl dipped under the fist's in 46 of
+3,813 tracked seconds with no voice meaning for it, and for a whole second
+in 11. In 13 of 181 seconds with a right pinch in them it dipped too,
+which is why a pinch opens nothing. In 73 menu pokes and 11 ray presses
+neither hand dipped.
+
+### The words
+
+| Where | Before | Now |
+|---|---|---|
+| The hint (`first_run::TALK_HINT`) | Tap your thumb to talk. / Try: what can I say | Make a fist, say a command, / then open your hand. / Or tap thumb on index finger. / Try: what can I say |
+| The label under a fist (`voice::HOLD_LABEL`) | Listening… | Listening… / Open your hand when done |
+| The label after a tap | Listening… | Listening… |
+
+The hint is four lines at the help card's size, where the other hints
+have two. The fist's three steps do not fit one line at a size worth
+reading. The tap is told in the same hint, since a wearer who cannot hold
+a fist has no other way in to ask what they can say. It is answered by a
+window with something said in it, opened by a fist or by a tap
+(`Hint::Talk`). A window nobody spoke in teaches nothing, so a stray tap
+no longer uses the hint up. It is saved as `talk`. An install that saved
+the old `tap` has not been taught the fist and sees the new hint once.
+
+### What the right fist was
+
+Until now only the left fist opened the window. The right fist was
+Murmur's predator: with voice on the flock saw an open left hand and the
+right fist still scattered it (`voice::flock_poses`). Board #5470 cut the
+flock, no effect reads the poses since, and nothing is left that the right
+fist does. `flock_poses` now gives the flock two open hands with voice on.
+
+### The log
+
+The launch line reads `voice: a fist on either hand holds the window open
+(it ends 0.5 s after the hand opens or at 20 s, sends nothing for a fist
+under 0.3 s or with nothing said by 6 s, and out of view closes on quiet
+or after 6 s) and a thumb tap opens one (closes after 0.8 s under 0.0100
+RMS, debug.fosfora.voicequiet, a second tap, or 6 s)`. A
+window opens as `voice: window open (right fist)`. A close gives `(hand
+opened)`, `(quiet 0.8 s at 0.004)`, `(fist out of view 6 s)` or `(20 s)`.
+A dropped window reads `voice: window dropped after 0.62 s (a fist too
+short to be meant) · 0.50 s of audio · peak … · rms … · nothing
+transcribed`, or `(nothing said)`. Every fist window also logs its hold:
+`voice: right fist held 3.21 s · 2 gaps forgiven, longest 0.06 s`.
+
+### Known, and to judge worn
+
+- Closing a fist can make the runtime's thumb tap fire first. The window
+  is then a tap window: it shows "Listening…" without the second line and
+  closes 0.8 s after the wearer stops talking, the fist still closed. In
+  the Nov 16 session the same hand's tap fired within 25 ms of a fist's
+  window opening twice, and 5 of the 7 tap windows opened in a second
+  where that hand's curl dipped under the fist's threshold. Twice a thumb
+  swipe stepped the theme within 0.4 s before a fist's window opened.
+- A held fist cannot be made unworn. The state machine is tested on the
+  desktop (`voice.rs`): hold and release, a flicker inside the grace, a
+  curled hand, tracking lost while held, the tail, an instant fist, a
+  silent hold and a resting fist, the ceiling, either hand and both, the
+  pinch, and the tap as it was.
 
 ## Feedback where the wearer looks, and every control said (board #5453)
 
@@ -1363,7 +1520,7 @@ first run"). The pinch that begins the show has a spoken form.
   begin first" (`first_run::menu_waits_reply`), as the left palm brings
   nothing then. Every other sentence applies as it does once the show is
   on.
-- **Not hands-free.** The window still opens with a thumb tap or the left
+- **Not hands-free.** The window still opens with a thumb tap or a
   fist. The card reads "Pinch to begin" and does not name the spoken way,
   since a wearer who said it with no window open would get no answer.
 - **Not the agent's.** Its actions have no begin, and "what can I say"
@@ -1532,7 +1689,8 @@ dark and logs the line above.
 
 1. The opener: the left fist held, or the thumb tap, or both from the
    start? Default taken if silent: the fist, the tap later. V4 added the
-   tap as the second opener ("V4 as built").
+   tap as the second opener ("V4 as built"). Board #5531: a fist on
+   either hand, held.
 2. Bundle the model in the APK or fetch on first use? Default: bundle
    `base.en` (148 MB; the spike made it the model).
 3. Is the agent in scope for the first release of the voice path, or does
