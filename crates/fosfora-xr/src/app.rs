@@ -232,10 +232,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       aaudio (synth, the default, file and loop play); 1 plays it over any source, 0 over none, file's and loop's clip
     //       included, so a quiet run needs 0; not saved; board #5385: the row plays the wearer's music folders, or
     //       debug.fosfora.file, and unset, over a source that is no microphone, the wearer's last play or stop decides,
-    //       saved in music.json under the config dir with the track; board #5528: while the folders hold no track the row
-    //       plays the tracks the app ships with, music::BUNDLED, in that list's order)
-    //   adb shell setprop debug.fosfora.bundled 1                (board #5528: the Music row's playlist is the bundled tracks whatever
-    //       the music folders hold, so they can be reached on a headset that has music of its own; the launch line says so; the
+    //       saved in music.json under the config dir with the track; board #5528, #5546: the row's list opens with the
+    //       tracks the app ships with, music::BUNDLED, in that list's order, and the wearer's follow them)
+    //   adb shell setprop debug.fosfora.bundled 1                (board #5528: the Music row's playlist is the bundled tracks alone, whatever
+    //       the music folders hold, so a measurement plays the same tracks on a headset that has music of its own; the launch line says so; the
     //       track is not saved, so each launch starts on the first one and the wearer's saved track is kept; default off; read at
     //       launch)
     //   adb shell setprop debug.fosfora.tracktheme 0             (board #5533: the bundled tracks bring no theme, so a theme under test
@@ -1258,9 +1258,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #5385: the row plays the wearer's music folders (`player.rs`),
     // the saved track first; `debug.fosfora.file` wins when set; unset, the
     // knob leaves the launch to the wearer's last play or stop. Board
-    // #5528: while the folders hold no track the row plays the tracks the
-    // app ships with, and `debug.fosfora.bundled 1` plays those whatever
-    // the folders hold. The test clip is the `file` and `loop` sources',
+    // #5528, #5546: the row's list opens with the tracks the app ships
+    // with and the wearer's follow them; `debug.fosfora.bundled 1` plays
+    // the bundled ones alone. The test clip is the `file` and `loop` sources',
     // and the row's only when no track plays at all.
     let bundled_dir = dirs.assets.join("audio");
     let bundled_clip = bundled_dir.join(crate::music::CLIP);
@@ -1367,7 +1367,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         )),
         "file" | "loop" => {
             info!(
-                "music: debug.fosfora.music 0: {audio_source} starts without its clip, the analysis on {} (the Music row plays the music folders, else the bundled tracks)",
+                "music: debug.fosfora.music 0: {audio_source} starts without its clip, the analysis on {} (the Music row plays the bundled tracks, then the music folders)",
                 crate::music::analysis(false, &audio_source).name()
             );
             None

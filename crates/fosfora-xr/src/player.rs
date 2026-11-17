@@ -3,13 +3,14 @@
 //! stream (`playback.rs`) with the analysis on its tap (`music.rs` has the
 //! row's words and where the analysis goes).
 //!
-//! **With no music of the wearer's own** (board #5528) the playlist is
-//! the tracks the app ships with (`music::BUNDLED`), in that list's
-//! order, and they play as the wearer's do. When a scan finds a track in
-//! either folder the playlist is the wearer's tracks only, and when the
-//! folders are empty again the bundled ones return. At either change the
-//! first track of the new playlist takes over: at once while the music
-//! plays, else at the next play. `debug.fosfora.bundled 1` keeps the
+//! **The bundled tracks come first** (board #5528, #5546). The playlist
+//! opens with the tracks the app ships with (`music::BUNDLED`), in that
+//! list's order, and they play as the wearer's do. The tracks a scan
+//! finds in either folder follow them in the same list. A scan that adds
+//! the wearer's tracks, or takes them away, leaves the playing track
+//! alone. Only when the row's own track is gone does the first track
+//! take over: at once while the music plays, else at the next play.
+//! `debug.fosfora.bundled 1` keeps the
 //! playlist on the bundled tracks whatever the folders hold, and saves no
 //! track, so the wearer's own place is still there without it. The test
 //! clip (`music::CLIP`) is what the measurement sources play. The row
@@ -199,7 +200,7 @@ pub struct Folders {
     /// The storage permission is granted: the shared folder is scanned.
     pub shared_readable: bool,
     /// The bundled tracks in their order (`playlist::bundled`): the
-    /// playlist while the folders hold no track (board #5528).
+    /// first tracks of the playlist (board #5528, #5546).
     pub bundled: Vec<playlist::Track>,
     /// `debug.fosfora.bundled 1`: the playlist is the bundled tracks
     /// whatever the folders hold.
@@ -353,7 +354,7 @@ impl Music {
     }
 
     /// The playlist for what a scan found (`playlist::listed`): the
-    /// wearer's tracks, or the bundled ones while the folders hold none.
+    /// bundled tracks, then the wearer's.
     fn listed(&self, found: Vec<playlist::Track>) -> Vec<playlist::Track> {
         playlist::listed(found, &self.folders.bundled, self.folders.only_bundled)
     }
@@ -833,24 +834,26 @@ impl Music {
             if scan.full { ", the cap" } else { "" }
         );
         self.bad.clear();
-        let was_bundled = self.playlist.is_bundled();
-        self.playlist.replace(self.listed(scan.tracks));
-        let swapped = was_bundled != self.playlist.is_bundled();
-        if swapped {
+        let own_before = self.playlist.own_len();
+        let kept = self.playlist.replace(self.listed(scan.tracks));
+        let (bundled, own) = (self.playlist.bundled_len(), self.playlist.own_len());
+        if (own_before == 0) != (own == 0) {
             info!(
                 "music: the playlist is now {}",
-                if self.playlist.is_bundled() {
-                    "the bundled tracks: the music folders are empty"
-                } else {
-                    "the tracks in the music folders"
+                match (bundled, own) {
+                    (_, 0) => "the bundled tracks: the music folders are empty".to_owned(),
+                    (0, _) => "the tracks in the music folders".to_owned(),
+                    _ =>
+                        format!("the {bundled} bundled tracks, then the {own} in the music folders"),
                 }
             );
         }
         // The first track takes over, at once while the music plays: from
         // the test clip when there was no track and now there is, and
-        // from the old playlist's track when the bundled tracks gave way
-        // to the wearer's or came back (board #5528).
-        let takes_over = playlist::takes_over(self.on_fallback, self.pinned, swapped);
+        // from a track that is gone from the new playlist. The wearer's
+        // tracks arriving after the bundled ones, or leaving, change
+        // nothing for a track that is still there (board #5546).
+        let takes_over = playlist::takes_over(self.on_fallback, self.pinned, !kept);
         if takes_over && !self.playlist.is_empty() {
             self.on_fallback = false;
             self.resume = 0;

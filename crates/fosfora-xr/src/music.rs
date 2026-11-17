@@ -26,8 +26,8 @@
 pub const CLIP: &str = "ember_glow_excerpt.ogg";
 
 /// The tracks the app ships with (board #5528), beside [`CLIP`], in the
-/// order the Music row plays them: the playlist while the wearer's music
-/// folders hold no track (`playlist::bundled`, `playlist::listed`). A
+/// order the Music row plays them: the first tracks of the playlist, the
+/// wearer's own after them (`playlist::bundled`, `playlist::listed`). A
 /// title is the file name's, by the rule for the wearer's files
 /// (`playlist::title`). A new track is a new entry here, with the theme it
 /// brings, and its file in `assets/xr/audio/`. Nothing else names a track:

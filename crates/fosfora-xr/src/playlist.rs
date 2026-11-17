@@ -1,7 +1,7 @@
 //! The wearer's own music (board #5385): the files in the two music
 //! folders as one playlist that the hand menu's Music row and the voice
-//! step through. Board #5528: while both folders hold no track, the
-//! playlist is the tracks the app ships with ([`bundled`], [`listed`]).
+//! step through. Board #5528, #5546: the tracks the app ships with come
+//! first in it, and the wearer's own follow ([`bundled`], [`listed`]).
 //!
 //! The folders are the shared `Music/` folder, which needs the storage
 //! permission (`permissions::storage`), and the app's own external files
@@ -267,27 +267,28 @@ pub fn bundled(dir: &Path, names: &[&str]) -> (Vec<Track>, Vec<String>) {
     (tracks, missing)
 }
 
-/// The Music row's tracks for what a scan `found` (board #5528): the
-/// wearer's own, and none of the `bundled` ones, when the folders hold
-/// any; else the bundled ones. `only_bundled` (`debug.fosfora.bundled 1`)
-/// is the bundled ones whatever the folders hold.
+/// The Music row's tracks for what a scan `found` (board #5528, #5546):
+/// the `bundled` ones first, in their order, then the wearer's own. A
+/// first launch opens on the first bundled track whatever the folders
+/// hold, and the wearer's music is a step away in the same list.
+/// `only_bundled` (`debug.fosfora.bundled 1`) is the bundled ones alone.
 pub fn listed(found: Vec<Track>, bundled: &[Track], only_bundled: bool) -> Vec<Track> {
-    if only_bundled || found.is_empty() {
-        bundled.to_vec()
-    } else {
-        found
+    let mut tracks = bundled.to_vec();
+    if !only_bundled {
+        tracks.extend(found);
     }
+    tracks
 }
 
 /// Whether the first track of a rescan's playlist takes over from what
 /// the Music row is on, at once while the music plays and at the next
 /// play otherwise. From the test clip (`on_clip`) it does, unless
 /// `debug.fosfora.file` put the row there (`pinned`). From a track it does
-/// only when the playlist changed hands (`swapped`): the bundled tracks
-/// gave way to the wearer's, or came back (board #5528). A rescan that
-/// leaves the playlist in the same hands leaves the playing track alone.
-pub fn takes_over(on_clip: bool, pinned: bool, swapped: bool) -> bool {
-    if on_clip { !pinned } else { swapped }
+/// only when that track is `gone` from the new playlist (board #5546). A
+/// rescan that adds the wearer's tracks after the bundled ones, or takes
+/// them away, leaves a track that is still there playing.
+pub fn takes_over(on_clip: bool, pinned: bool, gone: bool) -> bool {
+    if on_clip { !pinned } else { gone }
 }
 
 /// What a spoken name found.
@@ -372,12 +373,18 @@ impl Playlist {
         self.tracks.is_empty()
     }
 
-    /// Whether these are the tracks the app ships with ([`listed`] never
-    /// mixes them with the wearer's).
-    pub fn is_bundled(&self) -> bool {
+    /// How many of the tracks are the ones the app ships with ([`listed`]
+    /// puts them first).
+    pub fn bundled_len(&self) -> usize {
         self.tracks
-            .first()
-            .is_some_and(|t| t.folder == Folder::Bundled)
+            .iter()
+            .filter(|t| t.folder == Folder::Bundled)
+            .count()
+    }
+
+    /// How many of the tracks are the wearer's own.
+    pub fn own_len(&self) -> usize {
+        self.tracks.len() - self.bundled_len()
     }
 
     pub fn tracks(&self) -> &[Track] {
@@ -431,12 +438,20 @@ impl Playlist {
     }
 
     /// A fresh scan's tracks in place of these, the current track kept by
-    /// its path when it is still there, else the first.
-    pub fn replace(&mut self, tracks: Vec<Track>) {
-        let kept = self.current_track().map(|t| t.path.clone());
+    /// its path when it is still there, else the first. Returns whether
+    /// the row stayed on its track (true as well when it was on none).
+    pub fn replace(&mut self, tracks: Vec<Track>) -> bool {
+        let was = self.current_track().map(|t| t.path.clone());
         *self = Self::new(tracks);
-        if let Some(i) = kept.and_then(|p| self.index_of(&p)) {
-            self.current = Some(i);
+        let Some(path) = was else {
+            return true;
+        };
+        match self.index_of(&path) {
+            Some(i) => {
+                self.current = Some(i);
+                true
+            }
+            None => false,
         }
     }
 }
@@ -536,11 +551,11 @@ fn tracks_n(n: usize) -> String {
 }
 
 /// The launch line: how many tracks each folder gave (`scan`), the
-/// bundled tracks by name when they are the playlist (`list`), because
-/// the folders are empty or because `debug.fosfora.bundled` says so
-/// (`only_bundled`), and which track the Music row starts on (whether it
-/// was the saved one and whether it plays). With no track at all, that
-/// the test clip stands in.
+/// bundled tracks of the playlist (`list`) by name, whether they come
+/// before the wearer's, stand alone because the folders are empty, or
+/// because `debug.fosfora.bundled` says so (`only_bundled`), and which
+/// track the Music row starts on (whether it was the saved one and
+/// whether it plays). With no track at all, that the test clip stands in.
 pub fn launch_line(
     scan: &Scan,
     list: &Playlist,
@@ -576,21 +591,27 @@ pub fn launch_line(
         (true, false) => format!("playing \"{title}\""),
         (false, _) => format!("\"{title}\", stopped"),
     };
-    if !list.is_bundled() {
+    if list.bundled_len() == 0 {
         return format!("music: {found} \u{b7} {start}");
     }
-    let why = if only_bundled {
-        format!("debug.fosfora.bundled 1 over {found}")
-    } else {
-        "no tracks in the music folders".to_owned()
-    };
     let names = list
-        .titles()
+        .tracks()
         .iter()
-        .map(|t| format!("\"{t}\""))
+        .filter(|t| t.folder == Folder::Bundled)
+        .map(|t| format!("\"{}\"", t.title))
         .collect::<Vec<_>>()
         .join(", ");
-    format!("music: {why} \u{b7} bundled: {names} \u{b7} {start}")
+    if only_bundled {
+        return format!(
+            "music: debug.fosfora.bundled 1 over {found} \u{b7} bundled: {names} \u{b7} {start}"
+        );
+    }
+    if list.own_len() == 0 {
+        return format!(
+            "music: no tracks in the music folders \u{b7} bundled: {names} \u{b7} {start}"
+        );
+    }
+    format!("music: {found} \u{b7} after the bundled: {names} \u{b7} {start}")
 }
 
 /// The line for a track that starts: its title, length and decode time.
@@ -843,7 +864,20 @@ mod tests {
                 .collect(),
             ..Scan::default()
         };
-        let own = |scan: &Scan| Playlist::new(listed(scan.tracks.clone(), &shipped(), false));
+        // Without a bundled track (none in the assets): the folders' alone.
+        let own = |scan: &Scan| Playlist::new(listed(scan.tracks.clone(), &[], false));
+        // The wearer's after the bundled ones, the launch on the first
+        // bundled track, or on the saved one.
+        let mut both = Playlist::new(listed(scan.tracks.clone(), &shipped(), false));
+        assert_eq!(
+            launch_line(&scan, &both, false, false, true),
+            "music: 14 tracks (12 in Music, 2 in the app folder) \u{b7} after the bundled: \"First Song\", \"Second\" \u{b7} playing \"First Song\""
+        );
+        both.select(2);
+        assert_eq!(
+            launch_line(&scan, &both, false, true, false),
+            "music: 14 tracks (12 in Music, 2 in the app folder) \u{b7} after the bundled: \"First Song\", \"Second\" \u{b7} \"0\", stopped"
+        );
         assert_eq!(
             launch_line(&scan, &own(&scan), false, true, true),
             "music: 14 tracks (12 in Music, 2 in the app folder) \u{b7} resuming \"0\""
@@ -905,7 +939,7 @@ mod tests {
     #[test]
     fn with_empty_folders_the_playlist_is_the_bundled_tracks_in_the_lists_order() {
         let p = Playlist::new(listed(Vec::new(), &shipped(), false));
-        assert!(p.is_bundled());
+        assert_eq!((p.bundled_len(), p.own_len()), (2, 0));
         assert_eq!(p.titles(), ["First Song", "Second"]);
         assert_eq!(p.current(), Some(0));
         // Whatever the list's length: one, or three in an order no sort
@@ -923,70 +957,94 @@ mod tests {
         }
         // No bundled track either: nothing.
         let none = Playlist::new(listed(Vec::new(), &[], false));
-        assert!(none.is_empty() && !none.is_bundled());
+        assert!(none.is_empty() && none.bundled_len() == 0);
     }
 
     #[test]
-    fn the_wearers_tracks_win_and_no_bundled_one_is_among_them() {
+    fn the_wearers_tracks_follow_the_bundled_ones_in_one_list() {
         let own = vec![track("mine.mp3"), track("yours.flac")];
         let p = Playlist::new(listed(own.clone(), &shipped(), false));
-        assert!(!p.is_bundled());
+        assert_eq!(p.titles(), ["First Song", "Second", "mine", "yours"]);
+        assert_eq!((p.bundled_len(), p.own_len()), (2, 2));
+        // The launch is on the first bundled track whatever the folders
+        // hold, and a step back from it is the wearer's last.
+        assert_eq!(p.current(), Some(0));
+        assert_eq!(p.peek(-1), Some(3));
+        // The bundled ones keep their places, the wearer's their order.
+        let folders: Vec<Folder> = p.tracks().iter().map(|t| t.folder).collect();
+        assert_eq!(
+            folders,
+            [
+                Folder::Bundled,
+                Folder::Bundled,
+                Folder::Shared,
+                Folder::Shared
+            ]
+        );
+        // Every title is there for the voice, bundled or not.
+        assert_eq!(p.find("yours"), Found::One(3));
+        assert_eq!(p.find("second"), Found::One(1));
+        // With no bundled track in the assets the list is the wearer's.
+        let p = Playlist::new(listed(own.clone(), &[], false));
         assert_eq!(p.titles(), ["mine", "yours"]);
-        assert!(p.tracks().iter().all(|t| t.folder != Folder::Bundled));
-        // One track of the wearer's is enough.
-        let p = Playlist::new(listed(own[..1].to_vec(), &shipped(), false));
-        assert_eq!(p.titles(), ["mine"]);
-        // The knob: the bundled ones whatever the folders hold.
+        assert_eq!((p.bundled_len(), p.own_len()), (0, 2));
+        // The knob: the bundled ones alone, whatever the folders hold.
         let p = Playlist::new(listed(own, &shipped(), true));
-        assert!(p.is_bundled());
         assert_eq!(p.titles(), ["First Song", "Second"]);
-        assert!(Playlist::new(listed(Vec::new(), &shipped(), true)).is_bundled());
+        assert_eq!(p.own_len(), 0);
     }
 
     #[test]
-    fn the_folders_emptying_and_filling_swap_the_playlist() {
+    fn the_wearers_tracks_arriving_and_leaving_keep_the_row_on_its_track() {
         // Empty at launch, on the second bundled track.
         let mut p = Playlist::new(listed(Vec::new(), &shipped(), false));
         p.select(1);
-        // The wearer's tracks arrive: theirs only, the first current.
-        p.replace(listed(
+        // The wearer's tracks arrive (the permission, "scan my music"):
+        // they follow the bundled ones and the row stays where it is.
+        assert!(p.replace(listed(
             vec![track("a.mp3"), track("b.mp3")],
             &shipped(),
             false,
-        ));
-        assert!(!p.is_bundled());
+        )));
         assert_eq!(
             (p.titles(), p.current()),
-            (&["a", "b"].map(String::from)[..], Some(0))
+            (
+                &["First Song", "Second", "a", "b"].map(String::from)[..],
+                Some(1)
+            )
         );
         // A rescan among their tracks keeps the current one by its path.
-        p.select(1);
-        p.replace(listed(
+        p.select(3);
+        assert!(p.replace(listed(
             vec![track("0.mp3"), track("a.mp3"), track("b.mp3")],
             &shipped(),
             false,
-        ));
-        assert_eq!(p.current(), Some(2));
-        // The folders empty again: the bundled tracks return, from the
-        // first.
-        p.replace(listed(Vec::new(), &shipped(), false));
-        assert!(p.is_bundled());
+        )));
+        assert_eq!(p.current_track().map(|t| t.title.as_str()), Some("b"));
+        assert_eq!(p.current(), Some(4));
+        // The folders empty while the row is on one of theirs: that track
+        // is gone, and the row is on the first bundled one.
+        assert!(!p.replace(listed(Vec::new(), &shipped(), false)));
+        assert_eq!((p.bundled_len(), p.own_len()), (2, 0));
         assert_eq!(
             p.current_track().map(|t| t.title.as_str()),
             Some("First Song")
         );
-        // A rescan that still finds none keeps the bundled track the row
-        // is on.
+        // The folders empty while the row is on a bundled track: it stays.
+        p.replace(listed(vec![track("a.mp3")], &shipped(), false));
         p.select(1);
-        p.replace(listed(Vec::new(), &shipped(), false));
+        assert!(p.replace(listed(Vec::new(), &shipped(), false)));
         assert_eq!(p.current(), Some(1));
+        // A list with no current track has none to lose.
+        assert!(Playlist::default().replace(shipped()));
     }
 
     #[test]
-    fn a_rescan_takes_over_only_from_the_clip_or_when_the_playlist_changes_hands() {
-        // On a track, the playlist in the same hands: it plays on.
+    fn a_rescan_takes_over_only_from_the_clip_or_when_the_rows_track_is_gone() {
+        // On a track that is still in the list: it plays on, whatever the
+        // scan added or took away around it.
         assert!(!takes_over(false, false, false));
-        // The bundled tracks gave way to the wearer's, or came back.
+        // The row's track is gone from the list.
         assert!(takes_over(false, false, true));
         assert!(takes_over(false, true, true));
         // On the test clip: the first track takes over, unless
@@ -1011,6 +1069,9 @@ mod tests {
         assert_eq!(saved.playing, Some(true));
         let again = Playlist::new(listed(Vec::new(), &bundled, false));
         assert_eq!(again.index_of(saved.track.as_deref().unwrap()), Some(1));
+        // The wearer's own saved track is found after the bundled ones.
+        let both = Playlist::new(listed(vec![track("mine.mp3")], &bundled, false));
+        assert_eq!(both.index_of(before.track.as_deref().unwrap()), Some(2));
         // The knob keeps the wearer's saved track; the play or stop is
         // still theirs.
         let knob = before.next(Some(&bundled[1]), true, true);

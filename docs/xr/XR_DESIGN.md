@@ -306,13 +306,14 @@ renderer takes; `recording_ring.peek_latest` feeds the waveform texture.
 ### Your music (board #5385)
 
 *As built (`playlist.rs`, `player.rs`, `playback.rs`).* The Music row plays
-the wearer's own files. While the music folders are empty it plays the
-tracks the app ships with (board #5528).
+one list: the tracks the app ships with first (board #5528), then the
+wearer's own files (board #5546).
 
-- **With no music of your own.** The app ships full tracks, each with a
+- **The bundled tracks come first.** The app ships full tracks, each with a
   build, a drop and a breakdown: "Let the Night Come In", "Turn the Walls
-  to Stone" and "High Meadow" (`assets/xr/audio/`, CC0, staged into the APK). While both
-  folders hold no track the app can read, they are the playlist. Their
+  to Stone" and "High Meadow" (`assets/xr/audio/`, CC0, staged into the APK).
+  They are the first tracks of the playlist whatever the folders hold, so a
+  first launch opens on the same track on every headset. Their
   order is one list in the code (`music::BUNDLED`), the first track first,
   not the folder's order or the alphabet's. They go through the same
   playlist and player as the wearer's files, so everything below holds for
@@ -326,16 +327,19 @@ tracks the app ships with (board #5528).
   and a theme the wearer picks holds until the next bundled track starts.
   The wearer's own music brings no theme. `debug.fosfora.tracktheme 0`
   turns it off.
-- **Your music wins.** When a scan finds a track in either folder (at
-  launch, when the permission arrives, on "scan my music"), the playlist is
-  the wearer's tracks only, and no bundled track is in it. When the folders
-  are empty again the bundled ones return. At either change the first track
-  of the new playlist takes over: at once while the music plays, and at the
-  next play when it is stopped. A scan that leaves the playlist in the same
-  hands leaves the playing track alone, and keeps the row on its track when
-  that file is still there.
-- **`debug.fosfora.bundled 1`.** The playlist is the bundled tracks whatever
-  the folders hold, so they can be reached on a headset that has music.
+- **Your music follows.** When a scan finds tracks in either folder (at
+  launch, when the permission arrives, on "scan my music"), they join the
+  same list after the bundled ones, in the folders' order. A step past the
+  last bundled track is the wearer's first, and a step back from the first
+  bundled track is the wearer's last. A scan never interrupts a track that
+  is still in the list: the storage permission arriving in the middle of
+  the first song adds the wearer's tracks and the song plays on. Only when
+  the row's own track is gone from the list does the first track take
+  over: at once while the music plays, and at the next play when it is
+  stopped. A setting that leaves the bundled tracks out is not built.
+- **`debug.fosfora.bundled 1`.** The playlist is the bundled tracks alone,
+  whatever the folders hold, so a measurement plays the same three tracks
+  on a headset that has music.
   Read at launch. It saves no track: each launch starts on the first
   bundled track, and the wearer's saved track is still there without it.
 - **The test clip.** `ember_glow_excerpt.ogg` (45 s, 140 BPM) stays in the
@@ -400,13 +404,15 @@ tracks the app ships with (board #5528).
   `debug.fosfora.file`, when set, plays at launch in place of the saved track,
   so the measurement scripts get the same clip whatever the folders hold.
 - **The log.** At launch, `music: 14 tracks (12 in Music, 2 in the app
-  folder) · resuming "<title>"`. With empty folders, `music: no tracks in
+  folder) · after the bundled: "Let the Night Come In", "Turn the Walls
+  to Stone", "High Meadow" · resuming "<title>"`. With empty folders, `music: no tracks in
   the music folders · bundled: "Let the Night Come In", "Turn the Walls
   to Stone", "High Meadow" · playing "Let the Night Come In"`. With the knob the line
   starts `music: debug.fosfora.bundled 1 over 14 tracks (...)`. With no
   track at all, `music: no tracks found and no bundled track, playing the
-  test clip (put files in Music/)`. A scan that changes the playlist's
-  hands logs `music: the playlist is now the tracks in the music folders`,
+  test clip (put files in Music/)`. A scan after which the wearer's tracks
+  are there for the first time, or gone, logs `music: the playlist is now
+  the 3 bundled tracks, then the 14 in the music folders`,
   or `... the bundled tracks: the music folders are empty`. Then one line
   per track start with its length and decode time: `music: playing
   "<title>" · 3:42 · decoded in 1.8 s`.

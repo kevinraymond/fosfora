@@ -1743,8 +1743,9 @@ brings Aurora, the second Flint and the third Contour. Replacing a track
 is an edit of that list, and nothing else names a track.
 
 - **Only the bundled tracks.** The wearer's own music brings no theme.
-  When it takes over from the bundled tracks, the room's own look comes
-  back.
+  The wearer's tracks follow the bundled ones in the same list
+  (`XR_DESIGN.md`, "Your music"), and when one of theirs starts after a
+  bundled track, the room's own look comes back.
 - **Never saved.** When a track's theme is laid, the room's own file is
   set aside in memory and nothing is written while the track's theme
   shows. An edit of a surface made on it shows at once, is not saved, and
