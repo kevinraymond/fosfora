@@ -119,6 +119,33 @@ pub enum SurfaceBehavior {
     Contours,
 }
 
+/// The most strength shards draw at on a ceiling while the flash limit is
+/// on ([`SurfaceBehavior::drawn_strength`], board #5533).
+///
+/// Shards move their cell edges with the onsets, a position and not a
+/// light, so the limiter cannot hold them to its direction. A ceiling is
+/// the nearest face to a seated wearer (1.25 m in the flash room), where
+/// a cell is wider than the 10 degrees the rule counts in. Measured on
+/// Flint over eleven songs (the eight dumped ones and the three bundled
+/// tracks), the limiter on, the worst region's general flashes a second
+/// by the ceiling's strength:
+///
+/// | strength | worst | songs at 3.0 | songs the ceiling leads |
+/// |---|---|---|---|
+/// | 1.0 | 3.5, one song | three more | eight |
+/// | 0.8 | 3.0 | one | two |
+/// | 0.7 | 3.0 | one | two |
+/// | 0.6 | 3.0 | one | one |
+/// | 0.5 | 3.0 | one | one |
+///
+/// The one song at 3.0 stays there down to 0.4, so that count is not the
+/// strength's. 0.8 is the highest value tried that keeps every song
+/// within the rule. 0.6 is the highest whose counts are those of 0.5 on
+/// every song, with the ceiling the worst region on that one song alone:
+/// a quarter under the highest that passed, and nothing measured is
+/// gained below it.
+pub const CEILING_SHARDS_LIMITED: f32 = 0.6;
+
 /// Behavior names the catalogue reserves for a later step: the knob and
 /// the room file reject them instead of reading them as unknown. Empty
 /// since D2 made curls and pulse real.
@@ -379,6 +406,21 @@ impl SurfaceBehavior {
     /// left on one shows nothing.
     pub fn held_back(self) -> bool {
         matches!(self, Self::Astrolabe | Self::Fenestra)
+    }
+
+    /// The strength a surface of `kind` running this look is drawn at
+    /// when its lane asks for `strength` (board #5533): the lane's, but
+    /// for shards on a ceiling while the flash limit is on (`limited`),
+    /// which draw at [`CEILING_SHARDS_LIMITED`] at most. Only the drawing
+    /// reads this. The room file, the Strength row and the voice's replies
+    /// keep the wearer's own number, so with the limit off, or on another
+    /// look, the surface is as bright as they set it.
+    pub fn drawn_strength(self, kind: u32, strength: f32, limited: bool) -> f32 {
+        if limited && self == Self::Shards && kind == KIND_CEILING {
+            strength.min(CEILING_SHARDS_LIMITED)
+        } else {
+            strength
+        }
     }
 
     /// The look a surface of `kind` gets when the voice asks for this one
@@ -2171,5 +2213,61 @@ mod tests {
             ..table(Vec3::new(0.3, 0.0, 0.0), [0.4, 0.4])
         };
         assert_close!(weights_of(&[desk, wall], 1.5)[1], 0.0);
+    }
+
+    /// Board #5533: shards on a ceiling draw at the cap while the flash
+    /// limit is on, at the wearer's own strength with it off, and the cap
+    /// follows the limiter's switch from one frame to the next. Nothing
+    /// else is capped, and the lane keeps the number the wearer set.
+    #[test]
+    fn a_ceilings_shards_are_capped_while_the_flash_limit_is_on() {
+        use SurfaceBehavior as B;
+        let cap = CEILING_SHARDS_LIMITED;
+        assert!(cap > 0.0 && cap < 1.0);
+        // On: the cap at most; under it, the strength asked.
+        for asked in [1.0, 0.9, cap + 0.01] {
+            assert_close!(B::Shards.drawn_strength(KIND_CEILING, asked, true), cap);
+        }
+        for asked in [cap, 0.3, 0.0] {
+            assert_close!(B::Shards.drawn_strength(KIND_CEILING, asked, true), asked);
+        }
+        // Off: whatever the wearer set.
+        for asked in [1.0, 0.9, cap, 0.3, 0.0] {
+            assert_close!(B::Shards.drawn_strength(KIND_CEILING, asked, false), asked);
+        }
+        // Only shards, and only on a ceiling: every other look on a
+        // ceiling and shards on every other kind draw as asked.
+        for b in B::ALL.into_iter().filter(|b| *b != B::Shards) {
+            assert_close!(
+                b.drawn_strength(KIND_CEILING, 1.0, true),
+                1.0,
+                "{}",
+                b.name()
+            );
+        }
+        for (kind, _) in KIND_NAMES.into_iter().filter(|(k, _)| *k != KIND_CEILING) {
+            assert_close!(B::Shards.drawn_strength(kind, 1.0, true), 1.0);
+        }
+        assert_close!(B::Shards.drawn_strength(KIND_NONE, 1.0, true), 1.0);
+        // At the switch: the limiter's own state decides each frame, both
+        // ways, and the lane's row still holds the wearer's number.
+        let row = lane_row(B::Shards, 1.0, [0.0; 2]);
+        let mut limiter = crate::flash::Limiter::new(true);
+        let drawn = |l: &crate::flash::Limiter| {
+            lane_behavior(row, KIND_CEILING).drawn_strength(KIND_CEILING, row[1], l.on())
+        };
+        assert_close!(drawn(&limiter), cap);
+        limiter.set_on(false);
+        assert_close!(drawn(&limiter), 1.0);
+        limiter.set_on(true);
+        assert_close!(drawn(&limiter), cap);
+        assert_close!(row[1], 1.0);
+        // Flint's own ceiling sits at the cap, so the limit changes
+        // nothing there until the wearer raises it.
+        let flint = crate::themes::Theme::Flint
+            .look(KIND_CEILING)
+            .expect("a ceiling's look");
+        assert_eq!(flint.behavior, B::Shards);
+        assert_close!(flint.strength, cap);
     }
 }

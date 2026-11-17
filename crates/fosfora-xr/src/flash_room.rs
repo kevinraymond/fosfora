@@ -492,7 +492,16 @@ fn scene() -> Scene {
     let sky = Sky::new(room, sky::facing(Quat::IDENTITY));
     Scene {
         boxes,
-        eye: sky.point + Vec3::new(0.1, 0.0, 0.2),
+        // `FOSFORA_FLASH_EYE=<x>,<z>` seats the eye elsewhere (m from the
+        // room's middle), to count with a wall close by.
+        eye: sky.point
+            + std::env::var("FOSFORA_FLASH_EYE")
+                .ok()
+                .and_then(|v| {
+                    let (x, z) = v.split_once(',')?;
+                    Some(Vec3::new(x.parse().ok()?, 0.0, z.parse().ok()?))
+                })
+                .unwrap_or(Vec3::new(0.1, 0.0, 0.2)),
         forward: Vec3::NEG_Z,
         sky,
     }
@@ -556,6 +565,12 @@ struct Show {
     /// Whether the edge bars' heights follow the analysis
     /// (`edge_bars::Heights`, board #5532).
     bars_free: bool,
+    /// The ceiling's strength as the wearer's Strength row set it, instead
+    /// of the theme's (board #5533).
+    ceiling: Option<f32>,
+    /// The ceiling's facets drawn at the strength asked, the limiter on or
+    /// not: what the cap is found against.
+    uncapped: bool,
     scene: Scene,
     effects: Vec<Effect>,
     limiter: Limiter,
@@ -587,6 +602,8 @@ impl Show {
             part,
             edges: Choice::Theme,
             bars_free: false,
+            ceiling: None,
+            uncapped: false,
             scene: scene(),
             effects,
             limiter: Limiter::new(limit),
@@ -620,8 +637,22 @@ impl Show {
                 edges: edge_bars::Mode::Off,
                 mono: false,
             },
-            None => self.theme.look(kind).expect("a named kind"),
+            None => {
+                let mut look = self.theme.look(kind).expect("a named kind");
+                if let Some(strength) = self.ceiling.filter(|_| kind == KIND_CEILING) {
+                    look.strength = strength;
+                }
+                look
+            }
         }
+    }
+
+    /// The strength a box of `kind` draws `look` at: app.rs's, the
+    /// ceiling's facets capped while the limiter is on (`uncapped`: not,
+    /// to find the cap).
+    fn drawn(&self, kind: u32, look: &themes::Look) -> f32 {
+        look.behavior
+            .drawn_strength(kind, look.strength, self.limiter.on() && !self.uncapped)
     }
 
     fn draws(&self, part: Part) -> bool {
@@ -741,7 +772,7 @@ impl Show {
                     surface_port::port_face(face),
                     b.kind,
                     behavior,
-                    look.strength,
+                    self.drawn(b.kind, look),
                     look.color,
                     Map::of(true, behavior, b.kind),
                     look.mono,
@@ -752,7 +783,7 @@ impl Show {
                 face,
                 kind: b.kind,
                 behavior,
-                strength: look.strength,
+                strength: self.drawn(b.kind, look),
                 color: look.color,
                 band: look.band,
             });
@@ -2074,6 +2105,46 @@ impl Gpu {
         }
         std::fs::write(path, out).expect("writing the still");
     }
+}
+
+/// Flint with its ceiling's strength raised by hand (board #5533) over the
+/// dumped songs, the limiter on: the ceiling's facets draw at their cap
+/// (`surfaces::CEILING_SHARDS_LIMITED`), so no region passes three
+/// flashes. Uncapped at full strength, one song reached 3.5 overhead.
+/// `FOSFORA_FLASH_CEILING=<strength>` raises it to another value than 1,
+/// and `FOSFORA_FLASH_UNCAPPED` draws it as asked, to find the cap;
+/// `FOSFORA_FLASH_EYE` seats the eye near a wall. Nothing runs without
+/// the dumps' directory.
+#[test]
+#[ignore = "needs a GPU adapter and song dumps"]
+fn flints_ceiling_raised_by_hand_stays_within_three_flashes() {
+    let songs = dumps();
+    if songs.is_empty() {
+        return;
+    }
+    let ceiling: f32 = std::env::var("FOSFORA_FLASH_CEILING")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0);
+    let uncapped = std::env::var_os("FOSFORA_FLASH_UNCAPPED").is_some();
+    let gpu = Gpu::new(&effects());
+    let mut failed = Vec::new();
+    for (name, path) in &songs {
+        let mut show = Show::new(Theme::Flint, None, Part::All, true, effects());
+        show.ceiling = Some(ceiling);
+        show.uncapped = uncapped;
+        let mut dump = Dump::read(path).expect("a dump");
+        let found = run_show(&gpu, show, &mut dump);
+        eprintln!(
+            "| {name} | flint, ceiling at {ceiling}{} | {} |",
+            if uncapped { ", uncapped" } else { "" },
+            cell(&found)
+        );
+        if !found.worst.passes() {
+            failed.push(name.clone());
+        }
+    }
+    assert!(failed.is_empty(), "over three flashes: {failed:?}");
 }
 
 /// Stills of a theme, to look at: `FOSFORA_STILL=<theme>:<dump>:<dir>:

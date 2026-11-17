@@ -56,10 +56,12 @@
 //!   looks: the walls and the ceiling are shards, cells whose edges jump
 //!   with the kick, drawn in one color ([`Look::mono`]) so the facets are
 //!   gray with white edges, steel, and not the effect's own stained
-//!   glass. The walls' are untinted and the ceiling's warm white, at 0.4:
-//!   the ceiling is the nearest face, a cell there is wider than the 10
-//!   degrees the flash rule counts in, and at full strength its edges
-//!   moving with the onsets took one song over three flashes. The
+//!   glass. The walls' are untinted and the ceiling's warm white, at the
+//!   strength a ceiling's shards are capped to while the flash limit is
+//!   on (`surfaces::CEILING_SHARDS_LIMITED`): the ceiling is the nearest
+//!   face, a cell there is wider than the 10 degrees the flash rule
+//!   counts in, and at full strength its edges moving with the onsets
+//!   took one song over three flashes. The
 //!   floor is tessera's grid of tiles, blue. Tables are shards too, warm
 //!   white. Frames take the reticle and other surfaces shards, both
 //!   amber, the one hot color. The edge bars are on the face of the
@@ -309,7 +311,14 @@ impl Theme {
                 }
                 KIND_FLOOR => look(B::Tessera, BLUE, BAND_RMS, 1.0, face),
                 KIND_WALL => look(B::Shards, 0, BAND_RMS, 1.0, face).in_one_color(),
-                KIND_CEILING => look(B::Shards, WARM_WHITE, BAND_RMS, 0.4, face).in_one_color(),
+                KIND_CEILING => look(
+                    B::Shards,
+                    WARM_WHITE,
+                    BAND_RMS,
+                    crate::surfaces::CEILING_SHARDS_LIMITED,
+                    face,
+                )
+                .in_one_color(),
                 KIND_FRAME => look(B::Reticle, AMBER, BAND_RMS, 1.0, face),
                 _ => look(B::Shards, AMBER, BAND_RMS, 1.0, Mode::Standing).in_one_color(),
             },
@@ -880,9 +889,10 @@ mod tests {
             };
             assert_eq!(l.color, want, "{}", kind_name(kind));
             assert_eq!(l.mono, l.behavior == B::Shards, "{}", kind_name(kind));
-            // The ceiling's facets at 0.4, for the flash rule.
+            // The ceiling's facets at their cap, for the flash rule.
+            let cap = crate::surfaces::CEILING_SHARDS_LIMITED;
             let ceiling = kind == KIND_CEILING;
-            assert_close!(l.strength, if ceiling { 0.4 } else { 1.0 });
+            assert_close!(l.strength, if ceiling { cap } else { 1.0 });
         }
         for theme in Theme::ALL.into_iter().filter(|t| *t != Theme::Flint) {
             assert!(theme.looks().all(|(_, l)| !l.mono), "{theme:?}");

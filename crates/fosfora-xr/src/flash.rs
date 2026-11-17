@@ -92,7 +92,12 @@
 //! hue or a position rather than to light, so that more of the music can
 //! mean less light, is outside the proof and has to be measured as the
 //! themes are; so is a look built on the bar's clock, which passes as the
-//! analysis has it. And the edge bars' heights when they are free, which
+//! analysis has it. Shards are the first such look to need more than the
+//! measuring: they move their cell edges with the onsets, and on a ceiling,
+//! the nearest face, that took one song to 3.5 flashes a second at full
+//! strength. While the limiter is on they draw there at no more than
+//! `surfaces::CEILING_SHARDS_LIMITED` (board #5533); off, as the wearer
+//! set them. And the edge bars' heights when they are free, which
 //! do not pass through here at all (next).
 //!
 //! **The edge bars' heights** (board #5532, [`BARS_KNOB`]). Behind the

@@ -1482,7 +1482,7 @@ scenery". They come after Mirror in the cycle.
 | table | shards in one color, warm white, rms, 1, edges standing | none, warm white, rms, 1, edges on the face |
 | floor | tessera, blue, rms, 1, edges on the face | contours, green, rms, 1, edges off |
 | wall | shards in one color, own (untinted), rms, 1, edges on the face | contours, green, rms, 1, edges off |
-| ceiling | shards in one color, warm white, rms, 0.4, edges on the face | contours, green, rms, 1, edges off |
+| ceiling | shards in one color, warm white, rms, 0.6, edges on the face | contours, green, rms, 1, edges off |
 | frame | reticle, amber, rms, 1, edges on the face | none, warm white, rms, 1, edges on the face |
 | other | shards in one color, amber, rms, 1, edges standing | curls, warm white, rms, 0.4, edges on the face |
 
@@ -1490,7 +1490,9 @@ scenery". They come after Mirror in the cycle.
 it does on a drum. The eight dumped songs (110 to 185 BPM; none is rock,
 and the two nearest the rock track's 104 BPM are at 110 and 115) have a
 kick every 0.2 to 0.65 s whose level halves in 70 to 150 ms, and a snare
-that reads as a high onset with little kick.
+that reads as a high onset with little kick. The rock track the app now
+ships for Flint reads the same way: a kick every 0.9 s that halves in
+75 ms and takes shards' edges from 2.5 to 4.7, and a snare onset of 0.7.
 
 - **The walls and the ceiling: shards.** A seated or lying wearer sees
   mostly walls and ceiling, so the facets are there. The cell edges are
@@ -1501,15 +1503,46 @@ that reads as a high onset with little kick.
   Sustained energy shows as the cells' fill, which follows the rms and
   never drops out. A wall 2.45 m high shows seven cells up its height,
   about 35 cm each.
-- **The ceiling at 0.4.** Shards move their cell edges with the onsets,
-  which the flash limit cannot hold to its direction: a position, not a
-  light. The ceiling is the nearest face (1.25 m over a seated eye), so a
-  cell there (54 cm) is wider than the 10 degrees the rule counts in and
-  an edge crossing a region is a change of its light. At full strength
-  the ceiling took one dumped song to 3.5 flashes a second in one region
-  overhead and three more to 3. At 0.5 and at 0.4 the worst was 3 on one
-  song and 2.5 on the rest, so 0.4 bought nothing measurable over 0.5. A
-  wall this close to a chair would do the same.
+- **A ceiling's shards are capped while the flash limit is on**
+  (`SurfaceBehavior::drawn_strength`, `surfaces::CEILING_SHARDS_LIMITED`,
+  0.6). Shards move their cell edges with the onsets, which the flash
+  limit cannot hold to its direction: a position, not a light. The
+  ceiling is the nearest face (1.25 m over a seated eye), so a cell there
+  (54 cm) is wider than the 10 degrees the rule counts in and an edge
+  crossing a region is a change of its light. Flint over eleven songs
+  (the eight dumped ones and the three bundled tracks), the limiter on,
+  by the ceiling's strength:
+
+  | strength | worst region, flashes a second | songs at 3 | songs where the ceiling is the worst region |
+  | --- | --- | --- | --- |
+  | 1.0 | 3.5 on one song | three more | eight |
+  | 0.8 | 3 | one | two |
+  | 0.7 | 3 | one | two |
+  | 0.6 | 3 | one | one |
+  | 0.5 | 3 | one | one |
+
+  The one song at 3 stays there down to 0.4, so that count is not the
+  strength's. 0.8 is the highest value tried that keeps every song within
+  the rule. The cap is 0.6: the highest whose counts are those of 0.5 on
+  every song, a quarter under the highest that passed, with nothing
+  measured to gain below it. Flint's own ceiling sits at the cap.
+  - *Where.* The cap is applied where a box's strength is resolved for
+    drawing (`app.rs`, the surfaces pass's loop), and nowhere else. The
+    room file, the Strength row and the voice's replies keep the wearer's
+    own number, so nothing has to be put back when the limit goes off.
+  - *Live.* It reads the limiter's state each frame, so it follows the
+    wearer's "Limit flashing" setting, the two spoken sentences and the
+    knob. A strength does not glide anywhere in this path (a Strength
+    step or a theme lands on the next frame), so the cap lands on the
+    next frame too. With the limit switched on, a ceiling the wearer
+    raised over 0.6 steps down to 0.6 once. Switched off, it steps back
+    up to their number. On Flint as the theme sets it nothing changes at
+    the switch.
+  - *Only the ceiling.* Walls are not capped. Counted with the eye 1 m
+    from a wall, Flint's walls at full strength read 3 flashes a second
+    on four of the eleven songs, in regions of that wall, against one
+    song from the middle of the room, and none over 3. A wall's cells are
+    35 cm, the ceiling's 54.
 - **Steel, not stained glass** (`Look::mono`, `Port::mono`). Shards' own
   fills are magenta and green. Flint draws every shards in one color: the
   effect's `saturation` input at 0, so the cells are gray with white
@@ -2007,16 +2040,24 @@ Contour's own light hardly moves; what the limiter leaves it is the edge
 bars on its table. Flint lights the walls and the ceiling with shards, so
 without the limiter over a thousand of the 1,734 regions fail on every
 train. Its own motion is also the largest of the themes: with the music
-held still it reads 1.5 flashes a second at a level of 0.3 and 2 at 0.8,
-where the others stay at 1 or under, because shards' cell edges move on
-their own clock and with the onsets. On the dumped songs Flint's worst is
-3 flashes a second, on one song, in a region of the ceiling overhead, and
-2.5 or under on the other seven. Shards alone on every surface that now
-offers them, at full strength and in their own colors, read 2.5 on the
-pulse trains and 3 on the four songs tried, where they read 1 before they
-were on a wall's and a ceiling's list. A Flint ceiling raised to full
-strength by hand reached 3.5 on one song (above): that edit is over the
-rule and nothing stops it yet.
+held still it reads 1.5 flashes a second at a level of 0.3 and 2.5 at
+0.8, where the others stay at 1 or under, because shards' cell edges move
+on their own clock and with the onsets. Over eleven songs (the eight
+dumped ones and the three bundled tracks) Flint's worst is 3 flashes a
+second, on one song, in a region of the ceiling overhead, and 2.5 or
+under on the other ten; on its own rock track it reads 2. Contour's worst
+is 2.5, on one song, and 1 on its own track.
+
+A ceiling's shards draw at 0.6 at most while the limit is on (Themes,
+Flint). With that, a Flint ceiling raised to full strength by hand stays
+at 3 on the same eleven songs, where it reached 3.5 on one before
+(`flints_ceiling_raised_by_hand_stays_within_three_flashes`). Shards
+picked by hand at full strength, in their own colors, on every surface
+that offers them read 2.5 at worst on the pulse trains and 3 on two of
+the eleven songs, one of them at 3 red flashes as well. They read 1
+before they were on a wall's and a ceiling's list. Walls are not capped.
+With the eye 1 m from a wall, Flint's walls at full strength read 3 on
+four of the eleven songs, in regions of that wall, and none over.
 
 The same runs over real songs (`the_dumped_songs_stay_within_three_flashes`,
 eight tracks, fast ones and dense hi-hats among them) read dumps kept

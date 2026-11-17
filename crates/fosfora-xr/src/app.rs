@@ -5228,6 +5228,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     } else {
                         (lane, row.map_or(1.0, |r| r[1]))
                     };
+                    // Board #5533: shards on a ceiling draw at a cap while
+                    // the flash limit is on, whatever the lane asks; the
+                    // lane and the Strength row keep the wearer's number.
+                    // It follows the wearer's setting from frame to frame.
+                    let strength = behavior.drawn_strength(b.kind, strength, flash_limit.on());
                     let (color, band) = match row {
                         Some(r) if behavior == lane => crate::surfaces::lane_params(r, behavior),
                         _ => (0, behavior.default_band()),
