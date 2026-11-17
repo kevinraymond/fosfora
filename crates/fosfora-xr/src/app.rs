@@ -3867,11 +3867,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             // rising notes. Board #5531: under a fist the
                             // label says how to finish.
                             Ok(()) => {
-                                // Board #5452: the gesture the tap hint
-                                // teaches.
-                                if opener == VoiceOpener::Tap {
-                                    hint_made[crate::first_run::Hint::Tap.index()] = true;
-                                }
                                 crate::ui_sound::play(crate::ui_sound::Cue::Listening);
                                 voice_label.show_for(
                                     crate::voice::listening_label(opener).to_owned(),
@@ -3892,6 +3887,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         // it forgave, for tuning the grace.
                         if fist_window {
                             info!("{}", crate::voice::held_line(push_to_talk.held()));
+                        }
+                        // Board #5531: a window with something said in it
+                        // is what the talk hint teaches, by a fist or by
+                        // a tap. A tap that opened a window nobody spoke
+                        // in teaches nothing.
+                        if push_to_talk.spoke() {
+                            hint_made[crate::first_run::Hint::Talk.index()] = true;
                         }
                         if v.close(seconds, why) {
                             voice_label.show_for(
@@ -4457,8 +4459,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // shows (`first_run::Hints`). One that is made or gives up
                 // is saved as taught. The understood cue plays as "Got it"
                 // goes up, and never into an open voice window, which
-                // would hear it: the thumb tap's answer is the window's
-                // own sound and "Listening…".
+                // would hear it.
                 let label_free = shown.is_none();
                 let events = hints.step(
                     dt,
@@ -4466,9 +4467,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         show_on: !wait.waiting(),
                         label_free,
                         hands_seen: hands_hint.seen() || hints_knob,
+                        // Board #5531: the talk hint teaches the fist,
+                        // which needs no microgestures.
                         can: [
                             micro_on && world,
-                            micro_on && controls.voice && voice.is_some() && voice_mic,
+                            controls.voice && voice.is_some() && voice_mic,
                             hud.is_some() && !hud_test,
                         ],
                         made: std::mem::take(&mut hint_made),
@@ -4489,8 +4492,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let hint_now = hints.now().filter(|_| label_free);
                 match hint_now {
                     Some(_) if !hint_shown => hint_follow.place(head_rot),
-                    // A hint is two lines, "Got it" one.
-                    Some(_) => hint_follow.step(head_rot, dt, 2),
+                    // A hint is two lines or four, "Got it" one.
+                    Some((text, _)) => {
+                        hint_follow.step(head_rot, dt, crate::label::lines(text).len());
+                    }
                     None => {}
                 }
                 hint_shown = hint_now.is_some();

@@ -842,7 +842,7 @@ impl MenuFile {
     /// The file's text: `{"debug":false,"immerse":"full","voice":true}`,
     /// with `"agent":"local"` (`anthropic`, `openai`, `off`) once picked,
     /// `"roam":true` and `"space_setup_asked":true` only while true, and
-    /// `"taught":["swipe","tap","palm"]` with the hints taught, once one
+    /// `"taught":["swipe","talk","palm"]` with the hints taught, once one
     /// is.
     pub fn to_json(self) -> String {
         let mut json = serde_json::json!({
