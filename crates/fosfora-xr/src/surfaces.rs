@@ -427,11 +427,16 @@ impl SurfaceBehavior {
         matches!(self, Self::Windows | Self::Terraces)
     }
 
-    /// Whether this look is held back (board #5462). Astrolabe and fenestra
-    /// are in no theme, and on one song each they reached 3.5 flashes a
-    /// second in one region, over the app's limit of 3 (`flash.rs`). Until
-    /// they are bounded they are not offered, and a surface a saved room
-    /// left on one shows nothing.
+    /// Whether this look is held back (board #5462). On every surface, in
+    /// their own colors, astrolabe and fenestra reached 3.5 flashes a
+    /// second in one region on one song each, over the app's limit of 3
+    /// (`flash.rs`). They are not offered, and a surface a saved room left
+    /// on one shows nothing. One place draws them (board #5543): where the
+    /// room's theme gives the look to the surface's kind
+    /// (`themes::gives`), which is Mirror's ceiling for astrolabe and its
+    /// frames for fenestra, in one color and without their dim fill
+    /// (`surface_port::with_look`). There they count 3.0 and 2.0 at worst
+    /// over eleven songs.
     pub fn held_back(self) -> bool {
         matches!(self, Self::Astrolabe | Self::Fenestra)
     }

@@ -5427,13 +5427,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     };
                     let spectrum = behavior == SurfaceBehavior::Spectrum;
                     // Board #5462: a look held back (astrolabe and
-                    // fenestra) shows nothing; the lanes log the surfaces
-                    // on one. Board #5543: embers and sparks, which the
+                    // fenestra) shows nothing but where the room's theme
+                    // gives it to the kind (board #5543, Mirror); the
+                    // lanes log the surfaces on one that shows nothing. Board #5543: embers and sparks, which the
                     // wearer's lists still leave out, and the looks only a
                     // theme gives draw.
                     if spectrum != (spectrum_box == Some(k))
                         || (!spectrum && !behavior.draws_on_face())
-                        || behavior.held_back()
+                        || (behavior.held_back()
+                            && !crate::themes::gives(
+                                surface_lanes.saved_theme(),
+                                b.kind,
+                                behavior,
+                            ))
                         || b.hidden
                         || (k == stage_k && scene_floor)
                         || (behavior == SurfaceBehavior::Rings && ripple.is_none())
@@ -5462,6 +5468,29 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // audio bindings.
                     // Board #5436: Aurora on a wall or the ceiling is the
                     // sky, on a floor its reflection (`sky::Map`).
+                    // Board #5543: under a theme whose floor mirrors its
+                    // ceiling (Mirror: the astrolabe, barely), the
+                    // ceiling's look on the floor's face first, so the
+                    // floor's own look draws over it. It carries the
+                    // ceiling's kind, and with it the ceiling's color,
+                    // one color and cut.
+                    if b.kind == KIND_FLOOR
+                        && surface_ports.is_some()
+                        && let Some((mirrored, color, strength)) =
+                            crate::themes::floor_mirror(surface_lanes.saved_theme(), behavior)
+                        && let Some(i) = mirrored.port()
+                    {
+                        counts[5] += 1;
+                        ported.push((
+                            i,
+                            crate::surface_port::port_face(face),
+                            crate::surfaces::KIND_CEILING,
+                            mirrored,
+                            strength,
+                            color,
+                            Map::Face,
+                        ));
+                    }
                     if let (Some(i), Some(_)) = (behavior.port(), surface_ports.as_ref()) {
                         counts[5] += 1;
                         ported.push((
@@ -5671,9 +5700,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                                 .choice
                                                 .mode(crate::themes::edge_mode(light_theme, kind))
                                                 == crate::edge_bars::Mode::In;
+                                        // A held-back look was counted
+                                        // for the flash rule without its
+                                        // fill, so it never draws it.
                                         crate::surface_port::with_look(
                                             rows,
-                                            if tunnel {
+                                            if tunnel || behavior.held_back() {
                                                 crate::surface_port::TUNNEL_CUT
                                             } else {
                                                 0.0

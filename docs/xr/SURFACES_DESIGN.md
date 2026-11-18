@@ -2221,6 +2221,65 @@ The cost is a compare, a smoothstep and a select per fragment of a ported
 face, no texture. The walls now run the file's row: bezel, warm white,
 rms, 1, edges in, one color.
 
+**Astrolabe and fenestra, bounded** (`surfaces::SurfaceBehavior::held_back`,
+`themes::gives`). Both are held back from the wearer's lists: on every
+surface, in their own colors, each reached 3.5 flashes a second in one
+region on one song (board #5462). The file gives Mirror's ceiling
+astrolabe, "the mirror ball", and its frames fenestra, both in one color
+with their edges in. In that look, with the limiter on, each alone over
+the eleven songs:
+
+| look, where | worst general | failing regions |
+| --- | --- | --- |
+| astrolabe on the ceiling, strength 1 | 3.0 (erofex, systemcrash) | 0 |
+| the same at 0.8 and at 0.6 | 3.0 on the same two songs | 0 |
+| fenestra on the model's frame, 0.8 x 0.6 m | 0 | 0 |
+| fenestra on a door, 1.2 x 2 m | 2.0 (systemcrash) | 0 |
+
+Astrolabe's 3.0 is at the limit and inside it, as Aurora's, Classic's and
+Flint's worst are. It does not fall with the strength, so a cap would buy
+nothing and the row keeps the file's 1. The count that was 3.5 on erofex
+is 3.0 here: one face and not six, one color, and no fill.
+
+So a held-back look draws in one place: where the room's saved theme
+gives it to the surface's kind, which is Mirror's ceiling and frames.
+There it always draws with the cut, whatever the Edges control forces,
+since it was counted without its fill. Anywhere else it shows nothing, as
+before: on another kind, under another theme, in a room with none. The
+wearer's lists, the voice and the agent still leave both out.
+
+On the ceiling the dial's rings, ticks and sweeping arcs lie over the
+tunnel's nested frames (`recordings/themes3/mirror/step3/sheet-up.jpg`).
+The stills gained a fourth view, up, for it.
+
+**The floor's mirror** (`themes::Theme::floor_mirror`, `MIRROR_FLOOR`).
+The owner on Mirror's floor: "maybe a slight astrolabe, but barely so it
+doesn't take over the tessera." The floor draws the ceiling's look on its
+own face first, at 0.15 of the ceiling's strength, and its tiles over it,
+so the dial shows in the dark between the tiles and where a wave has not
+lit them. The file's value is 0.5; 0.15 is the least that still read in
+the stills. It is the ceiling's look laid flat on the floor, turning with
+the ceiling's, and not a mirror image with depth: the sky's reflection
+under Aurora solves the reflected ray, and a dial this faint does not
+earn that. It draws only while the floor runs Mirror's own tiles. One
+more ported face a frame, the floor's size, at the cut.
+
+**The whole theme, counted.** Limiter on, Mirror with every row above on
+the eleven songs: worst 3.0 general (erofex, systemcrash; the ceiling's
+dial), 0 red, 0 failing regions, the same with the floor's mirror and
+without it. On the pulse trains at 4 to 16 Hz: 1.5 for the theme, and
+each part alone no more (bezel 1.5, astrolabe 1.5, tessera 1.0, the
+tunnels 0.5, fenestra 0). A track's theme coming and the bars' free
+heights pass. Flint, whose floor is now in one color too: worst 3.0
+(meadow, psykovsky), 0 failing, as before. Output:
+`recordings/themes3/mirror/flash/`. Stills:
+`recordings/themes3/mirror/final/sheet.jpg`.
+
+**Not yet.** The headset: the tunnels' cost at three times the depth
+(they cover the same pixels as before, with a logarithm more in each),
+the cut's edge on bezel's thin lines in the half-size faces layer, and
+all of it worn.
+
 ## The contours (Nov 16, board #5533)
 
 **Why.** The owner asked for "gentle rolling and topographic scenery"

@@ -521,15 +521,18 @@ impl RoomLanes {
 
     /// The log line naming the surfaces on a look that shows nothing
     /// (board #5462, `SurfaceBehavior::held_back`): astrolabe and
-    /// fenestra. Embers and sparks were named here too until the surfaces
+    /// fenestra, but where the room's theme gives the look to the kind
+    /// (`themes::gives`, board #5543: Mirror's ceiling and frames), where
+    /// it draws. Embers and sparks were named here too until the surfaces
     /// pass drew them again (board #5543). `None` while the set is the one
     /// last named, so a room saved with one says it once, and again only
     /// when it changes.
     fn not_offered_line(&mut self, boxes: &[LaneBox<'_>]) -> Option<String> {
+        let theme = self.saved_theme();
         let mut now: Vec<([u8; 16], SurfaceBehavior)> = boxes
             .iter()
             .zip(&self.behaviors)
-            .filter(|(_, b)| b.held_back())
+            .filter(|(x, b)| b.held_back() && !crate::themes::gives(theme, x.kind, **b))
             .map(|(x, &b)| (x.uuid, b))
             .collect();
         now.sort_unstable_by_key(|(u, _)| *u);
@@ -544,7 +547,7 @@ impl RoomLanes {
             .iter()
             .zip(&self.behaviors)
             .enumerate()
-            .filter(|(_, (_, b))| b.held_back())
+            .filter(|(_, (x, b))| b.held_back() && !crate::themes::gives(theme, x.kind, **b))
             .map(|(k, (b, behavior))| {
                 let (label, uuid8) = box_label(b);
                 format!("#{k} {label} {uuid8} {}", behavior.name())
