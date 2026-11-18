@@ -501,7 +501,7 @@ impl Gfx {
             crate::surface_fx::SURFACE_FX_WGSL,
             "xr-surfaces",
             crate::surface_fx::UNIFORM_ROWS,
-            crate::surface_fx::MAX_SLOTS,
+            crate::surface_fx::MAX_SLOTS + crate::surface_fx::MAX_SIDES,
         );
         let (highlight_pipeline, highlight) = build_surface_pipeline(
             &device,
@@ -776,7 +776,8 @@ impl Gfx {
 
     /// The surfaces pass for this frame: one lit face per entry
     /// (`surface_fx::rows`), each into its own slot and drawn in order; at
-    /// most `surface_fx::MAX_SLOTS`, the rest dropped. Empty hides the
+    /// most `surface_fx::MAX_SLOTS` and, after them, `surface_fx::MAX_SIDES`
+    /// sides of volumes (board #5543), the rest dropped. Empty hides the
     /// pass.
     pub fn set_surfaces(&self, faces: &[[[f32; 4]; crate::surface_fx::UNIFORM_ROWS]]) {
         let n = faces.len().min(self.surfaces.len());

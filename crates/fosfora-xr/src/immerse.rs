@@ -1644,6 +1644,7 @@ mod tests {
             strength: 0.7,
             color: 0,
             band: 0,
+            seed: 0,
         };
         let rows = crate::surface_fx::rows(&slot, Audio::default(), None, None, 0.0);
         assert_close!(rows[PEAK_ROW][3], PULSE_PEAK_ALPHA);

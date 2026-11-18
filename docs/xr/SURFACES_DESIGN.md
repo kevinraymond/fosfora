@@ -2193,13 +2193,13 @@ have: windows for Aurora's city, terraces for Contour's hills, and sparks
 and embers for Flint's forge. Sparks and embers existed by name but drew
 nothing since the particle cloud went (board #5470).
 
-**One face per box.** The surfaces pass draws one quad per box: a
-volume's top face, or a plane's face toward the room
-(`surfaces::acting_face`). It draws no sides. So a table's windows are on
-its top, a city block seen from above, and a terraced table shows the
-rings on its top and no strata down its sides. A storage unit taller than
-the eye shows nothing of either. Sides need more faces in the pass, which
-is a change to its slots and its cost, and was left for a decision.
+**One face per box, and the sides for two looks.** The surfaces pass
+draws one quad per box: a volume's top face, or a plane's face toward the
+room (`surfaces::acting_face`). For every look but the windows and the
+terraces that is all it draws. Those two are lit on a volume's sides too
+("Sides" below): with the top alone a storage unit taller than the eye
+showed nothing of either, and a table's windows were a city block seen
+from above.
 
 **Windows** (`SurfaceBehavior::Windows`, id 17). A grid of cells 5 cm
 wide (4 cm on a frame) and 1.4 times as tall, a lit pane in the middle of
@@ -2265,6 +2265,69 @@ device:
 No look loops over cells or reads a texture. A hash is five multiplies
 and nine shifts and xors on integers. The sparks' and the embers' counts
 include the heat ramp's two smoothsteps.
+
+### Sides
+
+**Why.** The owner, on the first build with the windows: "The buildings
+definitely needs to have 'sides', however best it is to show them."
+Aurora's rows turn the edge bars off on tables and other surfaces, so a
+unit whose top is over the eye went dark.
+
+**What draws.** A volume running the windows or the terraces
+(`SurfaceBehavior::on_sides`) draws the look on its top and on the sides
+the head sees (`surface_fx::side_faces`): the faces the edge bars already
+work out for their outlines (`edge_bars::faces`, the ones turned toward
+the head, none from inside the box) that stand. That is one side from
+straight in front and two from a corner, never the bottom. Each side is
+turned upright (`surface_port::port_face`), so its `v` is up. A frame's
+windows are turned the same way (`surface_fx::lit_face`). Every other look
+and every other theme is as it was: the top alone.
+
+**Windows on a side.** The same cells as on the top, 5 cm wide and 1.4
+times as tall, so a 1.8 m unit has about 25 floors and a table about 10.
+The rows are level, and two sides of one box are centered at one height,
+so the rows run on round the corner. The roof keeps its windows: a table
+is seen mostly from above, and a dark roof would leave it its sides
+alone. Each face counts its cells from a place of its own
+(`window_offset`, a hash of the box's index and which side it is), so the
+two faces at a corner, the roof and the next building light different
+windows. The seed is the side's own and not its place in this frame's
+list, so a side keeps its windows while the wearer moves round the box.
+
+**Terraces on a side.** No hill. The land falls 1.25 of its units a
+meter from the top's rim (`TERRACE_STRATA`, `surface_fx::strata`), a line
+every 10 cm and an index line every 50, bent by the room's land, which is
+a field in the room and not on the face. The top's hill is 0 all along
+its rim, so the side's land at the rim is the top's and a ring cut by the
+rim goes on down the side as a stratum. The sides are below the tint's
+threshold, so they are the surface's green and the top keeps the high
+land's warm white.
+
+**Slots.** A side is its box's. It takes the acting face's kind, look,
+color, band and strength and has no lane and no entry in the room's file.
+The sides have slots of their own after the acting faces'
+(`surface_fx::MAX_SIDES`, 32, beside the 32 the acting faces and the ports
+share), so a side never takes a face that drew before. Past 32 the sides
+that cover the least of the view from the head are left out
+(`keep_sides`) and the log says how many. The owner's room has 7 tables
+and 7 other things: 14 to 28 sides by where he sits, under the cap. The
+log's `surfaces:` line counts them.
+
+**Cost.** One more draw per side and eye in the faces layer, and no new
+cost per fragment: the windows' one added vector, the strata in place of
+the hill. What is new is the area. A side's pixels drew nothing before,
+since the box's occluder hid the sky behind it. Counted from the shader
+and not measured on the device.
+
+**The flash count** (`flash_room.rs`). The model draws the sides as the
+app does, and its room gained a storage unit 1.8 m tall ahead and to the
+right, so the count sees a lit face that fills the view the way the
+owner's units do. With the limiter on, in that room: the eleven songs on
+the seven themes, 77 rows and 0 failing regions, worst 3.0 general (Aurora
+on edm, Classic, Flint, as before the sides) and 2.0 red (Aurora); Contour
+2.0 general. On the pulse trains at 4 to 16 Hz the windows alone reach
+2.5 and the terraces 0.5, and windows on every surface 2.5. Output:
+`recordings/themes3/sides/flash/`.
 
 ## The contours (Nov 16, board #5533)
 

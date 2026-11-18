@@ -8,6 +8,19 @@
 //! after the occluders, where the floor ripple drew: behind a hand or a
 //! chair in front of the surface, under the embers.
 //!
+//! **Sides** (board #5543). A volume running the windows or the terraces
+//! (`SurfaceBehavior::on_sides`) is lit on the sides the head sees too
+//! ([`side_faces`], [`push_sides`]): a storage unit taller than the eye
+//! showed nothing of a look on its top, and a building is seen by its
+//! faces. The sides are the faces the edge bars outline
+//! (`edge_bars::faces`) that stand, each upright, so a grid's rows are
+//! level and run on round the corner. A side is its box's: it takes the
+//! acting face's look, color, band and strength, needs no lane and no
+//! entry in the room's file, and has slots of its own after the acting
+//! faces' (up to [`MAX_SIDES`]; past it the sides covering the least of
+//! the view are left out, [`keep_sides`]). Every other look stays on the
+//! acting face alone.
+//!
 //! **The slot.** [`UNIFORM_ROWS`] rows, `struct SurfaceFx` in the WGSL:
 //! the four corners ([`Face::corners`] at [`LIFT_M`]); `face` (the face's
 //! two in-plane half extents, the lift, the behavior id); `params`
@@ -126,7 +139,12 @@
 //! limiter's rule needs. Where a cell is under four pixels the panes fade
 //! into their mean light instead of sparkling. A fragment costs three
 //! lattice hashes and six smoothsteps, with no texture read, no loop and
-//! no sine.
+//! no sine. Each face counts its cells from a place of its own
+//! ([`window_offset`] of the slot's seed, whole cells), so the two faces
+//! of a building seen at a corner, its roof and the building beside it do
+//! not light the same windows, and a side keeps its windows as the wearer
+//! moves round it ([`side_id`]). On a side the cells are upright and as
+//! large as on the top, so a tall unit has many floors.
 //!
 //! **Terraces** (id 18, board #5543): the contours' land climbing over the
 //! face, so a table reads as a hill in the room's landscape. The height is
@@ -138,7 +156,12 @@
 //! under [`TERRACE_BETWEEN`], since a small top shows one index line at
 //! most. The slopes keep the surface's color and the top takes the high
 //! land's. A fragment costs the contours' plus two normalizes, a square
-//! root and four dot products.
+//! root and four dot products. Down a volume's side there is no hill: the
+//! land falls [`TERRACE_STRATA`] a meter from the top's rim ([`strata`]),
+//! so the lines are strata, one every 10 cm, bent by the room's land. The
+//! hill is 0 all along the rim, so the side's land there is the top's
+//! and a line that reaches the rim goes on down the side. A side's
+//! fragment costs what the top's does.
 //!
 //! **Sparks** (id 2, board #5543) and **embers** (id 1). Until board
 //! #5470 these were the cloud's particles off a surface's top. Now the
@@ -163,7 +186,7 @@
 //! and the drift double on the beat and settle back, without the jumps a
 //! speed multiplied into the time would make.
 
-use glam::{Vec2, Vec3};
+use glam::{Quat, Vec2, Vec3};
 
 use crate::canvas::{Canvas, MAX_BARS};
 use crate::ripple::{MAX_RINGS, Ripple};
@@ -171,6 +194,11 @@ use crate::surfaces::{Face, KIND_FLOOR, KIND_FRAME, SurfaceBehavior, surface_col
 
 /// Lit faces the pass holds, one per obstacle box.
 pub const MAX_SLOTS: usize = crate::surfaces::SURFACE_LANE_ROWS;
+/// The sides of volumes the pass holds beside those (board #5543,
+/// [`side_faces`]): slots of their own, so a side never takes an acting
+/// face's or a port's. Past it the sides that cover the least of the view
+/// are left out ([`keep_sides`]).
+pub const MAX_SIDES: usize = 32;
 /// How far off the face the quad sits (m), plus the pipeline's depth bias:
 /// the ripple's, as the surface's occluder writes depth at the face.
 pub const LIFT_M: f32 = crate::ripple::LIFT_M;
@@ -310,6 +338,9 @@ pub const WINDOW_LIT: [f32; 2] = [0.2, 0.85];
 pub const WINDOW_SOFT: f32 = 0.06;
 /// The dimmest window's light against the brightest's.
 pub const WINDOW_DIM: f32 = 0.5;
+/// How far, in cells either way, a face's windows are counted from
+/// ([`window_offset`]).
+pub const WINDOW_OFFSET_CELLS: f32 = 512.0;
 /// How much of the lit share the highs add to the windows picked this
 /// tick, at full highs.
 pub const WINDOW_FLICKER: f32 = 0.3;
@@ -337,6 +368,10 @@ pub const TERRACE_BETWEEN: f32 = 0.45;
 /// from the surface's color to the high land's: the slopes keep the
 /// surface's color and the top takes the high land's.
 pub const TERRACE_TINT: f32 = 0.75;
+/// How fast a terraced volume's land falls down its sides, in the land's
+/// units a meter (board #5543): a line every 10 cm, the strata, an index
+/// line every 50.
+pub const TERRACE_STRATA: f32 = LAND_INTERVAL / 0.1;
 
 /// The sparks' peak alpha (board #5543).
 pub const SPARK_PEAK_ALPHA: f32 = 0.9;
@@ -624,6 +659,10 @@ pub struct Slot {
     pub strength: f32,
     pub color: u32,
     pub band: u32,
+    /// What tells this face from every other this frame ([`face_seed`]):
+    /// the windows count their cells from it ([`window_offset`]), so two
+    /// faces do not light the same windows. No other look reads it.
+    pub seed: u32,
 }
 
 /// What a spectrum slot draws: the bars' heights and the bottom glow (a
@@ -685,6 +724,153 @@ pub fn level_floor(face: Face, stage_top: Option<f32>) -> Face {
         axes: [a.normalize_or(face.axes[0]), b.normalize_or(face.axes[1])],
         half: [face.half[0] * a.length(), face.half[1] * b.length()],
     }
+}
+
+/// Whether `face` stands: its normal nearer level than up or down, the
+/// ports' rule for a wall (`surface_port::WALL_NORMAL_Y`). A volume's
+/// side, a wall, a frame.
+pub fn stands(face: &Face) -> bool {
+    face.normal.y.abs() < crate::surface_port::WALL_NORMAL_Y
+}
+
+/// The sides of a volume (`center`, `rot` box to world, `half`) that a
+/// look lit on them (`SurfaceBehavior::on_sides`) draws on beside the
+/// acting face, for a head at `head`, into `out` (board #5543). They are
+/// the faces the edge bars outline (`edge_bars::faces`: the ones turned
+/// toward the head, none from inside the box) that stand ([`stands`]), so
+/// neither the top, which is the acting face, nor the bottom; one or two
+/// for an upright box. Each is turned upright (`surface_port::port_face`:
+/// `v` up, `u` so the face is not mirrored), so a grid's rows are level
+/// and two sides of one box share their rows. None for a plane, whose one
+/// lit face is the acting face.
+pub fn side_faces(center: Vec3, rot: Quat, half: Vec3, head: Vec3, out: &mut Vec<Face>) {
+    out.clear();
+    if crate::surfaces::is_plane(half) {
+        return;
+    }
+    crate::edge_bars::faces(center, rot, half, head, out);
+    out.retain(stands);
+    for face in out.iter_mut() {
+        *face = crate::surface_port::port_face(*face);
+    }
+}
+
+/// How much of the view from `head` a face covers, about: its area as the
+/// head sees it over the square of the distance (steradians for a small
+/// face), 0 from behind.
+pub fn view_share(face: &Face, head: Vec3) -> f32 {
+    let d = head - face.center;
+    let r2 = d.length_squared().max(1e-4);
+    4.0 * face.half[0] * face.half[1] * face.normal.dot(d).max(0.0) / (r2 * r2.sqrt())
+}
+
+/// `sides` cut to `max` ([`MAX_SIDES`]): the ones that cover the most of
+/// the view from `head` ([`view_share`]) stay, in their order. Returns how
+/// many were left out.
+pub fn keep_sides(sides: &mut Vec<Slot>, head: Vec3, max: usize) -> usize {
+    let dropped = sides.len().saturating_sub(max);
+    if dropped == 0 {
+        return 0;
+    }
+    let mut order: Vec<usize> = (0..sides.len()).collect();
+    order.sort_by(|&a, &b| {
+        view_share(&sides[b].face, head).total_cmp(&view_share(&sides[a].face, head))
+    });
+    let mut keep = vec![false; sides.len()];
+    for &i in &order[..max] {
+        keep[i] = true;
+    }
+    let mut kept = keep.into_iter();
+    sides.retain(|_| kept.next().unwrap_or(false));
+    dropped
+}
+
+/// The seed of a lit face of the room's `index`th box ([`Slot::seed`]):
+/// `face` 0 its acting face, 1 to 6 a side ([`side_id`]).
+pub fn face_seed(index: usize, face: u32) -> u32 {
+    (index as u32) * 8 + face.min(7)
+}
+
+/// Which side of a box (`rot` box to world) the face of outward normal
+/// `normal` is, 1 to 6: the box's axis it lies along and its sign. It is
+/// the side's own, whichever other sides the head sees, so a side keeps
+/// its windows while the wearer moves round the box.
+pub fn side_id(rot: Quat, normal: Vec3) -> u32 {
+    let l = (rot.inverse() * normal).to_array();
+    let mut axis = 0;
+    for k in 1..3 {
+        if l[k].abs() > l[axis].abs() {
+            axis = k;
+        }
+    }
+    1 + 2 * axis as u32 + u32::from(l[axis] < 0.0)
+}
+
+/// `face` as a look draws on it: a look lit on sides
+/// (`SurfaceBehavior::on_sides`) has an up, so on a face that stands (a
+/// frame's, a wall's) it is turned upright as a side is ([`side_faces`]).
+/// Every other look and every level face keeps the face as it is.
+pub fn lit_face(behavior: SurfaceBehavior, face: Face) -> Face {
+    if behavior.on_sides() && stands(&face) {
+        crate::surface_port::port_face(face)
+    } else {
+        face
+    }
+}
+
+/// The sides of the room's `index`th box (`center`, `rot`, `half`) for
+/// the look `slot` draws on its acting face, onto `sides`: none unless
+/// the look is lit on sides (`SurfaceBehavior::on_sides`), else one slot
+/// per side the head at `head` sees ([`side_faces`]), each with the
+/// acting face's kind, look, strength, color and band and a seed of its
+/// own. A side needs no lane and no entry in the room's file: it is its
+/// box's. `scratch` is working room.
+#[expect(clippy::too_many_arguments)]
+pub fn push_sides(
+    slot: &Slot,
+    index: usize,
+    center: Vec3,
+    rot: Quat,
+    half: Vec3,
+    head: Vec3,
+    scratch: &mut Vec<Face>,
+    sides: &mut Vec<Slot>,
+) {
+    if !slot.behavior.on_sides() {
+        return;
+    }
+    side_faces(center, rot, half, head, scratch);
+    sides.extend(scratch.iter().map(|&face| Slot {
+        face,
+        seed: face_seed(index, side_id(rot, face.normal)),
+        ..*slot
+    }));
+}
+
+/// Where a face of seed `seed` counts its windows' cells from, in whole
+/// cells along its two axes: a hash of the seed, so each face of each
+/// building lights windows of its own. Whole cells, so the panes sit where
+/// they did on the face; the WGSL adds it to the cell index, and
+/// [`windows_light`] takes it as a shift of `uv` by that many cells.
+pub fn window_offset(seed: u32) -> [f32; 2] {
+    let cells = |k: i32| (WINDOW_OFFSET_CELLS * hash(seed as i32, k, 41)).round();
+    [cells(0), cells(1)]
+}
+
+/// A terraced volume's land on one of its sides (board #5543), `depth`
+/// (m) under the top's rim, where the room's land ([`land`]) is `height`
+/// high with the gradient `grad` along the face's two axes, whose own
+/// components along up are `up`: its height and its slope along the face,
+/// for [`terrace_light`]. The land falls [`TERRACE_STRATA`] a meter down
+/// the side, so the lines are strata, level but for the room's land. At
+/// the rim it is the top's ([`terrace`], whose hill is 0 all along the
+/// rim), so a line that reaches the rim on the top goes on down the side.
+/// The WGSL's `terraces_light` on a side before the lines.
+pub fn strata(depth: f32, height: f32, grad: Vec2, up: Vec2) -> (f32, f32) {
+    (
+        TERRACE_LAND * height - TERRACE_STRATA * depth.max(0.0),
+        (TERRACE_LAND * grad + TERRACE_STRATA * up).length(),
+    )
 }
 
 /// The color a slot draws in: its color index's (`surfaces::surface_color`,
@@ -795,7 +981,8 @@ pub fn rows(
             } else {
                 WINDOW_CELL_M
             };
-            rows[9] = [0.0, 0.0, 0.0, cell];
+            let [x, y] = window_offset(slot.seed);
+            rows[9] = [x, y, 0.0, cell];
         }
         SurfaceBehavior::Sparks => rows[9] = [0.0, 0.0, 0.0, SPARK_CELL_M],
         SurfaceBehavior::Embers => rows[9] = [0.0, 0.0, 0.0, EMBER_COAL_M],
@@ -809,6 +996,10 @@ pub fn rows(
             ];
             let [r, g, b] = LAND_HIGH_COLOR;
             rows[RINGS_ROW] = [r, g, b, land.travel_light];
+            // Board #5543: a terraced face that stands is a volume's
+            // side and draws the strata.
+            let side = slot.behavior == SurfaceBehavior::Terraces && stands(face);
+            rows[RINGS_ROW + 1] = [f32::from(u8::from(side)), 0.0, 0.0, 0.0];
         }
         _ => {
             let feature = if floor {
@@ -1152,11 +1343,13 @@ struct SurfaceFx {
     // right, y the bar count, z the bottom glow, w the bar fill; contours
     // and terraces: x the land's clock (s), y its level, z its breath, w
     // the traveling line's height; windows and sparks: w the cell (m);
-    // embers: w a coal's size (m)
+    // windows: x, y the cells the face counts from, whole; embers: w a
+    // coal's size (m)
     shape: vec4<f32>,
     // origin u, v (m), radius (m), intensity; 0 intensity for an empty slot
-    // (contours: the first row is the high land's color, w the traveling
-    // line's light)
+    // (contours and terraces: the first row is the high land's color, w
+    // the traveling line's light; terraces: the second row's x is 1 on a
+    // volume's side)
     rings: array<vec4<f32>, 8>,
     // the spectrum's bar heights 0..1, four per row, from the wearer's left
     bars: array<vec4<f32>, 16>,
@@ -1245,6 +1438,7 @@ const TERRACE_HILL: f32 = 0.625;
 const TERRACE_LAND: f32 = 0.5;
 const TERRACE_BETWEEN: f32 = 0.45;
 const TERRACE_TINT: f32 = 0.75;
+const TERRACE_STRATA: f32 = 1.25;
 // The sparks: the cells' growth over the flight, the share of cells with
 // a spark, its jitter, half length (m), the share of the length left at
 // the end, half width (m), the front's soft edge (m), the strike's radius
@@ -1572,7 +1766,9 @@ fn windows_light(uv: vec2<f32>, px: f32) -> f32 {
     let p = uv / cell;
     let i = floor(p);
     let f = p - i;
-    let c = vec2<i32>(i);
+    // Each face counts its cells from a place of its own (shape.xy, whole
+    // cells), so no two light the same windows.
+    let c = vec2<i32>(i + fx.shape.xy);
     let own = 0.5 + 0.5 * hash(c, 11u);
     let rank = 0.5 + 0.5 * hash(c, 12u);
     let tick = u32(max(fx.audio.w * WINDOW_FLICKER_HZ + 8.0 * rank, 0.0));
@@ -1604,9 +1800,17 @@ fn terraces_light(uv: vec2<f32>, world: vec3<f32>, px: f32) -> vec2<f32> {
     let half = max(fx.face.xy, vec2<f32>(1e-3));
     let r = uv / half;
     let rr = dot(r, r);
-    let height = TERRACE_LAND * l.x + TERRACE_HILL * (1.0 - min(rr, 1.0));
+    // A volume's side (rings[1].x): no hill, the land falling down the
+    // side from the top's rim, so the lines are strata that meet the
+    // top's at the rim, where the hill is 0.
+    let side = fx.rings[1].x;
+    let rim = max(max(fx.corners[0].y, fx.corners[1].y), max(fx.corners[2].y, fx.corners[3].y));
+    let height = TERRACE_LAND * l.x
+        + (1.0 - side) * TERRACE_HILL * (1.0 - min(rr, 1.0))
+        - side * TERRACE_STRATA * max(rim - world.y, 0.0);
     let g = TERRACE_LAND * vec2<f32>(dot(l.yzw, a), dot(l.yzw, b))
-        - step(rr, 1.0) * 2.0 * TERRACE_HILL * r / half;
+        - (1.0 - side) * step(rr, 1.0) * 2.0 * TERRACE_HILL * r / half
+        + side * TERRACE_STRATA * vec2<f32>(a.y, b.y);
     let slope = max(amp * length(g), LAND_SLOPE_MIN);
     let h = amp * height + LAND_TIDE * level;
     return vec2<f32>(
@@ -1761,7 +1965,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 mod tests {
     use super::*;
     use crate::surfaces::{KIND_CEILING, KIND_TABLE, KIND_WALL, acting_face, palette};
-    use glam::Quat;
 
     const HEAD: Vec3 = Vec3::new(0.3, 1.2, 0.4);
 
@@ -1793,6 +1996,7 @@ mod tests {
             strength: 1.0,
             color: 0,
             band: behavior.default_band(),
+            seed: 0,
         }
     }
 
@@ -1881,6 +2085,7 @@ mod tests {
             ("TERRACE_LAND", TERRACE_LAND),
             ("TERRACE_BETWEEN", TERRACE_BETWEEN),
             ("TERRACE_TINT", TERRACE_TINT),
+            ("TERRACE_STRATA", TERRACE_STRATA),
             ("SPARK_SPREAD", SPARK_SPREAD),
             ("SPARK_SHARE", SPARK_SHARE),
             ("SPARK_JITTER", SPARK_JITTER),
@@ -3011,7 +3216,9 @@ mod tests {
         };
         let w = of(KIND_TABLE, SurfaceBehavior::Windows, BAND_MID);
         assert_close!(w[4][3], 17.0);
-        assert_close!(w[9], [0.0, 0.0, 0.0, WINDOW_CELL_M]);
+        // The cells counted from the face's own place (seed 0 here).
+        let [x, y] = window_offset(0);
+        assert_close!(w[9], [x, y, 0.0, WINDOW_CELL_M]);
         assert_close!(w[6][3], WINDOW_PEAK_ALPHA);
         assert_close!(w[5][2], BAND_MID as f32);
         let frame = of(KIND_FRAME, SurfaceBehavior::Windows, BAND_MID);
@@ -3383,5 +3590,271 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A storage unit as the runtime reports one: local +Z up, 0.8 m wide,
+    /// 0.5 deep and 1.8 tall, ahead and to the left of [`HEAD`].
+    const UNIT: (Vec3, Vec3) = (Vec3::new(-0.9, 0.9, -1.6), Vec3::new(0.4, 0.25, 0.9));
+
+    fn upright() -> Quat {
+        Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+    }
+
+    /// Board #5543: a volume's sides are the standing faces the head
+    /// sees, each upright.
+    #[test]
+    fn a_volumes_sides_are_the_standing_faces_the_head_sees() {
+        let (center, half) = UNIT;
+        let rot = upright();
+        let mut sides = Vec::new();
+        side_faces(center, rot, half, HEAD, &mut sides);
+        // From ahead and to its right: the face toward the room (+Z) and
+        // the face toward +X; not its top, taller than the eye or not.
+        assert_eq!(sides.len(), 2);
+        let top = acting_face(center, rot, half, HEAD);
+        for f in &sides {
+            assert!(stands(f) && !stands(&top));
+            assert!(f.normal.dot(HEAD - f.center) > 0.0);
+            // Up is up, the unit's whole height, and the face is not
+            // mirrored.
+            assert_close!(f.axes[1].to_array(), Vec3::Y.to_array());
+            assert_close!(f.half[1], 0.9);
+            assert_close!(f.axes[0].cross(f.axes[1]).to_array(), f.normal.to_array());
+            // Its top edge is the top's rim.
+            assert_close!(f.center.y + f.half[1], top.center.y);
+        }
+        let normals: Vec<Vec3> = sides.iter().map(|f| f.normal).collect();
+        assert!(normals.iter().any(|n| n.abs_diff_eq(Vec3::X, 1e-5)));
+        assert!(normals.iter().any(|n| n.abs_diff_eq(Vec3::Z, 1e-5)));
+        // Straight in front of it one side; from inside none; a plane has
+        // none, its one face is the acting face.
+        side_faces(center, rot, half, Vec3::new(-0.9, 1.2, 0.5), &mut sides);
+        assert_eq!(sides.len(), 1);
+        assert_close!(sides[0].normal.to_array(), Vec3::Z.to_array());
+        side_faces(center, rot, half, center, &mut sides);
+        assert!(sides.is_empty());
+        side_faces(
+            Vec3::new(1.0, -0.02, -1.0),
+            rot,
+            Vec3::new(2.0, 1.5, 0.02),
+            HEAD,
+            &mut sides,
+        );
+        assert!(sides.is_empty());
+        // A table lower than the eye, the head within its width: the
+        // top is the acting face and the side toward the head comes with
+        // it, the table's height tall.
+        let table = (Vec3::new(0.0, 0.4, -0.8), Vec3::new(0.6, 0.4, 0.35));
+        side_faces(table.0, rot, table.1, HEAD, &mut sides);
+        assert_eq!(sides.len(), 1);
+        assert!(stands(&sides[0]));
+        assert_close!(sides[0].half, [0.6, 0.35]);
+        // Only the windows and the terraces are lit on sides.
+        for b in SurfaceBehavior::ALL {
+            let on = matches!(b, SurfaceBehavior::Windows | SurfaceBehavior::Terraces);
+            assert_eq!(b.on_sides(), on, "{}", b.name());
+        }
+    }
+
+    /// Board #5543: the sides are slots of their box's look, each with a
+    /// seed of its own that does not change as the wearer moves round.
+    #[test]
+    fn a_side_is_its_boxs_look_with_windows_of_its_own() {
+        use crate::surfaces::KIND_OTHER;
+        let (center, half) = UNIT;
+        let rot = upright();
+        let top = Slot {
+            face: acting_face(center, rot, half, HEAD),
+            kind: KIND_OTHER,
+            behavior: SurfaceBehavior::Windows,
+            strength: 0.7,
+            color: 4,
+            band: BAND_MID,
+            seed: face_seed(9, 0),
+        };
+        let (mut scratch, mut sides) = (Vec::new(), Vec::new());
+        push_sides(&top, 9, center, rot, half, HEAD, &mut scratch, &mut sides);
+        assert_eq!(sides.len(), 2);
+        for s in &sides {
+            assert_eq!(
+                (s.kind, s.behavior, s.color, s.band),
+                (KIND_OTHER, SurfaceBehavior::Windows, 4, BAND_MID)
+            );
+            assert_close!(s.strength, 0.7);
+            assert_eq!(s.seed, face_seed(9, side_id(rot, s.face.normal)));
+        }
+        // Three faces, three seeds, three places to count the cells from.
+        let seeds = [top.seed, sides[0].seed, sides[1].seed];
+        assert!(seeds[0] != seeds[1] && seeds[1] != seeds[2] && seeds[0] != seeds[2]);
+        let offsets = seeds.map(window_offset);
+        // Whole cells: compared as integers.
+        let cells = |o: [f32; 2]| o.map(|c| c as i32);
+        assert!(cells(offsets[0]) != cells(offsets[1]) && cells(offsets[1]) != cells(offsets[2]));
+        for o in offsets.iter().flatten() {
+            assert_close!(o.fract(), 0.0);
+            assert!(o.abs() <= WINDOW_OFFSET_CELLS);
+        }
+        // Another box's faces count from elsewhere.
+        assert_ne!(cells(window_offset(face_seed(10, 0))), cells(offsets[0]));
+        // The face toward the room keeps its seed when the head moves so
+        // that the other side seen is the far one.
+        let room_side = |head: Vec3| {
+            let mut s = Vec::new();
+            push_sides(&top, 9, center, rot, half, head, &mut Vec::new(), &mut s);
+            s.into_iter()
+                .find(|s| s.face.normal.abs_diff_eq(Vec3::Z, 1e-5))
+                .expect("the face toward the room")
+                .seed
+        };
+        assert_eq!(room_side(HEAD), room_side(Vec3::new(-2.5, 1.2, 0.4)));
+        // The six sides have six ids.
+        let mut ids: Vec<u32> = [Vec3::X, Vec3::Y, Vec3::Z]
+            .into_iter()
+            .flat_map(|a| [a, -a])
+            .map(|n| side_id(rot, rot * n))
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [1, 2, 3, 4, 5, 6]);
+        // The rows carry the offset, and a shift by whole cells leaves a
+        // pane where it was: the light at a cell's middle is some
+        // window's, lit or not, never the dark between two.
+        let rows = rows(&sides[0], Audio::default(), None, None, 0.0);
+        let [x, y] = window_offset(sides[0].seed);
+        assert_close!(rows[9], [x, y, 0.0, WINDOW_CELL_M]);
+        let size = Vec2::new(WINDOW_CELL_M, WINDOW_CELL_M * WINDOW_ASPECT);
+        let lit = (0..40)
+            .filter(|&k| {
+                let uv = (Vec2::new(k as f32, 3.0) + 0.5 + Vec2::new(x, y)) * size;
+                windows_light(uv, WINDOW_CELL_M, 1.0, 0.0, 5.0, 0.001) > 0.25
+            })
+            .count();
+        assert!(lit > 25, "{lit} of 40 lit at a full band");
+        // A look that is not lit on sides adds none.
+        let curls = Slot {
+            behavior: SurfaceBehavior::Curls,
+            ..top
+        };
+        let mut none = Vec::new();
+        push_sides(&curls, 9, center, rot, half, HEAD, &mut scratch, &mut none);
+        assert!(none.is_empty());
+        // A frame's windows stand upright too; a top keeps its face.
+        let frame = Face {
+            normal: Vec3::X,
+            center: Vec3::new(-2.0, 1.5, 0.0),
+            axes: [Vec3::Y, Vec3::Z],
+            half: [0.3, 0.4],
+        };
+        let turned = lit_face(SurfaceBehavior::Windows, frame);
+        assert_close!(turned.axes[1].to_array(), Vec3::Y.to_array());
+        assert_close!(turned.half, [0.4, 0.3]);
+        assert_eq!(lit_face(SurfaceBehavior::Pulse, frame), frame);
+        assert_eq!(lit_face(SurfaceBehavior::Windows, top.face), top.face);
+    }
+
+    /// Board #5543: past the cap the sides that cover the least of the
+    /// view go, and the rest keep their order.
+    #[test]
+    fn the_sides_past_the_cap_are_the_ones_least_in_view() {
+        use crate::surfaces::KIND_OTHER;
+        let rot = upright();
+        let head = Vec3::new(0.0, 1.2, 0.0);
+        let side = |z: f32, k: usize| {
+            let mut f = Vec::new();
+            side_faces(
+                Vec3::new(0.0, 0.9, z),
+                rot,
+                Vec3::new(0.4, 0.25, 0.9),
+                head,
+                &mut f,
+            );
+            Slot {
+                face: f[0],
+                kind: KIND_OTHER,
+                behavior: SurfaceBehavior::Windows,
+                strength: 1.0,
+                color: 0,
+                band: BAND_MID,
+                seed: k as u32,
+            }
+        };
+        // Five units in a row ahead, the fourth the nearest.
+        let z = [-6.0, -4.0, -8.0, -1.5, -3.0];
+        let mut sides: Vec<Slot> = z.iter().enumerate().map(|(k, &z)| side(z, k)).collect();
+        let shares: Vec<f32> = sides.iter().map(|s| view_share(&s.face, head)).collect();
+        assert!(shares[3] > shares[4] && shares[4] > shares[1] && shares[1] > shares[0]);
+        // A face seen from behind covers nothing.
+        assert_close!(view_share(&sides[0].face, Vec3::new(0.0, 1.2, -20.0)), 0.0);
+        assert_eq!(keep_sides(&mut sides, head, 8), 0);
+        assert_eq!(sides.len(), 5);
+        assert_eq!(keep_sides(&mut sides, head, 3), 2);
+        let kept: Vec<u32> = sides.iter().map(|s| s.seed).collect();
+        assert_eq!(kept, [1, 3, 4]);
+        // The pass holds every acting face and the sides beside them.
+        const { assert!(MAX_SIDES >= MAX_SLOTS) };
+    }
+
+    /// Board #5543: down a terraced volume's side the lines are strata,
+    /// and at the rim the side's land is the top's.
+    #[test]
+    fn the_strata_meet_the_tops_rings_at_the_rim() {
+        let (center, half) = (Vec3::new(0.0, 0.4, -0.8), Vec3::new(0.6, 0.4, 0.35));
+        let rot = upright();
+        let top = acting_face(center, rot, half, HEAD);
+        let mut sides = Vec::new();
+        side_faces(center, rot, half, HEAD, &mut sides);
+        let at = |f: &Face, uv: Vec2| f.center + f.axes[0] * uv.x + f.axes[1] * uv.y;
+        let along = |f: &Face, g: Vec3| Vec2::new(g.dot(f.axes[0]), g.dot(f.axes[1]));
+        let on_top = |p: Vec3| {
+            let (h, g) = land(p, 7.0);
+            terrace(face_uv(&top, p), top.half, h, along(&top, g)).0
+        };
+        for side in &sides {
+            let up = Vec2::new(side.axes[0].y, side.axes[1].y);
+            assert_close!(up.to_array(), Vec2::Y.to_array());
+            let on_side = |uv: Vec2| {
+                let p = at(side, uv);
+                let (h, g) = land(p, 7.0);
+                strata(top.center.y - p.y, h, along(side, g), up)
+            };
+            // Along the rim the two faces have one height, so a line that
+            // reaches the rim on the top goes on down the side.
+            for k in 0..9 {
+                let u = side.half[0] * (0.25 * k as f32 - 1.0);
+                let rim = Vec2::new(u, side.half[1]);
+                assert!((on_side(rim).0 - on_top(at(side, rim))).abs() < 1e-4, "{u}");
+            }
+            // The slope is the height's gradient along the side.
+            let e = 1e-3;
+            for k in 0..20 {
+                let uv = Vec2::new(
+                    side.half[0] * (0.09 * k as f32 - 0.85),
+                    side.half[1] * (0.8 - 0.08 * k as f32),
+                );
+                let du = (on_side(uv + Vec2::X * e).0 - on_side(uv - Vec2::X * e).0) / (2.0 * e);
+                let dv = (on_side(uv + Vec2::Y * e).0 - on_side(uv - Vec2::Y * e).0) / (2.0 * e);
+                assert!(
+                    (Vec2::new(du, dv).length() - on_side(uv).1).abs() < 2e-2,
+                    "{uv}"
+                );
+            }
+            // The side's rows say it is one; the top's and the contours'
+            // do not.
+            let terraced = |face: Face, behavior| {
+                let s = slot(face, KIND_TABLE, behavior);
+                rows(&s, Audio::default(), None, None, 0.0)[RINGS_ROW + 1][0]
+            };
+            assert_close!(terraced(*side, SurfaceBehavior::Terraces), 1.0);
+            assert_close!(terraced(top, SurfaceBehavior::Terraces), 0.0);
+            assert_close!(terraced(*side, SurfaceBehavior::Contours), 0.0);
+        }
+        // On level land the strata are level lines, one every 10 cm down
+        // the side and an index line every 50.
+        let level = |depth: f32| strata(depth, 0.0, Vec2::ZERO, Vec2::Y);
+        assert_close!(level(0.0).0, 0.0);
+        assert_close!(level(0.1).0, -LAND_INTERVAL);
+        assert_close!(level(0.5).0, -(LAND_INDEX_EVERY as f32) * LAND_INTERVAL);
+        assert_close!(level(0.3).1, TERRACE_STRATA);
+        // Never over the rim: the land does not rise past the top's.
+        assert_close!(level(-0.2).0, 0.0);
     }
 }
