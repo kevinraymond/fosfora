@@ -56,8 +56,11 @@
 //!   the ceiling the desktop's Aurora, drawn as one sky around the room
 //!   (`sky.rs`), the floor its reflection at 0.3 of what it was, all three
 //!   in the key's tint and their edges off, so nothing cuts the sky at a
-//!   corner. Tables, frames and other surfaces wait for the windows and
-//!   keep their teal tunnels.
+//!   corner. Under it the city: tables, frames and other surfaces run the
+//!   windows (`surface_fx.rs`), warm white on a table, a low building,
+//!   amber on other things, tall ones, and on a frame at 0.6, a far-off
+//!   building's face. The mids light them and the highs flicker single
+//!   ones. Their edges are off.
 //! - **Mirror**, a club of infinity mirrors: tables and other surfaces run
 //!   no behavior and their edges go in, each face a tunnel of light. The
 //!   walls add bezel, chrome round each tunnel, and the floor is
@@ -72,19 +75,23 @@
 //!   capped to while the flash limit is on
 //!   (`surfaces::CEILING_SHARDS_LIMITED`). The floor is tessera's
 //!   flagstones in cold blue at 0.5, and the frames pulse amber on the
-//!   bass, firelight through the cave's mouth. Tables wait for the sparks
-//!   and other surfaces for the embers, and keep their shards and their
-//!   standing bars.
+//!   bass, firelight through the cave's mouth. Tables are anvils, sparks
+//!   struck on the kick with the bars on their face, and other surfaces
+//!   banked coals, the embers on the mids, both amber on a heat ramp
+//!   (`surface_fx.rs`).
 //! - **Contour** (board #5533), a meadow drawn as a map: the floor and
 //!   the walls run the contours (`surface_fx.rs`), one landscape's lines
 //!   round the room, green on the low land and warm white on the high,
 //!   their edge bars off as Aurora's are. The ceiling is streamlines at
 //!   0.4, wind and thin cloud, and the frames pulse with the loudness, a
-//!   sunrise, both warm white. Tables and other surfaces wait for the
-//!   terraces.
+//!   sunrise, both warm white. Tables and other surfaces are hills in the
+//!   same land: the terraces (`surface_fx.rs`), green, on the mids.
 //!
-//! One pairing departs from the room editor's lists
-//! (`SurfaceBehavior::catalogue`): Tide's tables run the rings.
+//! Some pairings depart from the room editor's lists
+//! (`SurfaceBehavior::catalogue`): Tide's tables run the rings, and the
+//! windows and the terraces are on no kind's list, a theme's alone
+//! (`SurfaceBehavior::theme_only`). Embers and sparks are on their kinds'
+//! lists but not offered to the wearer; a theme gives them all the same.
 
 use crate::edge_bars::Mode;
 use crate::room_file::RoomFile;
@@ -293,14 +300,17 @@ impl Theme {
             },
             // Board #5436: the sky on the walls and the ceiling, its
             // reflection on the floor, one tint over all three so the
-            // sky has no seam of color at the ceiling's edge. Tables,
-            // frames and other surfaces wait for the windows and keep
-            // their tunnels until then.
+            // sky has no seam of color at the ceiling's edge. Board
+            // #5543: under it a city at night. Tables are low buildings
+            // with warm white windows, other things tall ones in amber,
+            // and a frame a far-off building's face.
             Self::Aurora => match kind {
                 KIND_FLOOR | KIND_WALL | KIND_CEILING => {
                     look(B::Aurora, COLOR_KEY, BAND_RMS, 1.0, Mode::Off)
                 }
-                _ => look(B::None, TEAL, BAND_RMS, 1.0, Mode::In),
+                KIND_TABLE => look(B::Windows, WARM_WHITE, BAND_MID, 1.0, Mode::Off),
+                KIND_FRAME => look(B::Windows, AMBER, BAND_MID, 0.6, Mode::Off),
+                _ => look(B::Windows, AMBER, BAND_MID, 1.0, Mode::Off),
             },
             // Board #5543: a club of infinity mirrors. The ceiling waits
             // for astrolabe and the frames for fenestra, both held back
@@ -314,30 +324,28 @@ impl Theme {
             },
             // Boards #5533, #5543: a forge in a cave. Warm white fissures
             // on the walls and the ceiling, cold blue flagstones, amber
-            // firelight in the frames. Tables and other surfaces wait for
-            // the sparks and the embers and keep their shards until then.
+            // firelight in the frames. Tables are anvils, sparks struck
+            // on the kick, and other surfaces banked coals.
             Self::Flint => match kind {
-                KIND_TABLE => {
-                    look(B::Shards, WARM_WHITE, BAND_RMS, 1.0, Mode::Standing).in_one_color()
-                }
+                KIND_TABLE => look(B::Sparks, AMBER, BAND_BASS, 1.0, face),
                 KIND_FLOOR => look(B::Tessera, BLUE, BAND_BASS, 0.5, Mode::Off).in_one_color(),
                 KIND_WALL => look(B::Shards, WARM_WHITE, BAND_RMS, 1.0, face).in_one_color(),
                 KIND_CEILING => {
                     look(B::Shards, WARM_WHITE, BAND_RMS, 0.4, Mode::Off).in_one_color()
                 }
                 KIND_FRAME => look(B::Pulse, AMBER, BAND_BASS, 0.8, face),
-                _ => look(B::Shards, AMBER, BAND_RMS, 1.0, Mode::Standing).in_one_color(),
+                _ => look(B::Embers, AMBER, BAND_MID, 1.0, Mode::Off),
             },
             // Boards #5533, #5543: a meadow drawn as a map. One landscape
             // on the floor and the walls, its edges off so nothing cuts it
             // at a corner, wind on the ceiling and a sunrise in the
-            // frames. Tables and other surfaces wait for the terraces.
+            // frames. Tables and other surfaces are hills in the same
+            // land, terraced.
             Self::Contour => match kind {
                 KIND_FLOOR | KIND_WALL => look(B::Contours, GREEN, BAND_RMS, 1.0, Mode::Off),
                 KIND_CEILING => look(B::Streamlines, WARM_WHITE, BAND_RMS, 0.4, Mode::Off),
                 KIND_FRAME => look(B::Pulse, WARM_WHITE, BAND_RMS, 0.6, face),
-                KIND_TABLE => look(B::None, WARM_WHITE, BAND_RMS, 1.0, face),
-                _ => look(B::Curls, WARM_WHITE, BAND_RMS, 0.4, face),
+                _ => look(B::Terraces, GREEN, BAND_MID, 1.0, Mode::Off),
             },
         })
     }
@@ -943,14 +951,16 @@ mod tests {
 
     #[test]
     fn every_look_is_on_its_kinds_list_with_a_valid_color_and_band() {
-        // One departure from the catalogue (`SurfaceBehavior::catalogue`):
+        // The departures from the catalogue (`SurfaceBehavior::catalogue`):
         // Tide's tables run the rings, tide pools, which the room editor's
-        // list for a table does not carry.
+        // list for a table does not carry, and the windows and the
+        // terraces are on no kind's list (`SurfaceBehavior::theme_only`).
         for theme in Theme::ALL {
             assert_eq!(theme.looks().count(), KIND_NAMES.len(), "{theme:?}");
             for (kind, look) in theme.looks() {
                 let what = format!("{} {}", theme.name(), kind_name(kind));
-                let departs = (theme, kind, look.behavior) == (Theme::Tide, KIND_TABLE, B::Rings);
+                let departs = (theme, kind, look.behavior) == (Theme::Tide, KIND_TABLE, B::Rings)
+                    || look.behavior.theme_only();
                 assert_eq!(
                     B::catalogue(kind).contains(&look.behavior),
                     !departs,
@@ -1006,7 +1016,7 @@ mod tests {
     fn the_seven_as_the_theme_file_has_them() {
         use crate::surface_fx::BAND_MID as MID;
         let (rms, bass) = (BAND_RMS, BAND_BASS);
-        let (off, face, stand, into) = (Mode::Off, Mode::Face, Mode::Standing, Mode::In);
+        let (off, face, into) = (Mode::Off, Mode::Face, Mode::In);
         // Board #5543, themes_new.csv, a row per part. A row whose effect
         // is not built yet is as it was before.
         assert_eq!(
@@ -1032,12 +1042,18 @@ mod tests {
                 (B::Curls, ROSE, MID, 1.0, off, false),
             ]
         );
-        // Tables, frames and other surfaces wait for the windows.
+        // A city under the sky: windows on what stands in the room.
         let sky = (B::Aurora, COLOR_KEY, rms, 1.0, off, false);
-        let tunnel = (B::None, TEAL, rms, 1.0, into, false);
         assert_eq!(
             table(Theme::Aurora),
-            [tunnel, sky, sky, sky, tunnel, tunnel]
+            [
+                (B::Windows, WARM_WHITE, MID, 1.0, off, false),
+                sky,
+                sky,
+                sky,
+                (B::Windows, AMBER, MID, 0.6, off, false),
+                (B::Windows, AMBER, MID, 1.0, off, false),
+            ]
         );
         // The ceiling waits for astrolabe and the frames for fenestra.
         assert_eq!(
@@ -1051,50 +1067,59 @@ mod tests {
                 (B::None, BLUE, MID, 1.0, into, false),
             ]
         );
-        // Tables wait for the sparks and other surfaces for the embers.
-        // The ceiling's shards are under their cap for the flash rule.
+        // Sparks on the tables and embers on other surfaces, drawn on
+        // the face. The ceiling's shards are under their cap for the
+        // flash rule.
         assert_eq!(
             table(Theme::Flint),
             [
-                (B::Shards, WARM_WHITE, rms, 1.0, stand, true),
+                (B::Sparks, AMBER, bass, 1.0, face, false),
                 (B::Tessera, BLUE, bass, 0.5, off, true),
                 (B::Shards, WARM_WHITE, rms, 1.0, face, true),
                 (B::Shards, WARM_WHITE, rms, 0.4, off, true),
                 (B::Pulse, AMBER, bass, 0.8, face, false),
-                (B::Shards, AMBER, rms, 1.0, stand, true),
+                (B::Embers, AMBER, MID, 1.0, off, false),
             ]
         );
         let ceiling = Theme::Flint.look(KIND_CEILING).expect("ceiling");
         assert!(ceiling.strength <= crate::surfaces::CEILING_SHARDS_LIMITED);
-        // Tables and other surfaces wait for the terraces.
+        // Tables and other surfaces are terraced hills in the land.
         assert_eq!(
             table(Theme::Contour),
             [
-                (B::None, WARM_WHITE, rms, 1.0, face, false),
+                (B::Terraces, GREEN, MID, 1.0, off, false),
                 (B::Contours, GREEN, rms, 1.0, off, false),
                 (B::Contours, GREEN, rms, 1.0, off, false),
                 (B::Streamlines, WARM_WHITE, rms, 0.4, off, false),
                 (B::Pulse, WARM_WHITE, rms, 0.6, face, false),
-                (B::Curls, WARM_WHITE, rms, 0.4, face, false),
+                (B::Terraces, GREEN, MID, 1.0, off, false),
             ]
         );
         // Only Classic runs the wall spectrum, and no theme a look that
-        // draws nothing (`SurfaceBehavior::offered`).
+        // draws nothing: none is held back, and each is none, the
+        // spectrum or a look the surfaces pass draws. Embers, sparks,
+        // windows and terraces are a theme's to give though the wearer's
+        // lists leave them out (`SurfaceBehavior::offered`).
         for theme in Theme::ALL {
             let spectrum = theme.looks().any(|(_, l)| l.behavior == B::Spectrum);
             assert_eq!(spectrum, theme == Theme::Classic, "{theme:?}");
-            assert!(
-                theme.looks().all(|(_, l)| l.behavior.offered()),
-                "{theme:?}"
-            );
+            for (_, l) in theme.looks() {
+                let b = l.behavior;
+                assert!(!b.held_back(), "{theme:?} {b:?}");
+                assert!(
+                    b.draws_on_face() || matches!(b, B::None | B::Spectrum),
+                    "{theme:?} {b:?}"
+                );
+            }
         }
         // One color follows the room's theme and the look the theme gave
         // the kind: a surface edited to another look, another theme and a
         // room with none draw every look in its own colors.
         let flint = Some(Theme::Flint);
         assert!(mono(flint, KIND_WALL, B::Shards));
-        assert!(mono(flint, KIND_TABLE, B::Shards));
+        assert!(mono(flint, KIND_CEILING, B::Shards));
         assert!(mono(flint, KIND_FLOOR, B::Tessera));
+        assert!(!mono(flint, KIND_TABLE, B::Shards));
         assert!(!mono(flint, KIND_WALL, B::Bezel));
         assert!(!mono(flint, KIND_FLOOR, B::Shards));
         assert!(!mono(flint, crate::surfaces::KIND_NONE, B::Shards));
@@ -1289,12 +1314,12 @@ mod tests {
         assert!(
             Theme::Aurora
                 .summary()
-                .contains("table none@1.00 teal rms edges in")
+                .contains("table windows@1.00 warm white mid edges off")
         );
         assert!(
             Theme::Flint
                 .summary()
-                .contains("table shards@1.00 warm white rms edges stand")
+                .contains("table sparks@1.00 amber bass \u{b7}")
         );
         assert!(
             Theme::Contour
@@ -1304,10 +1329,7 @@ mod tests {
         assert!(
             Theme::Contour
                 .summary()
-                .contains("other curls@0.40 warm white rms \u{b7}")
-                || Theme::Contour
-                    .summary()
-                    .ends_with("other curls@0.40 warm white rms")
+                .ends_with("other terraces@1.00 green mid edges off")
         );
         // The room's theme decides; with none saved (fresh or custom),
         // every kind on the face.

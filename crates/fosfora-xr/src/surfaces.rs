@@ -76,11 +76,13 @@ pub enum SurfaceBehavior {
     /// Nothing: the surface is an obstacle only.
     #[default]
     None,
-    /// Embers shed off the top face on the beat (Embers; a table's
-    /// default).
+    /// Banked coals on the face that glow with the band and shed motes
+    /// (`surface_fx.rs`, board #5543). Until board #5470 the cloud shed
+    /// embers off the top face on the beat.
     Embers,
-    /// Sparks up off the top face with the bass (Embers; a floor's
-    /// default until step 2d).
+    /// Sparks struck on the face with the kick (`surface_fx.rs`, board
+    /// #5543). Until board #5470 the cloud threw them up off the top face
+    /// with the bass.
     Sparks,
     /// The wall spectrum (`canvas.rs`; a wall's default).
     Spectrum,
@@ -117,6 +119,15 @@ pub enum SurfaceBehavior {
     /// landscape that fills the room (`surface_fx.rs`, board #5533): a
     /// line that reaches a face's edge goes on across the next face.
     Contours,
+    /// A building's windows: a grid of small lit cells on a dark face
+    /// (`surface_fx.rs`, board #5543). The band sets how many are lit and
+    /// the highs flicker single ones. A theme's alone
+    /// ([`Self::theme_only`]).
+    Windows,
+    /// The contours' landscape climbing over the face as a hill: rings of
+    /// elevation round its middle (`surface_fx.rs`, board #5543). A
+    /// theme's alone ([`Self::theme_only`]).
+    Terraces,
 }
 
 /// The most strength shards draw at on a ceiling while the flash limit is
@@ -157,7 +168,7 @@ pub const RINGS_ALIAS: &str = "ripple";
 
 impl SurfaceBehavior {
     /// Every behavior, in id order.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::None,
         Self::Embers,
         Self::Sparks,
@@ -175,16 +186,21 @@ impl SurfaceBehavior {
         Self::Reticle,
         Self::Tessera,
         Self::Contours,
+        Self::Windows,
+        Self::Terraces,
     ];
 
-    /// The behaviors a wearer can give a surface (boards #5470, #5462):
-    /// every one but four. Embers and sparks spawned particles of the
-    /// surface-born cloud effect, which is gone. Astrolabe and fenestra are
-    /// held back until they are bounded ([`Self::held_back`]). A surface on
-    /// any of the four shows nothing. The room editor's cycle steps past
-    /// them ([`Self::next_for`]), and the voice path's vocabulary, its help
-    /// and the agent's lists are built from this list. A room file that
-    /// names one still loads.
+    /// The behaviors a wearer can give a surface (boards #5470, #5462,
+    /// #5543): every one but six. Embers and sparks left the wearer's
+    /// lists when the surface-born cloud went; they are drawn on the face
+    /// again since board #5543, and a theme gives them, but the editor,
+    /// the voice and the agent still do not. Windows and terraces are a
+    /// theme's alone ([`Self::theme_only`]). Astrolabe and fenestra are
+    /// held back until they are bounded ([`Self::held_back`]), and a
+    /// surface on one of those two shows nothing. The room editor's cycle
+    /// steps past all six ([`Self::next_for`]), and the voice path's
+    /// vocabulary, its help and the agent's lists are built from this
+    /// list. A room file that names one still loads.
     pub const OFFERED: [Self; 13] = [
         Self::None,
         Self::Spectrum,
@@ -241,6 +257,8 @@ impl SurfaceBehavior {
             | Self::Reticle
             | Self::Tessera => crate::surface_port::PORTS[(self as u32 - 8) as usize].name,
             Self::Contours => "contours",
+            Self::Windows => "windows",
+            Self::Terraces => "terraces",
         }
     }
 
@@ -257,7 +275,8 @@ impl SurfaceBehavior {
 
     /// The next behavior in the whole catalogue, wrapping: none, embers,
     /// sparks, spectrum, rings, streamlines, curls, pulse, the eight ports
-    /// from aurora to tessera, contours, none. The room editor steps through a
+    /// from aurora to tessera, contours, windows, terraces, none. The room
+    /// editor steps through a
     /// kind's own ([`Self::next_for`]); this one is for the knob's side.
     #[must_use]
     pub fn next(self) -> Self {
@@ -392,11 +411,20 @@ impl SurfaceBehavior {
             .unwrap_or(Self::None)
     }
 
-    /// Whether a wearer can still give a surface this behavior
-    /// ([`Self::OFFERED`]). The app draws nothing on a surface running one
-    /// that is not.
+    /// Whether a wearer can give a surface this behavior
+    /// ([`Self::OFFERED`]). One that is not offered and not held back
+    /// still draws where a theme or a saved room put it.
     pub fn offered(self) -> bool {
-        !self.emits() && !self.held_back()
+        !self.emits() && !self.held_back() && !self.theme_only()
+    }
+
+    /// Whether only a theme gives this look (board #5543): windows and
+    /// terraces. They are on no kind's list ([`Self::catalogue`]), so the
+    /// room editor never steps onto one, and the voice and the agent do
+    /// not know their names. "Windows" is also what a wearer calls a
+    /// frame, so the voice must not hear it as a look.
+    pub fn theme_only(self) -> bool {
+        matches!(self, Self::Windows | Self::Terraces)
     }
 
     /// Whether this look is held back (board #5462). Astrolabe and fenestra
@@ -424,7 +452,9 @@ impl SurfaceBehavior {
     }
 
     /// The look a surface of `kind` gets when the voice asks for this one
-    /// and it is gone (board #5470): the curls for embers, the pulse for
+    /// and the wearer's lists leave it out (board #5470; the surfaces pass
+    /// draws both again since board #5543, for a theme to give): the curls
+    /// for embers, the pulse for
     /// sparks, or the kind's first offered look after none when that one
     /// is not on the kind's list ([`Self::catalogue`]). `None` for every
     /// other look: an offered one needs no stand-in, and a held-back one
@@ -449,22 +479,32 @@ impl SurfaceBehavior {
     }
 
     /// Whether the surface-born sim spawned particles on a surface running
-    /// it. No sim does since board #5470.
+    /// it. No sim does since board #5470, and since board #5543 the
+    /// surfaces pass draws the two on the face ([`Self::draws_on_face`]).
+    /// The wearer's lists still leave them out ([`Self::offered`]), and
+    /// the voice gives them a stand-in ([`Self::stand_in`]).
     pub fn emits(self) -> bool {
         matches!(self, Self::Embers | Self::Sparks)
     }
 
     /// Whether the surfaces pass draws every surface running it: the
-    /// rings, the streamlines, the curls, the pulse and the contours
-    /// (`surface_fx.rs`) and the ported desktop effects
-    /// (`surface_port.rs`). Embers and
-    /// sparks are the cloud's; the spectrum is drawn by the pass too since
-    /// D2, but on the one wall `canvas::WallPick` chooses, not on every
-    /// surface running it.
+    /// embers, the sparks, the rings, the streamlines, the curls, the
+    /// pulse, the contours, the windows and the terraces (`surface_fx.rs`)
+    /// and the ported desktop effects (`surface_port.rs`). The spectrum is
+    /// drawn by the pass too since D2, but on the one wall
+    /// `canvas::WallPick` chooses, not on every surface running it.
     pub fn draws_on_face(self) -> bool {
         matches!(
             self,
-            Self::Rings | Self::Streamlines | Self::Curls | Self::Pulse | Self::Contours
+            Self::Embers
+                | Self::Sparks
+                | Self::Rings
+                | Self::Streamlines
+                | Self::Curls
+                | Self::Pulse
+                | Self::Contours
+                | Self::Windows
+                | Self::Terraces
         ) || self.port().is_some()
     }
 
@@ -1505,7 +1545,9 @@ mod tests {
                 "fenestra",
                 "reticle",
                 "tessera",
-                "contours"
+                "contours",
+                "windows",
+                "terraces"
             ]
         );
         assert_eq!((B::Rings.id(), B::Streamlines.id()), (4, 5));
@@ -1521,6 +1563,30 @@ mod tests {
             assert_eq!(b.id() as usize, 8 + i);
             assert!(b.draws_on_face() && !b.emits());
         }
+        // Board #5543: windows and terraces are 17 and 18, shaders of the
+        // surfaces pass, a theme's alone: on no kind's list and not
+        // offered.
+        assert_eq!((B::Windows.id(), B::Terraces.id()), (17, 18));
+        for b in B::ALL {
+            let only = matches!(b, B::Windows | B::Terraces);
+            assert_eq!(b.theme_only(), only, "{b:?}");
+            if only {
+                assert!(b.draws_on_face() && !b.offered() && b.port().is_none());
+                assert!(!b.held_back() && !b.emits());
+                for kind in [
+                    KIND_NONE,
+                    KIND_TABLE,
+                    KIND_FLOOR,
+                    KIND_WALL,
+                    KIND_CEILING,
+                    KIND_FRAME,
+                    KIND_OTHER,
+                ] {
+                    assert!(!B::catalogue(kind).contains(&b), "{b:?} on {kind}");
+                    assert_eq!(b.stand_in(kind), None);
+                }
+            }
+        }
         assert_eq!(B::from_name(" Fenestra "), Some(B::Fenestra));
         for b in &B::ALL[..8] {
             assert_eq!(b.port(), None, "{b:?}");
@@ -1532,7 +1598,8 @@ mod tests {
         assert!(B::Contours.draws_on_face() && B::Contours.offered());
         assert_eq!(B::from_name("Contours"), Some(B::Contours));
         assert_eq!(B::Tessera.next(), B::Contours);
-        assert_eq!(B::Contours.next(), B::None);
+        assert_eq!(B::Contours.next(), B::Windows);
+        assert_eq!(B::Terraces.next(), B::None);
         assert_eq!(B::Pulse.next(), B::Aurora);
         assert_eq!(B::from_name(" Embers "), Some(B::Embers));
         // The ripple's old name reads as the rings; the name is the new one.
@@ -1540,11 +1607,11 @@ mod tests {
         assert_eq!(B::from_name(" RIPPLE "), Some(B::Rings));
         assert_eq!(B::Rings.name(), "rings");
         // D2 made 6 and 7 real and 8 to 15 the ports: nothing is
-        // reserved, 17 on is unknown.
+        // reserved, 19 on is unknown.
         assert!(RESERVED_BEHAVIORS.is_empty());
         assert_eq!(B::from_name("Curls"), Some(B::Curls));
         assert_eq!(B::from_name(" PULSE "), Some(B::Pulse));
-        for id in 17..24 {
+        for id in 19..24 {
             assert_eq!(B::from_id(id), None);
         }
         let emitting: Vec<_> = B::ALL.into_iter().filter(|b| b.emits()).collect();
@@ -1553,9 +1620,20 @@ mod tests {
             .into_iter()
             .filter(|b| b.draws_on_face() && b.port().is_none())
             .collect();
+        // Embers and sparks are drawn on the face again (board #5543).
         assert_eq!(
             drawn,
-            vec![B::Rings, B::Streamlines, B::Curls, B::Pulse, B::Contours]
+            vec![
+                B::Embers,
+                B::Sparks,
+                B::Rings,
+                B::Streamlines,
+                B::Curls,
+                B::Pulse,
+                B::Contours,
+                B::Windows,
+                B::Terraces
+            ]
         );
         // The rings and the pulse hit with the bass; the flows follow the
         // whole mix.
@@ -2078,7 +2156,12 @@ mod tests {
             lane_behavior([17.0, 1.0, 0.0, 0.0], KIND_TABLE),
             B::Contours
         );
-        assert_eq!(lane_behavior([18.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
+        assert_eq!(lane_behavior([18.0, 1.0, 0.0, 0.0], KIND_TABLE), B::Windows);
+        assert_eq!(
+            lane_behavior([19.0, 1.0, 0.0, 0.0], KIND_TABLE),
+            B::Terraces
+        );
+        assert_eq!(lane_behavior([20.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
     }
 
     #[test]

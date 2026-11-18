@@ -626,7 +626,11 @@ impl Show {
     fn look(&self, kind: u32) -> themes::Look {
         match self.every {
             Some(behavior) => themes::Look {
-                behavior: if SurfaceBehavior::catalogue(kind).contains(&behavior) {
+                // A look only a theme gives is on no kind's list: on
+                // every kind.
+                behavior: if behavior.theme_only()
+                    || SurfaceBehavior::catalogue(kind).contains(&behavior)
+                {
                     behavior
                 } else {
                     SurfaceBehavior::None
@@ -2153,9 +2157,11 @@ fn flints_ceiling_raised_by_hand_stays_within_three_flashes() {
 }
 
 /// Stills of a theme, to look at: `FOSFORA_STILL=<theme>:<dump>:<dir>:
-/// <seconds>[,<seconds>…]` plays the dump's song on the theme with the
-/// limiter on and writes, at each of those times, the view ahead and the
-/// view to the right and down as `<theme>_<seconds>_<view>.ppm`, 1280 by
+/// <seconds>[,<seconds>…][:<part>]` plays the dump's song on the theme
+/// (or on one part of it alone) with the
+/// limiter on and writes, at each of those times, the view ahead, the
+/// view to the right and down and the view to the left and down (the
+/// chair) as `<theme>_<seconds>_<view>.ppm`, 1280 by
 /// 720 across 100 degrees. The room is black and nothing hides anything:
 /// the harness draws no occluder, so a wall shows through the table.
 #[test]
@@ -2173,12 +2179,21 @@ fn stills_of_a_theme() {
         .map(|t| t.parse().expect("seconds"))
         .collect();
     times.sort_by(f64::total_cmp);
+    // A fifth field names one part of the theme to draw alone, as the
+    // tables print it ("sparks", "edge strips").
+    let part = v.get(4).map_or(Part::All, |name| {
+        Show::parts(theme)
+            .into_iter()
+            .find(|p| p.name() == *name)
+            .expect("a part of the theme")
+    });
     let gpu = Gpu::new(&effects());
-    let mut show = Show::new(theme, None, Part::All, true, effects());
+    let mut show = Show::new(theme, None, part, true, effects());
     let dt = 1.0 / FPS;
     let views = [
         ("ahead", Vec3::new(0.0, -0.05, -1.0)),
         ("right", Vec3::new(0.8, -0.3, -0.6)),
+        ("left", Vec3::new(-0.9, -0.45, -0.45)),
     ];
     let last = times.last().copied().unwrap_or(0.0);
     for n in 0..=(last * FPS).ceil() as usize {

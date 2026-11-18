@@ -871,8 +871,11 @@ fn behavior(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<SurfaceBehavior> {
     if NONE_WORDS.contains(&w) {
         return Some(SurfaceBehavior::None);
     }
+    // A look only a theme gives is no word here (board #5543): "windows"
+    // is what a wearer calls a frame.
     let known = |name: &str| {
-        SurfaceBehavior::from_name(name).filter(|b| vocab.behaviors.contains(b) || !b.offered())
+        SurfaceBehavior::from_name(name)
+            .filter(|b| vocab.behaviors.contains(b) || (!b.offered() && !b.theme_only()))
     };
     known(w).or_else(|| known(&format!("{w}s")))
 }
@@ -5127,6 +5130,25 @@ mod tests {
             assert!(!v.behaviors.contains(&gone), "{gone:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Board #5543: the looks only a theme gives are no words to the
+    /// grammar. "Windows" is what a wearer calls a frame, and "window"
+    /// with an s must not turn into the look. Embers and sparks are still
+    /// heard, for their stand-ins.
+    #[test]
+    fn a_look_only_a_theme_gives_is_no_word() {
+        let (e, boxes) = (cut_effects(), room());
+        let v = app_vocab(&e, &boxes);
+        for word in ["windows", "window", "terraces", "terrace"] {
+            assert_eq!(behavior(&[word], &v), None, "{word}");
+        }
+        assert_eq!(behavior(&["embers"], &v), Some(B::Embers));
+        assert_eq!(behavior(&["spark"], &v), Some(B::Sparks));
+        assert_eq!(behavior(&["fenestra"], &v), Some(B::Fenestra));
+        for only in [B::Windows, B::Terraces] {
+            assert!(!v.behaviors.contains(&only), "{only:?}");
+        }
     }
 
     /// The help card lists nothing that no longer works: no example steps

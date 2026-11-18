@@ -519,16 +519,17 @@ impl RoomLanes {
         true
     }
 
-    /// The log line naming the surfaces on a look that is not offered
-    /// (board #5462, `SurfaceBehavior::offered`): embers and sparks, whose
-    /// particles are gone, and astrolabe and fenestra, held back. They
-    /// show nothing. `None` while the set is the one last named, so a room
-    /// saved with one says it once, and again only when it changes.
+    /// The log line naming the surfaces on a look that shows nothing
+    /// (board #5462, `SurfaceBehavior::held_back`): astrolabe and
+    /// fenestra. Embers and sparks were named here too until the surfaces
+    /// pass drew them again (board #5543). `None` while the set is the one
+    /// last named, so a room saved with one says it once, and again only
+    /// when it changes.
     fn not_offered_line(&mut self, boxes: &[LaneBox<'_>]) -> Option<String> {
         let mut now: Vec<([u8; 16], SurfaceBehavior)> = boxes
             .iter()
             .zip(&self.behaviors)
-            .filter(|(_, b)| !b.offered())
+            .filter(|(_, b)| b.held_back())
             .map(|(x, &b)| (x.uuid, b))
             .collect();
         now.sort_unstable_by_key(|(u, _)| *u);
@@ -543,14 +544,14 @@ impl RoomLanes {
             .iter()
             .zip(&self.behaviors)
             .enumerate()
-            .filter(|(_, (_, b))| !b.offered())
+            .filter(|(_, (_, b))| b.held_back())
             .map(|(k, (b, behavior))| {
                 let (label, uuid8) = box_label(b);
                 format!("#{k} {label} {uuid8} {}", behavior.name())
             })
             .collect();
         Some(format!(
-            "room {}: on a look not offered, showing nothing: {}",
+            "room {}: on a look held back, showing nothing: {}",
             room_label(self.room),
             cells.join(" | ")
         ))
@@ -1837,7 +1838,9 @@ mod tests {
         assert_eq!(B::Curls.next(), B::Pulse);
         assert_eq!(B::Pulse.next(), B::Aurora);
         assert_eq!(B::Tessera.next(), B::Contours);
-        assert_eq!(B::Contours.next(), B::None);
+        assert_eq!(B::Contours.next(), B::Windows);
+        assert_eq!(B::Windows.next(), B::Terraces);
+        assert_eq!(B::Terraces.next(), B::None);
         let dir = std::env::temp_dir().join(format!("fosfora-lanes-cycle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let boxes = room();
@@ -2173,8 +2176,10 @@ mod tests {
     }
 
     /// Board #5462: a saved room with surfaces on looks not offered loads
-    /// them as they are, names them in the log once, and again only when
-    /// the set changes; the editor's cycle takes each to a look offered.
+    /// them as they are, names the held-back ones, which show nothing, in
+    /// the log once, and again only when the set changes; the editor's
+    /// cycle takes each to a look offered. Embers draw again (board
+    /// #5543), so the log does not name them.
     #[test]
     fn a_saved_surface_on_a_look_not_offered_loads_and_is_named_once() {
         let (dir, boxes, id, _) = fresh("not-offered");
@@ -2196,7 +2201,7 @@ mod tests {
         assert_eq!(lanes.behavior(1), B::Fenestra);
         assert_eq!(lanes.behavior(0), B::Embers);
         // Named at load; the same set says nothing again.
-        assert_eq!(lanes.not_offered.len(), 3);
+        assert_eq!(lanes.not_offered.len(), 2);
         assert_eq!(lanes.not_offered_line(&boxes), None);
         lanes.revision += 1;
         assert!(lanes.update(id, &boxes));
@@ -2205,20 +2210,20 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         // The editor's step leaves each for a look offered.
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Aurora));
-        assert_eq!(lanes.cycle(1, &boxes), Ok(B::Bezel));
         lanes.update(id, &boxes);
         assert_eq!(lanes.not_offered.len(), 1);
         // A line for the new set, with its box.
         lanes.not_offered.clear();
         let line = lanes.not_offered_line(&boxes).expect("a line");
         assert!(
-            line.contains("#0 DESK") && line.ends_with("embers"),
+            line.contains("held back") && line.ends_with("fenestra"),
             "{line}"
         );
         assert!(
-            !line.contains("astrolabe") && !line.contains("fenestra"),
+            !line.contains("astrolabe") && !line.contains("embers"),
             "{line}"
         );
+        assert_eq!(lanes.cycle(1, &boxes), Ok(B::Bezel));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
