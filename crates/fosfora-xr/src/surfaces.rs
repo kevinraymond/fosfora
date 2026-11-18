@@ -128,6 +128,11 @@ pub enum SurfaceBehavior {
     /// elevation round its middle (`surface_fx.rs`, board #5543). A
     /// theme's alone ([`Self::theme_only`]).
     Terraces,
+    /// Water on a shore: a wave that runs up the face and drains back once
+    /// a bar, and the line of foam it leaves at its furthest reach
+    /// (`surface_fx.rs`, board #5543). A theme's alone
+    /// ([`Self::theme_only`]).
+    Wash,
 }
 
 /// The most strength shards draw at on a ceiling while the flash limit is
@@ -168,7 +173,7 @@ pub const RINGS_ALIAS: &str = "ripple";
 
 impl SurfaceBehavior {
     /// Every behavior, in id order.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::None,
         Self::Embers,
         Self::Sparks,
@@ -188,17 +193,19 @@ impl SurfaceBehavior {
         Self::Contours,
         Self::Windows,
         Self::Terraces,
+        Self::Wash,
     ];
 
     /// The behaviors a wearer can give a surface (boards #5470, #5462,
-    /// #5543): every one but six. Embers and sparks left the wearer's
+    /// #5543): every one but seven. Embers and sparks left the wearer's
     /// lists when the surface-born cloud went; they are drawn on the face
     /// again since board #5543, and a theme gives them, but the editor,
-    /// the voice and the agent still do not. Windows and terraces are a
-    /// theme's alone ([`Self::theme_only`]). Astrolabe and fenestra are
-    /// held back until they are bounded ([`Self::held_back`]), and a
-    /// surface on one of those two shows nothing. The room editor's cycle
-    /// steps past all six ([`Self::next_for`]), and the voice path's
+    /// the voice and the agent still do not. Windows, terraces and the
+    /// wash are a theme's alone ([`Self::theme_only`]). Astrolabe and
+    /// fenestra are held back until they are bounded
+    /// ([`Self::held_back`]), and a surface on one of those two shows
+    /// nothing. The room editor's cycle steps past all seven
+    /// ([`Self::next_for`]), and the voice path's
     /// vocabulary, its help and the agent's lists are built from this
     /// list. A room file that names one still loads.
     pub const OFFERED: [Self; 13] = [
@@ -259,6 +266,7 @@ impl SurfaceBehavior {
             Self::Contours => "contours",
             Self::Windows => "windows",
             Self::Terraces => "terraces",
+            Self::Wash => "wash",
         }
     }
 
@@ -418,13 +426,13 @@ impl SurfaceBehavior {
         !self.emits() && !self.held_back() && !self.theme_only()
     }
 
-    /// Whether only a theme gives this look (board #5543): windows and
-    /// terraces. They are on no kind's list ([`Self::catalogue`]), so the
+    /// Whether only a theme gives this look (board #5543): windows,
+    /// terraces and the wash. They are on no kind's list ([`Self::catalogue`]), so the
     /// room editor never steps onto one, and the voice and the agent do
     /// not know their names. "Windows" is also what a wearer calls a
     /// frame, so the voice must not hear it as a look.
     pub fn theme_only(self) -> bool {
-        matches!(self, Self::Windows | Self::Terraces)
+        matches!(self, Self::Windows | Self::Terraces | Self::Wash)
     }
 
     /// Whether this look is held back (board #5462). Astrolabe and fenestra
@@ -505,6 +513,7 @@ impl SurfaceBehavior {
                 | Self::Contours
                 | Self::Windows
                 | Self::Terraces
+                | Self::Wash
         ) || self.port().is_some()
     }
 
@@ -1547,7 +1556,8 @@ mod tests {
                 "tessera",
                 "contours",
                 "windows",
-                "terraces"
+                "terraces",
+                "wash",
             ]
         );
         assert_eq!((B::Rings.id(), B::Streamlines.id()), (4, 5));
@@ -1563,12 +1573,13 @@ mod tests {
             assert_eq!(b.id() as usize, 8 + i);
             assert!(b.draws_on_face() && !b.emits());
         }
-        // Board #5543: windows and terraces are 17 and 18, shaders of the
-        // surfaces pass, a theme's alone: on no kind's list and not
-        // offered.
+        // Board #5543: windows, terraces and the wash are 17, 18 and 19,
+        // shaders of the surfaces pass, a theme's alone: on no kind's list
+        // and not offered.
         assert_eq!((B::Windows.id(), B::Terraces.id()), (17, 18));
+        assert_eq!(B::Wash.id(), 19);
         for b in B::ALL {
-            let only = matches!(b, B::Windows | B::Terraces);
+            let only = matches!(b, B::Windows | B::Terraces | B::Wash);
             assert_eq!(b.theme_only(), only, "{b:?}");
             if only {
                 assert!(b.draws_on_face() && !b.offered() && b.port().is_none());
@@ -1599,7 +1610,8 @@ mod tests {
         assert_eq!(B::from_name("Contours"), Some(B::Contours));
         assert_eq!(B::Tessera.next(), B::Contours);
         assert_eq!(B::Contours.next(), B::Windows);
-        assert_eq!(B::Terraces.next(), B::None);
+        assert_eq!(B::Terraces.next(), B::Wash);
+        assert_eq!(B::Wash.next(), B::None);
         assert_eq!(B::Pulse.next(), B::Aurora);
         assert_eq!(B::from_name(" Embers "), Some(B::Embers));
         // The ripple's old name reads as the rings; the name is the new one.
@@ -1607,11 +1619,11 @@ mod tests {
         assert_eq!(B::from_name(" RIPPLE "), Some(B::Rings));
         assert_eq!(B::Rings.name(), "rings");
         // D2 made 6 and 7 real and 8 to 15 the ports: nothing is
-        // reserved, 19 on is unknown.
+        // reserved, 20 on is unknown.
         assert!(RESERVED_BEHAVIORS.is_empty());
         assert_eq!(B::from_name("Curls"), Some(B::Curls));
         assert_eq!(B::from_name(" PULSE "), Some(B::Pulse));
-        for id in 19..24 {
+        for id in 20..24 {
             assert_eq!(B::from_id(id), None);
         }
         let emitting: Vec<_> = B::ALL.into_iter().filter(|b| b.emits()).collect();
@@ -1632,7 +1644,8 @@ mod tests {
                 B::Pulse,
                 B::Contours,
                 B::Windows,
-                B::Terraces
+                B::Terraces,
+                B::Wash
             ]
         );
         // The rings and the pulse hit with the bass; the flows follow the
@@ -2161,7 +2174,8 @@ mod tests {
             lane_behavior([19.0, 1.0, 0.0, 0.0], KIND_TABLE),
             B::Terraces
         );
-        assert_eq!(lane_behavior([20.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
+        assert_eq!(lane_behavior([20.0, 1.0, 0.0, 0.0], KIND_TABLE), B::Wash);
+        assert_eq!(lane_behavior([21.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
     }
 
     #[test]

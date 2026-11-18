@@ -2171,6 +2171,87 @@ No look loops over cells or reads a texture. A hash is five multiplies
 and nine shifts and xors on integers. The sparks' and the embers' counts
 include the heat ramp's two smoothsteps.
 
+### The wash (Nov 18, board #5543)
+
+**Why.** Tide is a shore at dusk and its floor is the water: "violet
+water, rose foam line, one advance and retreat per bar". The floor had
+the curls.
+
+**What it draws** (`surface_fx.rs`, id 19, a theme's alone like the
+windows). Once a bar a wave runs up the floor and drains back. It runs up
+over 0.4 of the bar and drains over the rest, half a cosine each way, so
+it sets out, turns and arrives at no speed. Behind its edge the water is
+the floor's color, a little brighter in a sheet that thins over half a
+meter, with faint sets lying in it that the wave passes over. A line of
+foam rides the edge, and the
+wave leaves another at its furthest reach, which fades until the phase
+wraps. The edge is bent along the shore by two slow sines, 6 cm and 3 cm.
+
+**Two colors.** The water is the row's color. The foam is the color the
+room's theme gives its tables (`surface_fx::wash_foam`): rose over Tide's
+violet, and warm white with no theme. A slot has one color, so the foam's
+rides in the wave's frame (`Audio::wash`) and lands in the first rings
+row, where the contours keep the high land's color. Nothing new is saved.
+
+**Where it comes from** (`surface_fx::wash_front`). The water comes from
+where the wearer faces toward where they sit, from the face's far side,
+and its run ends under the head, so a wave stops short of the wearer. The
+side is taken from the first facing that has a level part (a wearer lying
+back faces the ceiling and names none). It changes only when the wearer
+has turned past 60 degrees, and then on the frame the wave's phase wraps,
+when the water is out and no foam is lit. A side picked from the head's
+place on the floor would flip for a wearer in the middle of the room.
+With no facing or no head it runs along the face's longer side over 0.8
+of it.
+
+**Nothing jumps** (`surface_fx::Shore`, one for the room, stepped every
+frame). The wave keeps a phase of its own that runs after the bar's at
+one bar a second at most and never backward. When the analysis moves a
+bar on, the wave catches up at that pace; when it moves one back, the
+wave waits for it. When the bar's phase stands still for half a second
+(no music) the wave runs on at a wave every five seconds. The row's band
+(the bass) reaches it only as the land's gliding level (1.5 s): how far
+up its run a wave comes, 0.45 to 0.85, and how bright the water and the
+foam are. The beat, the downbeat and the frame's own bass do not touch
+the water.
+
+**The sky's mirror** (the owner, Nov 18: "it could just reflect the
+violet dusk sky slightly"). Tide's sky is the pulse on its walls and
+ceiling. Under the water and the foam, never over them, the floor shows
+that pulse's level at the theme's share (`Theme::reflection`, 0.2 for
+Tide, the file's value) of the walls' own peak, in the floor's color,
+which is the sky's violet. It is full where the view grazes the floor and
+gone toward the feet, by the cosines the Aurora floor's reflection fades
+by (`sky::REFLECT_COS`). At a full pulse it is under a tenth in alpha. It
+is the one part of the floor that moves with the downbeat, as the sky
+does.
+
+**The edge for the depth light.** Tide's sparkle "flares as the wash
+front passes under it". `wash_front(face, &audio.wash, level)` gives the
+world point the water comes from (`origin`), the way it runs (`toward`),
+and how far along it the edge (`front`) and the foam line (`peak`) are. A
+world point is `(p - origin).dot(toward)` meters along the run.
+
+**The flash rule.** A floor is the largest face in the room, and the
+wave is the look's own motion, which the limiter does not hold back, so
+it is counted like the themes (`flash_room.rs`). Eleven songs on Tide,
+the limiter on, each part alone too: 66 rows, no failing region; the
+whole theme 2.5 a second at worst, as before the wash, and the wash alone
+1.5. A first version drew a much brighter sheet behind the edge over dark
+water (0.3 of the sheet) with the sets riding the wave: a region counted
+2.5 on a fast song, the wave's coming and its going each a rise and a
+fall. Now the deep water is 0.8 of the sheet and the sets lie on the
+floor and creep, so a wave passing a place is one rise and one fall. The
+mirror moves with the sky's pulse and counts with it.
+
+**Cost per fragment**, counted from the shader: three sines, one square
+root and eight smoothsteps, no hash, no loop and no texture read. The
+wave's place, its foam's light and the band are worked out once a frame
+on the CPU.
+
+**Not measured:** the device. The foam line is 6 cm wide; whether it
+holds in the half-size faces layer at the far wall is for the headset.
+
 ## The contours (Nov 16, board #5533)
 
 **Why.** The owner asked for "gentle rolling and topographic scenery"

@@ -583,6 +583,7 @@ struct Show {
     outline: Outline,
     clock: Clock,
     terrain: surface_fx::Terrain,
+    shore: surface_fx::Shore,
     beat_env: f32,
     downbeat_env: f32,
     frame: u64,
@@ -616,6 +617,7 @@ impl Show {
             outline: Outline::default(),
             clock: Clock::default(),
             terrain: surface_fx::Terrain::default(),
+            shore: surface_fx::Shore::default(),
             beat_env: 0.0,
             downbeat_env: 0.0,
             frame: 0,
@@ -707,6 +709,9 @@ impl Show {
         let high = f.presence.max(f.brilliance);
         self.terrain
             .step(dt, motion, [f.rms, f.bass, f.mid, high], gate.downbeat);
+        // The wash's wave (board #5543), as in app.rs.
+        self.shore
+            .step(dt, motion, f.bar_phase, Some(self.scene.forward));
         self.ripple
             .update(t, dt, head, gate.beat, f.bass.max(f.sub_bass), f.bass);
         self.canvas.update(dt, &mel);
@@ -740,6 +745,7 @@ impl Show {
             bar_phase: f.bar_phase,
             key_tint: [1.0; 3],
             land: self.terrain.land(),
+            wash: surface_fx::Wash::default(),
         };
         if looks.iter().any(|l| l.color == COLOR_KEY) {
             let hue = fosfora_app::bindings::sources::collect_audio(&f)
@@ -748,6 +754,11 @@ impl Show {
             audio.key_tint = key_tint(hue);
             self.limiter.follow_all(follower::TINT, &mut audio.key_tint);
         }
+        audio.wash = self.shore.wash(
+            Some(head),
+            surface_fx::wash_foam(Some(self.theme), audio.key_tint),
+            self.theme.reflection(),
+        );
         for e in &mut self.effects {
             e.advance(dt * motion);
         }
