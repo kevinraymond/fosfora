@@ -4165,3 +4165,29 @@ room is found.
 
 Not measured: anything worn, and the edge of the hard cutout against a
 real thing, which a capture shows poorly.
+
+## Beams, coals and grass on the headset (board #5543, Nov 18)
+
+Debug eb13ccc (xr-themes3: the groundwork and the three depth looks, the
+air not yet in), the same headset, uptime, knobs and procedure as the
+groundwork's pass 20 minutes before, one launch per theme. The log names
+the look drawn (`depth light: beams, teal sides, the key's tint on top,
+bass, occluding (theme aurora)`).
+
+| theme, look | App med / p90 / max (ms) | min fps | the points, ef5d5ad |
+| --- | --- | --- | --- |
+| Aurora, beams | 8.75 / 9.36 / 9.51 | 71 | 8.57 / 9.00 / 9.17 |
+| Flint, coals | 7.99 / 8.82 / 9.30 | 71 | 7.91 / 8.36 / 9.43 |
+| Contour, grass | 8.19 / 8.73 / 9.13 | 70 | 7.29 / 8.10 / 8.71 |
+
+Beams and coals cost what the points did, inside the run-to-run spread.
+Grass reads 0.9 ms over the points; these are two launches 20 minutes
+apart and not a back-to-back A/B, so the figure is an upper bound and not
+a cost. All three are far under the 13.9 ms budget.
+
+Captures: `recordings/themes3/depth-eb13ccc/` (`sheet.jpg`). The pile at
+the left carries teal streaks under Aurora, orange lumps running from dark
+red to near white under Flint, and green blades under Contour.
+
+Not measured: anything worn, and grass against the points back to back.
+
