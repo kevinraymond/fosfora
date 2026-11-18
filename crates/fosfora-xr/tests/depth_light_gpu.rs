@@ -1541,6 +1541,7 @@ fn look_rows(
         front: depth_light::front(Some(theme), 0.35, at),
         orbit: 0.3 + 0.15 * secs,
         center: [at.x, at.z],
+        bands: [0.95 * music, 0.6 * music, 0.35 * music],
     };
     depth_light::with_around(
         depth_light::with_look(
@@ -1558,13 +1559,14 @@ fn look_rows(
 }
 
 /// The video's three themes, each with the look its depth light draws.
-const LOOKS: [(Theme, DepthLook); 6] = [
+const LOOKS: [(Theme, DepthLook); 7] = [
     (Theme::Aurora, DepthLook::Beams),
     (Theme::Flint, DepthLook::Coals),
     (Theme::Contour, DepthLook::Grass),
     (Theme::Drift, DepthLook::Bubbles),
     (Theme::Tide, DepthLook::Sparkle),
     (Theme::Mirror, DepthLook::Glints),
+    (Theme::Classic, DepthLook::Meters),
 ];
 
 /// Board #5543: the beams, the coals and the grass over the known
@@ -1958,7 +1960,7 @@ fn the_recorded_room_under_the_sweep() {
 /// The recorded room in each look, for the eye (board #5543).
 /// `FOSFORA_LOOK_REC` names a depth recording (`live_rec.rs`; they stay
 /// out of the repository) and `FOSFORA_LOOK_DUMP` a folder for the
-/// pictures (PPM): the points and each of the three looks in its theme's
+/// pictures (PPM): the points and each look in its theme's
 /// colors, quiet and loud, with the room black and with it visible (the
 /// light at its lowest over the stand-in room), and each look a third of
 /// a second on, to see what moved. The view and the target are the
@@ -2083,10 +2085,13 @@ fn the_recorded_room_in_each_look() {
             "{}",
             look.name()
         );
-        assert!(
-            differ(&bits(&loud), &bits(&later)) > 1000,
-            "{}",
-            look.name()
-        );
+        // A third of a second on the look has moved, but for the meters:
+        // they stand where their bands' levels are, and those are held.
+        let moved = differ(&bits(&loud), &bits(&later));
+        if look == DepthLook::Meters {
+            assert_eq!(moved, 0, "{}", look.name());
+        } else {
+            assert!(moved > 1000, "{}", look.name());
+        }
     }
 }

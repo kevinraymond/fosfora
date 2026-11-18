@@ -606,8 +606,8 @@ struct EnvEye {
     // starts (a share of the radius), w the twinkle's depth
     light_size: vec4<f32>,
     // The look (depth_light.rs, board #5543). x its id: 0 the points, 1
-    // beams, 2 coals, 3 grass, 4 bubbles, 5 sparkle, 6 glints; y the
-    // music 0..1, z the gust 0..1
+    // beams, 2 coals, 3 grass, 4 bubbles, 5 sparkle, 6 glints, 7 meters; y
+    // the music 0..1, z the gust 0..1
     light_look: vec4<f32>,
     // The looks' clocks, each 0..1 of a cycle: x the beams' travel, y the
     // grass's sway, z the bubbles' rise
@@ -617,7 +617,8 @@ struct EnvEye {
     // floor (world x and z, a unit), z where it is along that way (m), w
     // one over the half-width the points flare in (0: no wash). The
     // glints: x, y the center they turn about (world x and z), z, w the
-    // cosine and the sine of the turn (the air's orbit)
+    // cosine and the sine of the turn (the air's orbit). The meters: x, y,
+    // z the bass, the mids and the highs, 0..1
     light_more: vec4<f32>,
     // The sweep (sonar.rs), read by fs_mesh_light_sonar alone. x the
     // line's peak alpha (0: no sweep and no standing line this frame; the
@@ -1038,6 +1039,21 @@ const GLINT_SPACING_M: f32 = 0.45;
 const GLINT_TILT: vec2<f32> = vec2<f32>(0.8, -0.6);
 const GLINT_EDGE: vec2<f32> = vec2<f32>(0.3, 0.7);
 const GLINT_QUIET: f32 = 0.5;
+const LOOK_METERS: i32 = 7;
+const METER_PACK: f32 = 2.0;
+const METER_ROW: f32 = 4.0;
+const METER_ROW_STEP: f32 = 2.37;
+const METER_SEGS: f32 = 6.0;
+const METER_GAP: f32 = 0.3;
+const METER_EDGE: f32 = 0.08;
+const METER_GHOST: f32 = 0.12;
+const METER_NEAR: f32 = 0.7;
+const METER_REACH: f32 = 0.33;
+// The bands' colors, the air's by band (fireflies::BAND_COLORS): the
+// bass, the mids, the highs.
+const METER_BASS: vec3<f32> = vec3<f32>(0.58, 0.32, 1.0);
+const METER_MID: vec3<f32> = vec3<f32>(0.22, 0.52, 1.0);
+const METER_HIGH: vec3<f32> = vec3<f32>(1.0, 0.86, 0.68);
 
 // The id of the look drawn.
 fn look_id() -> i32 {
@@ -1206,6 +1222,50 @@ fn glint(g: vec2<f32>, k: u32, o: i32, radius_scale: f32, speck: f32) -> vec2<f3
     return vec2<f32>(light, light * speck);
 }
 
+// The level of the band a point of phase `phase` shows as a meter: the
+// bass, the mids or the highs, a third of the points each; and its tint,
+// 0, a half or 1.
+fn meter_band(phase: f32) -> vec2<f32> {
+    let band = min(floor(phase * 2.999), 2.0);
+    let m = env.light_more;
+    let level = select(select(m.z, m.y, band < 1.5), m.x, band < 0.5);
+    return vec2<f32>(level, 0.5 * band);
+}
+
+// Meters on an upright plane at g (across and up, cells), the plane moving
+// by f across a pixel: x the light, y the light times its tint. The plane
+// is cut into rows; each reads one line of the tile, closer across, so a
+// point near the line is a bar on the row's foot: a level meter in
+// segments, lit up to its band's level, the rest its outline.
+fn meter(g: vec2<f32>, f: vec2<f32>, k: u32, o: i32, radius_scale: f32) -> vec2<f32> {
+    let r = g.y / METER_ROW;
+    let row = floor(r);
+    let u = r - row;
+    let pt = look_point(vec2<f32>(g.x * METER_PACK, row * METER_ROW_STEP + 0.5), k, o, radius_scale);
+    let half = min(pt.y, METER_REACH);
+    let bar = 1.0 - smoothstep(half * env.light_size.z, max(half, 1e-6), pt.x * METER_NEAR);
+    let band = meter_band(pt.z);
+    let s = u * METER_SEGS;
+    let n = floor(s);
+    let at = s - n;
+    let edge = clamp(METER_SEGS * f.y / METER_ROW, METER_EDGE, 0.5 - 0.5 * METER_GAP);
+    let gap = 0.5 * METER_GAP;
+    let seg = smoothstep(gap, gap + edge, at) * (1.0 - smoothstep(1.0 - gap - edge, 1.0 - gap, at));
+    let lit = clamp(band.x * METER_SEGS - n, 0.0, 1.0);
+    let light = select(0.0, bar * seg * mix(METER_GHOST, 1.0, lit), half > 1e-4);
+    return vec2<f32>(light, light * band.y);
+}
+
+// A meter seen from the end, on the level plane at g: the point, as
+// bright as its band's level, tinted as its band.
+fn meter_top(g: vec2<f32>, k: u32, o: i32, radius_scale: f32) -> vec2<f32> {
+    let pt = look_point(g, k, o, radius_scale);
+    let core = 1.0 - smoothstep(pt.y * env.light_size.z, pt.y, pt.x);
+    let band = meter_band(pt.z);
+    let light = select(0.0, core * mix(METER_GHOST, 1.0, band.x), pt.y > 0.0);
+    return vec2<f32>(light, light * band.y);
+}
+
 // The radius factor a look's points are read at, for a vertex keeping
 // keep under the sweep's light under (0 without a sweep): the points'
 // own, wider for the beams and the coals, swollen under a sweep, within
@@ -1226,15 +1286,21 @@ fn look_radius(keep: f32, under: f32) -> f32 {
 
 // How the music lifts a look's light: the crests' gain for the beams,
 // the grass and the bubbles; the coals carry it in their heat, the
-// sparkle in its flares and the glints in their specks.
+// sparkle in its flares, the glints in their specks and the meters in
+// their levels.
 fn look_band() -> f32 {
     let look = look_id();
-    return select(env.light.w, 1.0, look == LOOK_COALS || look == LOOK_SPARKLE || look == LOOK_GLINTS);
+    return select(env.light.w, 1.0, look == LOOK_COALS || look >= LOOK_SPARKLE);
 }
 
 // A look's color at tint: the sides' at 0 toward the tops' at 1, and
-// toward the ember color at -1.
+// toward the ember color at -1. The meters' runs over the bands' colors:
+// the bass's at 0, the mids' at a half, the highs' at 1.
 fn look_color(tint: f32) -> vec3<f32> {
+    if look_id() == LOOK_METERS {
+        let t = clamp(tint, 0.0, 1.0);
+        return mix(mix(METER_BASS, METER_MID, min(2.0 * t, 1.0)), METER_HIGH, max(2.0 * t - 1.0, 0.0));
+    }
     let hot = mix(env.light_side.rgb, env.light_top.rgb, clamp(tint, 0.0, 1.0));
     return mix(hot, env.light_side.rgb * COAL_EMBER, clamp(-tint, 0.0, 1.0));
 }
@@ -1252,6 +1318,7 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
     let bubbles = look == LOOK_BUBBLES;
     let sparkles = look == LOOK_SPARKLE;
     let glints = look == LOOK_GLINTS;
+    let meters = look == LOOK_METERS;
     let n2 = n * n;
     let tri = n2 * n2 / dot(n2, n2);
     let l = clamp(log2(max(length(p - env.eye.xyz), 1e-3)), OCTAVE_MIN, OCTAVE_MAX);
@@ -1291,6 +1358,8 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
                 fine = max(f.x * BEAM_PACK, f.y / BEAM_STRETCH);
             } else if grass && upright {
                 fine = max(f.x * GRASS_PACK, f.y / GRASS_ROW);
+            } else if meters && upright {
+                fine = max(f.x * METER_PACK, f.y / METER_ROW);
             }
             let aa = 1.0 - smoothstep(env.light_cell.z, env.light_cell.w, fine);
             if aa > 0.0 {
@@ -1320,6 +1389,12 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
                     s = sparkle(g, k, o, radius_scale, front);
                 } else if glints {
                     s = glint(g, k, o, radius_scale, speck);
+                } else if meters {
+                    if upright {
+                        s = meter(g, f, k, o, radius_scale);
+                    } else {
+                        s = meter_top(g, k, o, radius_scale);
+                    }
                 } else {
                     s = coal(g, k, o, radius_scale);
                 }

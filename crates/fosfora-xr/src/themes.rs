@@ -458,9 +458,11 @@ impl DepthLook {
     }
 
     /// Whether the depth light draws this look yet. One that is not built
-    /// draws as the points, in the theme's colors and on its band.
+    /// draws as the points, in the theme's colors and on its band. Every
+    /// look is built now; one added to the list later is not until it is
+    /// named here.
     pub fn built(self) -> bool {
-        self != Self::Meters
+        Self::ALL[..8].contains(&self)
     }
 }
 
@@ -1163,10 +1165,9 @@ mod tests {
             (D::Coals, [AMBER, WARM_WHITE], BAND_BASS)
         );
         assert_eq!(depth(Theme::Contour), (D::Grass, [GREEN, WARM_WHITE], MID));
-        // The meters are not built yet: they draw as the points.
+        // Every look is built.
         for look in DepthLook::ALL {
-            let built = look != D::Meters;
-            assert_eq!(look.built(), built, "{}", look.name());
+            assert!(look.built(), "{}", look.name());
         }
         // The air row: the color, the band, the count and the motion.
         let air = |t: Theme| {

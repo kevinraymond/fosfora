@@ -5546,6 +5546,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         dt,
                         crate::depth_light::band_level(&audio, crate::surface_fx::BAND_RMS),
                     );
+                    // Board #5543: the meters' three bands, behind the
+                    // flash limit while the meters draw.
+                    depth_drive.step_bands(dt, [audio.bass, audio.mid, audio.high]);
+                    let mut depth_bands = depth_drive.bands();
+                    if crate::depth_light::look(light_theme) == crate::themes::DepthLook::Meters {
+                        flash_limit.follow_all(
+                            crate::flash::follower::DEPTH_BANDS,
+                            &mut depth_bands,
+                        );
+                    }
                     // Board #5451: the music the light swells with, as the
                     // flash limit lets it through.
                     let shown_drive = depth_drive.with_music(flash_limit.follow(
@@ -5601,6 +5611,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             // about the effect anchor as it does.
                             orbit: firefly_orbit,
                             center: [anchor[0], anchor[2]],
+                            bands: depth_bands,
                         },
                     )));
                     if depth_light_colors != Some(light_theme) {
