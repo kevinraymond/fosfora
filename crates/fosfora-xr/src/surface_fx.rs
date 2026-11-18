@@ -182,6 +182,32 @@
 //! smoothsteps, against the streamlines' eight to sixteen hashes. Neither
 //! reads a texture or takes a sine.
 //!
+//! **The wash** (id 19, board #5543): water on a shore, for a theme's
+//! floor. Once a bar a wave runs up the face and drains back
+//! ([`wash_advance`]), and the line of foam it leaves at its furthest
+//! reach fades until the next one. The water is the surface's color, a
+//! little brighter in a sheet behind its edge, with faint sets lying in
+//! it; the foam is a second color, the one the room's
+//! theme gives its tables ([`wash_foam`]). The wave comes from where the
+//! wearer faces toward where they sit and stops short of them
+//! ([`wash_front`]); with no head it runs along the face's longer side.
+//! Its edge is never a ruler's: two slow sines bend it along the shore.
+//! Nothing in it jumps. The wave keeps a phase of its own ([`Shore`]) that
+//! runs after the bar's at a bounded speed and never backward, so a bar
+//! the analysis moves does not move the water at once, and it runs on
+//! slowly when the music stops. The band reaches it only as the land's
+//! gliding level ([`Land::levels`]): how far up the shore a wave comes and
+//! how bright the water and the foam are. The side the water comes from
+//! changes only with the water out. Under the water and the foam, never
+//! over them, lies a faint mirror of the theme's sky ([`wash_mirror`]):
+//! Tide's sky is the pulse on its walls and ceiling, and the floor shows
+//! that pulse's level at the share the theme names
+//! (`themes::Theme::reflection`, 0.2), in the floor's own color, the
+//! sky's violet, strongest toward the walls and gone toward the feet as
+//! the Aurora floor's reflection is (`sky::REFLECT_COS`). A fragment costs
+//! three sines, a square root and eight smoothsteps, with no texture read,
+//! no hash and no loop.
+//!
 //! **The clock** ([`Clock`]) runs at 1 + the beat envelope, so the flow
 //! and the drift double on the beat and settle back, without the jumps a
 //! speed multiplied into the time would make.
@@ -190,7 +216,8 @@ use glam::{Quat, Vec2, Vec3};
 
 use crate::canvas::{Canvas, MAX_BARS};
 use crate::ripple::{MAX_RINGS, Ripple};
-use crate::surfaces::{Face, KIND_FLOOR, KIND_FRAME, SurfaceBehavior, surface_color};
+use crate::surfaces::{Face, KIND_FLOOR, KIND_FRAME, KIND_TABLE, SurfaceBehavior, surface_color};
+use crate::themes::Theme;
 
 /// Lit faces the pass holds, one per obstacle box.
 pub const MAX_SLOTS: usize = crate::surfaces::SURFACE_LANE_ROWS;
@@ -438,6 +465,75 @@ pub const HEAT_LOW: [f32; 3] = [1.0, 0.45, 0.3];
 pub const HEAT_KNEE: f32 = 0.65;
 pub const HEAT_WHITE: f32 = 0.7;
 
+/// The wash's peak alpha (board #5543): a floor is the largest face in
+/// the room and the water covers much of it, so it draws under a flow's
+/// line.
+pub const WASH_PEAK_ALPHA: f32 = 0.5;
+/// The deep water's light, as a share of the sheet's behind the edge:
+/// most of it, so the sheet passing a place is one rise of light and not
+/// a rise and a fall. At 0.3 a region of the floor counted 2.5 flashes a
+/// second on a fast song, a wave's coming and its going each a flash of
+/// their own; at 0.8 it counts 1.5.
+pub const WASH_WATER: f32 = 0.8;
+/// How far behind the edge the bright sheet thins to the deep water (m).
+pub const WASH_SWASH_M: f32 = 0.5;
+/// How much the sets take from the deep water's light at their troughs,
+/// their spacing (m) and how fast they run toward the shore (rad/s).
+/// They lie on the floor and creep, a few centimeters a second; the wave
+/// passes over them and does not carry them, or a region would see them
+/// go by at the wave's speed.
+pub const WASH_SET: f32 = 0.2;
+pub const WASH_SET_M: f32 = 0.35;
+pub const WASH_SET_RAD_S: f32 = 0.8;
+/// The bend of the water's edge along the shore: its size (m, the first
+/// sine's; the second's is half), the two sines' turns per meter of shore
+/// (rad/m) and their drift (rad/s).
+pub const WASH_WOBBLE_M: f32 = 0.06;
+pub const WASH_WOBBLE_RAD_M: [f32; 2] = [2.1, 5.3];
+pub const WASH_WOBBLE_RAD_S: [f32; 2] = [0.3, 0.5];
+/// The softness of the water's edge (m), a pixel's footprint when larger.
+pub const WASH_SOFT_M: f32 = 0.08;
+/// Half the foam line's width (m) and the softness of its sides (m, a
+/// pixel's footprint when larger).
+pub const WASH_FOAM_M: f32 = 0.03;
+pub const WASH_FOAM_SOFT_M: f32 = 0.01;
+/// How far up its run a wave reaches, with the band silent and full. The
+/// run ends at the wearer, so a wave stops short of them.
+pub const WASH_REACH: [f32; 2] = [0.45, 0.85];
+/// How far behind the far edge the water waits between waves (m), so
+/// that with the water out neither its bent edge nor its foam is on the
+/// face.
+pub const WASH_START_M: f32 = 0.25;
+/// The phase of its bar at which a wave is furthest up: it runs up
+/// faster than it drains.
+pub const WASH_PEAK_PHASE: f32 = 0.4;
+/// The foam on a wave's edge as it sets out, of its light at the top of
+/// the run.
+pub const WASH_LEAD: f32 = 0.6;
+/// The water's and the foam's light with the band silent, of their light
+/// with it full.
+pub const WASH_LEVEL: f32 = 0.7;
+pub const WASH_FOAM_LEVEL: f32 = 0.6;
+/// The shortest run a wave takes on a face that long (m), and the share
+/// of a face's length it takes when no head says where the wearer sits.
+pub const WASH_MIN_RUN_M: f32 = 1.0;
+pub const WASH_NO_HEAD_RUN: f32 = 0.8;
+/// The wave's own phase ([`Shore`]): the fastest it runs after the bar's
+/// (bars a second), its pace when the bar's stands still (bars a second,
+/// a wave every five seconds), how long the bar's must stand before that
+/// (s), and how far ahead of the bar's it may be and wait for it.
+pub const WASH_MAX_BARS_S: f32 = 1.0;
+pub const WASH_IDLE_BARS_S: f32 = 0.2;
+pub const WASH_STILL_S: f32 = 0.5;
+pub const WASH_AHEAD: f32 = 0.25;
+/// The cosine of the turn of the wearer's facing past which the water
+/// comes from the new side (60 degrees), and the least level part of a
+/// facing that names a side: a wearer lying back faces the ceiling.
+pub const WASH_TURN_COS: f32 = 0.5;
+pub const WASH_FACING_MIN: f32 = 0.3;
+/// The foam's color index with no theme: warm white.
+pub const WASH_FOAM_COLOR: u32 = 3;
+
 /// The audio band a surface follows (`params.z`): the rms, the bass, the
 /// mid, the high (the larger of presence and brilliance).
 pub const BAND_RMS: u32 = 0;
@@ -473,6 +569,8 @@ pub struct Audio {
     pub key_tint: [f32; 3],
     /// The contours' land this frame ([`Terrain::land`]).
     pub land: Land,
+    /// The wash's wave this frame ([`Shore::wash`]).
+    pub wash: Wash,
 }
 
 /// The contours' land as a frame draws it ([`Terrain::land`]): its clock
@@ -553,6 +651,220 @@ impl Terrain {
             travel,
             travel_light,
         }
+    }
+}
+
+/// The wash's wave as a frame draws it ([`Shore::wash`]): the phase of
+/// its bar (0 the water out, [`WASH_PEAK_PHASE`] furthest up), its clock
+/// (s, wrapped as the land's), the way the water runs (level, unit; none
+/// until the wearer's facing named a side), the head, the foam's color,
+/// and the share of the sky the floor mirrors under the water
+/// (`themes::Theme::reflection`; 0 with no theme, which has no sky).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Wash {
+    pub phase: f32,
+    pub clock: f32,
+    pub toward: Option<Vec3>,
+    pub head: Option<Vec3>,
+    pub foam: [f32; 3],
+    pub mirror: f32,
+}
+
+/// The wash's wave from frame to frame (board #5543): a phase of its own
+/// that follows the bar's without jumping, a clock for the bend of its
+/// edge and its sets, and the side the water comes from. One for the
+/// room.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Shore {
+    phase: f32,
+    /// The bar's phase as last seen and how long it has stood still (s).
+    bar: f32,
+    still: f32,
+    clock: f64,
+    toward: Option<Vec3>,
+}
+
+impl Shore {
+    /// `dt` seconds on, with the bar's phase at `bar_phase` and the wearer
+    /// facing `facing`. The wave's phase runs after the bar's, never
+    /// backward and at most [`WASH_MAX_BARS_S`] times `motion` (the flash
+    /// limit's share of the looks' own speed): a bar the analysis moves
+    /// back holds the wave until the bar comes round, and one it moves on
+    /// is caught up with at that pace. A bar's phase that stands still for
+    /// [`WASH_STILL_S`] (no music) leaves the wave running at
+    /// [`WASH_IDLE_BARS_S`]. The water comes from where the wearer faced
+    /// when a facing first had a level part, and from a new side only
+    /// once they have turned past [`WASH_TURN_COS`], taken as the wave's
+    /// phase wraps, when the water is out and no foam is left.
+    pub fn step(&mut self, dt: f32, motion: f32, bar_phase: f32, facing: Option<Vec3>) {
+        let dt = dt.max(0.0);
+        let motion = motion.clamp(0.0, 1.0);
+        self.clock = (self.clock + f64::from(dt * motion)).rem_euclid(LAND_CLOCK_WRAP_S);
+        let bar = if bar_phase.is_finite() {
+            bar_phase.rem_euclid(1.0)
+        } else {
+            self.bar
+        };
+        if (bar - self.bar).abs() < 1e-6 {
+            self.still += dt;
+        } else {
+            self.still = 0.0;
+        }
+        self.bar = bar;
+        let pace = dt * motion;
+        let step = if self.still >= WASH_STILL_S {
+            pace * WASH_IDLE_BARS_S
+        } else {
+            let behind = (bar - self.phase).rem_euclid(1.0);
+            if behind > 1.0 - WASH_AHEAD {
+                0.0
+            } else {
+                behind.min(pace * WASH_MAX_BARS_S)
+            }
+        };
+        let before = self.phase;
+        self.phase = (self.phase + step).rem_euclid(1.0);
+        let wrapped = self.phase < before;
+        let toward = facing
+            .map(|f| Vec3::new(-f.x, 0.0, -f.z))
+            .filter(|f| f.is_finite() && f.length() >= WASH_FACING_MIN)
+            .map(Vec3::normalize);
+        match (self.toward, toward) {
+            (None, Some(t)) => self.toward = Some(t),
+            (Some(now), Some(t)) if wrapped && now.dot(t) < WASH_TURN_COS => {
+                self.toward = Some(t);
+            }
+            _ => {}
+        }
+    }
+
+    /// The wave as this frame draws it, for a wearer whose head is at
+    /// `head`, foam of color `foam` ([`wash_foam`]) and a floor that
+    /// mirrors `mirror` of the sky ([`wash_mirror`]).
+    pub fn wash(&self, head: Option<Vec3>, foam: [f32; 3], mirror: f32) -> Wash {
+        Wash {
+            phase: self.phase,
+            clock: self.clock as f32,
+            toward: self.toward,
+            head,
+            foam,
+            mirror: if mirror.is_finite() {
+                mirror.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+        }
+    }
+}
+
+/// The foam's color in a room whose saved theme is `theme` while the key's
+/// tint is `key`: the color the theme gives its tables, so the foam is
+/// what stands in the water's color (rose over Tide's violet); warm white
+/// with no theme.
+pub fn wash_foam(theme: Option<Theme>, key: [f32; 3]) -> [f32; 3] {
+    let index = theme
+        .and_then(|t| t.look(KIND_TABLE))
+        .map_or(WASH_FOAM_COLOR, |l| l.color);
+    surface_color(index, KIND_TABLE, key)
+}
+
+/// How far up its run a wave is at `phase` of its bar, 0 (the water out)
+/// to 1 (furthest up, at [`WASH_PEAK_PHASE`]): half a cosine up and half a
+/// cosine back, so it sets out, turns and arrives at no speed.
+pub fn wash_advance(phase: f32) -> f32 {
+    let phase = phase.clamp(0.0, 1.0);
+    let x = if phase < WASH_PEAK_PHASE {
+        phase / WASH_PEAK_PHASE
+    } else {
+        1.0 + (phase - WASH_PEAK_PHASE) / (1.0 - WASH_PEAK_PHASE)
+    };
+    0.5 - 0.5 * (std::f32::consts::PI * x).cos()
+}
+
+/// Where a wash's water stands on a face ([`wash_front`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WashFront {
+    /// The world point the water comes from: the middle of the face's far
+    /// side, on its plane.
+    pub origin: Vec3,
+    /// The way the water runs, in the world (unit) and along the face's
+    /// two axes (unit).
+    pub toward: Vec3,
+    pub along: Vec2,
+    /// From the face's center to its far side along `along` (m).
+    pub reach: f32,
+    /// How far from `origin` along `toward` the water's edge is (m; under
+    /// 0 with the water out) and where the wave's furthest reach is (m).
+    pub front: f32,
+    pub peak: f32,
+    /// The light of the foam on the wave's edge and of the line left at
+    /// its furthest reach, 0 to 1.
+    pub lead: f32,
+    pub left: f32,
+}
+
+/// Where `wash`'s water stands on `face` with the band's gliding level at
+/// `level`. A world point `p` is `(p - origin).dot(toward)` meters from
+/// where the water comes from; the water's edge is at `front` of them and
+/// the foam line at `peak`. The depth light's sparkle reads the same edge
+/// (board #5543): it flares where that distance passes `front`.
+///
+/// The water runs the way [`Wash::toward`] says, so toward a wearer from
+/// where they face; when that has no part along the face, or was never
+/// named, along the face's longer side. Its run is from the far side to
+/// the head, at least [`WASH_MIN_RUN_M`] and at most the face; with no
+/// head [`WASH_NO_HEAD_RUN`] of the face. A wave reaches [`WASH_REACH`]
+/// of the run by the level, and waits [`WASH_START_M`] behind the far
+/// side between waves. The foam on its edge grows from [`WASH_LEAD`] to
+/// full as it runs up and goes as it drains; the line left at the top is
+/// full as the wave turns and gone, as a square, when its phase wraps.
+/// Both follow the level from [`WASH_FOAM_LEVEL`].
+pub fn wash_front(face: &Face, wash: &Wash, level: f32) -> WashFront {
+    let level = level.clamp(0.0, 1.0);
+    let longer = if face.half[0] >= face.half[1] {
+        Vec2::X
+    } else {
+        Vec2::Y
+    };
+    let named = wash
+        .toward
+        .map(|t| Vec2::new(t.dot(face.axes[0]), t.dot(face.axes[1])))
+        .filter(|v| v.length() > 0.5)
+        .map(Vec2::normalize);
+    let along = named.unwrap_or(longer);
+    let reach = along.x.abs() * face.half[0] + along.y.abs() * face.half[1];
+    let length = 2.0 * reach;
+    let run = match (named, wash.head) {
+        (Some(_), Some(head)) => {
+            (face_uv(face, head).dot(along) + reach).clamp(WASH_MIN_RUN_M.min(length), length)
+        }
+        _ => WASH_NO_HEAD_RUN * length,
+    };
+    let peak = run * (WASH_REACH[0] + (WASH_REACH[1] - WASH_REACH[0]) * level);
+    let a = wash_advance(wash.phase);
+    let rising = wash.phase < WASH_PEAK_PHASE;
+    let foam = WASH_FOAM_LEVEL + (1.0 - WASH_FOAM_LEVEL) * level;
+    let lead = if rising {
+        WASH_LEAD + (1.0 - WASH_LEAD) * a * a
+    } else {
+        a * a
+    };
+    let left = if rising {
+        0.0
+    } else {
+        let gone = ((wash.phase - WASH_PEAK_PHASE) / (1.0 - WASH_PEAK_PHASE)).clamp(0.0, 1.0);
+        (1.0 - gone) * (1.0 - gone)
+    };
+    let toward = face.axes[0] * along.x + face.axes[1] * along.y;
+    WashFront {
+        origin: face.center - toward * reach,
+        toward,
+        along,
+        reach,
+        front: a * (peak + WASH_START_M) - WASH_START_M,
+        peak,
+        lead: foam * lead,
+        left: foam * left,
     }
 }
 
@@ -917,6 +1229,7 @@ pub fn rows(
         SurfaceBehavior::Pulse => (0.0, PULSE_PEAK_ALPHA),
         SurfaceBehavior::Contours | SurfaceBehavior::Terraces => (0.0, CONTOUR_PEAK_ALPHA),
         SurfaceBehavior::Windows => (0.0, WINDOW_PEAK_ALPHA),
+        SurfaceBehavior::Wash => (0.0, WASH_PEAK_ALPHA),
         SurfaceBehavior::Sparks => (0.0, SPARK_PEAK_ALPHA),
         SurfaceBehavior::Embers => (EMBER_MOTE_M_S, EMBER_PEAK_ALPHA),
         SurfaceBehavior::Spectrum => (
@@ -983,6 +1296,32 @@ pub fn rows(
             };
             let [x, y] = window_offset(slot.seed);
             rows[9] = [x, y, 0.0, cell];
+        }
+        SurfaceBehavior::Wash => {
+            let level = audio.land.levels[slot.band.min(BANDS - 1) as usize].clamp(0.0, 1.0);
+            let f = wash_front(face, &audio.wash, level);
+            let [r, g, b] = audio.wash.foam;
+            rows[9] = [f.along.x, f.along.y, f.front, f.peak];
+            rows[RINGS_ROW] = [r, g, b, f.left];
+            rows[RINGS_ROW + 1] = [
+                f.reach,
+                audio.wash.clock,
+                f.lead,
+                WASH_LEVEL + (1.0 - WASH_LEVEL) * level,
+            ];
+            // The sky's mirror: the eye it fades by (a seated one over
+            // the face's middle with no head) and its light at a full
+            // pulse, the share of the walls' own peak.
+            let eye = audio
+                .wash
+                .head
+                .unwrap_or(face.center + face.normal * crate::sky::SEATED_EYE_M);
+            rows[RINGS_ROW + 2] = [
+                eye.x,
+                eye.y,
+                eye.z,
+                audio.wash.mirror * PULSE_PEAK_ALPHA / WASH_PEAK_ALPHA,
+            ];
         }
         SurfaceBehavior::Sparks => rows[9] = [0.0, 0.0, 0.0, SPARK_CELL_M],
         SurfaceBehavior::Embers => rows[9] = [0.0, 0.0, 0.0, EMBER_COAL_M],
@@ -1316,6 +1655,64 @@ pub fn heat_rgb(color: [f32; 3], t: f32) -> [f32; 3] {
     (warm + (hot - warm) * smooth(HEAT_KNEE, 1.0, t)).to_array()
 }
 
+/// The wash's light, 0 to 1, and the foam's share of it, at face
+/// point `uv` (m), before the edge fade: the WGSL's `wash_light`. `shape`
+/// is the slot's shape row (the way the water runs along the face's axes,
+/// the edge's and the foam line's distance from the far side),
+/// `left` the left line's light and `row` the row after it (the far
+/// side's distance from the center, the wave's clock, the edge foam's
+/// light, the water's level), as [`rows`] packs them; `px` a pixel's
+/// footprint (m). Behind its bent edge the water is a bright sheet
+/// thinning over [`WASH_SWASH_M`] to the deep water, which the sets
+/// darken a little; a line of foam rides the edge and another lies where
+/// the wave turned. The light is the brighter of water and foam, and the
+/// foam's share of it is the share of its color: all of it on a dry floor.
+pub fn wash_light(uv: Vec2, shape: [f32; 4], left: f32, row: [f32; 4], px: f32) -> (f32, f32) {
+    let along = Vec2::new(shape[0], shape[1]);
+    let s = uv.dot(along) + row[0];
+    let shore = uv.dot(Vec2::new(-along.y, along.x));
+    let t = row[1];
+    let wobble = WASH_WOBBLE_M
+        * ((WASH_WOBBLE_RAD_M[0] * shore + WASH_WOBBLE_RAD_S[0] * t).sin()
+            + 0.5 * (WASH_WOBBLE_RAD_M[1] * shore - WASH_WOBBLE_RAD_S[1] * t).sin());
+    let d = shape[2] + wobble - s;
+    let soft = px.max(WASH_SOFT_M);
+    let water = smooth(-soft, soft, d);
+    let swash = 1.0 - smooth(0.0, WASH_SWASH_M, d);
+    let sets = 0.5 + 0.5 * (std::f32::consts::TAU / WASH_SET_M * s - WASH_SET_RAD_S * t).sin();
+    let sheet = water
+        * row[3]
+        * (WASH_WATER + (1.0 - WASH_WATER) * swash)
+        * (1.0 - WASH_SET * sets * (1.0 - swash));
+    let side = px.max(WASH_FOAM_SOFT_M);
+    let line = |x: f32| 1.0 - smooth(WASH_FOAM_M, WASH_FOAM_M + side, x.abs());
+    let foam = (line(d) * row[2]).max(line(shape[3] + wobble - s) * left);
+    let light = sheet.max(foam);
+    (light, foam / light.max(1e-4))
+}
+
+/// The sky's mirror on a wash's level floor at world point `world`, seen
+/// from `eye`, for a pulse whose envelope is `env` ([`pulse_level`]) and a
+/// mirror of light `full` at a full pulse (the slot's row): the pulse's
+/// level, full where the view grazes the floor and gone toward the feet,
+/// by the cosines the Aurora floor's reflection fades by
+/// (`sky::REFLECT_COS`). The WGSL's `mirror` in `wash_light`.
+pub fn wash_mirror(world: Vec3, eye: Vec3, env: f32, full: f32) -> f32 {
+    let v = eye - world;
+    let [from, to] = crate::sky::REFLECT_COS;
+    let grazing = 1.0 - smooth(from, to, v.y.abs() / v.length().max(1e-4));
+    full * env.clamp(0.0, 1.0) * grazing
+}
+
+/// A wash's light and its foam's share ([`wash_light`]) over the sky's
+/// `mirror` ([`wash_mirror`]): the brighter of the two, so the mirror
+/// lies under the water and the foam and never adds to them, and the
+/// foam's share of what is drawn.
+pub fn wash_over(water: (f32, f32), mirror: f32) -> (f32, f32) {
+    let light = water.0.max(mirror);
+    (light, water.0 * water.1 / light.max(1e-4))
+}
+
 /// The surfaces pass's shader: group 0 is the eye pass's shared camera
 /// (`view_proj`), group 1 one slot's rows ([`rows`]). The vertex stage
 /// places the quad from its corners and hands the fragment its (u, v) on
@@ -1344,12 +1741,18 @@ struct SurfaceFx {
     // and terraces: x the land's clock (s), y its level, z its breath, w
     // the traveling line's height; windows and sparks: w the cell (m);
     // windows: x, y the cells the face counts from, whole; embers: w a
-    // coal's size (m)
+    // coal's size (m); the wash: x, y the way the water runs along the
+    // face's axes (unit), z its edge's and w its foam line's distance from
+    // the far side (m)
     shape: vec4<f32>,
     // origin u, v (m), radius (m), intensity; 0 intensity for an empty slot
     // (contours and terraces: the first row is the high land's color, w
     // the traveling line's light; terraces: the second row's x is 1 on a
-    // volume's side)
+    // volume's side; the wash: the first row is the foam's color, w the
+    // left line's light, the second x the far side's distance from the
+    // center (m), y the wave's clock (s), z the edge foam's light, w the
+    // water's level, the third xyz the eye (m) and w the light of the
+    // sky's mirror at a full pulse)
     rings: array<vec4<f32>, 8>,
     // the spectrum's bar heights 0..1, four per row, from the wearer's left
     bars: array<vec4<f32>, 16>,
@@ -1367,6 +1770,7 @@ const BEHAVIOR_PULSE: u32 = 7u;
 const BEHAVIOR_CONTOURS: u32 = 16u;
 const BEHAVIOR_WINDOWS: u32 = 17u;
 const BEHAVIOR_TERRACES: u32 = 18u;
+const BEHAVIOR_WASH: u32 = 19u;
 const BAND_BASS: u32 = 1u;
 const BAND_MID: u32 = 2u;
 const BAND_HIGH: u32 = 3u;
@@ -1479,6 +1883,23 @@ const HEAT_LOW_G: f32 = 0.45;
 const HEAT_LOW_B: f32 = 0.3;
 const HEAT_KNEE: f32 = 0.65;
 const HEAT_WHITE: f32 = 0.7;
+// The wash's (surface_fx.rs has each).
+const WASH_WATER: f32 = 0.8;
+const WASH_SWASH_M: f32 = 0.5;
+const WASH_SET: f32 = 0.2;
+const WASH_SET_RAD_M: f32 = 17.951958;
+const WASH_SET_RAD_S: f32 = 0.8;
+const WASH_WOBBLE_M: f32 = 0.06;
+const WASH_WOBBLE_RAD_M1: f32 = 2.1;
+const WASH_WOBBLE_RAD_M2: f32 = 5.3;
+const WASH_WOBBLE_RAD_S1: f32 = 0.3;
+const WASH_WOBBLE_RAD_S2: f32 = 0.5;
+const WASH_SOFT_M: f32 = 0.08;
+const WASH_FOAM_M: f32 = 0.03;
+const WASH_FOAM_SOFT_M: f32 = 0.01;
+const WASH_MIRROR_COS_FROM: f32 = 0.5;
+const WASH_MIRROR_COS_TO: f32 = 0.906;
+
 // The spectrum's (the canvas's): the softness of a bar's sides (fraction
 // of its slot) and of its top and cap (fraction of the wall's height),
 // and the bottom glow's height.
@@ -1894,6 +2315,44 @@ fn heat_rgb(c: vec3<f32>, t: f32) -> vec3<f32> {
     return mix(mix(low, c, smoothstep(0.0, HEAT_KNEE, t)), hot, smoothstep(HEAT_KNEE, 1.0, t));
 }
 
+// The wash: x the light of the water behind its bent edge and of the
+// foam, on the edge and where the wave turned; y the foam's share of that
+// light, the share of its color. The rows carry where the edge and the line are.
+fn wash_foam_line(x: f32, side: f32) -> f32 {
+    return 1.0 - smoothstep(WASH_FOAM_M, WASH_FOAM_M + side, abs(x));
+}
+
+fn wash_light(uv: vec2<f32>, world: vec3<f32>, px: f32) -> vec2<f32> {
+    let along = fx.shape.xy;
+    let s = dot(uv, along) + fx.rings[1].x;
+    let shore = dot(uv, vec2<f32>(-along.y, along.x));
+    let t = fx.rings[1].y;
+    let wobble = WASH_WOBBLE_M
+        * (sin(WASH_WOBBLE_RAD_M1 * shore + WASH_WOBBLE_RAD_S1 * t)
+            + 0.5 * sin(WASH_WOBBLE_RAD_M2 * shore - WASH_WOBBLE_RAD_S2 * t));
+    let d = fx.shape.z + wobble - s;
+    let soft = max(px, WASH_SOFT_M);
+    let water = smoothstep(-soft, soft, d);
+    let swash = 1.0 - smoothstep(0.0, WASH_SWASH_M, d);
+    let sets = 0.5 + 0.5 * sin(WASH_SET_RAD_M * s - WASH_SET_RAD_S * t);
+    let sheet = water * fx.rings[1].w * mix(WASH_WATER, 1.0, swash)
+        * (1.0 - WASH_SET * sets * (1.0 - swash));
+    let side = max(px, WASH_FOAM_SOFT_M);
+    let foam = max(
+        wash_foam_line(d, side) * fx.rings[1].z,
+        wash_foam_line(fx.shape.w + wobble - s, side) * fx.rings[0].w,
+    );
+    // Under them the sky's mirror: the pulse's level, full where the
+    // view grazes the floor and gone toward the feet.
+    let v = fx.rings[2].xyz - world;
+    let grazing = 1.0
+        - smoothstep(WASH_MIRROR_COS_FROM, WASH_MIRROR_COS_TO, abs(v.y) / max(length(v), 1e-4));
+    let env = max(fx.audio2.z, PULSE_FLOOR * clamp(band_level(), 0.0, 1.0));
+    let mirror = fx.rings[2].w * clamp(env, 0.0, 1.0) * grazing;
+    let light = max(max(sheet, foam), mirror);
+    return vec2<f32>(light * edge_fade(uv), foam / max(light, 1e-4));
+}
+
 // The wall spectrum: bars of light climbing the face, the bar index along
 // u times the sign (low bands on the wearer's left), the height along v,
 // brightest at the bar's top with a cap line, over a glow along the
@@ -1945,6 +2404,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         light = windows_light(in.uv, px);
     } else if id == BEHAVIOR_TERRACES {
         let c = terraces_light(in.uv, in.world, px);
+        light = c.x;
+        rgb = mix(rgb, fx.rings[0].rgb, c.y);
+    } else if id == BEHAVIOR_WASH {
+        // The water in the surface's color, the foam in its own.
+        let c = wash_light(in.uv, in.world, px);
         light = c.x;
         rgb = mix(rgb, fx.rings[0].rgb, c.y);
     } else if id == BEHAVIOR_SPARKS {
@@ -2069,6 +2533,22 @@ mod tests {
             ("BEHAVIOR_SPARKS", SurfaceBehavior::Sparks.id() as f32),
             ("BEHAVIOR_WINDOWS", SurfaceBehavior::Windows.id() as f32),
             ("BEHAVIOR_TERRACES", SurfaceBehavior::Terraces.id() as f32),
+            ("BEHAVIOR_WASH", SurfaceBehavior::Wash.id() as f32),
+            ("WASH_WATER", WASH_WATER),
+            ("WASH_SWASH_M", WASH_SWASH_M),
+            ("WASH_SET", WASH_SET),
+            ("WASH_SET_RAD_M", std::f32::consts::TAU / WASH_SET_M),
+            ("WASH_SET_RAD_S", WASH_SET_RAD_S),
+            ("WASH_WOBBLE_M", WASH_WOBBLE_M),
+            ("WASH_WOBBLE_RAD_M1", WASH_WOBBLE_RAD_M[0]),
+            ("WASH_WOBBLE_RAD_M2", WASH_WOBBLE_RAD_M[1]),
+            ("WASH_WOBBLE_RAD_S1", WASH_WOBBLE_RAD_S[0]),
+            ("WASH_WOBBLE_RAD_S2", WASH_WOBBLE_RAD_S[1]),
+            ("WASH_SOFT_M", WASH_SOFT_M),
+            ("WASH_FOAM_M", WASH_FOAM_M),
+            ("WASH_FOAM_SOFT_M", WASH_FOAM_SOFT_M),
+            ("WASH_MIRROR_COS_FROM", crate::sky::REFLECT_COS[0]),
+            ("WASH_MIRROR_COS_TO", crate::sky::REFLECT_COS[1]),
             ("WINDOW_ASPECT", WINDOW_ASPECT),
             ("WINDOW_PANE_U", WINDOW_PANE[0]),
             ("WINDOW_PANE_V", WINDOW_PANE[1]),
@@ -3856,5 +4336,514 @@ mod tests {
         assert_close!(level(0.3).1, TERRACE_STRATA);
         // Never over the rim: the land does not rise past the top's.
         assert_close!(level(-0.2).0, 0.0);
+    }
+
+    /// A wash frame for the floor: a wave at `phase` running toward +Z,
+    /// the wearer at `HEAD`.
+    fn wave(phase: f32) -> Wash {
+        Wash {
+            phase,
+            clock: 0.0,
+            toward: Some(Vec3::Z),
+            head: Some(HEAD),
+            foam: crate::surfaces::ROSE,
+            mirror: 0.0,
+        }
+    }
+
+    /// The wash (board #5543): a wave is out at both ends of its bar and
+    /// furthest up at the peak phase, sets out, turns and arrives at no
+    /// speed, and runs up faster than it drains.
+    #[test]
+    fn a_wave_runs_up_and_drains_back_once_a_bar() {
+        assert_close!(wash_advance(0.0), 0.0);
+        assert_close!(wash_advance(WASH_PEAK_PHASE), 1.0);
+        assert_close!(wash_advance(1.0), 0.0);
+        let n = 400;
+        let at = |i: i32| wash_advance(i as f32 / n as f32);
+        let peak = (WASH_PEAK_PHASE * n as f32).round() as i32;
+        for i in 0..n {
+            let step = at(i + 1) - at(i);
+            assert_eq!(step > 0.0, i < peak, "at {i}: {step}");
+            // The fastest it moves: half pi over the shorter part.
+            assert!(step.abs() < 1.01 * std::f32::consts::FRAC_PI_2 / (peak as f32));
+        }
+        for i in [0, peak - 1, peak, n - 1] {
+            assert!((at(i + 1) - at(i)).abs() < 3e-4, "no speed at {i}");
+        }
+        const { assert!(WASH_PEAK_PHASE < 0.5) };
+        // Out of range stays at the ends.
+        assert_close!(wash_advance(-1.0), 0.0);
+        assert_close!(wash_advance(2.0), 0.0);
+    }
+
+    /// The wave's own phase follows the bar's and never jumps: a bar moved
+    /// on is caught up with at a bounded pace, one moved back holds the
+    /// wave, a bar standing still leaves it running slowly, and the flash
+    /// limit's motion slows all of it.
+    #[test]
+    fn the_wave_follows_the_bar_without_jumping() {
+        let dt = 1.0 / 72.0;
+        let max = dt * WASH_MAX_BARS_S + 1e-6;
+        let phase = |s: &Shore| s.wash(None, [0.0; 3], 0.0).phase;
+        // A steady bar of 2 s: the wave is on it within a frame's step.
+        let mut s = Shore::default();
+        let mut bar = 0.0f32;
+        for _ in 0..720 {
+            bar = (bar + dt / 2.0).rem_euclid(1.0);
+            let before = phase(&s);
+            s.step(dt, 1.0, bar, None);
+            let moved = (phase(&s) - before).rem_euclid(1.0);
+            assert!(moved <= max, "{moved}");
+            assert_close!(phase(&s), bar);
+        }
+        // The analysis moves the bar on by 0.3: no jump, caught up at the
+        // bounded pace.
+        bar = (bar + 0.3).rem_euclid(1.0);
+        let mut frames = 0;
+        loop {
+            bar = (bar + dt / 2.0).rem_euclid(1.0);
+            let before = phase(&s);
+            s.step(dt, 1.0, bar, None);
+            let moved = (phase(&s) - before).rem_euclid(1.0);
+            assert!(moved <= max, "{moved}");
+            frames += 1;
+            if (phase(&s) - bar).abs() < 1e-5 {
+                break;
+            }
+            assert!(frames < 200);
+        }
+        // 0.3 of a bar at 1 - 0.5 bars a second of closing speed.
+        assert!((40..=46).contains(&frames), "{frames}");
+        // The analysis moves the bar back by 0.2: the wave holds until
+        // the bar comes round, never backward.
+        bar = (bar - 0.2).rem_euclid(1.0);
+        let held = phase(&s);
+        for _ in 0..10 {
+            bar = (bar + dt / 2.0).rem_euclid(1.0);
+            s.step(dt, 1.0, bar, None);
+            assert_close!(phase(&s), held);
+        }
+        const { assert!(WASH_AHEAD > 0.2) };
+        // The bar stands still (no music): after a moment the wave runs
+        // on at its idle pace, a wave every five seconds.
+        let mut s = Shore::default();
+        for _ in 0..36 {
+            s.step(dt, 1.0, 0.0, None);
+        }
+        let before = phase(&s);
+        for _ in 0..72 {
+            s.step(dt, 1.0, 0.0, None);
+        }
+        assert!((phase(&s) - before - WASH_IDLE_BARS_S).abs() < 1e-3);
+        // The limit's motion at 0 holds the wave and its clock.
+        let (before, clock) = (phase(&s), s.wash(None, [0.0; 3], 0.0).clock);
+        s.step(1.0, 0.0, 0.5, None);
+        assert_close!(phase(&s), before);
+        assert_close!(s.wash(None, [0.0; 3], 0.0).clock, clock);
+        // Bad input moves nothing but the count of stillness.
+        let mut bad = Shore::default();
+        bad.step(-1.0, f32::NAN, f32::NAN, Some(Vec3::splat(f32::NAN)));
+        assert_close!(phase(&bad), 0.0);
+        assert_eq!(bad.wash(None, [0.0; 3], 0.0).toward, None);
+        // Every rate of the clock a whole number of hundredths, so its
+        // wrap brings every phase of the edge and the sets round.
+        for r in [WASH_WOBBLE_RAD_S[0], WASH_WOBBLE_RAD_S[1], WASH_SET_RAD_S] {
+            assert_close!((r * 100.0).round(), r * 100.0);
+        }
+    }
+
+    /// The water comes from where the wearer faces. The side is taken
+    /// from the first facing with a level part and changes only when the
+    /// wearer has turned well round, and then only as the phase wraps.
+    #[test]
+    fn the_water_comes_from_where_the_wearer_faces() {
+        let dt = 1.0 / 72.0;
+        let toward = |s: &Shore| s.wash(None, [0.0; 3], 0.0).toward;
+        let mut s = Shore::default();
+        // Lying back, facing the ceiling: no side yet.
+        s.step(dt, 1.0, 0.1, Some(Vec3::new(0.1, 0.99, -0.1)));
+        assert_eq!(toward(&s), None);
+        // Facing -Z and a little down: the water runs toward +Z, level.
+        s.step(dt, 1.0, 0.1, Some(Vec3::new(0.0, -0.5, -0.86)));
+        assert_close!(toward(&s).expect("a side").to_array(), Vec3::Z.to_array());
+        // A turn of 45 degrees changes nothing, wrap or not.
+        let turned = Vec3::new(-0.7, 0.0, -0.7);
+        let mut bar = 0.1f32;
+        for _ in 0..200 {
+            bar = (bar + dt / 2.0).rem_euclid(1.0);
+            s.step(dt, 1.0, bar, Some(turned));
+        }
+        assert_close!(toward(&s).expect("a side").to_array(), Vec3::Z.to_array());
+        // Facing +X now: the side changes on the frame the phase wraps
+        // and not before.
+        let mut wraps = 0;
+        for _ in 0..200 {
+            bar = (bar + dt / 2.0).rem_euclid(1.0);
+            let before = s.wash(None, [0.0; 3], 0.0).phase;
+            s.step(dt, 1.0, bar, Some(Vec3::X));
+            let wrapped = s.wash(None, [0.0; 3], 0.0).phase < before;
+            wraps += u32::from(wrapped);
+            let want = if wraps > 0 { Vec3::NEG_X } else { Vec3::Z };
+            assert_close!(toward(&s).expect("a side").to_array(), want.to_array());
+        }
+        assert!(wraps >= 1);
+        // The wave hands the head and the foam's color on.
+        let w = s.wash(Some(HEAD), [0.1, 0.2, 0.3], 0.2);
+        assert_eq!((w.head, w.foam), (Some(HEAD), [0.1, 0.2, 0.3]));
+        assert_close!(w.mirror, 0.2);
+        assert_close!(s.wash(None, [0.0; 3], f32::NAN).mirror, 0.0);
+        assert_close!(s.wash(None, [0.0; 3], 3.0).mirror, 1.0);
+    }
+
+    /// Where the water stands on a floor: it comes from the far side in
+    /// front of the wearer, runs to the head at most, reaches further
+    /// with the band, and with the water out nothing of it is on the
+    /// face.
+    #[test]
+    fn a_wave_comes_from_the_far_side_and_stops_short_of_the_wearer() {
+        let face = floor();
+        // The floor of the helper: 4 x 3 m, level.
+        assert_close!(face.normal.to_array(), Vec3::Y.to_array());
+        let at = |phase: f32, level: f32| wash_front(&face, &wave(phase), level);
+        let f = at(WASH_PEAK_PHASE, 1.0);
+        assert_close!(f.toward.to_array(), Vec3::Z.to_array());
+        assert_close!(f.toward.dot(face.normal), 0.0);
+        assert_close!(f.along.length(), 1.0);
+        // The far side: the floor's -Z edge, half its depth from the
+        // center, level with it.
+        assert_close!(
+            f.origin.to_array(),
+            (face.center - Vec3::Z * f.reach).to_array()
+        );
+        assert_close!(f.reach, 1.5);
+        // A world point's distance along the run is the fragment's.
+        let p = face.center + Vec3::new(0.7, 0.0, -0.4);
+        assert_close!(
+            (p - f.origin).dot(f.toward),
+            face_uv(&face, p).dot(f.along) + f.reach
+        );
+        // The run ends under the head; the wave stops short of it.
+        let run = (HEAD - f.origin).dot(f.toward);
+        assert!(run > WASH_MIN_RUN_M && run < 2.0 * f.reach);
+        assert_close!(f.peak, WASH_REACH[1] * run);
+        assert_close!(f.front, f.peak);
+        assert_close!(at(WASH_PEAK_PHASE, 0.0).peak, WASH_REACH[0] * run);
+        assert!(f.peak < run - 0.1);
+        // The water out: its edge behind the far side by more than its
+        // bend, its softness and its foam, and no foam lit that is on the
+        // face.
+        for phase in [0.0, 1.0] {
+            let out = at(phase, 1.0);
+            assert_close!(out.front, -WASH_START_M);
+            assert_close!(out.left, 0.0);
+        }
+        const { assert!(WASH_START_M > 1.5 * WASH_WOBBLE_M + WASH_SOFT_M + WASH_FOAM_M) };
+        // The foam on the edge grows to full at the top; there the line
+        // left behind takes over at the same light and fades to nothing.
+        let foam = |level: f32| WASH_FOAM_LEVEL + (1.0 - WASH_FOAM_LEVEL) * level;
+        assert_close!(at(0.0, 1.0).lead, WASH_LEAD);
+        assert!((at(WASH_PEAK_PHASE - 1e-4, 1.0).lead - 1.0).abs() < 1e-3);
+        assert_close!(at(WASH_PEAK_PHASE - 1e-4, 1.0).left, 0.0);
+        assert_close!(at(WASH_PEAK_PHASE, 1.0).left, 1.0);
+        assert_close!(at(WASH_PEAK_PHASE, 0.0).left, foam(0.0));
+        let mut last = (1.0f32, 1.0f32);
+        for i in 1..=60 {
+            let phase = WASH_PEAK_PHASE + (1.0 - WASH_PEAK_PHASE) * i as f32 / 60.0;
+            let now = at(phase, 1.0);
+            assert!(now.lead < last.0 && now.left < last.1, "at {phase}");
+            last = (now.lead, now.left);
+        }
+        assert_close!(last.0, 0.0);
+        assert_close!(last.1, 0.0);
+        // No side named, or one with no part along the face: along the
+        // longer side, over most of it. A head past the far side: the
+        // shortest run.
+        for toward in [None, Some(Vec3::Y)] {
+            let w = Wash {
+                toward,
+                ..wave(WASH_PEAK_PHASE)
+            };
+            let f = wash_front(&face, &w, 1.0);
+            assert_close!(f.along.to_array(), Vec2::X.to_array());
+            assert_close!(f.reach, 2.0);
+            assert_close!(f.peak, WASH_REACH[1] * WASH_NO_HEAD_RUN * 4.0);
+        }
+        let no_head = Wash {
+            head: None,
+            ..wave(WASH_PEAK_PHASE)
+        };
+        assert_close!(
+            wash_front(&face, &no_head, 1.0).peak,
+            WASH_REACH[1] * WASH_NO_HEAD_RUN * 3.0
+        );
+        let behind = Wash {
+            head: Some(face.center - Vec3::Z * 5.0),
+            ..wave(WASH_PEAK_PHASE)
+        };
+        assert_close!(
+            wash_front(&face, &behind, 1.0).peak,
+            WASH_REACH[1] * WASH_MIN_RUN_M
+        );
+    }
+
+    /// The wash's rows and its light: water behind the edge and none
+    /// ahead of it, a bright sheet behind the edge over darker water,
+    /// foam on the edge and where the wave turned, in the foam's color.
+    #[test]
+    fn the_wash_is_water_behind_an_edge_and_foam_on_it() {
+        let face = floor();
+        let audio = |phase: f32, level: f32| Audio {
+            land: Land {
+                levels: [0.0, level, 0.0, 0.0],
+                ..Land::default()
+            },
+            wash: Wash {
+                clock: 3.0,
+                ..wave(phase)
+            },
+            ..Audio::default()
+        };
+        let s = Slot {
+            band: BAND_BASS,
+            color: 2,
+            ..slot(face, KIND_FLOOR, SurfaceBehavior::Wash)
+        };
+        let r = rows(&s, audio(0.7, 1.0), None, None, 0.0);
+        let f = wash_front(&face, &wave(0.7), 1.0);
+        assert_close!(r[4][3], 19.0);
+        assert_close!(r[5][3], 0.0);
+        assert_close!(r[6], [0.58, 0.32, 1.0, WASH_PEAK_ALPHA]);
+        assert_close!(r[9], [f.along.x, f.along.y, f.front, f.peak]);
+        let [fr, fg, fb] = crate::surfaces::ROSE;
+        assert_close!(r[RINGS_ROW], [fr, fg, fb, f.left]);
+        assert_close!(r[RINGS_ROW + 1], [f.reach, 3.0, f.lead, 1.0]);
+        // No theme's share: no mirror, the eye still the head.
+        assert_close!(r[RINGS_ROW + 2], [HEAD.x, HEAD.y, HEAD.z, 0.0]);
+        // The band is the land's gliding level and nothing faster: the
+        // frame's own bass does not reach the rows.
+        let loud = Audio {
+            bass: 1.0,
+            ..audio(0.7, 1.0)
+        };
+        assert_eq!(rows(&s, loud, None, None, 0.0)[9..], r[9..]);
+        let quiet = rows(&s, audio(0.7, 0.0), None, None, 0.0);
+        assert_close!(quiet[RINGS_ROW + 1][3], WASH_LEVEL);
+        assert!(quiet[9][3] < r[9][3]);
+        // The light, along the run through the face's middle, with the
+        // edge's bend taken out (clock 0 and the shore's coordinate 0).
+        let px = 0.004;
+        let light = |rows: &[[f32; 4]; UNIFORM_ROWS], from_far: f32| {
+            let uv = Vec2::new(rows[9][0], rows[9][1]) * (from_far - rows[RINGS_ROW + 1][0]);
+            let mut row = rows[RINGS_ROW + 1];
+            row[1] = 0.0;
+            wash_light(uv, rows[9], rows[RINGS_ROW][3], row, px)
+        };
+        // Draining at 0.7: the edge is under the turn's line.
+        assert!(f.front < f.peak - 0.3 && f.front > 0.6);
+        // Ahead of the edge and off both lines: dark.
+        let (ahead, foam) = light(&r, f.front + 0.15);
+        assert_close!(ahead, 0.0);
+        assert_close!(foam, 0.0);
+        // On the edge: half the water's light or its foam, the brighter,
+        // and the foam's share of the color.
+        let (edge, foam) = light(&r, f.front);
+        assert_close!(edge, f.lead.max(0.5));
+        assert_close!(foam, f.lead / edge);
+        // Just behind the edge the sheet at nearly the water's full
+        // light; deep behind it the darker water, the sets in it.
+        let (sheet, foam) = light(&r, f.front - 0.08);
+        assert_close!(foam, 0.0);
+        assert!(sheet > 0.8 && sheet <= 1.0, "{sheet}");
+        let deep: Vec<f32> = (0..40)
+            .map(|i| light(&r, f.front - WASH_SWASH_M - 0.01 * i as f32).0)
+            .collect();
+        let (low, high) = deep
+            .iter()
+            .fold((1.0f32, 0.0f32), |(l, h), v| (l.min(*v), h.max(*v)));
+        assert!((high - WASH_WATER).abs() < 0.01, "{high}");
+        assert!((low - WASH_WATER * (1.0 - WASH_SET)).abs() < 0.01, "{low}");
+        // Where the wave turned: the line left behind, on dry floor, all
+        // foam.
+        let (line, foam) = light(&r, f.peak);
+        assert_close!(line, f.left);
+        assert_close!(foam, 1.0);
+        assert!(f.left > 0.1);
+        // Light never passes 1, and the edge's bend moves it by its size
+        // at most.
+        let mut row = r[RINGS_ROW + 1];
+        for i in 0..400 {
+            let uv = Vec2::new(-2.0 + 0.01 * i as f32, 0.3);
+            row[1] = 0.37 * i as f32;
+            let (l, foam) = wash_light(uv, r[9], r[RINGS_ROW][3], row, px);
+            assert!((0.0..=1.0).contains(&l) && (0.0..=1.0).contains(&foam));
+        }
+        // A wide pixel softens the foam's sides and never brightens its
+        // middle.
+        let far = |px: f32| {
+            let uv = Vec2::new(r[9][0], r[9][1]) * (f.peak + 0.06 - r[RINGS_ROW + 1][0]);
+            let mut row = r[RINGS_ROW + 1];
+            row[1] = 0.0;
+            wash_light(uv, r[9], r[RINGS_ROW][3], row, px).0
+        };
+        assert_close!(far(0.004), 0.0);
+        assert!(far(0.1) > 0.0 && far(0.1) < f.left);
+    }
+
+    /// The whole floor's light moves slowly: over a bar of 2 s at 72 Hz,
+    /// no frame changes the mean light of the floor by more than a
+    /// fiftieth of its peak, and the mean has one rise and one fall. (The
+    /// sets coming onto the face move it by under a five-hundredth, which
+    /// the count leaves out.)
+    #[test]
+    fn the_floors_light_moves_slowly() {
+        let face = floor();
+        let mean = |phase: f32| {
+            let f = wash_front(&face, &wave(phase), 1.0);
+            let shape = [f.along.x, f.along.y, f.front, f.peak];
+            let row = [f.reach, 0.0, f.lead, 1.0];
+            // A centimeter apart along the run, so the foam's lines are
+            // sampled and not skipped.
+            let (nx, ny) = (8, 300);
+            let mut sum = 0.0;
+            for i in 0..nx {
+                for j in 0..ny {
+                    let uv = Vec2::new(
+                        face.half[0] * (2.0 * (i as f32 + 0.5) / nx as f32 - 1.0),
+                        face.half[1] * (2.0 * (j as f32 + 0.5) / ny as f32 - 1.0),
+                    );
+                    sum += wash_light(uv, shape, f.left, row, 0.01).0;
+                }
+            }
+            sum / (nx * ny) as f32
+        };
+        let frames = 144;
+        let means: Vec<f32> = (0..=frames)
+            .map(|i| mean(i as f32 / frames as f32))
+            .collect();
+        assert_close!(means[0], 0.0);
+        assert!(means[frames].abs() < 1e-3);
+        let mut turns = 0;
+        let mut rising = true;
+        for w in means.windows(2) {
+            let step = w[1] - w[0];
+            assert!(step.abs() < 0.02, "{step}");
+            if step.abs() > 0.002 && (step > 0.0) != rising {
+                turns += 1;
+                rising = !rising;
+            }
+        }
+        assert_eq!(turns, 1);
+        let top = means.iter().fold(0.0f32, |m, v| m.max(*v));
+        assert!(top > 0.1 && top < 0.75, "{top}");
+    }
+
+    /// Under the water the floor mirrors the theme's sky slightly: the
+    /// pulse's level at the theme's share, full where the view grazes the
+    /// floor and gone toward the feet, and never over the water or the
+    /// foam.
+    #[test]
+    fn the_floor_mirrors_the_sky_slightly_under_the_water() {
+        let face = floor();
+        let share = Theme::Tide.reflection();
+        assert_close!(share, 0.2);
+        let audio = Audio {
+            wash: Wash {
+                mirror: share,
+                ..wave(0.7)
+            },
+            ..Audio::default()
+        };
+        let s = slot(face, KIND_FLOOR, SurfaceBehavior::Wash);
+        let r = rows(&s, audio, None, None, 0.0);
+        // At a full pulse the mirror draws at the share of the walls'
+        // own peak alpha.
+        let full = r[RINGS_ROW + 2][3];
+        assert_close!(full * WASH_PEAK_ALPHA, share * PULSE_PEAK_ALPHA);
+        assert_close!(r[RINGS_ROW + 2][..3], HEAD.to_array());
+        // With no head, a seated eye over the face's middle.
+        let no_head = Audio {
+            wash: Wash {
+                head: None,
+                ..audio.wash
+            },
+            ..audio
+        };
+        let eye = face.center + Vec3::Y * crate::sky::SEATED_EYE_M;
+        assert_close!(
+            rows(&s, no_head, None, None, 0.0)[RINGS_ROW + 2][..3],
+            eye.to_array()
+        );
+        // The walls' pulse at the downbeat and between: the mirror
+        // follows its level.
+        let floor_y = face.center.y;
+        let at = |x: f32, z: f32, env: f32| wash_mirror(Vec3::new(x, floor_y, z), HEAD, env, full);
+        let far = Vec3::new(HEAD.x + 3.0, floor_y, HEAD.z);
+        assert_close!(at(far.x, far.z, 1.0), full);
+        assert_close!(at(far.x, far.z, 0.5), 0.5 * full);
+        assert_close!(at(far.x, far.z, pulse_level(0.0, 0.0)), 0.0);
+        // Gone under the wearer and toward the feet, full from where the
+        // view is 60 degrees off the floor's normal, and never rising on
+        // the way in.
+        assert_close!(at(HEAD.x, HEAD.z, 1.0), 0.0);
+        assert_close!(at(HEAD.x + 0.5, HEAD.z, 1.0), 0.0);
+        let height = HEAD.y - floor_y;
+        assert_close!(
+            at(HEAD.x + height * 3.0f32.sqrt() * 1.01, HEAD.z, 1.0),
+            full
+        );
+        let mut last = full;
+        for i in (0..=40).rev() {
+            let now = at(HEAD.x + 0.1 * i as f32, HEAD.z, 1.0);
+            assert!(now <= last + 1e-6, "at {i}");
+            last = now;
+        }
+        // Slight: at a full pulse and full strength the floor's mirror is
+        // under a tenth in alpha.
+        assert!(full * WASH_PEAK_ALPHA < 0.1);
+        // Under the water and the foam, never over them: the brighter
+        // draws, the foam keeps its share of what is drawn, and a dry
+        // floor shows the mirror in the water's color.
+        assert_eq!(wash_over((0.8, 0.0), 0.18), (0.8, 0.0));
+        assert_eq!(wash_over((0.6, 1.0), 0.18), (0.6, 1.0));
+        assert_eq!(wash_over((0.0, 0.0), 0.18), (0.18, 0.0));
+        let (light, foam) = wash_over((0.1, 1.0), 0.18);
+        assert_close!(light, 0.18);
+        assert_close!(foam, 0.1 / 0.18);
+        assert_eq!(wash_over((0.5, 0.3), 0.0), (0.5, 0.3));
+        // The shader has the same.
+        for lit in [
+            "let mirror = fx.rings[2].w * clamp(env, 0.0, 1.0) * grazing;",
+            "let light = max(max(sheet, foam), mirror);",
+            "let env = max(fx.audio2.z, PULSE_FLOOR * clamp(band_level(), 0.0, 1.0));",
+        ] {
+            assert!(SURFACE_FX_WGSL.contains(lit), "{lit}");
+        }
+    }
+
+    /// The foam is the color the room's theme gives its tables: rose over
+    /// Tide's violet water; warm white with no theme.
+    #[test]
+    fn the_foam_is_the_color_of_what_stands_in_the_water() {
+        let key = [0.2, 0.9, 0.4];
+        assert_close!(wash_foam(Some(Theme::Tide), key), crate::surfaces::ROSE);
+        assert_close!(wash_foam(None, key), crate::surfaces::WARM_WHITE);
+        assert_close!(
+            surface_color(WASH_FOAM_COLOR, KIND_TABLE, key),
+            crate::surfaces::WARM_WHITE
+        );
+        // Tide's floor is the wash, violet, and differs from its foam.
+        let floor = Theme::Tide.look(KIND_FLOOR).expect("a floor");
+        assert_eq!(floor.behavior, SurfaceBehavior::Wash);
+        assert_close!(
+            surface_color(floor.color, KIND_FLOOR, key),
+            crate::surfaces::VIOLET
+        );
+        for theme in Theme::ALL {
+            let washes = theme
+                .looks()
+                .any(|(_, l)| l.behavior == SurfaceBehavior::Wash);
+            assert_eq!(washes, theme == Theme::Tide, "{theme:?}");
+        }
     }
 }

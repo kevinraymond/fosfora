@@ -2126,6 +2126,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // track already on the speakers brings its own on the first frame; the
     // change under way; and `debug.fosfora.tracktheme`, live.
     let mut terrain = crate::surface_fx::Terrain::default();
+    // Board #5543: the wash's wave, one for the room.
+    let mut shore = crate::surface_fx::Shore::default();
     let mut theme_starts = 0u32;
     let mut bringing = crate::themes::Bringing::default();
     let mut track_themes = switch_now(crate::music::TRACK_THEME_KNOB).unwrap_or(true);
@@ -5349,7 +5351,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         );
                         terrain.land()
                     },
+                    // Set below, once the room's theme and the key's
+                    // tint are known.
+                    wash: crate::surface_fx::Wash::default(),
                 };
+                // Board #5543: the wash's wave follows the bar without
+                // jumping, and comes from where the wearer faces.
+                shore.step(
+                    dt,
+                    motion,
+                    f.bar_phase,
+                    Some(glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z),
+                );
                 let mut counts = [0usize; 7];
                 let mut slots = Vec::new();
                 let mut sides = Vec::new();
@@ -5554,6 +5567,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // Board #5451: as the flash limit lets it through.
                     flash_limit.follow_all(crate::flash::follower::TINT, &mut audio.key_tint);
                 }
+                // Board #5543: the wash's wave, its foam in the color the
+                // room's theme gives its tables, and the sky's mirror
+                // under it.
+                audio.wash = shore.wash(
+                    Some(head),
+                    crate::surface_fx::wash_foam(light_theme, audio.key_tint),
+                    // The share of its sky the theme's floor mirrors; no
+                    // theme has no sky.
+                    light_theme.map_or(0.0, crate::themes::Theme::reflection),
+                );
                 // The light follows the band the theme gives other surfaces,
                 // its peak and its veil the immersion level; logged when its
                 // colors change with the theme.
@@ -5625,13 +5648,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         immerse_level,
                         &sonar.rows(&sonar_opts, immerse_level),
                         // Board #5543: what the look reads of the room:
-                        // the wash's front for Tide's sparkle.
+                        // the edge of the wash on the floor, where one
+                        // runs (Tide), for the sparkle.
                         &crate::depth_light::Around {
-                            front: crate::depth_light::front(
-                                light_theme,
-                                audio.bar_phase,
-                                head,
-                            ),
+                            front: slots
+                                .iter()
+                                .find(|s| s.behavior == SurfaceBehavior::Wash)
+                                .map_or([0.0; 4], |s| {
+                                    crate::depth_light::front_of(&crate::surface_fx::wash_front(
+                                        &s.face,
+                                        &audio.wash,
+                                        audio.land.levels[(s.band as usize)
+                                            .min(crate::surface_fx::BANDS as usize - 1)],
+                                    ))
+                                }),
                             // The glints turn with the air's orbit,
                             // about the effect anchor as it does.
                             orbit: firefly_orbit,

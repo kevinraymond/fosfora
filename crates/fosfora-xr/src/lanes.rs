@@ -1840,7 +1840,8 @@ mod tests {
         assert_eq!(B::Tessera.next(), B::Contours);
         assert_eq!(B::Contours.next(), B::Windows);
         assert_eq!(B::Windows.next(), B::Terraces);
-        assert_eq!(B::Terraces.next(), B::None);
+        assert_eq!(B::Terraces.next(), B::Wash);
+        assert_eq!(B::Wash.next(), B::None);
         let dir = std::env::temp_dir().join(format!("fosfora-lanes-cycle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let boxes = room();

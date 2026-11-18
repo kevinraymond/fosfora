@@ -51,7 +51,11 @@
 //! - **Tide**, a shore at dusk: a violet sky breathing with the bar on
 //!   the walls and the ceiling (the pulse, the ceiling's at 0.6), rose on
 //!   what stands in it: rings on the tables, tide pools, and curls on
-//!   other things. The floor waits for the wash and keeps the violet curls.
+//!   other things. The floor is the wash (`surface_fx.rs`): violet water
+//!   that runs up it and drains back once a bar and leaves a line of foam,
+//!   rose as the tables are, with the bass setting how far it comes. Its
+//!   edges are off. Under the water the floor mirrors the dusk sky
+//!   slightly, the walls' pulse at 0.2 ([`Theme::reflection`]).
 //! - **Aurora** (board #5436), a night city under the lights: walls and
 //!   the ceiling the desktop's Aurora, drawn as one sky around the room
 //!   (`sky.rs`), the floor its reflection at 0.3 of what it was, all three
@@ -91,7 +95,7 @@
 //!
 //! Some pairings depart from the room editor's lists
 //! (`SurfaceBehavior::catalogue`): Tide's tables run the rings, and the
-//! windows and the terraces are on no kind's list, a theme's alone
+//! windows, the terraces and the wash are on no kind's list, a theme's alone
 //! (`SurfaceBehavior::theme_only`). Embers and sparks are on their kinds'
 //! lists but not offered to the wearer; a theme gives them all the same.
 
@@ -295,11 +299,10 @@ impl Theme {
                 KIND_FRAME => look(B::Pulse, TEAL, BAND_RMS, 0.6, face),
                 _ => look(B::Curls, TEAL, BAND_MID, 1.0, Mode::Off),
             },
-            // Board #5543: a shore at dusk. The floor waits for the wash
-            // and keeps the curls and its bars until then.
+            // Board #5543: a shore at dusk, the floor its water.
             Self::Tide => match kind {
                 KIND_TABLE => look(B::Rings, ROSE, BAND_BASS, 1.0, Mode::Off),
-                KIND_FLOOR => look(B::Curls, VIOLET, BAND_RMS, 1.0, face),
+                KIND_FLOOR => look(B::Wash, VIOLET, BAND_BASS, 1.0, Mode::Off),
                 KIND_WALL => look(B::Pulse, VIOLET, BAND_BASS, 1.0, Mode::Off),
                 KIND_CEILING => look(B::Pulse, VIOLET, BAND_BASS, 0.6, Mode::Off),
                 KIND_FRAME => look(B::Rings, ROSE, BAND_BASS, 1.0, face),
@@ -608,12 +611,15 @@ impl Theme {
         }
     }
 
-    /// The share of the sky's reflection a floor shows under this theme
-    /// (`sky::REFLECT_GAIN` is 1): Aurora's is dimmed, so the floor reads
-    /// as dark water or ice. No other theme has a sky.
+    /// The share of its sky a floor mirrors under this theme. Aurora's
+    /// reflection (`sky::REFLECT_GAIN` is 1) is dimmed, so the floor reads
+    /// as dark water or ice. Tide's floor, the wash, mirrors its dusk sky
+    /// slightly: the pulse on its walls and ceiling
+    /// (`surface_fx::wash_mirror`). No other theme has a sky.
     pub fn reflection(self) -> f32 {
         match self {
             Self::Aurora => 0.3,
+            Self::Tide => 0.2,
             _ => 1.0,
         }
     }
@@ -985,8 +991,9 @@ mod tests {
     fn every_look_is_on_its_kinds_list_with_a_valid_color_and_band() {
         // The departures from the catalogue (`SurfaceBehavior::catalogue`):
         // Tide's tables run the rings, tide pools, which the room editor's
-        // list for a table does not carry, and the windows and the
-        // terraces are on no kind's list (`SurfaceBehavior::theme_only`).
+        // list for a table does not carry, and the windows, the terraces
+        // and the wash are on no kind's list
+        // (`SurfaceBehavior::theme_only`).
         for theme in Theme::ALL {
             assert_eq!(theme.looks().count(), KIND_NAMES.len(), "{theme:?}");
             for (kind, look) in theme.looks() {
@@ -1075,12 +1082,11 @@ mod tests {
                 (B::Curls, TEAL, MID, 1.0, off, false),
             ]
         );
-        // The floor waits for the wash.
         assert_eq!(
             table(Theme::Tide),
             [
                 (B::Rings, ROSE, bass, 1.0, off, false),
-                (B::Curls, VIOLET, rms, 1.0, face, false),
+                (B::Wash, VIOLET, bass, 1.0, off, false),
                 (B::Pulse, VIOLET, bass, 1.0, off, false),
                 (B::Pulse, VIOLET, bass, 0.6, off, false),
                 (B::Rings, ROSE, bass, 1.0, face, false),
@@ -1232,11 +1238,14 @@ mod tests {
         );
         assert_eq!(air(Theme::Flint), (index(AMBER), BAND_BASS, 1500, M::Rise));
         assert_eq!(air(Theme::Contour), (index(GREEN), HIGH, 2000, M::Wander));
-        // The floor's reflection: Aurora's dimmed, all of it elsewhere and
-        // with no theme.
+        // The share of its sky a floor mirrors: Aurora's reflection
+        // dimmed, Tide's wash a slight mirror of its dusk; all of it
+        // elsewhere and with no theme.
         assert_close!(Theme::Aurora.reflection(), 0.3);
         assert_close!(reflection(Some(Theme::Aurora)), 0.3);
-        for t in Theme::ALL.into_iter().filter(|t| *t != Theme::Aurora) {
+        assert_close!(Theme::Tide.reflection(), 0.2);
+        let sky = [Theme::Aurora, Theme::Tide];
+        for t in Theme::ALL.into_iter().filter(|t| !sky.contains(t)) {
             assert_close!(t.reflection(), 1.0);
         }
         assert_close!(reflection(None), 1.0);

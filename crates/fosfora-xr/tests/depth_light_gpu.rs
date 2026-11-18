@@ -1538,7 +1538,7 @@ fn look_rows(
     // the time.
     let at = eye().eye_pos;
     let around = depth_light::Around {
-        front: depth_light::front(Some(theme), 0.35, at),
+        front: depth_light::bar_front(0.35, at),
         orbit: 0.3 + 0.15 * secs,
         center: [at.x, at.z],
         bands: [0.95 * music, 0.6 * music, 0.35 * music],

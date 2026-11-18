@@ -5141,13 +5141,13 @@ mod tests {
     fn a_look_only_a_theme_gives_is_no_word() {
         let (e, boxes) = (cut_effects(), room());
         let v = app_vocab(&e, &boxes);
-        for word in ["windows", "window", "terraces", "terrace"] {
+        for word in ["windows", "window", "terraces", "terrace", "wash"] {
             assert_eq!(behavior(&[word], &v), None, "{word}");
         }
         assert_eq!(behavior(&["embers"], &v), Some(B::Embers));
         assert_eq!(behavior(&["spark"], &v), Some(B::Sparks));
         assert_eq!(behavior(&["fenestra"], &v), Some(B::Fenestra));
-        for only in [B::Windows, B::Terraces] {
+        for only in [B::Windows, B::Terraces, B::Wash] {
             assert!(!v.behaviors.contains(&only), "{only:?}");
         }
     }

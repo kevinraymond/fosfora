@@ -111,7 +111,8 @@
 //! - *Sparkle* ([`sparkle`]; Tide). The points, dim ([`SPARKLE_DIM`]),
 //!   each flaring briefly on its own clock as strong as the band, and all
 //!   of them as the floor's wash front passes under ([`sparkle_front`]).
-//!   The front is the wash's ([`wash_front`], the one hook for it).
+//!   The front is the wash's own edge on the floor ([`front_of`], from
+//!   `surface_fx::wash_front`).
 //! - *Glints* ([`glint`]; Mirror). The points, dim, under a mirror ball's
 //!   specks ([`glint_speck`]): slanted shafts of light that turn about
 //!   the effect anchor with the air's orbit, so the specks and Mirror's
@@ -386,8 +387,8 @@ pub const SPARKLE_DIM: f32 = 0.25;
 pub const SPARKLE_QUIET: f32 = 0.3;
 /// Sparkle: how far to each side of the wash's front the points flare (m).
 pub const SPARKLE_FRONT_M: f32 = 0.3;
-/// Sparkle: how far the stand-in front travels to each side of the
-/// wearer (m), until the wash gives its own ([`wash_front`]).
+/// Sparkle: how far the flash model's front travels to each side of the
+/// wearer (m) ([`bar_front`]).
 pub const SPARKLE_REACH_M: f32 = 2.5;
 /// Glints: a point's light away from a speck, as a share of its light
 /// under one.
@@ -1157,33 +1158,35 @@ pub fn with_around(mut rows: [[f32; 4]; ROWS], around: &Around) -> [[f32; 4]; RO
     rows
 }
 
-/// WASH FRONT HOOK. Where the floor's wash front is at `bar_phase` (0..1
-/// of the bar) for a wearer at `center`, as [`Around::front`] has it. The
-/// wash (Tide's floor) is not merged here yet, so this is a stand-in with
-/// the wash's rhythm, one advance and one retreat a bar: a front square to
-/// the world's -z that runs from [`SPARKLE_REACH_M`] behind the wearer to
-/// as far ahead over the first half of the bar and back over the second.
-/// When the wash lands, its own front goes here: the direction it runs
-/// over the floor and its place along it, from the same bar phase.
-pub fn wash_front(bar_phase: f32, center: Vec3) -> [f32; 4] {
+/// The wash's front for the sparkle ([`Around::front`]) from the wash's
+/// own (`surface_fx::wash_front`, the floor Tide's wash runs over): the
+/// way the water runs over the floor, where its edge is along that way in
+/// the world, and the half-width the points flare in. All 0 when the
+/// water runs no level way.
+pub fn front_of(wash: &crate::surface_fx::WashFront) -> [f32; 4] {
+    let Some(way) = Vec2::new(wash.toward.x, wash.toward.z).try_normalize() else {
+        return [0.0; 4];
+    };
+    let from = Vec2::new(wash.origin.x, wash.origin.z).dot(way);
+    let at = from + wash.front;
+    if !at.is_finite() {
+        return [0.0; 4];
+    }
+    [way.x, way.y, at, 1.0 / SPARKLE_FRONT_M]
+}
+
+/// A front with the wash's rhythm and no floor under it, for the flash
+/// model's depth light run and the tests: square to the world's -z, from
+/// [`SPARKLE_REACH_M`] behind `center` to as far ahead over the first half
+/// of the bar and back over the second. The app takes the real wash's
+/// ([`front_of`]).
+pub fn bar_front(bar_phase: f32, center: Vec3) -> [f32; 4] {
     if !bar_phase.is_finite() {
         return [0.0; 4];
     }
     let out = 1.0 - (2.0 * bar_phase.rem_euclid(1.0) - 1.0).abs();
     let at = -center.z + SPARKLE_REACH_M * (2.0 * out - 1.0);
     [0.0, -1.0, at, 1.0 / SPARKLE_FRONT_M]
-}
-
-/// The wash's front in a room whose saved theme is `theme`
-/// ([`wash_front`]): Tide's, whose floor the wash runs over. No other
-/// theme has a wash, so its sparkle, if it had one, flares on its band
-/// alone.
-pub fn front(theme: Option<Theme>, bar_phase: f32, center: Vec3) -> [f32; 4] {
-    if theme == Some(Theme::Tide) {
-        wash_front(bar_phase, center)
-    } else {
-        [0.0; 4]
-    }
 }
 
 /// The look `rows` draw.
@@ -2523,7 +2526,7 @@ mod tests {
             level,
             &NO_SONAR,
             &Around {
-                front: front(Some(theme), 0.35, eye),
+                front: bar_front(0.35, eye),
                 orbit: 0.9,
                 center: [eye.x, eye.z],
                 bands: [0.9 * music, 0.6 * music, 0.3 * music],
@@ -3010,25 +3013,37 @@ mod tests {
     fn the_sparkle_is_dim_and_flares_on_its_band_and_under_the_washs_front() {
         let fw = Vec3::splat(5e-4);
         let (eye, grid) = wall_grid();
-        // The wall is 1 m ahead. The stand-in front runs from 2.5 m
+        // The wall is 1 m ahead. The flash model's front runs from 2.5 m
         // behind the wearer to 2.5 m ahead over half a bar and back.
         let center = Vec3::new(0.3, 1.2, 0.0);
-        assert_close!(wash_front(0.0, center), [0.0, -1.0, -2.5, 1.0 / 0.3]);
-        assert_close!(wash_front(0.5, center)[2], 2.5);
-        assert_close!(wash_front(0.25, center)[2], 0.0);
-        assert_close!(wash_front(0.75, center)[2], 0.0);
-        assert_close!(wash_front(1.25, center), wash_front(0.25, center));
+        assert_close!(bar_front(0.0, center), [0.0, -1.0, -2.5, 1.0 / 0.3]);
+        assert_close!(bar_front(0.5, center)[2], 2.5);
+        assert_close!(bar_front(0.25, center)[2], 0.0);
+        assert_close!(bar_front(0.75, center)[2], 0.0);
+        assert_close!(bar_front(1.25, center), bar_front(0.25, center));
         let none = |row: [f32; 4]| row.iter().all(|v| *v == 0.0);
-        assert!(none(wash_front(f32::NAN, center)));
-        // Tide alone has a wash.
-        for t in Theme::ALL {
-            let has = !none(front(Some(t), 0.3, center));
-            assert_eq!(has, t == Theme::Tide, "{t:?}");
-        }
-        assert!(none(front(None, 0.3, center)));
+        assert!(none(bar_front(f32::NAN, center)));
+        // The app's front is the wash's own edge: the way the water
+        // runs, and its edge's place along that way in the world.
+        let wash = crate::surface_fx::WashFront {
+            origin: Vec3::new(1.0, 0.0, -3.0),
+            toward: Vec3::Z,
+            along: Vec2::Y,
+            reach: 3.0,
+            front: 1.25,
+            peak: 2.0,
+            lead: 1.0,
+            left: 0.0,
+        };
+        assert_close!(front_of(&wash), [0.0, 1.0, -1.75, 1.0 / 0.3]);
+        // Water that runs no level way gives no front.
+        assert!(none(front_of(&crate::surface_fx::WashFront {
+            toward: Vec3::Y,
+            ..wash
+        })));
         // Only the sparkle reads the front.
         let around = Around {
-            front: wash_front(0.35, eye),
+            front: bar_front(0.35, eye),
             ..Around::default()
         };
         for look in DepthLook::ALL {
@@ -3058,7 +3073,7 @@ mod tests {
         let mut loud = away;
         loud[LOOK_ROW][1] = 1.0;
         let mut under = away;
-        under[MORE_ROW] = wash_front(0.35, eye);
+        under[MORE_ROW] = bar_front(0.35, eye);
         assert_close!(sparkle_front(&under, Vec3::new(0.2, 1.0, -1.0)), 1.0);
         assert_close!(sparkle_front(&under, Vec3::new(0.2, 1.0, -1.4)), 0.0);
         assert_close!(sparkle_front(&away, Vec3::new(0.2, 1.0, -1.0)), 0.0);
