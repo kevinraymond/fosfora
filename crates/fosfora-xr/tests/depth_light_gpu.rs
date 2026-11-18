@@ -1531,24 +1531,34 @@ fn look_rows(
         d.step(1.0 / 72.0, music, 0.0);
         d.step_wind(1.0 / 72.0, gust);
     }
-    depth_light::with_look(
-        depth_light::rows(
-            &d,
-            depth_light::peak_alpha(level, 1.0),
-            depth_light::colors(Some(theme), [0.7, 0.3, 1.0]),
-            depth_light::FILL,
-            0.0,
+    // What the look reads of the room: the wash's front for a theme that
+    // has one, a third of a bar in, 1 m ahead of the eye, over the known
+    // surfaces.
+    let around = depth_light::Around {
+        front: depth_light::front(Some(theme), 0.35, eye().eye_pos),
+    };
+    depth_light::with_around(
+        depth_light::with_look(
+            depth_light::rows(
+                &d,
+                depth_light::peak_alpha(level, 1.0),
+                depth_light::colors(Some(theme), [0.7, 0.3, 1.0]),
+                depth_light::FILL,
+                0.0,
+            ),
+            look,
         ),
-        look,
+        &around,
     )
 }
 
 /// The video's three themes, each with the look its depth light draws.
-const LOOKS: [(Theme, DepthLook); 4] = [
+const LOOKS: [(Theme, DepthLook); 5] = [
     (Theme::Aurora, DepthLook::Beams),
     (Theme::Flint, DepthLook::Coals),
     (Theme::Contour, DepthLook::Grass),
     (Theme::Drift, DepthLook::Bubbles),
+    (Theme::Tide, DepthLook::Sparkle),
 ];
 
 /// Board #5543: the beams, the coals and the grass over the known

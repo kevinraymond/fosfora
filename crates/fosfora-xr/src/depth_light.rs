@@ -176,7 +176,8 @@
 //! thirty-five operations (no soft edge, one wave), the beams and the
 //! grass about fifty (two more smoothsteps, a floor and a fract), the
 //! grass one wave more per fragment for the wind, the bubbles about
-//! fifty-five and one wave for the lane's snake. No look adds a
+//! fifty-five and one wave for the lane's snake, the sparkle about
+//! forty-five and a dot product a fragment for the wash's front. No look adds a
 //! transcendental, a hash or a read, and the vertex stage is the same.
 //! These are counts of the source, not a device number.
 //! The eye pass's mesh adds a constant fragment where the veil erases (0 <
@@ -251,8 +252,12 @@ pub const LOOK_ROW: usize = 9;
 /// The looks' clocks, `light_move` in `struct EnvEye`: the beams' travel,
 /// the grass's sway and the bubbles' rise, each 0..1 of a cycle.
 pub const MOVE_ROW: usize = LOOK_ROW + 1;
+/// What the look drawn reads of the room, `light_more` in `struct EnvEye`
+/// ([`Around`], [`with_around`]): for the sparkle the wash's front. All 0
+/// for a look that reads nothing there.
+pub const MORE_ROW: usize = MOVE_ROW + 1;
 /// The first of the sweep's rows, `sonar` in `struct EnvEye`.
-pub const SONAR_ROW: usize = MOVE_ROW + 1;
+pub const SONAR_ROW: usize = MORE_ROW + 1;
 
 /// Beams: how many times closer than the points' the streaks stand
 /// across.
@@ -347,6 +352,16 @@ pub const BUBBLE_SHINE_SIZE: f32 = 0.12;
 /// band, so the band lets them go; the beat envelope adds up to as much
 /// again. A bubble rises at 1, 2 or 3 times it by its size.
 pub const BUBBLE_RISE_HZ: [f32; 2] = [0.04, 0.4];
+/// Sparkle: a point's light between flares, as a share of a flare's.
+pub const SPARKLE_DIM: f32 = 0.25;
+/// Sparkle: a point's own flares with the band silent, as a share of
+/// their light at a full band.
+pub const SPARKLE_QUIET: f32 = 0.3;
+/// Sparkle: how far to each side of the wash's front the points flare (m).
+pub const SPARKLE_FRONT_M: f32 = 0.3;
+/// Sparkle: how far the stand-in front travels to each side of the
+/// wearer (m), until the wash gives its own ([`wash_front`]).
+pub const SPARKLE_REACH_M: f32 = 2.5;
 
 /// The height of one band of the wave (m).
 pub const BAND_SPACING_M: f32 = 0.2;
@@ -992,6 +1007,8 @@ pub fn rows(
         // The look: the points until `with_look` names another.
         [0.0, music, unit(drive.gust), 0.0],
         [drive.travel, drive.sway, drive.rise, 0.0],
+        // What the look reads of the room: nothing until `with_around`.
+        [0.0; 4],
     ];
     // The sweep's rows stay 0, no sweep, until `with_sonar` sets them.
     let mut rows = [[0.0f32; 4]; ROWS];
@@ -1004,6 +1021,54 @@ pub fn rows(
 pub fn with_look(mut rows: [[f32; 4]; ROWS], look: DepthLook) -> [[f32; 4]; ROWS] {
     rows[LOOK_ROW][0] = look_id(drawn(look)) as f32;
     rows
+}
+
+/// What a look reads of the room beside the drive (board #5543).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Around {
+    /// The wash's front, for the sparkle ([`front`]): the way it travels
+    /// over the floor (x, z, a unit), where it is along that way (m) and
+    /// one over the half-width the points flare in (1/m). All 0 for none.
+    pub front: [f32; 4],
+}
+
+/// `rows` with what their look reads of `around` in [`MORE_ROW`]: the
+/// wash's front for the sparkle, nothing for a look that reads none.
+pub fn with_around(mut rows: [[f32; 4]; ROWS], around: &Around) -> [[f32; 4]; ROWS] {
+    rows[MORE_ROW] = match look_of(&rows) {
+        DepthLook::Sparkle => around.front,
+        _ => [0.0; 4],
+    };
+    rows
+}
+
+/// WASH FRONT HOOK. Where the floor's wash front is at `bar_phase` (0..1
+/// of the bar) for a wearer at `center`, as [`Around::front`] has it. The
+/// wash (Tide's floor) is not merged here yet, so this is a stand-in with
+/// the wash's rhythm, one advance and one retreat a bar: a front square to
+/// the world's -z that runs from [`SPARKLE_REACH_M`] behind the wearer to
+/// as far ahead over the first half of the bar and back over the second.
+/// When the wash lands, its own front goes here: the direction it runs
+/// over the floor and its place along it, from the same bar phase.
+pub fn wash_front(bar_phase: f32, center: Vec3) -> [f32; 4] {
+    if !bar_phase.is_finite() {
+        return [0.0; 4];
+    }
+    let out = 1.0 - (2.0 * bar_phase.rem_euclid(1.0) - 1.0).abs();
+    let at = -center.z + SPARKLE_REACH_M * (2.0 * out - 1.0);
+    [0.0, -1.0, at, 1.0 / SPARKLE_FRONT_M]
+}
+
+/// The wash's front in a room whose saved theme is `theme`
+/// ([`wash_front`]): Tide's, whose floor the wash runs over. No other
+/// theme has a wash, so its sparkle, if it had one, flares on its band
+/// alone.
+pub fn front(theme: Option<Theme>, bar_phase: f32, center: Vec3) -> [f32; 4] {
+    if theme == Some(Theme::Tide) {
+        wash_front(bar_phase, center)
+    } else {
+        [0.0; 4]
+    }
 }
 
 /// The look `rows` draw.
@@ -1050,8 +1115,9 @@ pub fn scale_fades(mut rows: [[f32; 4]; ROWS], scale: f32) -> [[f32; 4]; ROWS] {
 }
 
 /// This frame's [`Frame`] under the options `opts`, with `drive` stepped,
-/// the room's `theme`, the key's tint `key`, the immersion `level` and the
-/// sweep's rows `sonar` (`sonar::Sonar::rows`; all 0 for none).
+/// the room's `theme`, the key's tint `key`, the immersion `level`, the
+/// sweep's rows `sonar` (`sonar::Sonar::rows`; all 0 for none) and what
+/// the look reads of the room, `around`.
 pub fn frame(
     opts: &DepthLightOptions,
     drive: &Drive,
@@ -1059,22 +1125,26 @@ pub fn frame(
     key: [f32; 3],
     level: f32,
     sonar: &[[f32; 4]; crate::sonar::ROWS],
+    around: &Around,
 ) -> Frame {
     Frame {
         rows: with_sonar(
-            with_look(
-                rows(
-                    drive,
-                    if opts.points {
-                        peak_alpha(level, opts.gain)
-                    } else {
-                        0.0
-                    },
-                    colors(theme, key),
-                    opts.fill,
-                    veil_share(level, opts.veil),
+            with_around(
+                with_look(
+                    rows(
+                        drive,
+                        if opts.points {
+                            peak_alpha(level, opts.gain)
+                        } else {
+                            0.0
+                        },
+                        colors(theme, key),
+                        opts.fill,
+                        veil_share(level, opts.veil),
+                    ),
+                    look(theme),
                 ),
-                look(theme),
+                around,
             ),
             sonar,
         ),
@@ -1593,6 +1663,49 @@ pub fn bubble(
     Vec2::new(light, light * shine)
 }
 
+/// The wash's front over world point `p`, 0..1: 1 on the front, falling
+/// to 0 at [`SPARKLE_FRONT_M`] to either side ([`MORE_ROW`]); 0 with no
+/// wash. The WGSL's `sparkle_front`.
+pub fn sparkle_front(rows: &[[f32; 4]; ROWS], p: Vec3) -> f32 {
+    let [dx, dz, at, inv] = rows[MORE_ROW];
+    if inv <= 0.0 {
+        return 0.0;
+    }
+    1.0 - smoothstep(0.0, 1.0, (p.x * dx + p.z * dz - at).abs() * inv)
+}
+
+/// Sparkle at `g` (cells) on any plane, under the wash's front `front`
+/// ([`sparkle_front`]): the light and the light times its tint. A point,
+/// dim ([`SPARKLE_DIM`]) until it flares. It flares briefly on its own,
+/// the eighth power of a wave on the twinkle's clock at 1, 2 or 3 times
+/// it from the point's phase, as strong as the band ([`SPARKLE_QUIET`] of
+/// it in silence), and as the front passes under it. The tint is the
+/// flare: the sides' color dim, the tops' at a flare. The WGSL's
+/// `sparkle`.
+pub fn sparkle(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    g: Vec2,
+    k: u32,
+    o: i32,
+    radius_scale: f32,
+    front: f32,
+) -> Vec2 {
+    let [d, radius, phase, size] = look_point(rows, tile, g, k, o, radius_scale);
+    if radius <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let core = 1.0 - smoothstep(radius * rows[8][2], radius, d);
+    let rate = 1.0 + (size * 2.999).floor();
+    let w = wave(rate * rows[3][3] + phase);
+    let w2 = w * w;
+    let w4 = w2 * w2;
+    let own = w4 * w4 * (SPARKLE_QUIET + (1.0 - SPARKLE_QUIET) * rows[LOOK_ROW][1]);
+    let flare = own.max(front);
+    let light = core * (SPARKLE_DIM + (1.0 - SPARKLE_DIM) * flare);
+    Vec2::new(light, light * flare)
+}
+
 /// The radius factor a look's points are read at, for a vertex keeping
 /// `keep` under the sweep's light `under` (0 without): the points' own
 /// (the fill's radius, the music's swell, the keep), wider for the beams
@@ -1610,14 +1723,13 @@ pub fn look_radius(rows: &[[f32; 4]; ROWS], keep: f32, under: f32) -> f32 {
         .min(point[2] / rows[8][1])
 }
 
-/// How the music lifts a look's light: by the crests' gain for the beams
-/// and the grass; the coals carry it in their heat. The WGSL's
-/// `look_band`.
+/// How the music lifts a look's light: by the crests' gain for the
+/// beams, the grass and the bubbles; the coals carry it in their heat and
+/// the sparkle in its flares. The WGSL's `look_band`.
 pub fn look_band(rows: &[[f32; 4]; ROWS]) -> f32 {
-    if look_of(rows) == DepthLook::Coals {
-        1.0
-    } else {
-        rows[0][3]
+    match look_of(rows) {
+        DepthLook::Coals | DepthLook::Sparkle => 1.0,
+        _ => rows[0][3],
     }
 }
 
@@ -1640,8 +1752,8 @@ pub fn look_color(rows: &[[f32; 4]; ROWS], tint: f32) -> [f32; 3] {
 /// read the look's own: on an upright plane the beams' streaks or the
 /// grass's blades, on the level plane their points seen from the end
 /// (the beams' in the tops' color, the grass's moved by the wind); the
-/// coals on every plane; the bubbles on an upright plane, the points on
-/// the level one. The fade for small cells counts the closer
+/// coals and the sparkle on every plane; the bubbles on an upright plane,
+/// the points on the level one. The fade for small cells counts the closer
 /// packing across and the longer features along up. The WGSL's
 /// `look_light`.
 pub fn look_light(
@@ -1667,6 +1779,11 @@ pub fn look_light(
     let next = smoothstep(cell_row[1], 1.0, l - li);
     let bend = if look == DepthLook::Grass {
         grass_bend(rows, p)
+    } else {
+        0.0
+    };
+    let front = if look == DepthLook::Sparkle {
+        sparkle_front(rows, p)
     } else {
         0.0
     };
@@ -1710,6 +1827,7 @@ pub fn look_light(
                         let v = plane_points(rows, tile, g, k, o, radius_scale);
                         Vec2::new(v, 0.5 * v * v)
                     }
+                    DepthLook::Sparkle => sparkle(rows, tile, g, k, o, radius_scale, front),
                     _ => coal(rows, tile, g, k, o, radius_scale),
                 };
                 sum += wo * wk * aa * s;
@@ -2147,6 +2265,9 @@ mod tests {
             d.step(1.0 / 72.0, music, 0.0);
             d.step_wind(1.0 / 72.0, gust);
         }
+        // The wash's front, where a theme has one, a third of a bar in:
+        // over the wall the tests look at.
+        let eye = Vec3::new(0.0, 1.2, 0.0);
         frame(
             &DepthLightOptions::default().under(Some(theme)),
             &d,
@@ -2154,6 +2275,9 @@ mod tests {
             [0.7, 0.3, 1.0],
             level,
             &NO_SONAR,
+            &Around {
+                front: front(Some(theme), 0.35, eye),
+            },
         )
         .rows
     }
@@ -2169,11 +2293,12 @@ mod tests {
         (eye, grid)
     }
 
-    const BUILT: [(Theme, DepthLook); 4] = [
+    const BUILT: [(Theme, DepthLook); 5] = [
         (Theme::Aurora, DepthLook::Beams),
         (Theme::Flint, DepthLook::Coals),
         (Theme::Contour, DepthLook::Grass),
         (Theme::Drift, DepthLook::Bubbles),
+        (Theme::Tide, DepthLook::Sparkle),
     ];
 
     #[test]
@@ -2193,8 +2318,8 @@ mod tests {
             assert_eq!(look_of(&look_rows(theme, 1.0, 0.5, 0.5)), want);
         }
         // A theme whose look is not built draws the points.
-        assert_eq!(look(Some(Theme::Tide)), DepthLook::Points);
-        assert_close!(look_rows(Theme::Tide, 1.0, 0.5, 0.5)[LOOK_ROW][0], 0.0);
+        assert_eq!(look(Some(Theme::Mirror)), DepthLook::Points);
+        assert_close!(look_rows(Theme::Mirror, 1.0, 0.5, 0.5)[LOOK_ROW][0], 0.0);
         // The look's rows: the id, the music and the gust; the clocks.
         let mut d = Drive::default();
         d.step(0.5, 0.8, 0.0);
@@ -2202,7 +2327,11 @@ mod tests {
         let rows = with_look(rows(&d, 0.2, [TEAL, GREEN], FILL, 0.0), DepthLook::Grass);
         assert_close!(rows[LOOK_ROW], [3.0, d.music(), d.gust(), 0.0]);
         assert_close!(rows[MOVE_ROW], [d.travel(), d.sway(), d.rise(), 0.0]);
-        const { assert!(MOVE_ROW == LOOK_ROW + 1 && SONAR_ROW == MOVE_ROW + 1) };
+        assert_close!(rows[MORE_ROW], [0.0; 4]);
+        const {
+            assert!(MOVE_ROW == LOOK_ROW + 1 && MORE_ROW == MOVE_ROW + 1);
+            assert!(SONAR_ROW == MORE_ROW + 1);
+        };
         // The WGSL's constants are these.
         let vec = |v: &[f32]| {
             let inner: Vec<String> = v.iter().map(|x| format!("{x:?}")).collect();
@@ -2238,6 +2367,8 @@ mod tests {
             ("BUBBLE_EDGE", BUBBLE_EDGE),
             ("BUBBLE_SHINE", BUBBLE_SHINE),
             ("BUBBLE_SHINE_SIZE", BUBBLE_SHINE_SIZE),
+            ("SPARKLE_DIM", SPARKLE_DIM),
+            ("SPARKLE_QUIET", SPARKLE_QUIET),
         ] {
             let line = format!("const {name}: f32 = {value:?};");
             assert!(ENV_DEPTH_WGSL.contains(&line), "{line}");
@@ -2592,6 +2723,77 @@ mod tests {
         }
         assert_close!(quiet.rise(), BUBBLE_RISE_HZ[0]);
         assert!(loud.rise() > 0.8 * BUBBLE_RISE_HZ[1] && loud.rise() <= BUBBLE_RISE_HZ[1]);
+    }
+
+    #[test]
+    fn the_sparkle_is_dim_and_flares_on_its_band_and_under_the_washs_front() {
+        let fw = Vec3::splat(5e-4);
+        let (eye, grid) = wall_grid();
+        // The wall is 1 m ahead. The stand-in front runs from 2.5 m
+        // behind the wearer to 2.5 m ahead over half a bar and back.
+        let center = Vec3::new(0.3, 1.2, 0.0);
+        assert_close!(wash_front(0.0, center), [0.0, -1.0, -2.5, 1.0 / 0.3]);
+        assert_close!(wash_front(0.5, center)[2], 2.5);
+        assert_close!(wash_front(0.25, center)[2], 0.0);
+        assert_close!(wash_front(0.75, center)[2], 0.0);
+        assert_close!(wash_front(1.25, center), wash_front(0.25, center));
+        let none = |row: [f32; 4]| row.iter().all(|v| *v == 0.0);
+        assert!(none(wash_front(f32::NAN, center)));
+        // Tide alone has a wash.
+        for t in Theme::ALL {
+            let has = !none(front(Some(t), 0.3, center));
+            assert_eq!(has, t == Theme::Tide, "{t:?}");
+        }
+        assert!(none(front(None, 0.3, center)));
+        // Only the sparkle reads the front.
+        let around = Around {
+            front: wash_front(0.35, eye),
+        };
+        for look in DepthLook::ALL {
+            let rows = with_around(with_look(lit_rows(), look), &around);
+            let reads = look == DepthLook::Sparkle;
+            assert_eq!(!none(rows[MORE_ROW]), reads, "{}", look.name());
+        }
+        // The light over the wall with the front far away, quiet and
+        // loud, and with it on the wall.
+        let base = look_rows(Theme::Tide, 1.0, 0.0, 0.0);
+        assert_eq!(look_of(&base), DepthLook::Sparkle);
+        let radius = look_radius(&base, 1.0, 0.0);
+        let total = |rows: &[[f32; 4]; ROWS]| -> (f32, f32) {
+            let (mut light, mut most) = (0.0f32, 0.0f32);
+            for &p in &grid {
+                let v = look_light(rows, tile(), eye, p, Vec3::Z, radius, fw);
+                assert!((0.0..=1.0).contains(&v.x) && (0.0..=1.0 + 1e-4).contains(&v.y));
+                light += v.x;
+                most = most.max(v.x);
+            }
+            (light, most)
+        };
+        let mut away = base;
+        away[MORE_ROW] = [0.0; 4];
+        let mut loud = away;
+        loud[LOOK_ROW][1] = 1.0;
+        let mut under = away;
+        under[MORE_ROW] = wash_front(0.35, eye);
+        assert_close!(sparkle_front(&under, Vec3::new(0.2, 1.0, -1.0)), 1.0);
+        assert_close!(sparkle_front(&under, Vec3::new(0.2, 1.0, -1.4)), 0.0);
+        assert_close!(sparkle_front(&away, Vec3::new(0.2, 1.0, -1.0)), 0.0);
+        let (quiet, quiet_most) = total(&away);
+        let (loud, loud_most) = total(&loud);
+        let (front, front_most) = total(&under);
+        eprintln!(
+            "sparkle over the wall: {quiet:.0} quiet (most {quiet_most:.2}), {loud:.0} loud ({loud_most:.2}), {front:.0} under the front ({front_most:.2})"
+        );
+        // Quiet, most points sit at their dim light and a few flare a
+        // little; loud, the flares reach full; under the front all do.
+        assert!(
+            quiet > 0.0 && quiet_most < SPARKLE_DIM + (1.0 - SPARKLE_DIM) * SPARKLE_QUIET + 1e-3
+        );
+        assert!(loud > quiet && loud_most > 0.95);
+        assert!(front > 2.0 * quiet && front_most > 0.99);
+        // Brief: loud, with no front, the flares add under a third to the
+        // dim light of all the points.
+        assert!(loud < 1.6 * quiet, "{loud} {quiet}");
     }
 
     #[test]
@@ -3122,8 +3324,8 @@ mod tests {
             "depth light: beams, teal sides, the key's tint on top, bass, occluding (theme aurora)"
         );
         assert_eq!(
-            colors_line(Some(Theme::Tide)),
-            "depth light: sparkle as points, rose sides, the same on top, high, occluding (theme tide)"
+            colors_line(Some(Theme::Mirror)),
+            "depth light: glints as points, warm white sides, the same on top, high, occluding (theme mirror)"
         );
         assert_eq!(
             colors_line(None),
@@ -3239,6 +3441,7 @@ mod tests {
             "light_size",
             "light_look",
             "light_move",
+            "light_more",
             "sonar",
         ]
         .into_iter()
@@ -3284,6 +3487,7 @@ mod tests {
             [1.0; 3],
             1.0,
             &NO_SONAR,
+            &Around::default(),
         );
         assert_close!(no_points.rows[0][2], 0.0);
         assert!(
@@ -3327,7 +3531,15 @@ mod tests {
         assert!(change.starts_with("depth light: on") && change.contains("(was: off"));
         // The frame: the veil by the level, or 1 with it off.
         let drive = Drive::default();
-        let f = frame(&on, &drive, Some(Theme::Aurora), [1.0; 3], 0.75, &NO_SONAR);
+        let f = frame(
+            &on,
+            &drive,
+            Some(Theme::Aurora),
+            [1.0; 3],
+            0.75,
+            &NO_SONAR,
+            &Around::default(),
+        );
         assert!(f.veil);
         assert_close!(f.rows[4][3], 0.25);
         let f = frame(
@@ -3337,6 +3549,7 @@ mod tests {
             [1.0; 3],
             0.75,
             &NO_SONAR,
+            &Around::default(),
         );
         assert!(!f.veil);
         assert_close!(f.rows[4][3], 1.0);

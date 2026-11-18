@@ -606,12 +606,17 @@ struct EnvEye {
     // starts (a share of the radius), w the twinkle's depth
     light_size: vec4<f32>,
     // The look (depth_light.rs, board #5543). x its id: 0 the points, 1
-    // beams, 2 coals, 3 grass, 4 bubbles; y the music 0..1, z the gust
-    // 0..1
+    // beams, 2 coals, 3 grass, 4 bubbles, 5 sparkle; y the music 0..1, z
+    // the gust 0..1
     light_look: vec4<f32>,
     // The looks' clocks, each 0..1 of a cycle: x the beams' travel, y the
     // grass's sway, z the bubbles' rise
     light_move: vec4<f32>,
+    // What the look drawn reads of the room (depth_light::with_around).
+    // The sparkle: the wash's front, x, y the way it travels over the
+    // floor (world x and z, a unit), z where it is along that way (m), w
+    // one over the half-width the points flare in (0: no wash)
+    light_more: vec4<f32>,
     // The sweep (sonar.rs), read by fs_mesh_light_sonar alone. x the
     // line's peak alpha (0: no sweep and no standing line this frame; the
     // mesh then draws with fs_mesh_light and nothing from here on is
@@ -1022,6 +1027,9 @@ const LOOK_BEAMS: i32 = 1;
 const LOOK_COALS: i32 = 2;
 const LOOK_GRASS: i32 = 3;
 const LOOK_BUBBLES: i32 = 4;
+const LOOK_SPARKLE: i32 = 5;
+const SPARKLE_DIM: f32 = 0.25;
+const SPARKLE_QUIET: f32 = 0.3;
 
 // The id of the look drawn.
 fn look_id() -> i32 {
@@ -1144,6 +1152,31 @@ fn bubble(g: vec2<f32>, k: u32, o: i32, radius_scale: f32) -> vec2<f32> {
     return vec2<f32>(light, light * shine);
 }
 
+// The wash's front over world point p, 0..1: 1 on the front, 0 from its
+// half-width on to either side, and with no wash.
+fn sparkle_front(p: vec3<f32>) -> f32 {
+    let m = env.light_more;
+    let off = abs(p.x * m.x + p.z * m.y - m.z) * m.w;
+    return select(0.0, 1.0 - smoothstep(0.0, 1.0, off), m.w > 0.0);
+}
+
+// Sparkle at g (cells) on any plane, under the wash's front: x the light,
+// y the light times its tint. A point, dim until it flares: briefly on
+// its own, as strong as the band, and as the front passes under it. The
+// tint is the flare.
+fn sparkle(g: vec2<f32>, k: u32, o: i32, radius_scale: f32, front: f32) -> vec2<f32> {
+    let pt = look_point(g, k, o, radius_scale);
+    let core = 1.0 - smoothstep(pt.y * env.light_size.z, pt.y, pt.x);
+    let rate = 1.0 + floor(pt.w * 2.999);
+    let w = light_wave(rate * env.light_wave.w + pt.z);
+    let w2 = w * w;
+    let w4 = w2 * w2;
+    let own = w4 * w4 * mix(SPARKLE_QUIET, 1.0, env.light_look.y);
+    let flare = max(own, front);
+    let light = select(0.0, core * mix(SPARKLE_DIM, 1.0, flare), pt.y > 0.0);
+    return vec2<f32>(light, light * flare);
+}
+
 // The radius factor a look's points are read at, for a vertex keeping
 // keep under the sweep's light under (0 without a sweep): the points'
 // own, wider for the beams and the coals, swollen under a sweep, within
@@ -1162,10 +1195,12 @@ fn look_radius(keep: f32, under: f32) -> f32 {
     );
 }
 
-// How the music lifts a look's light: the crests' gain for the beams and
-// the grass; the coals carry it in their heat.
+// How the music lifts a look's light: the crests' gain for the beams,
+// the grass and the bubbles; the coals carry it in their heat and the
+// sparkle in its flares.
 fn look_band() -> f32 {
-    return select(env.light.w, 1.0, look_id() == LOOK_COALS);
+    let look = look_id();
+    return select(env.light.w, 1.0, look == LOOK_COALS || look == LOOK_SPARKLE);
 }
 
 // A look's color at tint: the sides' at 0 toward the tops' at 1, and
@@ -1186,6 +1221,7 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
     let beams = look == LOOK_BEAMS;
     let grass = look == LOOK_GRASS;
     let bubbles = look == LOOK_BUBBLES;
+    let sparkles = look == LOOK_SPARKLE;
     let n2 = n * n;
     let tri = n2 * n2 / dot(n2, n2);
     let l = clamp(log2(max(length(p - env.eye.xyz), 1e-3)), OCTAVE_MIN, OCTAVE_MAX);
@@ -1194,6 +1230,10 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
     var bend = 0.0;
     if grass {
         bend = grass_bend(p);
+    }
+    var front = 0.0;
+    if sparkles {
+        front = sparkle_front(p);
     }
     var sum = vec2<f32>(0.0);
     var used = 0.0;
@@ -1242,6 +1282,8 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
                         let v = plane_points(g, k, o, radius_scale);
                         s = vec2<f32>(v, 0.5 * v * v);
                     }
+                } else if sparkles {
+                    s = sparkle(g, k, o, radius_scale, front);
                 } else {
                     s = coal(g, k, o, radius_scale);
                 }

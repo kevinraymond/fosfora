@@ -5589,6 +5589,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         audio.key_tint,
                         immerse_level,
                         &sonar.rows(&sonar_opts, immerse_level),
+                        // Board #5543: what the look reads of the room,
+                        // the wash's front for Tide's sparkle.
+                        &crate::depth_light::Around {
+                            front: crate::depth_light::front(
+                                light_theme,
+                                audio.bar_phase,
+                                head,
+                            ),
+                        },
                     )));
                     if depth_light_colors != Some(light_theme) {
                         info!("{}", crate::depth_light::colors_line(light_theme));

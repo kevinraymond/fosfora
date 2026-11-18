@@ -1958,8 +1958,7 @@ fragment for the grass's wind. No hash, no transcendental, no discard.
 
 **Not yet.** The grass's rows show on a large flat surface, as shelves of
 tufts; a chair or a pile breaks them up, and walls are the room's boxes
-in a scanned room. Sparkle, glints and meters have ids and draw as the
-points. Renders of a recorded room in each look come from
+in a scanned room. Glints and meters have ids and draw as the points. Renders of a recorded room in each look come from
 `the_recorded_room_in_each_look` (`FOSFORA_LOOK_REC`, `FOSFORA_LOOK_DUMP`).
 
 ### The other themes' looks
@@ -1981,6 +1980,22 @@ Built the same way, one at a time, for the four themes outside the video.
   the pulse trains bubbles do not flash without the sweep.
   Where two lanes meet, a bubble is cut by the seam; the GPU test allows
   twice the beams' count of pixels there.
+- **Sparkle** (Tide: rose, high). The points, dim, a quarter of their
+  light, until one flares. A point flares briefly on its own clock (the
+  eighth power of a wave, so about a sixth of each cycle), as strong as
+  the highs and a third of that in silence. And it flares as the floor's
+  wash front passes under it: every point within 30 cm of the front, in
+  the plan. The front rides a new row of the light's uniform
+  (`light_more`, `depth_light::Around`): the way it travels over the
+  floor, where it is, and its width. The wash is not merged with this
+  look yet, so `depth_light::wash_front` is a stand-in with the wash's
+  rhythm, a front square to the world's -z that runs 2.5 m to each side
+  of the wearer, out over the first half of the bar and back over the
+  second. The wash's own front goes in that one function. Only Tide has
+  a wash (`depth_light::front`). Cost by the source: the tile read as
+  often, about forty-five operations around each read, and once a
+  fragment a dot product and a smoothstep for the front. On the pulse
+  trains the worst is 1.0 flashes a second, with the sweep.
 
 ## The air per theme (Nov 18, board #5543)
 

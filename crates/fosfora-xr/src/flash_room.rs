@@ -2371,6 +2371,10 @@ fn sweep_run(
             audio.key_tint,
             LEVEL,
             &sonar.rows(sonar_opts, LEVEL),
+            // As `app.rs`: the wash's front for Tide's sparkle.
+            &depth_light::Around {
+                front: depth_light::front(theme, f.bar_phase, eye),
+            },
         )
         .rows;
         let swept = depth_light::swept(&rows);
@@ -2517,13 +2521,14 @@ fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
 }
 
 /// The themes whose depth light draws a look of its own (board #5543),
-/// each with that look: Aurora's beams, Flint's coals, Contour's grass
-/// and Drift's bubbles, on the band the theme gives them.
-const DEPTH_LOOKS: [(Theme, crate::themes::DepthLook); 4] = [
+/// each with that look: Aurora's beams, Flint's coals, Contour's grass,
+/// Drift's bubbles and Tide's sparkle, on the band the theme gives them.
+const DEPTH_LOOKS: [(Theme, crate::themes::DepthLook); 5] = [
     (Theme::Aurora, crate::themes::DepthLook::Beams),
     (Theme::Flint, crate::themes::DepthLook::Coals),
     (Theme::Contour, crate::themes::DepthLook::Grass),
     (Theme::Drift, crate::themes::DepthLook::Bubbles),
+    (Theme::Tide, crate::themes::DepthLook::Sparkle),
 ];
 
 /// The beams, the coals and the grass behind the limiter as `app.rs` runs
