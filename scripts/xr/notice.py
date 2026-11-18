@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -74,7 +75,12 @@ RULE = "=" * 72
 
 
 def cargo(*args: str) -> str:
-    """Run cargo offline and locked in the repo's root; its stdout."""
+    """Run cargo offline and locked in the repo's root; its stdout.
+
+    Without color whatever the caller's environment says: the output is
+    parsed, and CI sets CARGO_TERM_COLOR=always, which wraps cargo tree's
+    "(*)" in escape codes.
+    """
     try:
         return subprocess.run(
             ["cargo", *args, "--locked", "--offline"],
@@ -82,6 +88,7 @@ def cargo(*args: str) -> str:
             check=True,
             capture_output=True,
             text=True,
+            env={**os.environ, "CARGO_TERM_COLOR": "never"},
         ).stdout
     except subprocess.CalledProcessError as e:
         sys.exit(
