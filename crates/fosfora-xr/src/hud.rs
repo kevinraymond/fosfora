@@ -40,7 +40,6 @@
 //! depth perception, and a ray jitters): rows 1.7 cm tall at the bottom of
 //! the panel, picked by the pointer's height alone, then by its side: a
 //! wide row (a surface row's `<` `>`) has a left and a right half, the
-//! Limit flashing row is one button across, the
 //! others two cells
 //! side by side, each with a left and a right half where it has two
 //! actions (-/+); `panel_grid.rs` holds the layout and the hit test. The
@@ -178,6 +177,10 @@ pub struct Controls {
     /// menu's Limit flashing toggle, saved in `hand_menu.json`; board
     /// #5534): on until they turn it off.
     pub flash_limit: bool,
+    /// Whether the first run's hints show (the hand menu's Tips control,
+    /// saved in `hand_menu.json`; board #5575): on until they turn it
+    /// off.
+    pub tips: bool,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -235,6 +238,9 @@ pub enum Action {
     Menu(bool),
     /// The hand menu's Limit flashing toggle changed (saved; board #5534).
     SetFlashLimit(bool),
+    /// The hand menu's Tips control changed (saved; board #5575): on, the
+    /// first run's hints start over now; off, they stop.
+    SetTips(bool),
 }
 
 impl Controls {
@@ -270,6 +276,8 @@ enum Target {
     ToggleVoice,
     /// The Limit flashing toggle (board #5534).
     ToggleFlashLimit,
+    /// The Tips control (board #5575).
+    ToggleTips,
     /// The Agent control: the next provider in its cycle.
     CycleAgent,
     AllNone,
@@ -359,6 +367,7 @@ fn with_alpha(c: Color32, a: u8) -> Color32 {
 fn lit(controls: &Controls, debug: bool) -> Vec<Target> {
     [
         (controls.flash_limit, Target::ToggleFlashLimit),
+        (controls.tips, Target::ToggleTips),
         (controls.roam.is_on(), Target::ToggleRoam),
         (controls.edit_room, Target::ToggleEdit),
         (controls.cloud, Target::ToggleCloud),
@@ -872,6 +881,10 @@ impl Hud {
                 controls.flash_limit = !controls.flash_limit;
                 actions.push(Action::SetFlashLimit(controls.flash_limit));
             }
+            Some(Target::ToggleTips) => {
+                controls.tips = !controls.tips;
+                actions.push(Action::SetTips(controls.tips));
+            }
             // The app switches and sets `controls.agent` (the cycle
             // depends on what the headset has); with nothing to pick the
             // press does nothing.
@@ -992,8 +1005,6 @@ enum Control<'a> {
         right: (Target, &'a str),
         middle: String,
     },
-    /// One action across the row (board #5534: the Limit flashing toggle).
-    Button(Target, &'a str),
     /// Two cells side by side (`None`: an empty one).
     Pair([Option<Cell<'a>>; 2]),
     /// The music across the row (board #5385, #5572): `<` and `>` in the
@@ -1064,7 +1075,6 @@ impl Control<'_> {
     fn target(&self, hit: grid::Hit, end: Option<bool>) -> Option<Target> {
         match self {
             Self::Wide { left, right, .. } => Some(if hit.col == 1 { right.0 } else { left.0 }),
-            Self::Button(t, _) => Some(*t),
             Self::Text(_) => None,
             Self::Music { .. } => Some(match end {
                 Some(false) => Target::PrevTrack,
@@ -1126,7 +1136,6 @@ impl Rows<'_> {
                         PALETTE.text,
                     );
                 }
-                Control::Button(t, label) => self.button(painter, row, *t, label, on.is_some()),
                 Control::Text(text) => label(painter, row, text),
                 Control::Music { playing, title } => {
                     let under = on.and_then(|h| control.target(h, end));
@@ -1610,7 +1619,7 @@ fn panel_ui(
     while let Some(left) = steppers.next() {
         block.push(Control::Pair([Some(left), steppers.next()]));
     }
-    block.push(flash_row(controls.flash_limit));
+    block.push(flash_row(controls.flash_limit, controls.tips));
     block.push(recenter_row(view.room, controls.roam));
     block.push(agent_row(controls.agent, controls.immerse));
     block.push(menu_row(true, controls.pitcher));
@@ -1645,7 +1654,7 @@ fn menu_ui(
         .iter()
         .filter_map(|row| {
             Some(match *row {
-                grid::MenuRow::Flash => flash_row(controls.flash_limit),
+                grid::MenuRow::Flash => flash_row(controls.flash_limit, controls.tips),
                 grid::MenuRow::Recenter => recenter_row(view.room, controls.roam),
                 grid::MenuRow::Agent => agent_row(controls.agent, controls.immerse),
                 grid::MenuRow::Developer => menu_row(false, controls.pitcher),
@@ -1733,16 +1742,30 @@ fn voice_theme_row(voice: (bool, bool), theme: &str) -> Control<'_> {
 /// The Limit flashing toggle (board #5534), the menu's top row in both
 /// layouts and on both surfaces, under the steppers in the debug panel:
 /// the photosensitive limit as the wearer set it, "Limit flashing: on" or
-/// "Limit flashing: off" (`flash_choice::row_label`), one button across
-/// the row. A press changes it at once and saves it; nothing confirms an
-/// off. It went in at the top as the Recenter and the Agent rows did, so
-/// no row the wearer already reaches for moved (the quad keeps its bottom
-/// edge and grows upward). It has the row to itself, so no control shares
-/// a cell with it that a press meant for the other half could land on.
+/// "Limit flashing: off" (`flash_choice::row_label`). A press changes it
+/// at once and saves it; nothing confirms an off. It went in at the top
+/// as the Recenter and the Agent rows did, so no row the wearer already
+/// reaches for moved (the quad keeps its bottom edge and grows upward).
 /// The state is in the words, and in the outline and the orange of "on"
 /// (board #5553).
-fn flash_row(on: bool) -> Control<'static> {
-    Control::Button(Target::ToggleFlashLimit, crate::flash_choice::row_label(on))
+///
+/// Board #5575: it was one button across the row until the Tips control
+/// took the right cell ("Tips: on", "Tips: off",
+/// `first_run::tips_label`). Limit flashing keeps the left one, a whole
+/// cell with no halves, so no press meant for a neighbor inside its cell
+/// can land on it, and the menu is no taller. Tips off, the first run's
+/// hints no longer show; on, they start over now.
+fn flash_row(on: bool, tips: bool) -> Control<'static> {
+    Control::Pair([
+        Some(Cell::Button(
+            Target::ToggleFlashLimit,
+            crate::flash_choice::row_label(on),
+        )),
+        Some(Cell::Button(
+            Target::ToggleTips,
+            crate::first_run::tips_label(tips),
+        )),
+    ])
 }
 
 /// Recenter the fireflies around the wearer, and with the room on Rescan

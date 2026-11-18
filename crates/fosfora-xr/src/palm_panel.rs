@@ -909,8 +909,10 @@ impl PalmPanel {
 /// control is first pressed), and the immersion depth (board #5384: full
 /// unless saved otherwise). Board #5393: the wearer's Roam choice, and
 /// whether the app has asked for Space Setup, both off unless saved on.
-/// Board #5452: the first run's hints the wearer has been taught, none
-/// unless saved. Board #5534: the wearer's flash limit setting, absent
+/// Board #5575: the Tips control, on unless saved off (the hints a wearer
+/// had been taught were saved here as `taught` from board #5452 until
+/// then; a file that has the field loads, and a save leaves it out).
+/// Board #5534: the wearer's flash limit setting, absent
 /// until they choose. A missing or broken file is the defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuFile {
@@ -927,9 +929,9 @@ pub struct MenuFile {
     /// ended, once (board #5393): from then on only the hand menu's Rescan
     /// and the spoken rescan open Space Setup.
     pub space_setup_asked: bool,
-    /// The first run's hints the wearer has been taught (board #5452,
-    /// `first_run::Hints`): those never show again.
-    pub taught: crate::first_run::Taught,
+    /// The Tips control (board #5575, `first_run::Hints`): the first
+    /// run's hints show on every launch until the wearer turns this off.
+    pub tips: bool,
     /// The "Limit flashing" setting (board #5534, `flash_choice.rs`): the
     /// photosensitive limit on or off, as the wearer chose. `None` until
     /// they answer the question or change the row: they have not been
@@ -946,7 +948,7 @@ impl Default for MenuFile {
             immerse: crate::immerse::Depth::default(),
             roam: false,
             space_setup_asked: false,
-            taught: crate::first_run::Taught::default(),
+            tips: true,
             limit_flashing: None,
         }
     }
@@ -956,7 +958,7 @@ impl MenuFile {
     /// The file's text read leniently: a field that is missing or not a
     /// boolean keeps its default; an `agent` that is missing or names no
     /// pick is no saved choice; an `immerse` that is missing or names no
-    /// depth is full; a `taught` that is missing has taught no hint; a
+    /// depth is full; a `tips` that is missing is on; a
     /// `limit_flashing` that is missing or not a boolean is no choice.
     pub fn parse(json: &str) -> Self {
         let value = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default();
@@ -981,7 +983,7 @@ impl MenuFile {
                 .unwrap_or(d.immerse),
             roam: field("roam", d.roam),
             space_setup_asked: field("space_setup_asked", d.space_setup_asked),
-            taught: crate::first_run::Taught::from_json(value.get("taught")),
+            tips: field("tips", d.tips),
             limit_flashing: value
                 .get(crate::flash_choice::FIELD)
                 .and_then(serde_json::Value::as_bool),
@@ -991,8 +993,8 @@ impl MenuFile {
     /// The file's text: `{"debug":false,"immerse":"full","voice":true}`,
     /// with `"agent":"local"` (`anthropic`, `openai`, `off`) once picked,
     /// `"roam":true` and `"space_setup_asked":true` only while true, and
-    /// `"taught":["swipe","talk","palm"]` with the hints taught, once one
-    /// is, and `"limit_flashing":true` or `false` once the wearer has
+    /// `"tips":false` only while the tips are off, and
+    /// `"limit_flashing":true` or `false` once the wearer has
     /// chosen.
     pub fn to_json(self) -> String {
         let mut json = serde_json::json!({
@@ -1009,9 +1011,8 @@ impl MenuFile {
         if self.space_setup_asked {
             json["space_setup_asked"] = true.into();
         }
-        let taught = self.taught.names();
-        if !taught.is_empty() {
-            json["taught"] = taught.into();
+        if !self.tips {
+            json["tips"] = false.into();
         }
         if let Some(on) = self.limit_flashing {
             json[crate::flash_choice::FIELD] = on.into();
@@ -1176,8 +1177,9 @@ mod tests {
         }
     }
 
-    /// Board #5452: the hints taught round-trip, are written once one is
-    /// taught, and a file from before them has taught none.
+    /// Board #5575: a file that lists the hints taught, as the app saved
+    /// them until the tips showed on every launch, loads, and a save
+    /// leaves the list out.
     /// Board #5470: the menu no longer has an effect row. A
     /// `hand_menu.json` that names an effect, cut or not, loads with every
     /// field it does have, and a save leaves the name out.
@@ -1185,8 +1187,6 @@ mod tests {
     fn a_menu_file_that_names_a_cut_effect_still_loads() {
         let json = r#"{"agent":"local","debug":true,"effect":"Flock","world_effect":"Embers","effect_index":2,"immerse":"low","roam":true,"taught":["swipe"],"voice":false}"#;
         let file = MenuFile::parse(json);
-        let mut taught = crate::first_run::Taught::default();
-        taught.set(crate::first_run::Hint::Swipe);
         assert_eq!(
             file,
             MenuFile {
@@ -1196,13 +1196,13 @@ mod tests {
                 immerse: crate::immerse::Depth::Low,
                 roam: true,
                 space_setup_asked: false,
-                taught,
+                tips: true,
                 limit_flashing: None,
             }
         );
         let saved = file.to_json();
         assert!(
-            !saved.contains("effect") && !saved.contains("Flock"),
+            !saved.contains("effect") && !saved.contains("Flock") && !saved.contains("taught"),
             "{saved}"
         );
         assert_eq!(MenuFile::parse(&saved), file);
@@ -1213,40 +1213,35 @@ mod tests {
         );
     }
 
+    /// Board #5575: the Tips control round-trips, is written only while
+    /// off, and a file from before it, or with something else in the
+    /// field, has the tips on.
     #[test]
-    fn the_menu_file_saves_the_hints_taught_and_reads_none_when_absent() {
-        use crate::first_run::{Hint, Taught};
-        let mut some = Taught::default();
-        some.set(Hint::Swipe);
-        some.set(Hint::Palm);
-        for taught in [some, Taught::ALL] {
+    fn the_menu_file_saves_the_tips_off_and_reads_them_on_when_absent() {
+        for tips in [true, false] {
             let file = MenuFile {
-                taught,
+                tips,
                 voice: false,
                 ..MenuFile::default()
             };
             let json = file.to_json();
             assert_eq!(MenuFile::parse(&json), file, "{json}");
+            assert_eq!(json.contains(r#""tips":false"#), !tips, "{json}");
+            assert_eq!(json.contains("tips"), !tips, "{json}");
         }
-        let json = MenuFile {
-            taught: some,
-            ..MenuFile::default()
-        }
-        .to_json();
-        assert!(json.contains(r#""taught":["swipe","palm"]"#), "{json}");
-        assert!(!MenuFile::default().to_json().contains("taught"));
-        // Files written before the hints, as the app saved them: every
-        // field they have still loads, and no hint is taught.
+        // Files written before the control, as the app saved them, with
+        // every hint taught or none: every field they have still loads,
+        // and the tips are on.
         for (json, voice, roam) in [
             (r#"{"debug":false,"voice":true}"#, true, false),
             (
-                r#"{"agent":"local","debug":false,"immerse":"black","roam":true,"space_setup_asked":true,"voice":false}"#,
+                r#"{"agent":"local","debug":false,"immerse":"black","roam":true,"space_setup_asked":true,"taught":["swipe","talk","palm"],"voice":false}"#,
                 false,
                 true,
             ),
         ] {
             let file = MenuFile::parse(json);
-            assert_eq!(file.taught, Taught::default(), "{json}");
+            assert!(file.tips, "{json}");
             assert_eq!((file.voice, file.roam), (voice, roam), "{json}");
         }
         let old = MenuFile::parse(
@@ -1255,11 +1250,8 @@ mod tests {
         assert_eq!(old.immerse, crate::immerse::Depth::Black);
         assert_eq!(old.agent, Some(crate::agent::Pick::Local));
         assert!(old.space_setup_asked);
-        // A mistyped field teaches nothing.
-        assert_eq!(
-            MenuFile::parse(r#"{"taught": "all"}"#).taught,
-            Taught::default()
-        );
+        // A mistyped field turns nothing off.
+        assert!(MenuFile::parse(r#"{"tips": "off"}"#).tips);
     }
 
     /// Board #5534: the flash limit setting round-trips either way, is
@@ -1298,7 +1290,7 @@ mod tests {
         let old = MenuFile::parse(
             r#"{"agent":"local","debug":false,"immerse":"black","roam":true,"space_setup_asked":true,"taught":["swipe","talk","palm"],"voice":false}"#,
         );
-        assert_eq!(old.taught, crate::first_run::Taught::ALL);
+        assert!(old.tips);
         assert_eq!(old.immerse, crate::immerse::Depth::Black);
         assert!(old.roam && old.space_setup_asked && !old.voice);
         // A mistyped field is no choice, never an "off".

@@ -280,6 +280,10 @@ pub enum Intent {
     /// or off ("full show"). While the question card is up it is the
     /// answer.
     FlashLimit(bool),
+    /// The hand menu's Tips control (board #5575, `first_run.rs`): the
+    /// first run's hints on ("tips on", "show tips"), which starts them
+    /// over, or off ("tips off").
+    Tips(bool),
     /// "Credits" (board #4198): the short credits card ([`CREDITS`]) on the
     /// card "what can I say" uses, staying as long. The licenses in full
     /// are the APK's `NOTICE` (`docs/xr/RELEASE.md`).
@@ -503,6 +507,18 @@ const FLASH_LIMIT_OFF: [&str; 7] = [
     "dont limit flashing",
     "stop limiting flashing",
     "no flash limit",
+];
+/// Board #5575: the Tips control on and off, as [`normalize`] leaves them
+/// ("show the tips" is "show tips"), a leading "turn", "switch" or "set"
+/// dropped by [`tips`].
+const TIPS_ON: [&str; 5] = ["tips on", "on tips", "show tips", "tips again", "tips"];
+const TIPS_OFF: [&str; 6] = [
+    "tips off",
+    "off tips",
+    "hide tips",
+    "no tips",
+    "no more tips",
+    "stop tips",
 ];
 /// Board #5459: the hand menu opened ahead of the wearer and closed, as
 /// [`normalize`] leaves them ("open the menu" is "open menu").
@@ -1034,6 +1050,9 @@ fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
     if let Some(on) = flash_limit(ts) {
         return Some(Intent::FlashLimit(on));
     }
+    if let Some(on) = tips(ts) {
+        return Some(Intent::Tips(on));
+    }
     if any(ts, &MENU_OPEN) {
         return Some(Intent::Menu(true));
     }
@@ -1113,6 +1132,22 @@ fn flash_limit(ts: &[&str]) -> Option<bool> {
     if any(ts, &FLASH_LIMIT_ON) {
         Some(true)
     } else if any(ts, &FLASH_LIMIT_OFF) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Board #5575: the Tips control on ([`TIPS_ON`]) or off ([`TIPS_OFF`]), a
+/// leading "turn", "switch" or "set" dropped ("turn the tips off").
+fn tips(ts: &[&str]) -> Option<bool> {
+    let ts = match ts {
+        ["turn" | "switch" | "set", rest @ ..] => rest,
+        _ => ts,
+    };
+    if any(ts, &TIPS_ON) {
+        Some(true)
+    } else if any(ts, &TIPS_OFF) {
         Some(false)
     } else {
         None
@@ -2108,7 +2143,14 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
         // Once the show is on the app answers `BEGUN_REPLY` instead.
         Intent::Begin => BEGIN_REPLY.to_owned(),
         Intent::FlashLimit(on) => flash_limit_reply(on).to_owned(),
+        Intent::Tips(on) => tips_reply(on).to_owned(),
     }
+}
+
+/// Board #5575: the label once the Tips control is set by voice, the hand
+/// menu's words in the replies' lower case.
+pub fn tips_reply(on: bool) -> &'static str {
+    if on { "tips on" } else { "tips off" }
 }
 
 /// Board #5534: the label once the flash limit is set by voice, the hand
@@ -2764,6 +2806,36 @@ mod tests {
     /// Board #5534: the flash limit on and off by voice, in the card's two
     /// answers and the menu row's words, beside the phrases that share
     /// their words; not the agent's.
+    /// Board #5575: the Tips control by voice, either way, with the
+    /// menu's own words among them.
+    #[test]
+    fn tips_on_and_tips_off() {
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        for (words, on) in [
+            ("Tips on.", true),
+            ("Turn the tips on", true),
+            ("Turn on the tips", true),
+            ("Show the tips", true),
+            ("Tips again", true),
+            ("Tips", true),
+            ("Tips off.", false),
+            ("Turn off the tips", false),
+            ("Hide the tips", false),
+            ("No more tips", false),
+        ] {
+            assert_eq!(parse(words, &v), Ok(Intent::Tips(on)), "{words}");
+        }
+        for on in [true, false] {
+            assert_eq!(
+                parse(crate::first_run::tips_label(on), &v),
+                Ok(Intent::Tips(on))
+            );
+        }
+        assert_eq!(reply(&Intent::Tips(true), &v), "tips on");
+        assert_eq!(reply(&Intent::Tips(false), &v), "tips off");
+    }
+
     #[test]
     fn limit_flashing_and_full_show() {
         let (e, boxes) = (effects(), room());
@@ -4416,6 +4488,7 @@ mod tests {
             Intent::FlashLimit(_) => {
                 unreachable!("the agent's actions have no flash limit")
             }
+            Intent::Tips(_) => unreachable!("the agent's actions have no tips"),
             Intent::Credits => unreachable!("the agent's actions have no credits"),
             Intent::Edges(_) | Intent::Agent(_) | Intent::Voice(_) => {
                 unreachable!("the agent's actions have no edges, agent or voice")

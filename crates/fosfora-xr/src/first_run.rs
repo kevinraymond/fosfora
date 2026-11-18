@@ -5,7 +5,8 @@
 //!
 //! **The wait** ([`Wait`]). Every launch waits. Once the scan's and the
 //! permission's labels have gone, a card at the center of view says
-//! "Pinch to begin" ([`card_text`]). Until the show begins the music does
+//! "Pinch to begin" ([`card_text`]), and with the tips on, under it, that
+//! tips will follow ([`TIPS_FOLLOW`], board #5575). Until the show begins the music does
 //! not play, the looks get silence in place of the audio, the room is
 //! dimmed to `immerse::WAIT_LEVEL` and the hands do one thing, begin the
 //! show ([`Live`], board #5531): a pinch, a drag and a thumb swipe do
@@ -28,8 +29,10 @@
 //! **The start gesture** ([`start_gesture`], [`START_WORD`]) is a pinch.
 //! That function and that word are the only places that say so.
 //!
-//! **The hints** ([`Hints`], [`Hint`]). Three things are taught once per
-//! install, in this order ([`Hint::SHOW_ORDER`], board #5547): the left
+//! **The hints** ([`Hints`], [`Hint`]). Three things are taught on every
+//! launch (board #5575; once per install until then, which left a wearer
+//! who missed one no way to see it again), in this order
+//! ([`Hint::SHOW_ORDER`], board #5547): the left
 //! palm that brings the menu, how to talk (hold a fist, or tap the thumb
 //! on the index finger), and the thumb swipe. The two that change nothing
 //! in the room come first, and the swipe, which steps the theme, last.
@@ -43,12 +46,21 @@
 //! them, the swipe's caption, and are dropped behind one that stays
 //! longer: after a spoken command its own answer is the answer. A hint
 //! that has been in view [`HINT_GIVE_UP_S`] gives up.
-//! Either way it is saved as taught ([`Taught`], in `hand_menu.json`) and
-//! never shows again.
+//! Either way it is taught for this run ([`Taught`]) and shows again on
+//! the next launch.
 //! A wearer who makes a gesture before its hint has shown has taught
-//! themselves, and that hint is saved as taught without showing. A hint
+//! themselves, and that hint does not show in this run. A hint
 //! never holds the show and never covers another label: its time counts
 //! only while it is the label showing.
+//!
+//! **The Tips control** (board #5575, `hud.rs`). The hand menu's "Tips:
+//! on" / "Tips: off" ([`tips_label`]), saved in `hand_menu.json` as
+//! `"tips":false` once off. Off, no hint shows, in this run or at a
+//! launch ([`Hints::stop`], [`Hints::at_launch`]). Turned on, the hints
+//! start over at once, whatever this run taught ([`Hints::replay`]). When
+//! the last hint of a run has gone, one more label says where that
+//! control is ([`TIPS_END`]), once: the hints come back on every launch,
+//! and the wearer has to be told how to stop them.
 //!
 //! **The caption** ([`swipe_caption`]). A thumb swipe that changes the
 //! room's theme names the new one on the label, every time.
@@ -79,16 +91,31 @@ pub fn start_gesture(hands: &HandEdges) -> Option<usize> {
     [1, 0].into_iter().find(|&h| hands.pinch_began[h])
 }
 
+/// What the begin card says under "Pinch to begin" with the tips on
+/// (board #5575): the hints come later, so the wearer is told to expect
+/// them and that nothing is asked of them until then.
+pub const TIPS_FOLLOW: &str = "Then listen and watch.\nTips will follow.";
+
+/// The card's first line: the start gesture and what it does.
+fn begin_line() -> String {
+    format!("{START_WORD} to begin")
+}
+
 /// The card's words while the show waits. With `no_hands` (no hand has
 /// been tracked for `label::HANDS_WAIT_S`) the controllers line goes under
-/// it. The card does not name the spoken "begin": the app does not listen
-/// by itself, so a wearer who read "say begin" and said it would get no
-/// answer.
-pub fn card_text(no_hands: bool) -> String {
-    let mut text = format!("{START_WORD} to begin");
+/// it. Else, with `tips` (the hints will show in this run), [`TIPS_FOLLOW`]
+/// does: the controllers line comes first, since without hands nothing
+/// begins. The card does not name the spoken "begin": the app does not
+/// listen by itself, so a wearer who read "say begin" and said it would
+/// get no answer.
+pub fn card_text(no_hands: bool, tips: bool) -> String {
+    let mut text = begin_line();
     if no_hands {
         text.push('\n');
         text.push_str(HANDS_LABEL);
+    } else if tips {
+        text.push('\n');
+        text.push_str(TIPS_FOLLOW);
     }
     text
 }
@@ -229,7 +256,7 @@ pub struct Live {
 /// The label for a spoken "menu" while the show waits (board #5531): the
 /// card's words and "first".
 pub fn menu_waits_reply() -> String {
-    format!("{} first", card_text(false))
+    format!("{} first", begin_line())
 }
 
 /// The pinches the begin holds back, per hand (left, right; board #5531).
@@ -306,9 +333,26 @@ pub const HINT_GAP_S: f32 = 5.0;
 /// How long the show has been on, in a run, before its first hint (s,
 /// board #5547). The first hint used to show 10 s after the begin and ask
 /// for a swipe, which stepped the theme away from the one the opening
-/// track brings. This long, and the wearer has seen that look through a
-/// first build before anything asks for a gesture.
-pub const FIRST_HINT_S: f32 = 45.0;
+/// track brings. It was 45 s until board #5575: people trying the app
+/// had stopped expecting any help by then. The swipe is the last of the
+/// three now, so at 20 s the two hints that change nothing come first and
+/// the swipe's falls about where it did. `debug.fosfora.hintwait <s>`
+/// sets another for a launch ([`Hints::at_launch`]).
+pub const FIRST_HINT_S: f32 = 20.0;
+/// How long after the Tips control is turned on its first hint shows (s,
+/// board #5575): the press is the wearer asking, so nothing waits for the
+/// opening or the gap.
+pub const REPLAY_GAP_S: f32 = 2.0;
+/// The label after the last hint of a run (board #5575): the hints show
+/// on every launch, and this is where they are turned off.
+pub const TIPS_END: &str = "Tips show at every start.\nMenu: Tips turns them off.";
+/// How long [`TIPS_END`] stays (s).
+pub const TIPS_END_S: f32 = 8.0;
+
+/// The hand menu's Tips control (board #5575): what the setting is now.
+pub fn tips_label(on: bool) -> &'static str {
+    if on { "Tips: on" } else { "Tips: off" }
+}
 /// How long a hint stays in view before it gives up (s).
 pub const HINT_GIVE_UP_S: f32 = 20.0;
 
@@ -340,9 +384,7 @@ impl Hint {
         }
     }
 
-    /// Its name in `hand_menu.json` and in the log. The talk hint was the
-    /// tap hint, saved as "tap", until board #5531. A file that has "tap"
-    /// has not been taught the fist, so the new hint shows once.
+    /// Its name in the log.
     pub fn name(self) -> &'static str {
         match self {
             Self::Swipe => "swipe",
@@ -350,15 +392,11 @@ impl Hint {
             Self::Palm => "palm",
         }
     }
-
-    /// The hint `name` names.
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|h| h.name() == name)
-    }
 }
 
-/// The hints the wearer has been taught, saved in `hand_menu.json` as
-/// `"taught":["swipe","talk"]`. A file without the field has taught none.
+/// The hints the wearer has been taught in this run. Nothing of it is
+/// saved (board #5575): every launch starts with none taught, or with all
+/// of them when the Tips control is off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Taught {
     done: [bool; 3],
@@ -374,30 +412,6 @@ impl Taught {
 
     pub fn set(&mut self, hint: Hint) {
         self.done[hint.index()] = true;
-    }
-
-    /// The taught hints' names, in the hints' order.
-    pub fn names(self) -> Vec<&'static str> {
-        Hint::ALL
-            .into_iter()
-            .filter(|h| self.has(*h))
-            .map(Hint::name)
-            .collect()
-    }
-
-    /// From the file's `taught` field. A missing field, one that is not a
-    /// list, and names that are no hint's teach nothing.
-    pub fn from_json(value: Option<&serde_json::Value>) -> Self {
-        let mut taught = Self::default();
-        let names = value.and_then(serde_json::Value::as_array);
-        for hint in names
-            .into_iter()
-            .flatten()
-            .filter_map(|n| n.as_str().and_then(Hint::from_name))
-        {
-            taught.set(hint);
-        }
-        taught
     }
 }
 
@@ -431,14 +445,11 @@ pub enum HintEvent {
     SelfTaught(Hint),
     /// The hint had [`HINT_GIVE_UP_S`] in view.
     GaveUp(Hint),
+    /// The run's last hint has gone and [`TIPS_END`] went up.
+    TipsEnd,
 }
 
 impl HintEvent {
-    /// Whether the event taught a hint, so the saved state changed.
-    pub fn teaches(self) -> bool {
-        matches!(self, Self::Made(_) | Self::SelfTaught(_) | Self::GaveUp(_))
-    }
-
     /// Whether the understood cue plays.
     pub fn confirms(self) -> bool {
         self == Self::GotIt
@@ -453,17 +464,21 @@ impl HintEvent {
                 h.text().replace('\n', " | ")
             ),
             Self::Made(h) => format!(
-                "first run: the {} hint's gesture was made (taught, saved)",
+                "first run: the {} hint's gesture was made (taught for this run)",
                 h.name()
             ),
             Self::GotIt => format!("first run: the label reads \"{GOT_IT}\""),
             Self::SelfTaught(h) => format!(
-                "first run: the {} gesture was made before its hint (taught, saved)",
+                "first run: the {} gesture was made before its hint (taught for this run)",
                 h.name()
             ),
             Self::GaveUp(h) => format!(
-                "first run: the {} hint gave up after {HINT_GIVE_UP_S:.0} s in view (taught, saved)",
+                "first run: the {} hint gave up after {HINT_GIVE_UP_S:.0} s in view (taught for this run)",
                 h.name()
+            ),
+            Self::TipsEnd => format!(
+                "first run: the hints are over, the label reads \"{}\"",
+                TIPS_END.replace('\n', " | ")
             ),
         }
     }
@@ -479,6 +494,9 @@ enum Stage {
     /// The gesture was made on its hint: how long [`GOT_IT`] has been the
     /// label showing, and how long another label has covered it.
     GotIt { s: f32, covered_s: f32 },
+    /// The run's hints are over: how long [`TIPS_END`] has been the label
+    /// showing.
+    End { s: f32 },
 }
 
 /// The hints across frames.
@@ -486,21 +504,69 @@ enum Stage {
 pub struct Hints {
     taught: Taught,
     stage: Stage,
-    /// How long the show has been on this run (s), for [`FIRST_HINT_S`].
+    /// How long the show has been on this run (s), for `first_s`.
     on_s: f32,
+    /// How long the show is on before the first hint (s): [`FIRST_HINT_S`],
+    /// the knob's, or none once the Tips control asked for the hints.
+    first_s: f32,
+    /// A hint has shown since the hints last started, so [`TIPS_END`] is
+    /// owed when they are over. A wearer who made every gesture before
+    /// its hint saw no hint and is told nothing.
+    end_owed: bool,
 }
 
 impl Hints {
-    /// With what the wearer has been taught already.
+    /// With what the wearer has been taught already, the first hint
+    /// [`FIRST_HINT_S`] into the show.
     pub fn new(taught: Taught) -> Self {
         Self {
             taught,
             stage: Stage::Idle { free_s: 0.0 },
             on_s: 0.0,
+            first_s: FIRST_HINT_S,
+            end_owed: false,
         }
     }
 
-    /// What has been taught, for `hand_menu.json`.
+    /// The hints of a launch (board #5575): every one with `tips` (the
+    /// Tips control, on unless saved off), none without. The first shows
+    /// `first_s` into the show ([`FIRST_HINT_S`], or the knob's).
+    pub fn at_launch(tips: bool, first_s: f32) -> Self {
+        Self {
+            first_s: first_s.max(0.0),
+            ..Self::new(if tips { Taught::default() } else { Taught::ALL })
+        }
+    }
+
+    /// The Tips control was turned on: the hints start over, whatever
+    /// this run taught, and the first shows after [`REPLAY_GAP_S`] of
+    /// free label.
+    pub fn replay(&mut self) {
+        *self = Self {
+            stage: Stage::Idle {
+                free_s: HINT_GAP_S - REPLAY_GAP_S,
+            },
+            on_s: self.on_s,
+            first_s: 0.0,
+            ..Self::new(Taught::default())
+        };
+    }
+
+    /// The Tips control was turned off: the hint showing goes, and no
+    /// other shows in this run.
+    pub fn stop(&mut self) {
+        self.taught = Taught::ALL;
+        self.stage = Stage::Idle { free_s: 0.0 };
+        self.end_owed = false;
+    }
+
+    /// Whether a hint may still show in this run: the begin card then
+    /// says tips will follow ([`card_text`]).
+    pub fn pending(&self) -> bool {
+        self.taught != Taught::ALL
+    }
+
+    /// What has been taught in this run.
     pub fn taught(&self) -> Taught {
         self.taught
     }
@@ -514,6 +580,7 @@ impl Hints {
                 Some((hint.text(), fade_for(shown_s, HINT_GIVE_UP_S)))
             }
             Stage::GotIt { s, .. } => Some((GOT_IT, fade_for(s, GOT_IT_S))),
+            Stage::End { s } => Some((TIPS_END, fade_for(s, TIPS_END_S))),
         }
     }
 
@@ -548,12 +615,29 @@ impl Hints {
                 let next = Hint::SHOW_ORDER
                     .into_iter()
                     .find(|h| !self.taught.has(*h) && input.can[h.index()]);
+                let due = free && free_s >= HINT_GAP_S && self.on_s >= self.first_s;
                 match next {
-                    Some(hint) if free && free_s >= HINT_GAP_S && self.on_s >= FIRST_HINT_S => {
+                    Some(hint) if due => {
                         events.push(HintEvent::Shown(hint));
+                        self.end_owed = true;
                         Stage::Showing { hint, shown_s: 0.0 }
                     }
+                    // No hint is left that can show, and one did: where
+                    // the hints are turned off, once.
+                    None if due && self.end_owed => {
+                        events.push(HintEvent::TipsEnd);
+                        self.end_owed = false;
+                        Stage::End { s: 0.0 }
+                    }
                     _ => Stage::Idle { free_s },
+                }
+            }
+            Stage::End { s } => {
+                let s = if input.label_free { s + dt } else { s };
+                if s >= TIPS_END_S {
+                    Stage::Idle { free_s: 0.0 }
+                } else {
+                    Stage::End { s }
                 }
             }
             // Its gesture stopped working (voice went off): it comes back
@@ -870,19 +954,36 @@ mod tests {
 
     #[test]
     fn the_card_names_the_pinch_and_the_controllers() {
-        assert_eq!(card_text(false), "Pinch to begin");
-        assert_eq!(
-            card_text(true),
-            "Pinch to begin\nPut the controllers down. Fosfora uses your hands."
-        );
+        assert_eq!(card_text(false, false), "Pinch to begin");
+        for tips in [false, true] {
+            assert_eq!(
+                card_text(true, tips),
+                "Pinch to begin\nPut the controllers down. Fosfora uses your hands."
+            );
+        }
         // One line without the controllers line, three with it.
-        assert_eq!(layout(&card_text(false)).lines.len(), 1);
-        let laid = layout(&card_text(true));
+        assert_eq!(layout(&card_text(false, false)).lines.len(), 1);
+        let laid = layout(&card_text(true, false));
         assert_eq!(
             laid.lines[1..],
             ["Put the controllers down.", "Fosfora uses your hands."],
             "{laid:?}"
         );
+        // Board #5575: with the tips on the card says they will follow,
+        // three lines as written, none wrapped, at the hints' size.
+        let laid = layout(&card_text(false, true));
+        assert_eq!(
+            laid.lines,
+            [
+                "Pinch to begin",
+                "Then listen and watch.",
+                "Tips will follow."
+            ],
+            "{laid:?}"
+        );
+        assert_close!(laid.px, crate::label::LINES_FONT_PX);
+        // A spoken "menu" during the wait is answered with the first line.
+        assert_eq!(menu_waits_reply(), "Pinch to begin first");
     }
 
     #[test]
@@ -935,6 +1036,19 @@ mod tests {
         assert!(crate::voice::HOLD_LABEL.contains("Open your hand"));
         assert_eq!(layout(GOT_IT).lines, [GOT_IT]);
         assert!(GOT_IT_S >= read_s(GOT_IT));
+        // Board #5575: the label after the last hint, two lines as
+        // written, up longer than it takes to read, and it names the
+        // control by the word on it.
+        let laid = layout(TIPS_END);
+        assert_eq!(
+            laid.lines,
+            ["Tips show at every start.", "Menu: Tips turns them off."]
+        );
+        assert!(laid.px > 64.0, "{laid:?}");
+        assert!(TIPS_END_S > read_s(TIPS_END));
+        for on in [true, false] {
+            assert!(tips_label(on).starts_with("Tips: "));
+        }
         // The talk hint's example is a sentence the grammar has.
         let said = TALK_HINT.rsplit("Try: ").next().expect("the example");
         let vocab = crate::intent::Vocabulary {
@@ -1012,7 +1126,7 @@ mod tests {
         );
         // The opening is long enough to hold the hints back and short
         // against a song.
-        const { assert!(FIRST_HINT_S >= 30.0 && FIRST_HINT_S <= 90.0) };
+        const { assert!(FIRST_HINT_S >= 15.0 && FIRST_HINT_S <= 90.0) };
     }
 
     #[test]
@@ -1068,11 +1182,11 @@ mod tests {
             [HintEvent::Made(Hint::Swipe), HintEvent::GotIt]
         );
         assert_eq!(hints.taught(), Taught::ALL);
-        // Every hint taught: nothing shows again, in this run or the next.
-        assert!(hints_for(&mut hints, 120.0, ON).is_empty());
+        // Every hint taught: where they are turned off, once (board
+        // #5575), and then nothing more in this run.
+        assert_eq!(hints_for(&mut hints, 120.0, ON), [HintEvent::TipsEnd]);
         assert_eq!(hints.now(), None);
-        let mut next = Hints::new(hints.taught());
-        assert!(hints_for(&mut next, 120.0, ON).is_empty());
+        assert!(hints_for(&mut hints, 120.0, ON).is_empty());
     }
 
     #[test]
@@ -1101,12 +1215,13 @@ mod tests {
         assert_eq!(hints.now().map(|n| n.0), Some(TALK_HINT));
         // Made again, a taught gesture says nothing.
         assert!(hints.step(DT, made(Hint::Swipe)).is_empty());
-        // How to talk is the only hint this install shows.
+        // How to talk is the only hint this run shows, and one hint
+        // shown is enough to be told where they are turned off.
         assert_eq!(
             hints.step(DT, made(Hint::Talk)),
             [HintEvent::Made(Hint::Talk), HintEvent::GotIt]
         );
-        assert!(hints_for(&mut hints, 120.0, ON).is_empty());
+        assert_eq!(hints_for(&mut hints, 120.0, ON), [HintEvent::TipsEnd]);
         assert_eq!(hints.taught(), Taught::ALL);
     }
 
@@ -1135,14 +1250,10 @@ mod tests {
             hints_for(&mut hints, HINT_GAP_S + 0.1, ON),
             [HintEvent::Shown(Hint::Talk)]
         );
-        // Only an event that teaches changes the saved state, and only
-        // "Got it" plays the cue.
-        assert!(!HintEvent::Shown(Hint::Talk).teaches());
-        assert!(HintEvent::GaveUp(Hint::Talk).teaches());
-        assert!(HintEvent::SelfTaught(Hint::Talk).teaches());
-        assert!(HintEvent::Made(Hint::Talk).teaches());
-        assert!(HintEvent::GotIt.confirms() && !HintEvent::GotIt.teaches());
+        // Only "Got it" plays the cue.
+        assert!(HintEvent::GotIt.confirms());
         for quiet in [
+            HintEvent::TipsEnd,
             HintEvent::Shown(Hint::Talk),
             HintEvent::Made(Hint::Talk),
             HintEvent::SelfTaught(Hint::Talk),
@@ -1215,7 +1326,10 @@ mod tests {
             [HintEvent::Shown(Hint::Swipe)]
         );
         hints.step(DT, made(Hint::Swipe));
-        assert!(hints_for(&mut hints, 60.0, no_voice).is_empty());
+        // No hint is left that can show: the last label (board #5575),
+        // and the talk hint is still untaught.
+        assert_eq!(hints_for(&mut hints, 60.0, no_voice), [HintEvent::TipsEnd]);
+        assert_eq!(hints.now(), None);
         assert!(!hints.taught().has(Hint::Talk));
         // Voice comes on: the talk hint shows now.
         assert_eq!(
@@ -1257,34 +1371,86 @@ mod tests {
         );
     }
 
+    /// Board #5575: the hints show on every launch, the Tips control
+    /// stops them and starts them over, and the run's last hint is
+    /// followed, once, by where that control is.
     #[test]
-    fn the_taught_hints_round_trip_through_their_names() {
-        assert_eq!(Taught::from_json(None), Taught::default());
-        for hint in Hint::ALL {
-            assert_eq!(Hint::from_name(hint.name()), Some(hint));
-            let mut taught = Taught::default();
-            taught.set(hint);
-            let json = serde_json::json!(taught.names());
-            assert_eq!(Taught::from_json(Some(&json)), taught);
-        }
-        assert_eq!(Taught::ALL.names(), ["swipe", "talk", "palm"]);
-        let json = serde_json::json!(Taught::ALL.names());
-        assert_eq!(Taught::from_json(Some(&json)), Taught::ALL);
-        // Names that are no hint's, and a field that is no list.
-        let odd = serde_json::json!(["fist", 3, "talk"]);
-        let mut talk = Taught::default();
-        talk.set(Hint::Talk);
-        assert_eq!(Taught::from_json(Some(&odd)), talk);
-        // An install taught the tap hint before the fist was a hold: the
-        // talk hint is not taught, so it shows once.
-        let old = serde_json::json!(["swipe", "tap", "palm"]);
-        let taught = Taught::from_json(Some(&old));
-        assert!(taught.has(Hint::Swipe) && taught.has(Hint::Palm));
-        assert!(!taught.has(Hint::Talk));
+    fn the_hints_show_every_launch_until_the_tips_are_turned_off() {
+        // A launch with the tips on: every hint, the first after the
+        // knob's wait.
+        let mut hints = Hints::at_launch(true, 3.0);
+        assert!(hints.pending());
+        assert!(hints_for(&mut hints, 2.8, ON).is_empty());
         assert_eq!(
-            Taught::from_json(Some(&serde_json::json!(true))),
-            Taught::default()
+            hints_for(&mut hints, HINT_GAP_S, ON),
+            [HintEvent::Shown(Hint::Palm)]
         );
+        // The three give up in turn, then the last label, once.
+        let events = hints_for(&mut hints, 3.0 * (HINT_GIVE_UP_S + HINT_GAP_S) + 1.0, ON);
+        assert_eq!(
+            events,
+            [
+                HintEvent::GaveUp(Hint::Palm),
+                HintEvent::Shown(Hint::Talk),
+                HintEvent::GaveUp(Hint::Talk),
+                HintEvent::Shown(Hint::Swipe),
+                HintEvent::GaveUp(Hint::Swipe),
+                HintEvent::TipsEnd,
+            ]
+        );
+        assert_eq!(hints.now().map(|n| n.0), Some(TIPS_END));
+        assert!(!hints.pending());
+        // It counts its time only while it is the label showing.
+        let covered = HintInput {
+            label_free: false,
+            ..ON
+        };
+        hints_for(&mut hints, 2.0 * TIPS_END_S, covered);
+        assert_eq!(hints.now().map(|n| n.0), Some(TIPS_END));
+        assert!(hints_for(&mut hints, TIPS_END_S, ON).is_empty());
+        assert_eq!(hints.now(), None);
+        assert!(hints_for(&mut hints, 120.0, ON).is_empty());
+        // The next launch shows them again: nothing of a run is kept.
+        assert!(Hints::at_launch(true, FIRST_HINT_S).pending());
+        assert_eq!(
+            Hints::at_launch(true, FIRST_HINT_S),
+            Hints::new(Taught::default())
+        );
+
+        // A launch with the tips off: nothing, however long.
+        let mut off = Hints::at_launch(false, FIRST_HINT_S);
+        assert!(!off.pending());
+        assert!(hints_for(&mut off, 300.0, ON).is_empty());
+        // Turned on in the menu: the first hint 2 s later, with no wait
+        // for the opening, and the rest follow as at a launch.
+        off.replay();
+        assert!(off.pending());
+        assert!(hints_for(&mut off, REPLAY_GAP_S - 0.2, ON).is_empty());
+        assert_eq!(hints_for(&mut off, 0.4, ON), [HintEvent::Shown(Hint::Palm)]);
+        // Turned off while a hint shows: it goes, nothing follows, and
+        // the last label is not owed.
+        off.stop();
+        assert_eq!(off.now(), None);
+        assert!(!off.pending());
+        assert!(hints_for(&mut off, 300.0, ON).is_empty());
+
+        // A wearer who made every gesture before its hint saw no hint,
+        // and is not told how to turn them off.
+        let mut knows = Hints::at_launch(true, FIRST_HINT_S);
+        for hint in Hint::ALL {
+            assert_eq!(knows.step(DT, made(hint)), [HintEvent::SelfTaught(hint)]);
+        }
+        assert!(hints_for(&mut knows, 300.0, ON).is_empty());
+        // With the microphone denied the talk hint cannot show: the last
+        // label follows the two that can.
+        let no_voice = HintInput {
+            can: [true, false, true],
+            ..ON
+        };
+        let mut hints = Hints::at_launch(true, 0.0);
+        let events = hints_for(&mut hints, 3.0 * (HINT_GIVE_UP_S + HINT_GAP_S), no_voice);
+        assert_eq!(events.last(), Some(&HintEvent::TipsEnd));
+        assert!(!events.contains(&HintEvent::Shown(Hint::Talk)));
     }
 
     #[test]
@@ -1295,7 +1461,7 @@ mod tests {
         );
         assert_eq!(
             HintEvent::Made(Hint::Swipe).line(),
-            "first run: the swipe hint's gesture was made (taught, saved)"
+            "first run: the swipe hint's gesture was made (taught for this run)"
         );
         assert_eq!(
             HintEvent::GotIt.line(),
@@ -1303,11 +1469,15 @@ mod tests {
         );
         assert_eq!(
             HintEvent::SelfTaught(Hint::Palm).line(),
-            "first run: the palm gesture was made before its hint (taught, saved)"
+            "first run: the palm gesture was made before its hint (taught for this run)"
         );
         assert_eq!(
             HintEvent::GaveUp(Hint::Palm).line(),
-            "first run: the palm hint gave up after 20 s in view (taught, saved)"
+            "first run: the palm hint gave up after 20 s in view (taught for this run)"
+        );
+        assert_eq!(
+            HintEvent::TipsEnd.line(),
+            "first run: the hints are over, the label reads \"Tips show at every start. | Menu: Tips turns them off.\""
         );
     }
 

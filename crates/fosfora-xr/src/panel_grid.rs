@@ -9,8 +9,7 @@
 //! bottom row [`MARGIN`] above that edge in both, so the row under the
 //! pointer stays there when debug toggles. Rows are [`ROW_H`] tall with
 //! [`ROW_GAP`] between them. A row is wide (a left and a right action,
-//! a surface row's `<` `>`, or one action across it, the Limit flashing
-//! toggle) or a pair of cells, one per column, each about
+//! a surface row's `<` `>`) or a pair of cells, one per column, each about
 //! half the width with its own -/+ end boxes ([`END_BOX_W`]) or one
 //! action. The pointer picks a row by its height alone (a row owns half
 //! the gap above and below it, so the rows tile the block), a column by
@@ -63,8 +62,8 @@ pub const SURFACE_ROWS: usize = 3;
 /// One row of the hand menu (`hud.rs` paints each).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuRow {
-    /// The Limit flashing toggle, one action across the row (board
-    /// #5534).
+    /// The Limit flashing toggle (board #5534) beside the Tips control
+    /// (board #5575), a cell each.
     Flash,
     /// Recenter and Rescan, a half each, beside Roam.
     Recenter,
@@ -598,10 +597,11 @@ mod tests {
         for on in [true, false] {
             whole.push(crate::room_edit::particles_label(on));
         }
-        // Board #5534: the Limit flashing toggle has its row to itself,
-        // and its words fit a cell too.
+        // Board #5534: the Limit flashing toggle's words fit a cell, and
+        // since board #5575 it has one, beside the Tips control's.
         for on in [true, false] {
             whole.push(crate::flash_choice::row_label(on));
+            whole.push(crate::first_run::tips_label(on));
         }
         for text in whole {
             fits(text, FONT_BUTTON, cell_w());

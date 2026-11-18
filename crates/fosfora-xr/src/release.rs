@@ -400,6 +400,9 @@ mod tests {
             // both surfaces, either way.
             Intent::FlashLimit(true),
             Intent::FlashLimit(false),
+            // Board #5575: the Tips control too.
+            Intent::Tips(true),
+            Intent::Tips(false),
         ] {
             assert!(voice_reaches(Surface::Developer, &shown));
             assert!(voice_reaches(Surface::Release, &shown));

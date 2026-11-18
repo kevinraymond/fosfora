@@ -442,10 +442,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       board #5531: while the show waits the hand menu does not come, by the palm or by voice, and nothing is thrown or lifted;
     //       board #5534: it skips the flash question too and saves no answer, so the limit is on unless the file or the
     //       flashlimit knob says otherwise; set while the question is up, it ends the question the same way)
-    //   adb shell setprop debug.fosfora.hints 1                  (board #5452: the first run's three hints again this launch: what
-    //       hand_menu.json saved as taught is left out, and the hints show without a hand having been tracked, so they can be captured
-    //       unworn; a hint made or given up in such a launch is saved, and the file then holds only what that launch taught; read at
-    //       launch)
+    //   adb shell setprop debug.fosfora.hints 1                  (board #5452: the first run's three hints this launch whatever
+    //       hand_menu.json's "tips" says, and without a hand having been tracked, so they can be captured unworn; nothing is saved;
+    //       read at launch)
+    //   adb shell setprop debug.fosfora.hintwait <s>             (board #5575: how long the show is on before its first hint, in
+    //       place of first_run::FIRST_HINT_S (20); the hints show on every launch until the hand menu's Tips control is turned
+    //       off, and turning it on starts them over at once; read at launch)
     //   adb shell setprop debug.fosfora.swipe right|left         (board #5452: a thumb swipe from the right hand as if made, for the unworn
     //       check of the swipe's caption and of the swipe hint's "Got it": right steps to the next theme, left to the one before
     //       (board #5470), and the caption names it; polled once a second, fed once per value as debug.fosfora.say is (set "" or
@@ -1697,6 +1699,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         edges: edge_bars.choice,
         // Board #5534: on until the wearer turns it off.
         flash_limit: menu_saved.limit_flashing.unwrap_or(true),
+        // Board #5575: the first run's hints, on until turned off.
+        tips: menu_saved.tips,
     };
     // Board #5420: the hand menu's Edges control holds its choice over the
     // knob's until the knob's own value changes (board #5431: the theme's
@@ -1891,7 +1895,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     }
     // Board #5452: the first run (`first_run.rs`). The show waits for the
     // wearer behind a card at the center of view; three gestures are
-    // taught once per install as the wearer makes them, on a label ahead
+    // taught on every launch (board #5575, until the hand menu's Tips
+    // control is turned off) as the wearer makes them, on a label ahead
     // of the view; a thumb swipe's caption names the theme it stepped to.
     // `begin_pinch` holds back every pinch closed during the wait, the one
     // that began the show included, until it opens (board #5531).
@@ -1924,13 +1929,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Whether the thumb swipe and the thumb tap can be made at all.
     let micro_on = session.has_microgestures();
     let hints_knob = debug_prop("debug.fosfora.hints").as_deref() == Some("1");
-    let mut hints = crate::first_run::Hints::new(if hints_knob {
-        crate::first_run::Taught::default()
-    } else {
-        menu_saved.taught
-    });
+    let hint_wait = debug_prop("debug.fosfora.hintwait")
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|s| s.is_finite() && *s >= 0.0);
+    let mut hints = crate::first_run::Hints::at_launch(
+        menu_saved.tips || hints_knob,
+        hint_wait.unwrap_or(crate::first_run::FIRST_HINT_S),
+    );
     info!(
-        "first run: {} · hints taught: {}{}",
+        "first run: {} · tips {}, the first {:.0} s into the show{}{}",
         if begin_knob {
             "no wait (debug.fosfora.begin 1)".to_owned()
         } else {
@@ -1940,12 +1947,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 crate::first_run::WAIT_MAX_S
             )
         },
-        match hints.taught().names() {
-            names if names.is_empty() => "none".to_owned(),
-            names => names.join(", "),
+        if hints.pending() { "on" } else { "off" },
+        hint_wait.unwrap_or(crate::first_run::FIRST_HINT_S),
+        if hint_wait.is_some() {
+            " (debug.fosfora.hintwait)"
+        } else {
+            ""
         },
         if hints_knob {
-            " (debug.fosfora.hints 1: the saved ones left out, shown without a tracked hand)"
+            " (debug.fosfora.hints 1: shown whatever is saved, without a tracked hand)"
         } else {
             ""
         }
@@ -3150,6 +3160,29 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // setting, saved, and the limiter follows on this
                     // frame unless its knob overrides. A wearer who sets
                     // it here has chosen and is not asked at a launch.
+                    // Board #5575: the Tips control, saved. On, the
+                    // first run's hints start over now, whatever this
+                    // run taught; off, the one showing goes and none
+                    // shows at the next launch.
+                    Action::SetTips(on) => {
+                        menu_saved.tips = on;
+                        save_hand_menu(&menu_file, menu_saved);
+                        controls.tips = on;
+                        if on {
+                            hints.replay();
+                        } else {
+                            hints.stop();
+                        }
+                        info!(
+                            "first run: the wearer set \"{}\" (saved): {}",
+                            crate::first_run::tips_label(on),
+                            if on {
+                                "the hints start over"
+                            } else {
+                                "no hint shows, in this run or at a launch"
+                            }
+                        );
+                    }
                     Action::SetFlashLimit(on) => {
                         menu_saved.limit_flashing = Some(on);
                         save_hand_menu(&menu_file, menu_saved);
@@ -4885,7 +4918,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             crate::flash_choice::card_text(armed, no_hands, None),
                         )
                     } else {
-                        let text = crate::first_run::card_text(no_hands);
+                        let text = crate::first_run::card_text(no_hands, hints.pending());
                         (text.clone(), text)
                     }
                 });
@@ -4971,7 +5004,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     });
                 // Board #5452: the hints last, only while no other label
                 // shows (`first_run::Hints`). One that is made or gives up
-                // is saved as taught. The understood cue plays as "Got it"
+                // is taught for this run. The understood cue plays as "Got it"
                 // goes up, and never into an open voice window, which
                 // would hear it.
                 let label_free = shown.is_none();
@@ -4997,10 +5030,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         && !matches!(push_to_talk.window(), VoiceWindow::Open { .. })
                     {
                         crate::ui_sound::play(crate::ui_sound::Cue::Understood);
-                    }
-                    if event.teaches() {
-                        menu_saved.taught = hints.taught();
-                        save_hand_menu(&menu_file, menu_saved);
                     }
                 }
                 let hint_now = hints.now().filter(|_| label_free);
@@ -7315,6 +7344,11 @@ fn apply_intent(
             actions.push(Action::SetVoice(on));
         }
         // Board #5534: the Limit flashing toggle's press, by voice.
+        // Board #5575: the Tips control's press, by voice.
+        Intent::Tips(on) => {
+            controls.tips = on;
+            actions.push(Action::SetTips(on));
+        }
         Intent::FlashLimit(on) => {
             controls.flash_limit = on;
             actions.push(Action::SetFlashLimit(on));
@@ -7428,14 +7462,15 @@ fn save_hand_menu(path: &std::path::Path, menu: crate::palm_panel::MenuFile) {
     let on_off = |on: bool| if on { "on" } else { "off" };
     match std::fs::write(path, menu.to_json()) {
         Ok(()) => info!(
-            "hand menu: debug panel {} · voice {}{} · immersion {} · roam {} (saved)",
+            "hand menu: debug panel {} · voice {}{} · immersion {} · roam {} · tips {} (saved)",
             on_off(menu.debug),
             on_off(menu.voice),
             menu.agent
                 .map(|p| format!(" · agent {}", p.name()))
                 .unwrap_or_default(),
             menu.immerse.name(),
-            on_off(menu.roam)
+            on_off(menu.roam),
+            on_off(menu.tips)
         ),
         Err(e) => log::warn!("hand menu: saving {}: {e}", path.display()),
     }
