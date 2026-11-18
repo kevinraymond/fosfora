@@ -274,8 +274,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       world and mr, and only ever over passthrough; read at launch)
     //   adb shell setprop debug.fosfora.facescale 0.5            (board #3793: the faces layer's swapchain vs the recommended eye size,
     //       0.25..1.0; default 0.5; read at launch)
-    //   adb shell setprop debug.fosfora.facesharpen 0|1          (board #3793: XR_FB_composition_layer_settings normal sharpening on the
-    //       faces layer's upsample; default 0; read at launch)
+    //   adb shell setprop debug.fosfora.facesharpen 0|1|2        (board #3793, #5543: the runtime's filter on the faces layer's upsample,
+    //       XR_FB_composition_layer_settings: 1 normal sharpening, 2 quality sharpening (Meta's Super Resolution); default 0; read at launch)
     //   adb shell setprop debug.fosfora.mode mr                  (S7: passthrough + hands + room, no quad)
     //   adb shell setprop debug.fosfora.passthrough 0|1          (override the mode's default)
     //   adb shell setprop debug.fosfora.hands 0|1                (hand joints as obstacles + pinch)

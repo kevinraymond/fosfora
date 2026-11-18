@@ -16,6 +16,42 @@ pub const FACE_SCALE_MAX: f32 = 1.0;
 /// The smallest side any eye swapchain is created with.
 pub const MIN_SIDE: u32 = 64;
 
+/// How the runtime filters the faces layer as it upsamples it to the
+/// display (`XR_FB_composition_layer_settings`). The layer is half the
+/// eye's size by default, so the upsample is what the wearer sees of every
+/// wall. The filter runs in the compositor, outside the app's frame time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Sharpen {
+    /// The runtime's plain upsample.
+    #[default]
+    Off,
+    /// Normal sharpening, the cheaper filter.
+    Normal,
+    /// Quality sharpening: Meta's Super Resolution, an edge-aware
+    /// upsample and sharpen in one pass, made for layers under the
+    /// display's size.
+    Quality,
+}
+
+impl Sharpen {
+    /// The knob's value: 1 normal, 2 quality, anything else off.
+    pub fn from_knob(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some("1") => Self::Normal,
+            Some("2") => Self::Quality,
+            _ => Self::Off,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Normal => "normal",
+            Self::Quality => "quality",
+        }
+    }
+}
+
 /// The faces layer's knobs, read at launch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FacesOptions {
@@ -25,9 +61,9 @@ pub struct FacesOptions {
     /// `debug.fosfora.facescale`: the faces swapchain against the
     /// recommended size, [`FACE_SCALE_MIN`]..[`FACE_SCALE_MAX`].
     pub scale: f32,
-    /// `debug.fosfora.facesharpen 0|1`: `XR_FB_composition_layer_settings`
-    /// normal sharpening on the faces layer's upsample (default 0).
-    pub sharpen: bool,
+    /// `debug.fosfora.facesharpen 0|1|2`: the filter on the faces layer's
+    /// upsample ([`Sharpen`]; default 0).
+    pub sharpen: Sharpen,
 }
 
 /// Off: the surfaces in the eye pass, as without passthrough.
@@ -36,7 +72,7 @@ impl Default for FacesOptions {
         Self {
             layer: false,
             scale: FACE_SCALE_DEFAULT,
-            sharpen: false,
+            sharpen: Sharpen::Off,
         }
     }
 }
@@ -58,7 +94,7 @@ impl FacesOptions {
         Self {
             layer: toggle(layer, layer_default),
             scale: face_scale(scale.and_then(|s| s.trim().parse::<f32>().ok())),
-            sharpen: toggle(sharpen, false),
+            sharpen: Sharpen::from_knob(sharpen),
         }
     }
 }
@@ -168,7 +204,7 @@ mod tests {
             FacesOptions {
                 layer: true,
                 scale: FACE_SCALE_DEFAULT,
-                sharpen: false
+                sharpen: Sharpen::Off
             }
         );
         let o = FacesOptions::from_knobs(Some("0"), Some("0.3"), Some("1"), true);
@@ -177,8 +213,17 @@ mod tests {
             FacesOptions {
                 layer: false,
                 scale: 0.3,
-                sharpen: true
+                sharpen: Sharpen::Normal
             }
+        );
+        // 2 is the quality filter; anything else is off.
+        let sharpen = |v| FacesOptions::from_knobs(None, None, Some(v), true).sharpen;
+        assert_eq!(sharpen("2"), Sharpen::Quality);
+        assert_eq!(sharpen(" 2 "), Sharpen::Quality);
+        assert_eq!(sharpen("3"), Sharpen::Off);
+        assert_eq!(
+            [Sharpen::Off, Sharpen::Normal, Sharpen::Quality].map(Sharpen::name),
+            ["off", "normal", "quality"]
         );
         // The quad and particles modes default off; the knob turns it on.
         assert!(!FacesOptions::from_knobs(None, None, None, false).layer);

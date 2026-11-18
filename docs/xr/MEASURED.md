@@ -3927,6 +3927,51 @@ themes, 54 runs counted): no run over three with the limit on. The worst
 general count is 3.0 on 4 runs, 2.5 on 33, 2.0 or less on 17. The worst red
 is 2.0. With the limit off the same runs reach 16. Not yet worn.
 
+## The faces layer's size and its upsample filter (board #5543, Nov 18)
+
+Worn, the looks rank by sharpness: the scanned boxes, then the walls, the
+floor and the ceiling, then what the depth map finds. The surfaces draw in
+the faces layer at half the recommended eye size (840x880 an eye, of
+1680x1760) and the runtime upsamples it, so the question was what a larger
+layer costs and what the runtime's filters do for the half-size one.
+
+Quest 3 unworn on the desk, xr afb7165, 72 Hz, music playing, the runtime's
+`VrApi` lines over 30 s after 16 s to settle, one launch a row, back to
+back. Passthrough holds the GPU at level 2 in every row.
+
+**The size**, Aurora (two sky layers), App GPU median / p90 / max in ms and
+stale frames:
+
+| `facescale` | Sharpening off | Normal sharpening |
+|---|---|---|
+| 0.5, the default | 8.71 / 9.01 / 9.06, 77 | 8.79 / 9.10 / 9.12, 25 |
+| 0.75 | 14.03 / 15.33 / 15.38, 603 | 14.52 / 15.57 / 16.11, 764 |
+| 1.0 | 21.57 / 24.86 / 25.08, 1,313 | 22.34 / 23.83 / 25.55, 1,445 |
+
+0.5 again at the end: 9.29 / 9.74 / 9.81, 89, with the battery 4.5 C warmer
+(43.0 to 47.5), so the drift is 0.6 ms against steps of 5 and 8. The layer
+is the frame's largest cost: 2.25 times its pixels cost 5.3 ms more, which
+puts it near 4.2 ms at 0.5. 0.75 is over the 13.9 ms budget. Aurora's
+curtains are soft and its captures look the same at every size.
+
+**The filter**, Contour (thin lines), `facescale` 0.5, with the build that
+adds the quality filter (`debug.fosfora.facesharpen 2`,
+`XR_FB_composition_layer_settings` `QUALITY_SHARPENING`):
+
+| `facesharpen` | App GPU median / p90 / max | Stale | Compositor (`TW`) median |
+|---|---|---|---|
+| 0, off | 7.49 / 8.08 / 8.14 | 135 | 2.67 |
+| 1, normal | 7.58 / 8.20 / 8.32 | 65 | 3.14 |
+| 2, quality | 7.80 / 8.16 / 8.50 | 69 | 3.02 |
+| 0 again | 7.92 / 8.62 / 8.70 | 84 | 2.67 |
+
+The app's own time does not move beyond the drift between the two rows at
+0. The filter costs the compositor 0.35 to 0.5 ms. A screencap shows it:
+with the quality filter Contour's lines are thinner and their edges clean,
+with the normal one a little crisper than off
+(`recordings/facesharpen-nov18/compare-crops.jpg`, outside the repo). Not
+yet worn; the default stays off until it is.
+
 **What else it could have been.**
 
 - *A clock offset in the analysis.* A click track at 120 BPM through the

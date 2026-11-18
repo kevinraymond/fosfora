@@ -469,9 +469,9 @@ pub struct XrSession {
     /// The faces layer's swapchains, one per eye (board #3793); empty
     /// when it is off, and then the surfaces draw in the eye pass.
     faces: Vec<Eye>,
-    /// Chain `NORMAL_SHARPENING` on the faces layer
+    /// The filter chained on the faces layer
     /// (`debug.fosfora.facesharpen`, with the extension enabled).
-    faces_sharpen: bool,
+    faces_sharpen: crate::faces_layer::Sharpen,
     space: xr::Space,
     stream: xr::FrameStream<xr::Vulkan>,
     waiter: xr::FrameWaiter,
@@ -602,7 +602,11 @@ impl XrSession {
                 faces.push(eye);
             }
         }
-        let faces_sharpen = faces_on && mr.faces.sharpen && ctx.has_layer_settings;
+        let faces_sharpen = if faces_on && ctx.has_layer_settings {
+            mr.faces.sharpen
+        } else {
+            crate::faces_layer::Sharpen::Off
+        };
         match faces.first() {
             Some(f) => info!(
                 "faces layer: {}x{} per eye (scale {:.2}) · {} images · sharpen {}",
@@ -610,12 +614,10 @@ impl XrSession {
                 f.extent.height,
                 crate::faces_layer::face_scale(Some(mr.faces.scale)),
                 f.images.len(),
-                if faces_sharpen {
-                    "on"
-                } else if mr.faces.sharpen {
-                    "asked, XR_FB_composition_layer_settings missing"
+                if faces_sharpen == mr.faces.sharpen {
+                    faces_sharpen.name()
                 } else {
-                    "off"
+                    "asked, XR_FB_composition_layer_settings missing"
                 },
             ),
             None => info!(
@@ -1283,14 +1285,19 @@ impl XrSession {
         let sharpen = xr::sys::CompositionLayerSettingsFB {
             ty: xr::sys::CompositionLayerSettingsFB::TYPE,
             next: std::ptr::null(),
-            layer_flags: xr::sys::CompositionLayerSettingsFlagsFB::NORMAL_SHARPENING,
+            layer_flags: match self.faces_sharpen {
+                crate::faces_layer::Sharpen::Quality => {
+                    xr::sys::CompositionLayerSettingsFlagsFB::QUALITY_SHARPENING
+                }
+                _ => xr::sys::CompositionLayerSettingsFlagsFB::NORMAL_SHARPENING,
+            },
         };
         let faces_layer = faces_on.then(|| {
             let faces = xr::CompositionLayerProjection::new()
                 .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
                 .space(&self.space)
                 .views(&faces_views);
-            if !self.faces_sharpen {
+            if self.faces_sharpen == crate::faces_layer::Sharpen::Off {
                 return faces;
             }
             let mut raw = faces.into_raw();
