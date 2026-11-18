@@ -120,10 +120,10 @@ pub const AWAY_MARGIN: f32 = 1.5;
 const PARK_AHEAD_M: f32 = 0.45;
 const PARK_BELOW_M: f32 = 0.05;
 
-/// The log's line for `debug.fosfora.menustay` (board #5459).
+/// The log's line for `debug.fosfora.menustay` (board #5459, #5539).
 pub fn knob_line(stay: bool) -> &'static str {
     if stay {
-        "hand menu: debug.fosfora.menustay 1, the palm summons it and it stays in the air"
+        "hand menu: debug.fosfora.menustay 1, the palm shows it and hides it at once, and a spoken \"menu\" parks it in the air"
     } else {
         "hand menu: debug.fosfora.menustay 0, it lives on the palm"
     }
