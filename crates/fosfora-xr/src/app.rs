@@ -5658,6 +5658,32 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                     behavior.id(),
                                     crate::surface_port::tint(color, kind, audio.key_tint),
                                 );
+                                // Board #5543: a face whose edges go in
+                                // keeps its effect's bright parts round
+                                // the tunnel and drops its dim fill; and
+                                // one color is the wrapper's where the
+                                // effect has no input for it.
+                                let rows = match map {
+                                    Map::Face => {
+                                        let tunnel = edge_on
+                                            && occluders
+                                            && edge_bars
+                                                .choice
+                                                .mode(crate::themes::edge_mode(light_theme, kind))
+                                                == crate::edge_bars::Mode::In;
+                                        crate::surface_port::with_look(
+                                            rows,
+                                            if tunnel {
+                                                crate::surface_port::TUNNEL_CUT
+                                            } else {
+                                                0.0
+                                            },
+                                            effect.wrapper_mono()
+                                                && crate::themes::mono(light_theme, kind, behavior),
+                                        )
+                                    }
+                                    _ => rows,
+                                };
                                 crate::gfx::PortFace {
                                     effect: i,
                                     uniforms: crate::surface_port::uniforms(

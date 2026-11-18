@@ -64,11 +64,13 @@
 //! - **Mirror**, a club of infinity mirrors: tables and other surfaces run
 //!   no behavior and their edges go in, each face a tunnel of light. The
 //!   floor is tessera's lit tiles in one color, with the bars on its
-//!   face. The ceiling waits for astrolabe and the frames for fenestra,
-//!   held back for flashing, and keep their tunnels. The walls keep
-//!   theirs too: the file gives them bezel, chrome round each tunnel, but
-//!   in unworn captures on the headset the two together showed no chrome
-//!   and a fainter tunnel.
+//!   face. The walls run bezel in one color with their edges in, a chrome
+//!   frame round each tunnel: on a face whose edges go in a ported effect
+//!   keeps its bright parts and drops its dim fill
+//!   (`surface_port::with_look`), which at first lay over the whole wall
+//!   as a haze and made the tunnel read faint. The ceiling waits for
+//!   astrolabe and the frames for fenestra, held back for flashing, and
+//!   keep their tunnels.
 //! - **Flint** (board #5533), a forge in a cave: the walls and the
 //!   ceiling are shards, cells whose edges jump with the kick, drawn in
 //!   one color ([`Look::mono`]), warm white, so they read as glowing
@@ -314,14 +316,13 @@ impl Theme {
                 KIND_FRAME => look(B::Windows, AMBER, BAND_MID, 0.6, Mode::Off),
                 _ => look(B::Windows, AMBER, BAND_MID, 1.0, Mode::Off),
             },
-            // Board #5543: a club of infinity mirrors. The ceiling waits
-            // for astrolabe and the frames for fenestra, both held back
-            // (`SurfaceBehavior::held_back`), and keep their tunnels. So
-            // do the walls: with bezel on them the headset showed no
-            // chrome and a fainter tunnel than the ceiling's (Nov 18).
+            // Board #5543: a club of infinity mirrors. Bezel frames each
+            // wall's tunnel in chrome. The ceiling waits for astrolabe and
+            // the frames for fenestra, both held back
+            // (`SurfaceBehavior::held_back`), and keep their tunnels.
             Self::Mirror => match kind {
                 KIND_FLOOR => look(B::Tessera, BLUE, BAND_BASS, 1.0, face).in_one_color(),
-                KIND_WALL => look(B::None, WARM_WHITE, BAND_RMS, 1.0, Mode::In),
+                KIND_WALL => look(B::Bezel, WARM_WHITE, BAND_RMS, 1.0, Mode::In).in_one_color(),
                 KIND_CEILING => look(B::None, WARM_WHITE, BAND_RMS, 1.0, Mode::In),
                 KIND_FRAME => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
                 _ => look(B::None, BLUE, BAND_MID, 1.0, Mode::In),
@@ -1059,14 +1060,13 @@ mod tests {
                 (B::Windows, AMBER, MID, 1.0, off, false),
             ]
         );
-        // The ceiling waits for astrolabe, the frames for fenestra and
-        // the walls for a bezel that draws with a tunnel.
+        // The ceiling waits for astrolabe and the frames for fenestra.
         assert_eq!(
             table(Theme::Mirror),
             [
                 (B::None, BLUE, MID, 1.0, into, false),
                 (B::Tessera, BLUE, bass, 1.0, face, true),
-                (B::None, WARM_WHITE, rms, 1.0, into, false),
+                (B::Bezel, WARM_WHITE, rms, 1.0, into, true),
                 (B::None, WARM_WHITE, rms, 1.0, into, false),
                 (B::None, BLUE, rms, 1.0, into, false),
                 (B::None, BLUE, MID, 1.0, into, false),
@@ -1356,7 +1356,7 @@ mod tests {
         assert!(
             Theme::Mirror
                 .summary()
-                .contains("wall none@1.00 warm white rms edges in")
+                .contains("wall bezel@1.00 warm white rms edges in")
         );
         assert!(
             Theme::Mirror

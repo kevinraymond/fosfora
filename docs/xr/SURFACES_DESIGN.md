@@ -2171,6 +2171,56 @@ No look loops over cells or reads a texture. A hash is five multiplies
 and nine shifts and xors on integers. The sparks' and the embers' counts
 include the heat ramp's two smoothsteps.
 
+## Mirror, deeper (Nov 18, board #5543)
+
+**Why.** The owner wore Mirror with the depth knob at its top, 2, and
+wanted more: "2.0 is looking pretty good, though maybe 3.0 if we can also
+make it fade out the deeper it goes." His walls had not moved with the
+knob at all, since a wall was at the 1.5 m clamp already at the default
+0.6. What he saw at 2 was the boxes.
+
+**Deeper tunnels** (`edge_bars.rs`, `XR_DESIGN.md`'s edge bars). A tunnel
+is three times its face's smaller side deep, 0.3 to 8 m: 7.5 m behind a
+4 x 2.5 m wall, 1.2 m behind a 40 cm box. The knob
+`debug.fosfora.edgebarsdepth` runs 0 to 8 and is live. Twenty rungs where
+there were ten, and their gaps spread with the depth, each 1.12 of the one
+in front (`rung_coord`): 10 cm at a wall's rim, 90 cm at its end. Drawn in
+perspective the frames nest toward one point and leave a small dark
+center. Ten even rungs over that depth were 75 cm apart from the rim on:
+a few thick bands. Each rung keeps 0.9 of the one in front, times a
+straight fall to nothing at the end (`rung_dim`), so the tunnel dissolves
+into the dark and has no lit back wall.
+
+The depth is the same for every theme. Only Mirror's rows go in now; the
+Edges control can still force the tunnels on any theme.
+
+**A face's effect with its tunnel** (`surface_port::with_look`). Mirror's
+walls were tried as bezel with their edges in (ef5d5ad). On the headset no
+chrome showed and the wall's tunnel read fainter than the ceiling's. The
+tunnel was as bright as before: a pixel count on the desktop gives the
+same rungs with bezel and without. What bezel adds is its own dim fill
+over the whole wall, a haze of about 8 % that lifts the dark between the
+rungs and in the center, so the tunnel loses its contrast. And its frame
+came out gold, not chrome: "one color" was shards' alone, an input of
+that effect, and did nothing for the other ports.
+
+Two values in the port's rows fix both, and the wrapper's `xr_light`
+reads them:
+
+- **The cut.** On a face whose edges go in, a ported effect draws nothing
+  under a luminance of 0.12 and all of its light from 0.24
+  (`TUNNEL_CUT`). Bezel keeps its frame, its corner brackets and its
+  ticks, and its fill is gone, so the tunnel's dark stays dark.
+- **One color in the wrapper.** Where an effect has no input that takes
+  its hues away, the wrapper draws its luminance in place of its color,
+  and the row's color tints that. Shards keeps its own input. So
+  tessera's tiles are blue in Mirror and Flint and bezel's frame is warm
+  white.
+
+The cost is a compare, a smoothstep and a select per fragment of a ported
+face, no texture. The walls now run the file's row: bezel, warm white,
+rms, 1, edges in, one color.
+
 ## The contours (Nov 16, board #5533)
 
 **Why.** The owner asked for "gentle rolling and topographic scenery"

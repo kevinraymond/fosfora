@@ -831,6 +831,23 @@ impl Show {
                 behavior.id(),
                 surface_port::tint(color, kind, audio.key_tint),
             );
+            // As `app.rs`: the cut on a face whose edges go in, and the
+            // wrapper's one color.
+            let rows = match map {
+                Map::Face => {
+                    let tunnel = self.edges.mode(self.look(kind).edges) == edge_bars::Mode::In;
+                    surface_port::with_look(
+                        rows,
+                        if tunnel {
+                            surface_port::TUNNEL_CUT
+                        } else {
+                            0.0
+                        },
+                        effect.wrapper_mono() && mono,
+                    )
+                }
+                _ => rows,
+            };
             let features = if surface_port::PORTS[i].shapes {
                 &f_shapes
             } else {

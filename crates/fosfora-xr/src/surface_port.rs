@@ -94,7 +94,8 @@ pub struct Port {
     /// color alone tints it (board #5533). A theme asks per kind
     /// (`themes::Look::mono`); everywhere else, a hand-picked look
     /// included, it runs as its `.pfx` has it. Empty: it has no such
-    /// input, and runs the same either way.
+    /// input, and the wrapper draws its luminance in place of its color
+    /// ([`with_look`], board #5543).
     pub mono: &'static [(&'static str, f32)],
 }
 
@@ -289,18 +290,63 @@ pub fn frame_coord(uv: Vec2, half: [f32; 2], resolution: [f32; 2]) -> Vec2 {
 /// coverage; the tint then multiplies the color alone. The WGSL's
 /// `fs_main` after the call.
 pub fn light(c: [f32; 4], overlay: bool, k: f32, tint: [f32; 3]) -> [f32; 4] {
-    let rgb = [c[0], c[1], c[2]].map(|x| x.clamp(0.0, 1.0));
-    let cover = if overlay {
-        c[3]
+    light_in(c, overlay, k, tint, 0.0, false)
+}
+
+/// The luminance under which a ported effect draws nothing on a face
+/// whose edges go in ([`with_look`]): its dim fill, which would lift the
+/// dark between a tunnel's rungs and in its center. All of the light is
+/// kept from twice this.
+pub const TUNNEL_CUT: f32 = 0.12;
+
+/// [`light`] with a face's look ([`with_look`]): under the luminance `cut`
+/// (0 for none) nothing is written, all of the light from twice it; and
+/// in one color (`mono`) the effect's color is its luminance alone, for
+/// the tint to color. The WGSL's `xr_light`.
+pub fn light_in(
+    c: [f32; 4],
+    overlay: bool,
+    k: f32,
+    tint: [f32; 3],
+    cut: f32,
+    mono: bool,
+) -> [f32; 4] {
+    let mut rgb = [c[0], c[1], c[2]].map(|x| x.clamp(0.0, 1.0));
+    let lum: f32 = rgb.iter().zip(LUMA).map(|(x, w)| x * w).sum();
+    let cover = if overlay { c[3] } else { lum };
+    if mono {
+        rgb = [lum; 3];
+    }
+    let keep = if cut > 0.0 {
+        let t = ((lum - cut) / cut).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
     } else {
-        rgb.iter().zip(LUMA).map(|(x, w)| x * w).sum()
+        1.0
     };
+    let k = k * keep;
     [
         rgb[0] * tint[0] * k,
         rgb[1] * tint[1] * k,
         rgb[2] * tint[2] * k,
         cover.clamp(0.0, 1.0) * k,
     ]
+}
+
+/// `rows` ([`rows`]) for a face with a look of its own (board #5543):
+/// `cut`, the luminance under which the effect draws nothing
+/// ([`TUNNEL_CUT`] on a face whose edges go in, so the effect's bright
+/// parts frame the tunnel and its dim fill leaves the tunnel's dark
+/// alone; 0 elsewhere), and `mono`, the effect's color as its luminance
+/// alone. `params` y and z.
+#[must_use]
+pub fn with_look(
+    mut rows: [[f32; 4]; UNIFORM_ROWS],
+    cut: f32,
+    mono: bool,
+) -> [[f32; 4]; UNIFORM_ROWS] {
+    rows[5][1] = cut.clamp(0.0, 0.5);
+    rows[5][2] = f32::from(u8::from(mono));
+    rows
 }
 
 /// The surfaces pass's edge fade at face point `uv` (m): 0 at the face's
@@ -329,7 +375,9 @@ struct XrPort {
     // x, y the half extents along the face's axes (m), z the lift (m),
     // w the behavior id
     face: vec4<f32>,
-    // x strength 0..1
+    // x strength 0..1; y the luminance under which nothing is drawn (0
+    // none: a face whose edges go in cuts the effect's dim fill); z 1 in
+    // one color: the effect's color as its luminance alone
     params: vec4<f32>,
     // rgb the tint (white: the effect's own colors), w the peak alpha
     color: vec4<f32>,
@@ -381,15 +429,26 @@ fn vs_main(@builtin(vertex_index) i: u32) -> XrVsOut {
 }
 
 // The effect's output c as premultiplied light at a scale of k: an
-// overlay's coverage its alpha, an opaque effect's its luminance.
+// overlay's coverage its alpha, an opaque effect's its luminance. In one
+// color (params.z) the color is the luminance alone, and under the cut
+// (params.y) nothing is written.
 fn xr_light(c: vec4<f32>, k: f32) -> vec4<f32> {
-    let rgb = clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
-    var cover = dot(rgb, XR_LUMA);
+    var rgb = clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let lum = dot(rgb, XR_LUMA);
+    var cover = lum;
     if xr_port.mode.x > 0.5 {
         cover = c.a;
     }
+    if xr_port.params.z > 0.5 {
+        rgb = vec3<f32>(lum);
+    }
+    var keep = 1.0;
+    let cut = xr_port.params.y;
+    if cut > 0.0 {
+        keep = smoothstep(cut, 2.0 * cut, lum);
+    }
     // The tint after the coverage: it colors the light, never its alpha.
-    return vec4<f32>(rgb * xr_port.color.rgb, clamp(cover, 0.0, 1.0)) * k;
+    return vec4<f32>(rgb * xr_port.color.rgb, clamp(cover, 0.0, 1.0)) * (k * keep);
 }
 
 @fragment
@@ -550,6 +609,14 @@ mod core_side {
                 }
             }
             p
+        }
+
+        /// Whether one color is the wrapper's to draw
+        /// (`with_look`'s `mono`): the effect has no input that takes its
+        /// hues away ([`Port::mono`] is empty), so its luminance stands
+        /// for its color. Shards has one and keeps its own gray.
+        pub fn wrapper_mono(&self) -> bool {
+            self.mono.is_empty()
         }
     }
 
@@ -1013,6 +1080,57 @@ mod tests {
             frame_coord(Vec2::ZERO, half, res).to_array(),
             [512.0, 204.8]
         );
+    }
+
+    #[test]
+    fn a_faces_look_cuts_the_dim_fill_and_draws_one_color() {
+        use crate::surfaces::AMBER;
+        const WHITE: [f32; 3] = [1.0; 3];
+        let gold = [0.8, 0.6, 0.2, 1.0];
+        let haze = [0.08, 0.06, 0.03, 1.0];
+        // No look: `light` itself.
+        for c in [gold, haze] {
+            assert_close!(
+                light_in(c, false, 0.5, AMBER, 0.0, false),
+                light(c, false, 0.5, AMBER)
+            );
+        }
+        // The cut: the fill under it writes nothing, color or alpha; the
+        // chrome well over twice it keeps all of its light; between, a
+        // smooth share.
+        let lum = |c: [f32; 4]| c[..3].iter().zip(LUMA).map(|(x, w)| x * w).sum::<f32>();
+        assert!(lum(haze) < TUNNEL_CUT && lum(gold) > 2.0 * TUNNEL_CUT);
+        assert_close!(
+            light_in(haze, false, 0.5, WHITE, TUNNEL_CUT, false),
+            [0.0; 4]
+        );
+        assert_close!(
+            light_in(gold, false, 0.5, WHITE, TUNNEL_CUT, false),
+            light(gold, false, 0.5, WHITE)
+        );
+        let mid = [1.5 * TUNNEL_CUT; 4];
+        let half = light_in(mid, false, 1.0, WHITE, TUNNEL_CUT, false);
+        assert_close!(half[3], 0.5 * 1.5 * TUNNEL_CUT);
+        // One color: the luminance stands for the color, the coverage is
+        // unchanged, and the tint colors it.
+        let one = light_in(gold, false, 1.0, AMBER, 0.0, true);
+        let l = lum(gold);
+        assert_close!(one, [l * AMBER[0], l * AMBER[1], l * AMBER[2], l]);
+        // The rows carry both, and `rows` alone neither.
+        let face = Face {
+            center: Vec3::ZERO,
+            axes: [Vec3::X, Vec3::Y],
+            half: [1.0, 1.0],
+            normal: Vec3::Z,
+        };
+        let plain = rows(&face, 1.0, false, 3, WHITE);
+        assert_close!(plain[5], [1.0, 0.0, 0.0, 0.0]);
+        let looked = with_look(plain, TUNNEL_CUT, true);
+        assert_close!(looked[5], [1.0, TUNNEL_CUT, 1.0, 0.0]);
+        assert_close!(with_look(plain, 0.0, false)[5], plain[5]);
+        for (k, row) in looked.iter().enumerate().filter(|(k, _)| *k != 5) {
+            assert_close!(*row, plain[k]);
+        }
     }
 
     #[test]
