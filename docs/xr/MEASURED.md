@@ -4298,3 +4298,29 @@ edge bars off, and only windows and terraces draw on sides.
 
 Not measured: anything worn.
 
+
+## The tips on every launch, on the headset (board #5575)
+
+Quest 3 v209, Nov 18 2026, the signed release APK of 81f3b02 (versionCode
+3, same certificate as versionCode 2), installed over versionCode 2 with
+`adb install -r`, unworn on the desk, `hints 1`, `hintwait 5`,
+`handshint 0`. Times are from the app's log.
+
+- **The icon.** `aapt2 dump badging` lists the icon at five densities.
+  versionCode 2's APK had none.
+- **The card.** `the card reads "Pinch to begin | Then listen and watch. |
+  Tips will follow."` 4.1 s after the launch line, three lines, centered.
+- **The hints**, after `begin 1`: the palm hint 9.0 s after the begin (the
+  knob's 5 s, then the opening's label and the 5 s gap), the talk hint
+  5.0 s after the palm's gave up, the swipe hint 5.0 s after the talk's.
+  Each gave up at 20.0 s, unworn. Nothing was saved.
+- **The last label.** `the hints are over, the label reads "Tips show at
+  every start. | Menu: Tips turns them off."` 5.0 s after the swipe hint
+  gave up, two lines.
+- **The menu** (`hudtest 1`): "Limit flashing: off" in the top row's left
+  cell and "Tips: on", outlined, in its right one. Seven rows, as before.
+- VrApi read 72 to 73 frames/s at App 5.9 to 6.1 ms through the hints.
+
+Not judged here: a press on the Tips control, the spoken "tips off", the
+hints starting over after "Tips: on", and how the card reads worn.
+Captures and the log: `recordings/tips-nov18/`.
