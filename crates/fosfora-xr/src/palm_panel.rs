@@ -8,43 +8,54 @@
 //! low in front of the chest, a palm turned up faces both, so the panel
 //! shows only while the palm faces the head more than it faces up.
 //!
-//! Two ways to operate it with the right hand. The primary one needs no
-//! depth judgment (it must work without stereo depth perception): a ray
-//! from the shoulder through the index knuckle puts a cursor on the panel,
-//! a pinch that starts there clicks, and pinching and moving drags. The
-//! cursor holds still for the first [`CLICK_SLOP_M`] after the pinch
-//! closes, so the pinch's own jolt does not turn a click into a drag. The
-//! other is a poke with the index fingertip, which wins whenever the
-//! fingertip is close. While either is on the panel it stops following the
-//! left hand, so it holds still instead of wobbling under the pointer.
+//! One way to operate it with the right hand, and it needs no depth
+//! judgment (it must work without stereo depth perception): a ray from the
+//! shoulder through the index knuckle puts a cursor on the panel, a pinch
+//! that starts there clicks, and pinching and moving drags. The cursor
+//! holds still for the first [`CLICK_SLOP_M`] the ray travels after the
+//! pinch closes, so the pinch's own jolt does not turn a click into a
+//! drag. A poke with the index fingertip was the second way. It is off
+//! since board #5572 (`debug.fosfora.menupoke 1` brings it back,
+//! [`PalmPanel::set_poke`]): the menu is ray only.
 //!
-//! **The palm shows it and hides it** (board #5459, #5539,
-//! `debug.fosfora.menustay`, on unless 0). The menu is [`At::Hidden`],
-//! [`At::Palm`] or [`At::Air`]:
+//! **The palm parks it ahead** (boards #5459, #5539, #5572,
+//! `debug.fosfora.menustay`, on unless 0). The menu is [`At::Hidden`] or
+//! [`At::Air`]; [`At::Palm`] is the knob at 0 alone.
 //!
-//! - The left palm turning to the face (the thresholds above, as a rising
-//!   edge) brings it to the palm from anywhere, and it follows the palm.
-//! - The palm turning away hides it at once, and a hand that drops out
-//!   of tracking hides it [`LOST_GRACE_S`] later, so a frame or two of
-//!   lost tracking does not blink it
-//!   ([`Close::PalmAway`], board #5539). Until then the menu stayed in the
-//!   air where the palm left it and closed after [`IDLE_S`]. Worn, a menu
-//!   still up after the hand had gone read as a mistake: nothing said why
-//!   it was there. A pointer on the menu holds it for the press, as it
-//!   holds it still, and it goes when the pointer leaves.
-//! - The spoken "menu" puts it in the air ahead of the head
-//!   ([`PalmPanel::open_parked`]), no palm needed, and there it stays. That
-//!   is the way in for one hand: the wearer asked for it by name, so it is
-//!   no surprise that it is up.
+//! - The left palm turned to the face (the thresholds above) and held
+//!   there for [`PALM_DWELL_S`] parks the menu ahead of the head in the
+//!   air ([`PalmPanel::open_parked`]), where the spoken "menu" puts it,
+//!   and there it holds still. It no longer rides the palm, and turning
+//!   the palm away does not hide it. Worn (Nov 18, board #5572), five
+//!   pinches in 3.3 s each pressed a different row of the menu on the
+//!   palm: a small target on a hand that moves, aimed at by a hand that
+//!   jolts as it pinches.
+//! - The palm turned to the face again closes it ([`Close::PalmAgain`]),
+//!   so the palm is a toggle. Not while a pointer is on it.
+//! - No surprise menu. The palm brings nothing while the left hand is a
+//!   fist or a voice window is open, nor for [`SUMMON_LOCKOUT_S`] after
+//!   ([`PalmPanel::set_summon_blocked`]). A palm that came up in that
+//!   time has to turn away and back, as after [`PalmPanel::hold`].
 //! - A menu in the air closes by itself: no pointer on it for [`IDLE_S`],
 //!   a pinch that starts away from it ([`AWAY_MARGIN`]; that pinch does
 //!   nothing else until it is released), or the spoken "close the menu".
-//!   A pinch that just missed a row, inside the margin, does nothing. A
-//!   pinch away closes the menu on the palm too.
+//!   A pinch that just missed a row, inside the margin, does nothing.
 //!
-//! The frame is [`Placement::facing_view`], steady with the hand over the
-//! face. With the knob at 0 none of this runs: the menu lives on the palm
-//! as above, with world up's frame.
+//! **Where a press lands** (board #5572). Closing the fingers moves the
+//! hand, so by the frame a pinch registers the ray has left the row the
+//! wearer aimed at. The press lands where the cursor was [`AIM_BACK_S`]
+//! before that frame, from a short trail of the cursor on the panel
+//! ([`AIM_KEEP_S`]). If the cursor was off the panel then, the pinch
+//! presses nothing: a ray sweeping past as the fingers close is not a
+//! press. And after one press no other begins for [`PRESS_GAP_S`], so a
+//! hand whose tips hover at the pinch's threshold does not walk down the
+//! rows. A drag is one pinch and is not cut.
+//!
+//! The frame is [`Placement::facing_view`]. With the knob at 0 none of
+//! this runs: the menu lives on the palm, shown while the palm faces the
+//! wearer, with world up's frame.
+
+use std::collections::VecDeque;
 
 use glam::{Quat, Vec3};
 
@@ -103,12 +114,21 @@ const WORLD_UP_ABOVE: f32 = 0.5;
 /// to lower one hand and point with the other.
 /// `debug.fosfora.menuidle` sets another time ([`PalmPanel::set_idle`]).
 pub const IDLE_S: f32 = 3.0;
-/// Board #5539: how long the menu on the palm outlives the left hand
-/// dropping out of tracking (s). A palm the headset sees turning away
-/// hides the menu at once. A hand it loses for a frame or two, at the edge
-/// of its view or behind the other hand, would blink the menu off and on,
-/// so a lost hand has this long to come back.
-pub const LOST_GRACE_S: f32 = 0.25;
+/// Board #5572: how long the left palm must face the wearer before it
+/// brings the menu or closes it (s). A hand passing through the pose on
+/// its way somewhere else does not hold it this long.
+pub const PALM_DWELL_S: f32 = 0.3;
+/// Board #5572: how long after a fist or a voice window on the left hand
+/// the palm brings nothing (s). An opening fist turns its palm to the
+/// face.
+pub const SUMMON_LOCKOUT_S: f32 = 1.5;
+/// Board #5572: a press lands where the cursor was this long before the
+/// pinch registered (s), and the trail of the cursor reaches this far
+/// back (s).
+pub const AIM_BACK_S: f32 = 0.12;
+pub const AIM_KEEP_S: f32 = 0.25;
+/// Board #5572: after one press begins, no other does for this long (s).
+pub const PRESS_GAP_S: f32 = 0.35;
 /// The shortest and longest idle time the knob may set (s).
 pub const IDLE_RANGE_S: (f32, f32) = (0.5, 60.0);
 /// Board #5459: a pinch whose ray lands outside the panel grown by half
@@ -123,7 +143,7 @@ const PARK_BELOW_M: f32 = 0.05;
 /// The log's line for `debug.fosfora.menustay` (board #5459, #5539).
 pub fn knob_line(stay: bool) -> &'static str {
     if stay {
-        "hand menu: debug.fosfora.menustay 1, the palm shows it and hides it at once, and a spoken \"menu\" parks it in the air"
+        "hand menu: debug.fosfora.menustay 1, the left palm held to the face parks it ahead in the air and closes it again, as a spoken \"menu\" does; pressed by the ray alone"
     } else {
         "hand menu: debug.fosfora.menustay 0, it lives on the palm"
     }
@@ -134,9 +154,9 @@ pub fn knob_line(stay: bool) -> &'static str {
 pub enum At {
     #[default]
     Hidden,
-    /// On the left palm, following it.
+    /// On the left palm, following it (`debug.fosfora.menustay 0`).
     Palm,
-    /// Where the palm left it, or parked ahead by voice, holding still.
+    /// Parked ahead of the head, by the palm or by voice, holding still.
     Air,
 }
 
@@ -160,9 +180,8 @@ pub enum Close {
     PinchAway(usize),
     /// The spoken "close the menu".
     Spoken,
-    /// Board #5539: the palm that held it turned away or dropped out of
-    /// tracking.
-    PalmAway,
+    /// Board #5572: the left palm turned to the face again.
+    PalmAgain,
 }
 
 impl Close {
@@ -175,7 +194,7 @@ impl Close {
                 if h == 0 { "left" } else { "right" }
             ),
             Self::Spoken => "spoken".to_owned(),
-            Self::PalmAway => "the palm turned away".to_owned(),
+            Self::PalmAgain => "the palm raised again".to_owned(),
         }
     }
 }
@@ -253,25 +272,6 @@ impl Placement {
         }
     }
 
-    /// A [`Self::facing_view`] panel whose bottom edge's middle is at
-    /// `bottom` (board #5459). Away from a vertical line of sight it grows
-    /// up along world up, as the palm's panel always has; near one, world
-    /// up runs along the line of sight and would put the panel behind the
-    /// hand, so it grows along its own up instead (toward the top of the
-    /// head when lying back), blended as the frame is.
-    pub fn above_view(bottom: Vec3, eye: Vec3, head_rot: Quat, height: f32) -> Self {
-        let half = height * 0.5;
-        let level = bottom + Vec3::Y * half;
-        let sine = Vec3::Y.cross((eye - level).normalize_or(Vec3::Z)).length();
-        if sine >= WORLD_UP_ABOVE {
-            return Self::facing_view(level, eye, head_rot, height);
-        }
-        let own = Self::facing_view(level, eye, head_rot, height).up;
-        let w = world_up_weight(sine);
-        let grow = (Vec3::Y * w + own * (1.0 - w)).normalize_or(Vec3::Y);
-        Self::facing_view(bottom + grow * half, eye, head_rot, height)
-    }
-
     /// Half-extent vectors for the renderer (center to right edge, center
     /// to top edge).
     pub fn half_vectors(&self) -> (Vec3, Vec3) {
@@ -326,6 +326,9 @@ struct Ray {
     was_pinching: bool,
     /// Where a press landed (panel meters), while the cursor is held there.
     held_at: Option<(f32, f32)>,
+    /// Where the ray was (panel meters) on the frame the pinch registered:
+    /// the cursor is held until the ray travels [`CLICK_SLOP_M`] from here.
+    slop_from: Option<(f32, f32)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -338,18 +341,35 @@ pub struct PalmPanel {
     /// off, it lives on the palm with world up's frame.
     stay: bool,
     /// Board #5459: the left palm faces the head, with the show and hide
-    /// thresholds' hysteresis and nothing else; its rise brings the menu
-    /// to the palm.
+    /// thresholds' hysteresis and nothing else.
     palm_up: bool,
-    /// Board #5531: the palm faced the head while the menu was held back
-    /// ([`Self::hold`]) and has not turned away since.
+    /// Board #5572: how long it has (s), toward [`PALM_DWELL_S`], and
+    /// whether this raise has already brought or closed the menu.
+    palm_s: f32,
+    summoned: bool,
+    /// Board #5572: the left hand is a fist or a voice window is open
+    /// ([`Self::set_summon_blocked`]), and the time left after it during
+    /// which the palm brings nothing (s).
+    blocked: bool,
+    lockout_s: f32,
+    /// Board #5572: the palm brought the menu that is up (not the spoken
+    /// "menu"): the gesture the palm hint teaches.
+    by_palm: bool,
+    /// Board #5572: the fingertip poke presses the menu
+    /// (`debug.fosfora.menupoke 1`); off, the ray alone does.
+    poke_on: bool,
+    /// Board #5572: the menu's clock (s), stepped by [`Self::tick`]; the
+    /// cursor's trail on the panel (the time, and where the ray was on it
+    /// or `None` off it) and when the last press began.
+    clock_s: f64,
+    trail: VecDeque<(f64, Option<(f32, f32)>)>,
+    last_press_s: Option<f64>,
+    /// Board #5531, #5572: the palm faced the head while the menu was held
+    /// back ([`Self::hold`]) or the summon was blocked, and has not turned
+    /// away since.
     held_palm: bool,
     /// Board #5459: seconds in the air with no pointer on it.
     idle_s: f32,
-    /// Board #5539: the left hand is out of tracking with the menu on the
-    /// palm, and for how long (s), toward [`LOST_GRACE_S`].
-    palm_lost: bool,
-    lost_s: f32,
     /// The idle time `debug.fosfora.menuidle` asks for in place of
     /// [`IDLE_S`] (s).
     idle_knob_s: Option<f32>,
@@ -385,10 +405,32 @@ impl PalmPanel {
         self.height = Some(height);
     }
 
-    /// Board #5459: the menu stays in the air once the palm lets it go
-    /// (`debug.fosfora.menustay`, read live), or lives on the palm.
+    /// Board #5459, #5572: the menu has its place in the air, where the
+    /// palm and the spoken "menu" park it (`debug.fosfora.menustay`, read
+    /// live), or lives on the palm.
     pub fn set_stay(&mut self, on: bool) {
         self.stay = on;
+    }
+
+    /// Board #5572: whether a fingertip poke presses the menu
+    /// (`debug.fosfora.menupoke`); off, the default, the ray alone does.
+    pub fn set_poke(&mut self, on: bool) {
+        self.poke_on = on;
+    }
+
+    /// Board #5572: the left hand is a fist or a voice window is open this
+    /// frame, so its palm brings no menu, now or for
+    /// [`SUMMON_LOCKOUT_S`] after. Call before [`Self::place`].
+    pub fn set_summon_blocked(&mut self, blocked: bool) {
+        self.blocked = blocked;
+        if blocked {
+            self.lockout_s = SUMMON_LOCKOUT_S;
+        }
+    }
+
+    /// Board #5572: the left palm brought the menu that is up.
+    pub fn by_palm(&self) -> bool {
+        self.by_palm && self.at != At::Hidden
     }
 
     /// The idle time before a menu in the air closes: `seconds`
@@ -437,7 +479,12 @@ impl PalmPanel {
         head: Vec3,
         head_rot: Quat,
     ) -> Option<Placement> {
-        let rose = self.palm_faces(palm, head);
+        self.palm_faces(palm, head);
+        // Board #5572: a palm up through a fist, a voice window or the
+        // time just after one brings nothing.
+        if self.stay && self.palm_up && (self.blocked || self.lockout_s > 0.0) {
+            self.held_palm = true;
+        }
         // Board #5531: a palm raised while the menu was held back brings
         // nothing until it has turned away.
         if self.held_palm {
@@ -447,10 +494,26 @@ impl PalmPanel {
             self.held_palm = false;
         }
         if self.stay {
-            self.place_staying(palm, rose, head, head_rot)
+            let summon = self.summon();
+            self.place_staying(summon, head, head_rot)
         } else {
             self.place_on_palm(palm, head)
         }
+    }
+
+    /// Board #5572: the palm has faced the wearer for [`PALM_DWELL_S`],
+    /// once per raise ([`Self::tick`] counts the time).
+    fn summon(&mut self) -> bool {
+        if !self.palm_up {
+            self.palm_s = 0.0;
+            self.summoned = false;
+            return false;
+        }
+        if self.summoned || self.palm_s < PALM_DWELL_S {
+            return false;
+        }
+        self.summoned = true;
+        true
     }
 
     /// Board #5531: the menu held back for this frame, in place of
@@ -463,6 +526,10 @@ impl PalmPanel {
     pub fn hold(&mut self, palm: Option<(Vec3, Quat)>, head: Vec3, pinching: bool) {
         self.palm_faces(palm, head);
         self.held_palm = self.palm_up;
+        self.palm_s = 0.0;
+        self.summoned = false;
+        self.by_palm = false;
+        self.trail.clear();
         self.at = At::Hidden;
         self.placement = None;
         self.closed = None;
@@ -542,58 +609,22 @@ impl PalmPanel {
         self.visible()
     }
 
-    /// Board #5459, #5539: the palm brings the menu and takes it away.
-    /// `rose`: the palm turned to the face this frame.
-    fn place_staying(
-        &mut self,
-        palm: Option<(Vec3, Quat)>,
-        rose: bool,
-        head: Vec3,
-        head_rot: Quat,
-    ) -> Option<Placement> {
-        let near = self.touch.near;
-        if rose {
-            // Showing the palm brings the menu to it from anywhere: at
-            // once, unless a pointer holds it, and then once the pointer
-            // leaves.
-            if !near {
-                self.placement = None;
+    /// Board #5572: the palm parks the menu ahead and closes it again.
+    /// `summon`: the palm has been held to the face ([`Self::summon`]).
+    fn place_staying(&mut self, summon: bool, head: Vec3, head_rot: Quat) -> Option<Placement> {
+        // A menu the knob at 0 left on the palm holds still where it is.
+        if self.at == At::Palm {
+            self.at = At::Air;
+            self.idle_s = 0.0;
+        }
+        if summon {
+            if self.at == At::Hidden {
+                self.open_parked(head, head_rot);
+                self.by_palm = true;
+            } else if !self.pointed() {
+                self.close(Close::PalmAgain);
             }
-            self.at = At::Palm;
-            self.closed = None;
-        } else if self.at == At::Palm && palm.is_some() && !self.palm_up && !near {
-            // Board #5539: the palm turned away, and the menu goes with
-            // it at once. A pointer on it holds it for the press, and it
-            // goes when the pointer leaves.
-            self.close(Close::PalmAway);
         }
-        // A hand out of tracking has `LOST_GRACE_S` to come back
-        // (`Self::tick` counts it).
-        self.palm_lost = self.at == At::Palm && palm.is_none();
-        if self.at != At::Palm {
-            return self.visible();
-        }
-        let Some((pos, _)) = palm else {
-            return self.visible();
-        };
-        if near && self.placement.is_some() {
-            return self.visible();
-        }
-        let to_head = (head - pos).normalize_or(Vec3::Z);
-        let h = self.height();
-        let target = Placement::above_view(
-            pos + to_head * TOWARD_HEAD_M + Vec3::Y * BOTTOM_ABOVE_PALM_M,
-            head,
-            head_rot,
-            h,
-        );
-        let next = match self.placement {
-            Some(p) => {
-                Placement::facing_view(p.center.lerp(target.center, FOLLOW), head, head_rot, h)
-            }
-            None => target,
-        };
-        self.placement = Some(next);
         self.visible()
     }
 
@@ -611,11 +642,11 @@ impl PalmPanel {
         self.at = At::Hidden;
         self.closed = Some(why);
         self.idle_s = 0.0;
-        self.palm_lost = false;
-        self.lost_s = 0.0;
+        self.by_palm = false;
         self.touch = Touch::default();
         self.ray.pressed = false;
         self.ray.held_at = None;
+        self.ray.slop_from = None;
         self.pressed = false;
     }
 
@@ -639,6 +670,7 @@ impl PalmPanel {
         self.at = At::Air;
         self.idle_s = 0.0;
         self.closed = None;
+        self.by_palm = false;
         true
     }
 
@@ -656,18 +688,19 @@ impl PalmPanel {
     }
 
     /// Board #5459: `dt` seconds pass, after [`Self::input`]. A menu in the
-    /// air with no pointer on it for [`IDLE_S`] closes.
+    /// air with no pointer on it for [`IDLE_S`] closes. Board #5572: the
+    /// menu's clock, the palm's dwell and the lockout after a fist run
+    /// here too.
     pub fn tick(&mut self, dt: f32) {
-        // Board #5539: the menu on the palm of a hand out of tracking goes
-        // after its grace, unless a pointer holds it for the press (the
-        // left hand is often lost behind the right one then).
-        if self.palm_lost && self.at == At::Palm && !self.pointed() {
-            self.lost_s += dt;
-            if self.lost_s >= LOST_GRACE_S {
-                self.close(Close::PalmAway);
-            }
+        let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
+        self.clock_s += f64::from(dt);
+        if self.palm_up && !self.held_palm {
+            self.palm_s += dt;
         } else {
-            self.lost_s = 0.0;
+            self.palm_s = 0.0;
+        }
+        if !self.blocked {
+            self.lockout_s = (self.lockout_s - dt).max(0.0);
         }
         if self.at != At::Air || self.pointed() {
             self.idle_s = 0.0;
@@ -682,8 +715,9 @@ impl PalmPanel {
 
     /// This frame's pointing: the right index fingertip (center and joint
     /// radius), the right hand's ray (origin, direction) and whether it is
-    /// pinching. A poke wins while the fingertip is near the panel. Call
-    /// after [`Self::place`].
+    /// pinching. The fingertip is read only with the poke on
+    /// ([`Self::set_poke`]), and then a poke wins while the fingertip is
+    /// near the panel. Call after [`Self::place`].
     ///
     /// Board #5459: with the menu staying, a pinch that starts with no
     /// pointer near the menu and the ray off the panel grown by
@@ -699,13 +733,14 @@ impl PalmPanel {
         if !pinching {
             self.swallowed[1] = false;
         }
-        let poke = self.poke(tip);
+        let poke = self.poke(tip.filter(|_| self.poke_on));
         let (aim, within) = self.aim(ray, pinching);
         let poke_wins = poke.pressed || poke.poke_depth.is_some_and(|d| d < POKE_WINS_M);
         self.touch = if poke_wins {
             // A poke in progress cancels a ray press.
             self.ray.pressed = false;
             self.ray.held_at = None;
+            self.ray.slop_from = None;
             Touch {
                 captures_pinch: aim.captures_pinch,
                 ..poke
@@ -733,6 +768,7 @@ impl PalmPanel {
                 was_pinching: pinching,
                 ..Ray::default()
             };
+            self.trail.clear();
             return (Touch::default(), false);
         };
         let dir = match self.ray.dir {
@@ -753,20 +789,53 @@ impl PalmPanel {
         let inside =
             |(x, y): (f32, f32), margin: f32| x.abs() <= hw * margin && y.abs() <= hh * margin;
         let hover = hit.is_some_and(|h| inside(h, RAY_MARGIN));
+        // Board #5572: the cursor's trail on the panel, a quarter second
+        // of it.
+        let now = self.clock_s;
+        while self
+            .trail
+            .front()
+            .is_some_and(|(t, _)| now - t > f64::from(AIM_KEEP_S))
+            || self.trail.len() >= 64
+        {
+            self.trail.pop_front();
+        }
+        self.trail.push_back((now, hit.filter(|_| hover)));
         if self.ray.pressed {
             if !pinching {
                 self.ray.pressed = false;
                 self.ray.held_at = None;
+                self.ray.slop_from = None;
             }
-        } else if began && hover {
-            self.ray.pressed = true;
-            self.ray.held_at = hit;
+        } else if began {
+            // Board #5572: the press lands where the cursor was before the
+            // fingers began to close. With no sample that old (the menu
+            // just came up), where it is now.
+            let earlier = self
+                .trail
+                .iter()
+                .rev()
+                .find(|(t, _)| now - t >= f64::from(AIM_BACK_S))
+                .map(|(_, at)| *at);
+            let at = earlier.unwrap_or(hit.filter(|_| hover));
+            let rested = self
+                .last_press_s
+                .is_none_or(|t| now - t >= f64::from(PRESS_GAP_S));
+            if let Some(at) = at
+                && rested
+            {
+                self.ray.pressed = true;
+                self.ray.held_at = Some(at);
+                self.ray.slop_from = hit.or(Some(at));
+                self.last_press_s = Some(now);
+            }
         }
         // Past the slop the cursor follows the ray (a slider drag).
-        if let (Some(at), Some(h)) = (self.ray.held_at, hit)
-            && ((h.0 - at.0).powi(2) + (h.1 - at.1).powi(2)).sqrt() > CLICK_SLOP_M
+        if let (Some(from), Some(h)) = (self.ray.slop_from, hit)
+            && ((h.0 - from.0).powi(2) + (h.1 - from.1).powi(2)).sqrt() > CLICK_SLOP_M
         {
             self.ray.held_at = None;
+            self.ray.slop_from = None;
         }
         let cursor = self
             .ray
@@ -1267,8 +1336,11 @@ mod tests {
         (pos, Quat::from_rotation_arc(Vec3::NEG_Y, tilt * to_head))
     }
 
+    /// The menu on the palm (the knob at 0) with the poke on: the two
+    /// pointers as they were before board #5572.
     fn shown_panel() -> (PalmPanel, Placement) {
         let mut panel = PalmPanel::default();
+        panel.set_poke(true);
         let p = panel
             .place(Some(palm(1.0)), HEAD, Quat::IDENTITY)
             .expect("shown");
@@ -1647,19 +1719,18 @@ mod tests {
     /// A frame at 72 Hz.
     const DT: f32 = 1.0 / 72.0;
 
-    /// Board #5459: the menu summoned on the palm with the knob at 1.
+    /// Board #5572: the menu the palm brought, with the knob at 1: parked
+    /// ahead in the air.
     fn staying() -> (PalmPanel, Placement) {
         let mut panel = PalmPanel::default();
         panel.set_stay(true);
-        let p = panel
-            .place(Some(palm(1.0)), HEAD, Quat::IDENTITY)
-            .expect("shown");
-        assert_eq!(panel.at(), At::Palm);
+        let p = hold_palm(&mut panel).expect("shown");
+        assert_eq!(panel.at(), At::Air);
+        assert!(panel.by_palm());
         (panel, p)
     }
 
-    /// The menu in the air: the spoken "menu", no palm (board #5539: the
-    /// palm no longer leaves it there).
+    /// The menu in the air by the spoken "menu", no palm.
     fn parked() -> (PalmPanel, Placement) {
         let mut panel = PalmPanel::default();
         panel.set_stay(true);
@@ -1686,6 +1757,16 @@ mod tests {
         panel.placement()
     }
 
+    /// The left palm held to the face until it acts: its dwell and a few
+    /// frames more.
+    fn hold_palm(panel: &mut PalmPanel) -> Option<Placement> {
+        let mut drawn = None;
+        for _ in 0..(PALM_DWELL_S / DT) as usize + 3 {
+            drawn = frame(panel, Some(palm(1.0)), None, false, false);
+        }
+        drawn
+    }
+
     /// `seconds` of frames with nothing pointing and the palm away.
     fn idle(panel: &mut PalmPanel, seconds: f32) -> Option<Placement> {
         let mut drawn = panel.placement();
@@ -1695,66 +1776,214 @@ mod tests {
         drawn
     }
 
-    /// Board #5539: the palm turns away and the menu goes at once, on that
-    /// frame, and says why. A hand that drops out of tracking has a
-    /// quarter second to come back, so lost frames do not blink the menu.
-    /// A pointer on it holds it for the press, and it goes when that
-    /// leaves.
+    /// Board #5572: the palm held to the face parks the menu ahead of the
+    /// head, where the spoken "menu" puts it, and there it holds still
+    /// whatever the hand does. Held to the face again it closes it. A palm
+    /// passing through the pose does neither.
     #[test]
-    fn the_palm_turning_away_hides_the_menu_at_once() {
-        // Turned away, tracked: gone on that frame.
-        let (mut panel, _) = staying();
+    fn the_palm_held_to_the_face_parks_the_menu_ahead_and_closes_it_again() {
+        let mut panel = PalmPanel::default();
+        panel.set_stay(true);
+        // A palm that passes through the pose brings nothing.
+        for _ in 0..(PALM_DWELL_S / DT) as usize - 3 {
+            assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_none());
+        }
         assert!(frame(&mut panel, Some(palm(0.0)), None, false, false).is_none());
-        assert_eq!(panel.at(), At::Hidden);
-        assert_eq!(panel.take_closed(), Some(Close::PalmAway));
-        // Nothing lingers and nothing counts down.
-        assert!(idle(&mut panel, IDLE_S + 1.0).is_none());
-        assert_eq!(panel.take_closed(), None);
-        // The palm again: the menu again, at once.
-        assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_some());
-        assert_eq!(panel.at(), At::Palm);
-        assert_eq!(Close::PalmAway.label(), "the palm turned away");
-
-        // Out of tracking for a few frames and back: the menu never went.
-        let (mut panel, _) = staying();
-        for _ in 0..5 {
-            assert!(frame(&mut panel, None, None, false, false).is_some());
+        // Held: parked ahead, not on the palm.
+        let p = hold_palm(&mut panel).expect("parked");
+        assert_eq!(panel.at(), At::Air);
+        assert!(panel.by_palm());
+        let ahead = HEAD + Vec3::new(0.0, -PARK_BELOW_M, -PARK_AHEAD_M);
+        assert!(p.center.distance(ahead) < 1e-5, "{}", p.center);
+        // It holds still while the hand moves, turns away and drops out
+        // of tracking.
+        let (pos, rot) = palm(1.0);
+        let moved = Some((pos + Vec3::new(0.1, 0.05, 0.0), rot));
+        for hand in [moved, Some(palm(0.0)), None] {
+            for _ in 0..10 {
+                assert_eq!(frame(&mut panel, hand, None, false, false), Some(p));
+            }
         }
-        assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_some());
         assert_eq!(panel.take_closed(), None);
-        // Out of tracking for good: gone after the grace, well inside the
-        // old 3 s.
-        assert!(idle(&mut panel, LOST_GRACE_S - 0.05).is_some());
-        assert!(idle(&mut panel, 0.1).is_none());
-        assert_eq!(panel.take_closed(), Some(Close::PalmAway));
-        // The grace starts again each time the hand comes back.
-        let (mut panel, _) = staying();
+        // The palm held to the face again closes it, and says why.
+        assert!(hold_palm(&mut panel).is_none());
+        assert_eq!(panel.take_closed(), Some(Close::PalmAgain));
+        assert_eq!(Close::PalmAgain.label(), "the palm raised again");
+        // One raise acts once: still up, it brings nothing back.
+        for _ in 0..72 {
+            assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_none());
+        }
+        // Away and held again: the menu again.
+        frame(&mut panel, Some(palm(0.0)), None, false, false);
+        let p = hold_palm(&mut panel).expect("parked again");
+        // Not from under a pointer: the ray on a row and the palm held.
+        frame(&mut panel, Some(palm(0.0)), None, false, false);
+        let on = ray_at(&p, 0.0, 0.0);
+        for _ in 0..72 {
+            assert!(frame(&mut panel, Some(palm(1.0)), on, false, false).is_some());
+        }
+        // The spoken "menu" is not the palm's.
+        let (spoken, _) = parked();
+        assert!(!spoken.by_palm());
+        const { assert!(PALM_DWELL_S >= 0.2 && PALM_DWELL_S <= 0.5) };
+    }
+
+    /// Board #5572: the fingertip presses nothing unless the poke is on.
+    #[test]
+    fn the_fingertip_presses_nothing_unless_the_poke_is_on() {
+        let (mut panel, p) = parked();
+        panel.input(tip_at(&p, 0.0, 0.0, 0.02), None, false);
+        let t = panel.input(tip_at(&p, 0.0, 0.0, 0.0), None, false);
+        assert_eq!(t, Touch::default());
+        assert!(!panel.pointed());
+        panel.set_poke(true);
+        panel.input(tip_at(&p, 0.0, 0.0, 0.02), None, false);
+        assert!(panel.input(tip_at(&p, 0.0, 0.0, 0.0), None, false).pressed);
+    }
+
+    /// Board #5572: no surprise menu. A palm turned to the face through a
+    /// fist or a voice window, or in the second and a half after one,
+    /// brings nothing until it has turned away and back.
+    #[test]
+    fn a_fist_or_a_voice_window_and_the_time_after_bring_no_menu() {
+        fn step(panel: &mut PalmPanel, blocked: bool, facing: f32) -> Option<Placement> {
+            panel.set_summon_blocked(blocked);
+            frame(panel, Some(palm(facing)), None, false, false)
+        }
+        let frames = |seconds: f32| (seconds / DT) as usize;
+        // A fist with its palm to the face, 2 s: nothing.
+        let mut panel = PalmPanel::default();
+        panel.set_stay(true);
+        for _ in 0..frames(2.0) {
+            assert!(step(&mut panel, true, 1.0).is_none());
+        }
+        // The hand opens and the palm stays to the face: nothing, however
+        // long, until it turns away and back.
+        for _ in 0..frames(3.0) {
+            assert!(step(&mut panel, false, 1.0).is_none());
+        }
+        step(&mut panel, false, 0.0);
+        assert!(hold_palm(&mut panel).is_some());
+        // The fist opens with the palm away, and the palm comes up a
+        // second later, inside the lockout: nothing while it is held.
+        let mut panel = PalmPanel::default();
+        panel.set_stay(true);
         for _ in 0..10 {
-            assert!(idle(&mut panel, LOST_GRACE_S * 0.6).is_some());
-            assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_some());
+            step(&mut panel, true, 0.0);
         }
-        const { assert!(LOST_GRACE_S <= 0.3 && LOST_GRACE_S < IDLE_S) };
+        for _ in 0..frames(1.0) {
+            step(&mut panel, false, 0.0);
+        }
+        for _ in 0..frames(2.0) {
+            assert!(step(&mut panel, false, 1.0).is_none());
+        }
+        step(&mut panel, false, 0.0);
+        assert!(hold_palm(&mut panel).is_some());
+        // Raised once the lockout has run out, it comes on the dwell.
+        let mut panel = PalmPanel::default();
+        panel.set_stay(true);
+        step(&mut panel, true, 0.0);
+        for _ in 0..frames(SUMMON_LOCKOUT_S + 0.1) {
+            step(&mut panel, false, 0.0);
+        }
+        assert!(hold_palm(&mut panel).is_some());
+        // A fist's palm does not close a menu that is up, either.
+        for _ in 0..frames(1.0) {
+            assert!(step(&mut panel, true, 0.0).is_some());
+        }
+        step(&mut panel, true, 0.0);
+        let on = ray_at(&panel.placement().expect("up"), 0.0, 0.0);
+        for _ in 0..frames(1.0) {
+            panel.set_summon_blocked(true);
+            assert!(frame(&mut panel, Some(palm(1.0)), on, false, false).is_some());
+        }
+        const { assert!(SUMMON_LOCKOUT_S >= 1.0) };
+    }
 
-        // The right hand's ray is on a row as the left hand turns away or
-        // drops out of tracking behind it: the menu holds, still, for the
-        // press, however long.
-        for gone in [Some(palm(0.0)), None] {
-            let (mut panel, p) = staying();
-            let on = ray_at(&p, 0.0, 0.0);
-            frame(&mut panel, Some(palm(1.0)), on, false, false);
-            let held = frame(&mut panel, gone, on, false, false).expect("held by the pointer");
-            assert_eq!(panel.at(), At::Palm, "{gone:?}");
-            for _ in 0..(2.0 / DT) as usize {
-                assert_eq!(frame(&mut panel, gone, on, false, false), Some(held));
-            }
-            assert!(panel.input(None, on, true).pressed);
-            panel.input(None, on, false);
-            // The pointer leaves: now it goes.
-            for _ in 0..(LOST_GRACE_S / DT) as usize + 3 {
-                frame(&mut panel, gone, None, false, false);
-            }
-            assert!(panel.placement().is_none(), "{gone:?}");
-            assert_eq!(panel.take_closed(), Some(Close::PalmAway));
+    /// One frame of the right hand's ray at panel meters (x, y) on the
+    /// parked menu `p`, pinching or not.
+    fn point(panel: &mut PalmPanel, p: &Placement, x: f32, y: f32, pinch: bool) -> Touch {
+        panel.place(None, HEAD, Quat::IDENTITY);
+        let t = panel.input(None, ray_at(p, x, y), pinch);
+        panel.tick(DT);
+        t
+    }
+
+    /// Board #5572: the press lands where the cursor was before the
+    /// fingers began to close, not where the hand had jolted to when the
+    /// pinch registered. A ray that was off the menu then presses nothing.
+    #[test]
+    fn a_press_lands_where_the_cursor_was_before_the_fingers_closed() {
+        let (mut panel, p) = parked();
+        // The cursor rests on a row 5 cm over the middle.
+        for _ in 0..22 {
+            point(&mut panel, &p, 0.0, 0.05, false);
+        }
+        // The fingers close: over six frames the ray drops 4 cm, two rows
+        // down, and the pinch registers there.
+        for i in 1..=6 {
+            point(&mut panel, &p, 0.0, 0.05 - 0.04 * i as f32 / 6.0, false);
+        }
+        let t = point(&mut panel, &p, 0.0, 0.01, true);
+        assert!(t.pressed);
+        let v_of = |y: f32| (1.0 - y / p.half_h) * 0.5;
+        let [u, v] = t.pointer.expect("on the menu");
+        assert!((u - 0.5).abs() < 0.01, "{u}");
+        assert!((v - v_of(0.05)).abs() < 0.01, "{v} vs {}", v_of(0.05));
+        assert!((v - v_of(0.01)).abs() > 0.04);
+        // Held there while the pinch is closed, and released there: a
+        // click on the row the wearer aimed at.
+        let held = point(&mut panel, &p, 0.0, 0.01, true);
+        assert_eq!(held.pointer, t.pointer);
+        assert!(!point(&mut panel, &p, 0.0, 0.01, false).pressed);
+        // A ray off the menu that sweeps onto it as the fingers close
+        // presses nothing, then or while the pinch stays closed.
+        for _ in 0..36 {
+            point(&mut panel, &p, 0.25, 0.0, false);
+        }
+        for i in 1..=4 {
+            point(&mut panel, &p, 0.25 - 0.25 * i as f32 / 4.0, 0.0, false);
+        }
+        for _ in 0..20 {
+            assert!(!point(&mut panel, &p, 0.0, 0.0, true).pressed);
+        }
+        assert!(panel.placement().is_some());
+        point(&mut panel, &p, 0.0, 0.0, false);
+        // Rested on the menu again, the next pinch presses.
+        for _ in 0..22 {
+            point(&mut panel, &p, 0.0, 0.0, false);
+        }
+        assert!(point(&mut panel, &p, 0.0, 0.0, true).pressed);
+        const { assert!(AIM_BACK_S < AIM_KEEP_S) };
+    }
+
+    /// Board #5572: after one press no other begins for
+    /// [`PRESS_GAP_S`], and a drag is one press.
+    #[test]
+    fn after_one_press_no_other_begins_for_a_third_of_a_second() {
+        let (mut panel, p) = parked();
+        for _ in 0..22 {
+            point(&mut panel, &p, 0.0, 0.0, false);
+        }
+        assert!(point(&mut panel, &p, 0.0, 0.0, true).pressed);
+        for _ in 0..2 {
+            point(&mut panel, &p, 0.0, 0.0, true);
+        }
+        for _ in 0..3 {
+            assert!(!point(&mut panel, &p, 0.0, 0.0, false).pressed);
+        }
+        // A second pinch 83 ms after the first: nothing, for as long as
+        // it is closed.
+        for _ in 0..30 {
+            assert!(!point(&mut panel, &p, 0.0, 0.0, true).pressed);
+        }
+        point(&mut panel, &p, 0.0, 0.0, false);
+        // Past the gap, the next one presses, and held and moved it stays
+        // one press: a drag.
+        assert!(point(&mut panel, &p, 0.0, 0.0, true).pressed);
+        for i in 0..72 {
+            let x = 0.06 * (i as f32 / 72.0);
+            assert!(point(&mut panel, &p, x, 0.0, true).pressed);
         }
     }
 
@@ -1762,12 +1991,11 @@ mod tests {
     /// pointer starts the count again; on the palm it never counts.
     #[test]
     fn the_menu_in_the_air_closes_after_its_idle_time_without_a_pointer() {
+        // Brought by the palm, it counts down as the spoken one does.
         let (mut panel, _) = staying();
-        // Held up on the palm for 20 s: it stays.
-        for _ in 0..(20.0 / DT) as usize {
-            assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_some());
-        }
-        assert_eq!(panel.take_closed(), None);
+        assert!(idle(&mut panel, IDLE_S - 0.5).is_some());
+        assert!(idle(&mut panel, 0.6).is_none());
+        assert_eq!(panel.take_closed(), Some(Close::Idle(IDLE_S)));
         // In the air, by the spoken "menu".
         let (mut panel, p) = parked();
         assert!(idle(&mut panel, IDLE_S - 1.0).is_some());
@@ -1869,38 +2097,29 @@ mod tests {
         assert_eq!(panel.at(), At::Air);
     }
 
-    /// Showing the palm again brings the menu back to it: from the air, at
-    /// once and to the hand's new place; from closed; and after a close
-    /// with the palm still up, only once the palm turns away and back.
+    /// The palm and the spoken "menu" work the same menu: the palm closes
+    /// one the voice opened, brings one the idle count closed, and after a
+    /// spoken close with the palm still up it waits for the palm to turn
+    /// away and back.
     #[test]
-    fn showing_the_palm_again_moves_the_menu_back_to_it() {
-        // In the air by the spoken "menu", the palm away.
-        let (mut panel, p) = parked();
-        frame(&mut panel, Some(palm(0.0)), None, false, false);
-        assert_eq!(panel.at(), At::Air);
-        let (pos, rot) = palm(1.0);
-        let moved = Some((pos + Vec3::new(-0.15, 0.05, 0.0), rot));
-        let back = frame(&mut panel, moved, None, false, false).expect("shown");
-        assert_eq!(panel.at(), At::Palm);
-        assert!(
-            back.center.x < p.center.x - 0.1,
-            "{} vs {}",
-            back.center,
-            p.center
-        );
-        // Closed by the idle count, the palm brings it back too.
+    fn the_palm_and_the_voice_work_the_same_menu() {
+        // In the air by the spoken "menu": the palm held closes it.
+        let (mut panel, _) = parked();
+        assert!(hold_palm(&mut panel).is_none());
+        assert_eq!(panel.take_closed(), Some(Close::PalmAgain));
+        // Closed by the idle count, the palm brings it back.
         let (mut panel, _) = parked();
         assert!(idle(&mut panel, IDLE_S + 0.1).is_none());
         assert_eq!(panel.take_closed(), Some(Close::Idle(IDLE_S)));
-        assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_some());
+        assert!(hold_palm(&mut panel).is_some());
         // Closed by voice with the palm still up: closed until the palm
-        // turns away and back.
+        // turns away and is held again.
         assert!(panel.close_spoken());
-        for _ in 0..30 {
+        for _ in 0..72 {
             assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_none());
         }
         assert!(frame(&mut panel, Some(palm(0.0)), None, false, false).is_none());
-        assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_some());
+        assert!(hold_palm(&mut panel).is_some());
     }
 
     /// The spoken "menu" parks it ahead of the head, in the air, no palm;
@@ -1950,11 +2169,15 @@ mod tests {
             for _ in 0..10 {
                 assert!(frame(&mut panel, Some(palm(1.0)), None, true, false).is_none());
             }
-            // The palm turns away and back: the menu, on the palm. The
-            // pinch from the hold is still closed, on a row: no press.
+            // The palm turns away and back: the menu. The pinch from the
+            // hold is still closed, on a row: no press.
             frame(&mut panel, Some(palm(0.0)), None, true, false);
-            let p = frame(&mut panel, Some(palm(1.0)), None, true, false).expect("shown");
-            assert_eq!(panel.at(), At::Palm);
+            let mut shown = None;
+            for _ in 0..(PALM_DWELL_S / DT) as usize + 3 {
+                shown = frame(&mut panel, Some(palm(1.0)), None, true, false);
+            }
+            let p = shown.expect("shown");
+            assert_eq!(panel.at(), if stay { At::Air } else { At::Palm });
             assert!(!aim(&mut panel, ray_at(&p, 0.0, 0.0), true).pressed);
             // Nor does it close the menu from away from it.
             frame(
@@ -1970,11 +2193,11 @@ mod tests {
             aim(&mut panel, ray_at(&p, 0.0, 0.0), false);
             assert!(aim(&mut panel, ray_at(&p, 0.0, 0.0), true).pressed);
         }
-        // A palm that was down when the hold ended brings it at once.
+        // A palm that was down when the hold ended brings it on its dwell.
         let mut panel = PalmPanel::default();
         panel.set_stay(true);
         panel.hold(Some(palm(0.0)), HEAD, false);
-        assert!(frame(&mut panel, Some(palm(1.0)), None, false, false).is_some());
+        assert!(hold_palm(&mut panel).is_some());
         // The hold hides a menu that is up.
         let (mut panel, _) = staying();
         panel.hold(None, HEAD, false);
@@ -2027,12 +2250,11 @@ mod tests {
         assert!(frame(&mut panel, None, None, false, false).is_none());
     }
 
-    /// Board #5459: with the hand straight above the face and the head
-    /// looking up, the palm's menu keeps its top edge toward the top of the
-    /// head through the hand's jitter, and sits beside the hand in the view
-    /// instead of behind it (world up runs along the line of sight there).
+    /// Boards #5459, #5572: lying back with the hand straight above the
+    /// face, the palm parks the menu along the view, over the face and
+    /// upright for the wearer, and the hand's jitter does not move it.
     #[test]
-    fn the_palm_menu_overhead_is_steady_and_beside_the_hand() {
+    fn the_palm_overhead_parks_the_menu_over_the_face() {
         let over = HEAD + Vec3::Y * 0.45;
         let jitter = [
             Vec3::ZERO,
@@ -2044,15 +2266,39 @@ mod tests {
         let mut panel = PalmPanel::default();
         panel.set_stay(true);
         panel.set_height(0.3);
+        let step = |panel: &mut PalmPanel, d: Vec3| {
+            panel.place(Some((over + d, Quat::IDENTITY)), HEAD, looking_up());
+            panel.input(None, None, false);
+            panel.tick(DT);
+            panel.placement()
+        };
+        let mut shown = None;
+        for i in 0..(PALM_DWELL_S / DT) as usize + 3 {
+            shown = step(&mut panel, jitter[i % jitter.len()]);
+        }
+        let p = shown.expect("shown");
+        assert_eq!(panel.at(), At::Air);
+        assert!(degrees(p.right, Vec3::X) < 3.0, "{p:?}");
+        assert!(p.up.z > 0.9, "{p:?}");
+        assert!(p.normal.dot((HEAD - p.center).normalize()) > 0.999);
+        assert!(p.center.y > HEAD.y + 0.4, "{}", p.center);
         for d in jitter {
-            let p = panel
-                .place(Some((over + d, Quat::IDENTITY)), HEAD, looking_up())
-                .expect("shown");
-            assert!(degrees(p.right, Vec3::X) < 3.0, "{d}: {p:?}");
-            assert!(p.up.z > 0.9, "{d}: {p:?}");
-            assert!(p.normal.dot((HEAD - p.center).normalize()) > 0.999);
-            let apart = degrees(p.center - HEAD, over + d - HEAD);
-            assert!(apart > 10.0, "{d}: {apart}°");
+            assert_eq!(step(&mut panel, d), Some(p));
+        }
+        // The parked menu sits inside the glasses' design area, 58 by 54
+        // degrees about the view's center: 25 degrees wide, and at its
+        // tallest (the developer's menu with Edit room on, 22 cm) from 8
+        // degrees over the center to 20 under.
+        let half_w = (PANEL_W_M * 0.5 / PARK_AHEAD_M).atan().to_degrees();
+        assert!(half_w < 29.0, "{half_w}");
+        for h in [0.142f32, 0.222] {
+            let top = ((h * 0.5 - PARK_BELOW_M) / PARK_AHEAD_M)
+                .atan()
+                .to_degrees();
+            let bottom = ((h * 0.5 + PARK_BELOW_M) / PARK_AHEAD_M)
+                .atan()
+                .to_degrees();
+            assert!(top < 27.0 && bottom < 27.0, "{h}: {top} {bottom}");
         }
         // The knob at 0 puts it straight behind the hand.
         let mut panel = PalmPanel::default();

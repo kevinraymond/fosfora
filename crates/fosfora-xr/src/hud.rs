@@ -1,13 +1,13 @@
 //! The hand menu and the debug panel: an egui UI rendered into a texture
-//! that `Gfx` draws on a quad above the left palm (`palm_panel.rs` places
-//! it and turns the right hand's ray or fingertip into a pointer). Board
-//! #5539: the palm shows the menu and hides it at once; the spoken "menu"
-//! parks it ahead, where it stays until it closes by itself
-//! (`palm_panel.rs`, "The palm shows it and hides it";
+//! that `Gfx` draws on a quad ahead of the wearer (`palm_panel.rs` places
+//! it and turns the right hand's ray into a pointer). Board #5572: the
+//! left palm held to the face parks the menu ahead in the air, as the
+//! spoken "menu" does, and held again closes it; it stays until then or
+//! until it closes by itself (`palm_panel.rs`, "The palm parks it ahead";
 //! `debug.fosfora.menustay 0` is the menu on the palm with no place in
-//! the air).
+//! the air, `debug.fosfora.menupoke 1` the fingertip's press back).
 //!
-//! Turning the left palm toward the face always shows the hand menu (a palm
+//! Holding the left palm toward the face brings the hand menu (a palm
 //! turned more to the ceiling is a hold instead, `palm_panel.rs`): seven
 //! rows on the developer surface (`panel_grid::menu`), the Limit flashing
 //! toggle on top (board #5534: the photosensitive limit, the wearer's
@@ -461,25 +461,29 @@ impl Hud {
 
     /// Place the panel for this frame's left palm and head, and read the
     /// right hand against it: its ray (shoulder through index knuckle) with
-    /// its pinch, and its index fingertip for a poke. Returns what the
-    /// panel does with the pointer this frame (default when hidden).
+    /// its pinch, and, with the poke on ([`Self::set_menu_poke`]), its
+    /// index fingertip. Returns what the panel does with the pointer this
+    /// frame (default when hidden).
     ///
-    /// Board #5459, #5539: with `stay` (`debug.fosfora.menustay`) the
-    /// spoken "menu" has its place in the air, and the menu closes by
-    /// itself: `dt` seconds count toward the idle close in the air and
-    /// toward a lost hand's grace on the palm.
+    /// Boards #5459, #5572: with `stay` (`debug.fosfora.menustay`) the palm
+    /// and the spoken "menu" park it ahead in the air, and the menu closes
+    /// by itself: `dt` seconds count toward the idle close, the palm's
+    /// dwell and the lockout after a fist. `summon_blocked`: the left hand
+    /// is a fist or a voice window is open, so its palm brings no menu.
     pub fn place(
         &mut self,
         gfx: &Gfx,
         hands: &crate::input::HandsFrame,
         (head, head_rot): ([f32; 3], [f32; 4]),
         stay: bool,
+        summon_blocked: bool,
         dt: f32,
     ) -> Touch {
         let head = Vec3::from(head);
         let head_rot = Quat::from_array(head_rot);
         let palm = hands.palm[0].map(|(p, q)| (Vec3::from(p), Quat::from_array(q)));
         self.placement.set_stay(stay);
+        self.placement.set_summon_blocked(summon_blocked);
         self.placement.set_height(self.height_m());
         self.placement.place(palm, head, head_rot);
         let ray = hands.index_knuckle[1]
@@ -570,11 +574,17 @@ impl Hud {
         self.shown_logged
     }
 
-    /// Whether the menu is on the left palm, which brought it (board
-    /// #5452: the palm hint's gesture). Not when the spoken "menu" put it
-    /// in the air.
-    pub fn on_palm(&self) -> bool {
-        self.placement.at() == At::Palm
+    /// Whether the left palm brought the menu that is up (board #5452:
+    /// the palm hint's gesture; board #5572: parked ahead, or on the palm
+    /// with `debug.fosfora.menustay 0`). Not when the spoken "menu" did.
+    pub fn by_palm(&self) -> bool {
+        self.placement.by_palm() || self.placement.at() == At::Palm
+    }
+
+    /// Board #5572: whether a fingertip poke presses the menu
+    /// (`debug.fosfora.menupoke`); off, the default, the ray alone does.
+    pub fn set_menu_poke(&mut self, on: bool) {
+        self.placement.set_poke(on);
     }
 
     /// The idle time before the menu in the air closes

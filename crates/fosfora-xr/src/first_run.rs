@@ -291,9 +291,9 @@ pub const SWIPE_HINT: &str = "Swipe your thumb\nalong your finger\nto change the
 /// and the tap has to be told here, since a wearer who cannot hold a fist
 /// has no other way to ask what they can say.
 pub const TALK_HINT: &str = "Make a fist, say a command,\nthen open your hand.\nOr tap thumb on index finger.\nTry: what can I say";
-/// The palm hint's words. Board #5539: the menu goes when the palm turns
-/// away, and the hint says so (until then it read "It stays there.").
-pub const PALM_HINT: &str = "Left palm to your face\nshows the menu. Away hides it.";
+/// The palm hint's words. Board #5572: the palm opens the menu and, held
+/// to the face again, closes it (board #5539's read "Away hides it.").
+pub const PALM_HINT: &str = "Left palm to your face\nopens the menu, and closes it.";
 /// What the label says when the wearer makes the gesture a hint asks for,
 /// and for how long (s).
 pub const GOT_IT: &str = "Got it";
@@ -890,7 +890,7 @@ mod tests {
         let laid = layout(PALM_HINT);
         assert_eq!(
             laid.lines,
-            ["Left palm to your face", "shows the menu. Away hides it."]
+            ["Left palm to your face", "opens the menu, and closes it."]
         );
         assert!(laid.px > 64.0, "{laid:?}");
         assert!(laid.px <= TWO_LINES_FONT_PX);

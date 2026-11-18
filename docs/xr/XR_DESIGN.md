@@ -2036,6 +2036,11 @@ the headset.
 
 ### The hand menu: the palm shows it and hides it (board #5459, #5539)
 
+Superseded on Nov 18 by "The hand menu: parked ahead, ray only" below
+(board #5572): the palm no longer shows the menu at the hand or hides it
+by turning away, and `LOST_GRACE_S`, `Close::PalmAway` and
+`Placement::above_view` are gone from the code. Kept for the reasons.
+
 The app is used lying back in a chair. The menu first lived on the left
 palm and hid when the palm turned away, so nothing in it worked with one
 hand. Board #5459 let the palm summon it and leave it in the air, where
@@ -2103,6 +2108,57 @@ on each change. 0 is the menu on the palm with no place in the air.
   In `intent.rs`, `open_and_close_the_menu`. The worn comparison is
   pending.
 
+### The hand menu: parked ahead, ray only (board #5572, Nov 18)
+
+This replaces the summon and the hide above. The spoken open, the idle
+close, the pinch away and the knob at 0 are as they were.
+
+**The worn finding.** The owner wore the menu on the palm and pressed rows
+with the right hand's ray. Five pinches in 3.3 s each pressed a different
+row: fireflies off, music off, Edit room on, fireflies on, one more. No
+press was a fingertip's. The presses were 0.5 to 1.2 s apart, so they were
+deliberate, and they missed. The menu is a 20 cm target on a hand that
+moves, and closing the fingers moves the hand that aims. His words: "the
+controls suck and all kinds of buttons are being clicked", then "Fixed
+menu, ray only, seems to be the answer."
+
+- **Fixed.** The left palm held to the face parks the menu 45 cm ahead of
+  the head along the view and 5 cm under it, where the spoken "menu" puts
+  it, and there it holds still. It does not ride the palm, and turning the
+  palm away does not hide it. The palm held to the face again closes it
+  (`hand menu hidden (the palm raised again)`), though not from under a
+  pointer. Board #5539's complaint was a menu left hanging where the hand
+  had been. This one is where the wearer asked for it, as the spoken one
+  is, and it still closes after 3 s with no pointer on it.
+- **Inside the glasses' design area.** At 45 cm the menu is 25 degrees
+  wide. The release menu (14 cm) runs from 3 degrees over the view's
+  center to 15 under, and the tallest (the developer's with Edit room on,
+  22 cm) from 8 over to 20 under. The design area is 58 by 54.
+- **Ray only.** The fingertip poke no longer presses the menu.
+  `debug.fosfora.menupoke 1` brings it back; default 0, polled once a
+  second.
+- **No surprise menu.** The palm has to face the wearer for 0.3 s before
+  it acts (`PALM_DWELL_S`), so a hand passing through the pose does
+  nothing. While the left hand is a fist or a voice window is open, and
+  for 1.5 s after (`SUMMON_LOCKOUT_S`), the palm brings nothing, and a
+  palm that came up in that time has to turn away and back. An opening
+  fist turns its palm to the face.
+- **Steadier aim.** A press lands where the cursor was 120 ms before the
+  pinch registered (`AIM_BACK_S`), from a quarter second of the cursor's
+  trail on the panel. If the cursor was off the menu then, the pinch
+  presses nothing. The cursor is held there until the ray travels 1.5 cm
+  from where it was when the pinch registered, as before.
+- **One press at a time.** After a press begins no other does for 0.35 s
+  (`PRESS_GAP_S`). A drag is one pinch and is not cut. The worn presses
+  were further apart than this, so it guards a hand hovering at the
+  pinch's threshold and would not have changed that sitting.
+
+The palm hint reads "Left palm to your face" over "opens the menu, and
+closes it."
+
+Checked by the desktop tests and the Android build. Not worn: the dwell,
+the look-back and the parked place are first values.
+
 ## The labels a new wearer meets (board #5461)
 
 *Built.* Everything the app tells a wearer is on one in-world label
@@ -2132,7 +2188,7 @@ What a wearer can meet, in the order of a first launch:
 | Room editor: a first hold | desk: hold again for all tables -> curls | at the surface | the arm's 2.5 s |
 | A voice reply or miss | theme: Aurora, Didn't catch that… | the voice window's place | its own time or its reading time |
 | A thumb swipe stepped the theme | Aurora | the voice window's place | its reading time |
-| A first run hint, the show on for 45 s and the label free for 5 s | Left palm to your face shows the menu. Away hides it. | the voice window's place | until the gesture is made, 20 s at most |
+| A first run hint, the show on for 45 s and the label free for 5 s | Left palm to your face opens the menu, and closes it. | the voice window's place | until the gesture is made, 20 s at most |
 | The hint's gesture was made | Got it | same | 2.5 s |
 | The session ends on an error | Fosfora stopped: the session was lost | 1.2 m ahead, level | 4 s, then the app exits |
 
@@ -2283,7 +2339,7 @@ not run on the headset yet.
    teaches itself.
 7. **The palm hint**, first, once the label has been free for 5 s, ahead
    of the view and 10 degrees under the line of sight: **"Left palm to
-   your face"** over **"shows the menu. Away hides it."** The palm brings
+   your face"** over **"opens the menu, and closes it."** The palm brings
    the menu, then **"Got it"** for 2.5 s with the understood cue. The
    menu changes nothing in the room.
 8. **The talk hint**, 5 s of free label later, only with voice on and the

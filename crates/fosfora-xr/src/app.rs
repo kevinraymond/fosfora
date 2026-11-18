@@ -385,9 +385,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the APK's debuggable flag decides. Release: no Debug panel, Pitcher or "All: none" in the hand menu, the saved debug
     //       panel ignored, transcripts out of the log, no debug/anchors.json; read at launch)
     //   adb shell setprop debug.fosfora.hudtest 1                (diagnostic: the debug panel parked ahead of the view, untracked, for a screencap)
-    //   adb shell setprop debug.fosfora.menustay 0|1             (board #5459, #5539: 1 = the left palm shows the hand menu and hides it at once; the spoken
-    //       "menu" parks it ahead in the air, closing after 3 s with no pointer on it, on a pinch away from it, or on "close the menu";
+    //   adb shell setprop debug.fosfora.menustay 0|1             (boards #5459, #5572: 1 = the left palm held to the face for 0.3 s parks the hand menu
+    //       ahead in the air, where the spoken "menu" puts it, and held again closes it; it closes after 3 s with no pointer on it, on a
+    //       pinch away from it, or on "close the menu"; a fist, a voice window and the 1.5 s after one bring no menu;
     //       0 = it lives on the palm with no place in the air, as before #5459; default 1, polled once a second)
+    //   adb shell setprop debug.fosfora.menupoke 0|1             (board #5572: 1 = a fingertip poke presses the hand menu's rows too, as before;
+    //       default 0, the right hand's ray and pinch alone; polled once a second)
     //   adb shell setprop debug.fosfora.menuidle 5               (board #5459: seconds the menu stays in the air with no pointer on it, 0.5 to 60,
     //       in place of the default 3; polled once a second, "" back to the default)
     //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: the hands extend Go-Go style past a comfortable reach. Board
@@ -1558,10 +1561,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     );
     let mut hud = (hud_test || mr.hands && session.has_hands())
         .then(|| Hud::new(&mut gfx, debug_on, surface));
-    // Board #5459, #5539: the palm shows and hides the menu; "menu" parks it in the air.
+    // Boards #5459, #5572: the palm and the spoken "menu" park the menu
+    // ahead in the air, and the ray alone presses it.
     let mut menu_stay = switch_now("debug.fosfora.menustay").unwrap_or(true);
+    let mut menu_poke = switch_now("debug.fosfora.menupoke").unwrap_or(false);
     let mut menu_idle: Option<f32> = None;
     info!("{}", crate::palm_panel::knob_line(menu_stay));
+    if let Some(hud) = hud.as_mut() {
+        hud.set_menu_poke(menu_poke);
+    }
+    if menu_poke {
+        info!("hand menu: debug.fosfora.menupoke 1, a fingertip presses its rows too");
+    }
     // Board #3789: the thermal governor (`governor.rs`) steps the
     // density, the share of the fireflies' count that is asked for, so it
     // acts in world mode only; the knob's default follows the brief (on in
@@ -2636,6 +2647,22 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     menu_stay = now;
                     info!("{}", crate::palm_panel::knob_line(now));
                 }
+                let poke = switch_now("debug.fosfora.menupoke").unwrap_or(false);
+                if poke != menu_poke {
+                    menu_poke = poke;
+                    if let Some(hud) = hud.as_mut() {
+                        hud.set_menu_poke(poke);
+                    }
+                    info!(
+                        "hand menu: debug.fosfora.menupoke {}, {}",
+                        u8::from(poke),
+                        if poke {
+                            "a fingertip presses its rows too"
+                        } else {
+                            "the ray alone presses its rows"
+                        }
+                    );
+                }
                 let idle = system_prop("debug.fosfora.menuidle").and_then(|v| v.parse::<f32>().ok());
                 if idle != menu_idle {
                     menu_idle = idle;
@@ -2654,6 +2681,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // Board #5531: while the show waits for the wearer the menu is
             // held back, and the palm does not bring it.
             let menu_live = wait.live().menu;
+            // Board #5572: no surprise menu. The left palm brings nothing
+            // while that hand is a fist (the pose reader said so last
+            // frame, or its fingers are curled under the fist's now) or a
+            // voice window is open: an opening fist turns its palm to the
+            // face.
+            let summon_blocked = push_to_talk.window() != VoiceWindow::Closed
+                || fist_last[0]
+                || HandInput {
+                    palm: input.hands.palm[0]
+                        .map(|(p, q)| (glam::Vec3::from(p), glam::Quat::from_array(q))),
+                    tips: input.hands.finger_tips[0].map(|t| t.map(glam::Vec3::from)),
+                }
+                .curl()
+                .is_some_and(|c| c < crate::pose::FIST_ON_M);
             let panel_up = hud.as_mut().is_some_and(|h| {
                 h.record(&input.perf);
                 if hud_test {
@@ -2663,7 +2704,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     h.hold(&gfx, &input.hands, input.head);
                     false
                 } else {
-                    h.place(&gfx, &input.hands, (input.head, input.head_rot), menu_stay, dt);
+                    h.place(
+                        &gfx,
+                        &input.hands,
+                        (input.head, input.head_rot),
+                        menu_stay,
+                        summon_blocked,
+                        dt,
+                    );
                     h.shown()
                 }
             });
@@ -2676,7 +2724,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let swipes_blocked = panel_up && (!menu_stay || menu_pointed);
             // Board #5452: the left palm brought the menu, the gesture the
             // palm hint teaches.
-            let on_palm = !hud_test && hud.as_ref().is_some_and(Hud::on_palm);
+            let on_palm = !hud_test && hud.as_ref().is_some_and(Hud::by_palm);
             if on_palm && !palm_was {
                 hint_made[crate::first_run::Hint::Palm.index()] = true;
             }
