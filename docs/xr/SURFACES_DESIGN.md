@@ -1960,6 +1960,135 @@ in a scanned room. Bubbles, sparkle, glints and meters have ids and draw
 as the points. Renders of a recorded room in each look come from
 `the_recorded_room_in_each_look` (`FOSFORA_LOOK_REC`, `FOSFORA_LOOK_DUMP`).
 
+## The air per theme (Nov 18, board #5543)
+
+**Why.** The fireflies were the same in every theme. The owner's rule for
+the air: "it should be basically replacing the fireflies with <other
+thing>, the same way the fireflies work now." So a theme gets no new
+effect. It gets the fireflies' pool as its own thing: the same slots under
+the same count and cap, the same sprites, the same draw.
+
+**What a theme gives** (`themes::Air`, read through the room's saved
+theme like the edges; `fireflies::Look` resolves it for the sim):
+
+| theme | what it reads as | color | band | count | motion |
+| --- | --- | --- | --- | --- | --- |
+| Aurora | stars | warm white | high | 2000 | twinkle |
+| Flint | ash and sparks | amber | bass | 1500 | rise |
+| Contour | fireflies | green | high | 2000 | wander |
+| Classic | fireflies | by band | each its own | 2000 | wander |
+| Drift | plankton | teal | high | 1500 | drift |
+| Tide | spray | rose | bass | 1000 | rise |
+| Mirror | a mirror ball's specks | warm white | high | 1500 | orbit |
+
+A room with no theme has the fireflies exactly as they were: the air's two
+rows are all zero, and zero is the fireflies' own tints, the loudness and
+the wander.
+
+- **The color** is a surface palette color, each particle up to a fifth of
+  the way toward white by its slot, so 2,000 of them are not one flat
+  color. By band (Classic), a particle follows the bass, the mids or the
+  highs by its slot and wears that band's color: violet, blue and warm
+  white. Those are the colors of the parts of Classic that follow those
+  bands (the floor's rings, the tables, the wall's spectrum). The app had
+  no colors per band to borrow: the edge bars and the spectrum draw every
+  band in the surface's one color.
+- **The band** is the level the light and the size follow, where the
+  fireflies follow the loudness. The sim reads it from the same uniforms
+  it read the loudness from (`u.rms`, `u.bass`, `u.mid`, the higher of
+  `u.presence` and `u.brilliance`), which the flash limit has already
+  held. The size follows the same band gliding (`Look::level`).
+- **The count** is the theme's, under `FIREFLY_CAP`, unless
+  `debug.fosfora.fireflies` is set to a number, which wins
+  (`Knobs::under`). The density and the governor still take their share
+  of it.
+- **The motion** is one of five (`fireflies_xr_sim.wgsl`):
+  - *Wander*: the fireflies' own loops, untouched.
+  - *Twinkle*: born in the upper part of the slab (from 0.3 m over the
+    anchor to the top), each on one slow circle at 8 % of the drift speed,
+    under a centimeter a second. Each flickers on a period of its own
+    between 0.9 and 2.2 s. With the band silent a star dims to 0.55 of
+    its peak; with it full, to 0.12. So the highs make the stars
+    scintillate, and the light of all of them together stays about level.
+    A star is 0.6 of a firefly's size.
+  - *Rise*: born in the lowest 15 cm over the floor and let go with the
+    band: a dead slot fills at 1.5 a second times the band's level, and at
+    4 % of that with it silent. It goes up at five times the drift speed
+    (0.3 m/s at the default, each 0.6 to 1.4 of it) with a sway a fifth of
+    that, lives 5 to 10 s, fades and shrinks over the last half, and dies.
+    It fades in over 0.4 s.
+  - *Drift*: every particle carried one way at 1.5 times the drift speed,
+    with a wobble of its own. One that leaves the volume comes back in on
+    the far side, past the bound where the fade has it unseen. The way is
+    fixed in the room (`XR_DRIFT_DIR`). It does not follow the walls'
+    streamlines: those run along a curl field with no one direction to
+    share.
+  - *Orbit*: each particle has a radius, a height and an angle of its own
+    and goes round the anchor's upright axis by one phase. The app steps
+    the phase (`fireflies::orbit_step`, 0.15 rad/s at the default drift, a
+    turn in about 42 s) and hands it to the sim, so the depth light's
+    glints can read the same number and turn in step when they are built.
+
+**A change of theme.** A particle carries the stamp of the air it was
+born into, its motion and its color. When the theme changes, the
+particles of the old air fade out where they are over 0.75 s, still in
+their own motion and color, and die. Their slots then fill with the new
+air, which fades in. No particle jumps from one motion to another, and
+none changes color while it is seen. A track that brings its theme goes
+through dark (`themes::Bringing`), and the air now goes through dark with
+it: its brightness follows the same veil as the surfaces' light, and the
+stamp changes when the theme is laid, in the dark. A theme the wearer
+picks is laid at once, with no veil, and there the 0.75 s fade is the
+whole change.
+
+**Cost.** No texture read, no flow field and no noise, as before. Per
+particle, the transcendentals: wander 6 (as it was), twinkle 3, rise 2,
+drift 4, orbit 3 and a square root. Every motion adds three reads of the
+aux rows and a few compares to what a firefly cost. So no motion costs
+more than the fireflies did, and the count is under the same cap. Not
+measured on the headset yet.
+
+**The flash rule.** The air draws nothing on the desktop, so the flash
+count does not see it (above). What holds it:
+
+- The light and the size read only levels the limiter holds, as the
+  fireflies' did. Rise's release reads the same level. The sim still
+  reads no beat, onset or beat phase (`fireflies.rs` pins the list).
+- A star's own flicker turns about once a second at most (a period of
+  0.9 s or more), a third of the three the rule allows, and every star is
+  on a period and a phase of its own.
+- The sprites are small. The rule exempts a flash over less than a
+  quarter of a 10 degree field, 25 square degrees. A firefly 2 m away is
+  about 1 square degree and a star about 0.4, and a 10 degree region
+  holds about five of them at 2,000 in the volume. That is an estimate
+  from the sizes and the count, not a measurement.
+
+**Tested** on the desktop GPU (RTX 4090, `tests/fireflies_gpu.rs`, the
+sim itself behind the loader's preamble, 300 particles):
+
+- Stars: the fastest 0.006 m/s; dimmest against brightest 0.55 with the
+  highs silent and 0.12 with them full; the mean opacity 0.62 silent and
+  0.57 full; the largest step of one star's opacity in a frame 0.017
+  silent and 0.044 full.
+- Rise: 57 of 300 alive after 3 s with the bass silent and 295 with it
+  full. In 14 s more, 475 died of age and 454 were let go; every one was
+  born in the layer over the floor and had faded under 0.01 before it
+  died.
+- Drift (at 0.15 m/s): 408 wraps in 30 s, each unseen on both sides, no
+  particle born again, no velocity more than 20 degrees off the way.
+- Orbit: every particle keeps its radius and its height, and all sweep
+  the same angle the phase turned.
+- By band: a particle's light answers its own band by the full 60 % and
+  the two others by nothing.
+- A change of theme: the fireflies gone in 0.76 s, 300 stars after it,
+  the light of all of them never moving more than 1.9 % of the start in
+  one frame.
+
+**Not yet.** The headset: the cost of each motion, the worn look of each
+air, and whether a count or a size wants tuning per theme. The depth
+light's glints reading the orbit's phase. The key's tint as an air's
+color: a color index is the palette's, and the key's reads as white.
+
 ## The contours (Nov 16, board #5533)
 
 **Why.** The owner asked for "gentle rolling and topographic scenery"

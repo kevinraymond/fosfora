@@ -4,7 +4,9 @@
 //! is hammered with bursts, the count knob, the fireflies' calm motion and
 //! their answer to the music, and the hand particles: the arc, the landing
 //! without a bounce, and the edge flow along a wall's foot, round a table's
-//! rim and down a corner. One test runs the preset itself through the
+//! rim and down a corner. The air a theme makes of the fireflies (board
+//! #5543): the stars, the rise, the drift, the orbit, an air by band, and
+//! a change of theme. One test runs the preset itself through the
 //! core: its loader, its particle system and its world draw, with the aux
 //! block the XR app uploads. The tests are `#[ignore]`d like the core's probes
 //! (they need an adapter); run them with
@@ -14,8 +16,11 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use fosfora_xr::fireflies::{EDGE_BAND_M, FIREFLY_CAP, Knobs, POOL_CAP, hand_steal};
+use fosfora_xr::fireflies::{
+    BAND_COLORS, EDGE_BAND_M, FIREFLY_CAP, Knobs, Look, POOL_CAP, hand_steal, orbit_step,
+};
 use fosfora_xr::instruments::{Burst, MAX_STEAL, aim_row, rows as instrument_rows};
+use fosfora_xr::themes::{Motion, Theme};
 use glam::Vec3;
 
 static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
@@ -97,7 +102,7 @@ const PREAMBLE: [&str; 7] = [
 ];
 const SIM: &str = include_str!("../../../assets/xr/shaders/fireflies_xr_sim.wgsl");
 /// Rows the XR app uploads (`WORLD_AUX_ROWS` in `scene.rs`).
-const WORLD_AUX_ROWS: usize = 1240;
+const WORLD_AUX_ROWS: usize = 1242;
 /// The instrument rows, the box rows and the fireflies' rows.
 const AUX_INSTRUMENTS: usize = 170;
 const AUX_POUR: usize = 180;
@@ -219,6 +224,13 @@ struct Sample {
     alpha: f32,
     /// A hand particle's age (s); a firefly's presence.
     age: f32,
+    /// Its color, and for a particle of the air the stamp and the motion
+    /// it was born with (board #5543).
+    rgb: Vec3,
+    stamp: f32,
+    motion: f32,
+    /// A rising particle's age (s).
+    clock: f32,
 }
 
 impl Sample {
@@ -265,6 +277,9 @@ struct Sim {
     frame: u32,
     /// `u.rms`, the loudness as the flash limit lets it through.
     rms: f32,
+    /// `u.bass`, `u.mid` and `u.presence`, the same way: the bands a
+    /// theme's air follows (board #5543).
+    bands: [f32; 3],
 }
 
 impl Sim {
@@ -443,6 +458,7 @@ impl Sim {
             count,
             frame: 0,
             rms: 0.0,
+            bands: [0.0; 3],
         }
     }
 
@@ -461,6 +477,9 @@ impl Sim {
         self.u.f32("seed", t * 1000.0 % 65536.0);
         self.u.set("frame_index", self.frame);
         self.u.f32("rms", self.rms);
+        self.u.f32("bass", self.bands[0]);
+        self.u.f32("mid", self.bands[1]);
+        self.u.f32("presence", self.bands[2]);
         self.queue.write_buffer(&self.uniforms, 0, &self.u.bytes);
         self.queue.write_buffer(&self.counters, 0, &[0u8; 16]);
         let mut encoder = self
@@ -502,6 +521,10 @@ impl Sim {
                 size: lane(1)[i][3],
                 alpha: lane(2)[i][3],
                 age: lane(3)[i][0],
+                rgb: Vec3::new(lane(2)[i][0], lane(2)[i][1], lane(2)[i][2]),
+                stamp: lane(3)[i][1],
+                motion: lane(3)[i][2],
+                clock: lane(3)[i][3],
             })
             .collect()
     }
@@ -561,6 +584,12 @@ fn table_at(x: f32, z: f32) -> TestBox {
     }
 }
 
+/// The fireflies' rows for `knobs` at `density` and `swell` in a room with
+/// no theme: the air's two rows all zero.
+fn fly_rows(knobs: &Knobs, density: f32, swell: f32) -> [[f32; 4]; 4] {
+    knobs.rows(density, swell, &Look::default(), 0.0)
+}
+
 /// The aux block for `boxes` and `knobs` (density 1, the swell at 0): the
 /// header (no spheres, the boxes, the margin), the box rows, no cell list
 /// (every particle against every box), and the fireflies' rows.
@@ -572,7 +601,7 @@ fn aux_for(boxes: &[TestBox], knobs: &Knobs) -> Vec<[f32; 4]> {
         aux[AUX_BOX_ROT + k] = [0.0, 0.0, 0.0, 1.0];
         aux[AUX_BOX_HALF + k] = [b.half.x, b.half.y, b.half.z, 0.0];
     }
-    aux[AUX_FIREFLIES..].copy_from_slice(&knobs.rows(1.0, 0.0));
+    aux[AUX_FIREFLIES..].copy_from_slice(&fly_rows(knobs, 1.0, 0.0));
     aux
 }
 
@@ -674,18 +703,18 @@ fn the_count_knob_fills_and_thins_the_fireflies() {
         .sum::<f32>()
         / 2_000.0;
     assert!((0.2..0.6).contains(&mean), "mean opacity {mean}");
-    sim.write_aux(AUX_FIREFLIES, &with(500).rows(1.0, 0.0));
+    sim.write_aux(AUX_FIREFLIES, &fly_rows(&with(500), 1.0, 0.0));
     // Fading, not gone at once: none has died a frame later.
     sim.step();
     assert_eq!(flies(&sim), 2_000);
     sim.run(3.0);
     assert_eq!(flies(&sim), 500);
     assert!(sim.read().iter().skip(500).all(|s| !s.firefly()));
-    sim.write_aux(AUX_FIREFLIES, &with(1_500).rows(1.0, 0.0));
+    sim.write_aux(AUX_FIREFLIES, &fly_rows(&with(1_500), 1.0, 0.0));
     sim.run(8.0);
     assert_eq!(flies(&sim), 1_500);
     // The density, the debug panel's and the governor's, is a share of it.
-    sim.write_aux(AUX_FIREFLIES, &with(1_500).rows(0.3, 0.0));
+    sim.write_aux(AUX_FIREFLIES, &fly_rows(&with(1_500), 0.3, 0.0));
     sim.run(3.0);
     assert_eq!(flies(&sim), 450);
     sim.finish();
@@ -769,7 +798,7 @@ fn the_music_lifts_the_light_and_the_size_a_little() {
             ..Knobs::default()
         };
         let mut aux = aux_for(&[], &knobs);
-        aux[AUX_FIREFLIES..].copy_from_slice(&knobs.rows(1.0, rms));
+        aux[AUX_FIREFLIES..].copy_from_slice(&fly_rows(&knobs, 1.0, rms));
         let mut sim = Sim::new(2_048, &[], &aux);
         sim.rms = rms;
         sim.run(8.0);
@@ -794,6 +823,480 @@ fn the_music_lifts_the_light_and_the_size_a_little() {
         assert!((d.alpha - q.alpha).abs() < 1e-4 && (d.size - q.size).abs() < 1e-6);
     }
     assert!(seen > 250, "{seen} fireflies lit");
+}
+
+/// The aux block with no boxes for `knobs` in a room whose saved theme is
+/// `theme` (board #5543), the orbit at `phase`.
+fn air_aux(theme: Option<Theme>, knobs: &Knobs, phase: f32) -> Vec<[f32; 4]> {
+    let mut aux = aux_for(&[], knobs);
+    aux[AUX_FIREFLIES..].copy_from_slice(&knobs.rows(1.0, 0.0, &Look::of(theme), phase));
+    aux
+}
+
+/// 300 particles of the air, the count's knob set.
+fn three_hundred() -> Knobs {
+    Knobs {
+        count: 300,
+        count_forced: true,
+        ..Knobs::default()
+    }
+}
+
+/// The slab's floor and top and where the stars' part starts, in meters
+/// from the anchor at the preset's half extent (the sim's `XR_FLY_Y_LOW`,
+/// `XR_FLY_Y_HIGH` and `XR_STAR_Y_LOW`).
+const SLAB_LOW_M: f32 = -0.35 * HALF_M;
+const SLAB_HIGH_M: f32 = 0.55 * HALF_M;
+const STAR_LOW_M: f32 = 0.1 * HALF_M;
+
+/// Aurora's air: stars. Born in the upper part of the slab, warm white,
+/// nearly still. Each flickers on its own period: shallow with the highs
+/// silent, deep with them full, and never by much in one frame, while
+/// the light of all of them together stays about level.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn a_star_stays_high_and_nearly_still_and_flickers_with_the_highs() {
+    let knobs = three_hundred();
+    let look = Look::of(Some(Theme::Aurora));
+    assert_eq!(look.motion, Motion::Twinkle);
+    // What 4 s of one level of the highs shows: each star's dimmest
+    // against its brightest, the mean opacity, and the largest step of
+    // opacity in a frame.
+    let run = |high: f32| {
+        let mut sim = Sim::new(2_048, &[], &air_aux(Some(Theme::Aurora), &knobs, 0.0));
+        sim.bands[2] = high;
+        sim.run(6.0);
+        let start = sim.read();
+        assert_eq!(start.iter().filter(|s| s.firefly()).count(), 300);
+        let (mut low, mut top) = (vec![f32::MAX; 300], vec![0.0f32; 300]);
+        let (mut sum, mut jump, mut fastest) = (0.0f32, 0.0f32, 0.0f32);
+        let mut before = start.clone();
+        let frames = (4.0 * FPS) as u32;
+        for _ in 0..frames {
+            sim.step();
+            let now = sim.read();
+            for (i, (a, b)) in before.iter().zip(&now).take(300).enumerate() {
+                assert!(b.firefly(), "a star died or was born again");
+                low[i] = low[i].min(b.alpha);
+                top[i] = top[i].max(b.alpha);
+                sum += b.alpha;
+                jump = jump.max((b.alpha - a.alpha).abs());
+                fastest = fastest.max(b.vel.length());
+            }
+            before = now;
+        }
+        for (a, b) in start.iter().zip(&before).take(300) {
+            // The upper part of the slab, where it was born.
+            assert!(b.pos.y >= STAR_LOW_M - 0.01 && b.pos.y <= SLAB_HIGH_M + 0.01);
+            assert!(a.pos.distance(b.pos) < 0.1, "{:?} to {:?}", a.pos, b.pos);
+            assert!((b.stamp - look.stamp as f32).abs() < 0.1 && (b.motion - 1.0).abs() < 0.1);
+            // Warm white, a little toward white.
+            assert!(b.rgb.x > 0.99 && b.rgb.y > 0.85 && b.rgb.z > 0.67 && b.rgb.z < b.rgb.y);
+        }
+        sim.finish();
+        let depth: Vec<f32> = low
+            .iter()
+            .zip(&top)
+            .filter(|(_, t)| **t > 0.05)
+            .map(|(l, t)| l / t)
+            .collect();
+        assert!(depth.len() > 250, "{} stars lit", depth.len());
+        let shallowest = depth.iter().copied().fold(0.0f32, f32::max);
+        let mean_depth = depth.iter().sum::<f32>() / depth.len() as f32;
+        (
+            mean_depth,
+            shallowest,
+            sum / (300.0 * frames as f32),
+            jump,
+            fastest,
+        )
+    };
+    let (quiet_depth, _, quiet_mean, quiet_jump, fastest) = run(0.0);
+    let (loud_depth, loud_shallowest, loud_mean, loud_jump, _) = run(1.0);
+    eprintln!(
+        "stars: dimmest/brightest {quiet_depth:.2} quiet, {loud_depth:.2} loud · mean opacity {quiet_mean:.3} quiet, {loud_mean:.3} loud · largest step {quiet_jump:.4} quiet, {loud_jump:.4} loud · fastest {fastest:.4} m/s"
+    );
+    // Nearly still: under a centimeter a second.
+    assert!(fastest < 0.01, "{fastest}");
+    // Quiet, a star dims to a little over half; loud, to a seventh or so
+    // (a 4 s window holds a whole period of every star).
+    assert!(quiet_depth > 0.5 && quiet_depth < 0.65, "{quiet_depth}");
+    assert!(loud_depth < 0.25, "{loud_depth}");
+    assert!(loud_shallowest < 0.4, "{loud_shallowest}");
+    // Together they hold about level: the highs make them scintillate,
+    // they do not pump the room's light.
+    assert!(
+        (loud_mean / quiet_mean - 1.0).abs() < 0.25,
+        "{quiet_mean} to {loud_mean}"
+    );
+    // And no star moves its light by much in one frame.
+    assert!(
+        quiet_jump < 0.03 && loud_jump < 0.07,
+        "{quiet_jump} {loud_jump}"
+    );
+}
+
+/// Flint's air: ash and sparks. Let go with the bass: a pool fills fast
+/// with it full and slowly with it silent. Each is born on the floor, goes
+/// up at a steady speed with a small sway, never faster on a frame than
+/// the one before, and has faded out before it dies of age.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn ash_rises_from_the_floor_with_the_bass_fades_and_dies() {
+    let knobs = three_hundred();
+    let look = Look::of(Some(Theme::Flint));
+    assert_eq!(look.motion, Motion::Rise);
+    let aux = air_aux(Some(Theme::Flint), &knobs, 0.0);
+    let alive = |sim: &Sim| sim.read().iter().filter(|s| s.firefly()).count();
+    // Silent: a trickle. Full: the pool's 300 within a few seconds.
+    let mut quiet = Sim::new(2_048, &[], &aux);
+    quiet.run(3.0);
+    let trickle = alive(&quiet);
+    quiet.finish();
+    let mut sim = Sim::new(2_048, &[], &aux);
+    sim.bands[0] = 1.0;
+    sim.run(3.0);
+    let burst = alive(&sim);
+    eprintln!("rise: {trickle} alive after 3 s silent, {burst} with the bass full");
+    assert!(trickle < 100, "{trickle}");
+    assert!(burst > 280, "{burst}");
+    // 14 s more, frame by frame: longer than the longest life.
+    let up = knobs.drift * 5.0;
+    let (mut deaths, mut births, mut highest) = (0, 0, f32::MIN);
+    let mut before = sim.read();
+    for _ in 0..(14.0 * FPS) as u32 {
+        sim.step();
+        let now = sim.read();
+        for (a, b) in before.iter().zip(&now).take(300) {
+            match (a.firefly(), b.firefly()) {
+                (true, false) => {
+                    deaths += 1;
+                    // Dead of age, and unseen by then.
+                    assert!(a.clock > 4.9, "died at {} s", a.clock);
+                    assert!(a.alpha < 0.01, "died lit at {}", a.alpha);
+                }
+                (false, true) => {
+                    births += 1;
+                    // On the floor, unseen until it fades in.
+                    assert!(
+                        b.pos.y >= SLAB_LOW_M - 1e-3
+                            && b.pos.y <= SLAB_LOW_M + 0.05 * HALF_M + 1e-3,
+                        "born at {:?}",
+                        b.pos
+                    );
+                    assert!(b.alpha <= 0.0, "born lit at {}", b.alpha);
+                    assert!((b.motion - 2.0).abs() < 0.1);
+                    // Amber, a little toward white.
+                    assert!(b.rgb.x > 0.99 && b.rgb.y > 0.6 && b.rgb.y < 0.72 && b.rgb.z < 0.36);
+                }
+                (true, true) => {
+                    // Up at its own steady speed, 0.6 to 1.4 of the
+                    // mean, the sway a fifth of it at most.
+                    assert!(b.clock <= 10.0 + DT, "{} s old", b.clock);
+                    assert!(
+                        b.vel.y >= up * 0.6 / 1.1 - 1e-4 && b.vel.y <= up * 1.4 / 1.1 + 1e-4,
+                        "{}",
+                        b.vel.y
+                    );
+                    if a.vel.length() > 0.0 {
+                        assert!((b.vel.y - a.vel.y).abs() < 1e-5);
+                        assert!(glam::Vec2::new(b.vel.x, b.vel.z).length() <= b.vel.y * 0.2 + 1e-5);
+                        assert!((b.pos - a.pos).distance(b.vel * DT) < 1e-5);
+                        assert!(
+                            (b.alpha - a.alpha).abs() < 0.05,
+                            "{} to {}",
+                            a.alpha,
+                            b.alpha
+                        );
+                    }
+                    highest = highest.max(b.pos.y);
+                }
+                (false, false) => {}
+            }
+        }
+        before = now;
+    }
+    eprintln!(
+        "rise: {deaths} died of age and {births} were let go in 14 s, the highest at {highest:.2} m"
+    );
+    // Every one of the first 300 lived out its life, and the bass kept
+    // letting more go.
+    assert!(deaths >= 280, "{deaths}");
+    assert!(births >= 250, "{births}");
+    // They climb past a seated eye, 1.2 m over the floor, and none leaves
+    // the volume.
+    assert!(highest > SLAB_LOW_M + 2.0, "{highest}");
+    assert!(highest < SLAB_HIGH_M + 0.4 * HALF_M, "{highest}");
+    sim.finish();
+}
+
+/// Drift's air: plankton. Every particle is carried the one way, each
+/// with a small wobble of its own, and one that leaves the volume comes
+/// back in on the far side unseen: none is born again and none jumps
+/// while it can be seen.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn plankton_is_carried_one_way_and_wraps_unseen() {
+    // A fast current, so 30 s carries every particle through the volume,
+    // and not so fast that its rise and fall takes one out of the slab.
+    let knobs = Knobs {
+        drift: 0.15,
+        ..three_hundred()
+    };
+    assert_eq!(Look::of(Some(Theme::Drift)).motion, Motion::Drift);
+    let mut sim = Sim::new(2_048, &[], &air_aux(Some(Theme::Drift), &knobs, 0.0));
+    sim.run(6.0);
+    let way = Vec3::new(0.94, 0.0, 0.3412);
+    let mut before = sim.read();
+    assert_eq!(before.iter().filter(|s| s.firefly()).count(), 300);
+    let (mut wraps, mut widest, mut mean) = (0, 0.0f32, Vec3::ZERO);
+    let frames = (30.0 * FPS) as u32;
+    for _ in 0..frames {
+        sim.step();
+        let now = sim.read();
+        for (a, b) in before.iter().zip(&now).take(300) {
+            assert!(
+                b.firefly() && b.age >= a.age,
+                "plankton died or was born again"
+            );
+            widest = widest.max(b.vel.angle_between(way).to_degrees());
+            mean += b.vel;
+            let step = b.pos - a.pos;
+            if step.distance(b.vel * DT) > 1e-4 {
+                // The wrap: a whole volume across, and unseen on both
+                // sides of it.
+                wraps += 1;
+                assert!(
+                    (step.x.abs() - 2.0 * 1.02 * HALF_M).abs() < 0.02
+                        || (step.z.abs() - 2.0 * 1.02 * HALF_M).abs() < 0.02,
+                    "{step:?}"
+                );
+                assert!(a.alpha == 0.0 && b.alpha == 0.0, "wrapped lit");
+            }
+            let across = b.pos.x.abs().max(b.pos.z.abs());
+            assert!(across <= HALF_M * 1.03, "{:?}", b.pos);
+            assert!(across < HALF_M || b.alpha == 0.0);
+        }
+        before = now;
+    }
+    let mean = mean / (300.0 * frames as f32);
+    eprintln!(
+        "drift: {wraps} wraps in 30 s, the widest a velocity turns off the way {widest:.1} deg, the mean velocity {mean:?}"
+    );
+    assert!(wraps > 200, "{wraps}");
+    assert!(widest < 30.0, "{widest}");
+    // Together: the one way, at 1.5 of the drift speed on average.
+    assert!(mean.angle_between(way).to_degrees() < 3.0);
+    assert!(
+        (mean.length() / (knobs.drift * 1.5) - 1.0).abs() < 0.15,
+        "{}",
+        mean.length()
+    );
+    sim.finish();
+}
+
+/// Mirror's air: a mirror ball's specks. All turn round the anchor's
+/// upright axis by the app's phase, each at a radius and a height of its
+/// own that it keeps.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn the_specks_orbit_together_by_the_apps_phase() {
+    let knobs = three_hundred();
+    let look = Look::of(Some(Theme::Mirror));
+    assert_eq!(look.motion, Motion::Orbit);
+    let mut phase = 0.0f32;
+    let mut sim = Sim::new(2_048, &[], &air_aux(Some(Theme::Mirror), &knobs, phase));
+    let mut advance = |sim: &mut Sim, seconds: f32| {
+        for _ in 0..(seconds * FPS) as u32 {
+            phase = orbit_step(phase, DT, knobs.drift);
+            sim.write_aux(AUX_FIREFLIES + 3, &[look.rows(phase)[1]]);
+            sim.step();
+        }
+        phase
+    };
+    let at = advance(&mut sim, 6.0);
+    let start = sim.read();
+    assert_eq!(start.iter().filter(|s| s.firefly()).count(), 300);
+    let later = advance(&mut sim, 10.0);
+    let end = sim.read();
+    let turned = (later - at).rem_euclid(std::f32::consts::TAU);
+    // 10 s at the default drift: 1.5 rad.
+    assert!((turned - 1.5).abs() < 0.01, "{turned}");
+    let level = |p: Vec3| glam::Vec2::new(p.x, p.z);
+    let mut farthest = 0.0f32;
+    for (a, b) in start.iter().zip(&end).take(300) {
+        assert!(b.firefly() && b.age >= a.age);
+        let (ra, rb) = (level(a.pos).length(), level(b.pos).length());
+        assert!((ra - rb).abs() < 1e-3, "radius {ra} to {rb}");
+        assert!((a.pos.y - b.pos.y).abs() < 1e-4);
+        assert!(ra <= 0.9 * HALF_M + 1e-3);
+        assert!(a.pos.y >= SLAB_LOW_M - 1e-3 && a.pos.y <= SLAB_HIGH_M + 1e-3);
+        farthest = farthest.max(ra);
+        if ra > 0.2 {
+            // Every one by the same angle, the way x turns toward z.
+            let swept = level(a.pos).angle_to(level(b.pos));
+            assert!((swept - turned).abs() < 2e-3, "{swept} against {turned}");
+        }
+    }
+    // They fill the disk out to nine tenths of the half extent.
+    assert!(farthest > 0.8 * HALF_M, "{farthest}");
+    sim.finish();
+}
+
+/// Classic's air, by band: a particle follows the bass, the mids or the
+/// highs by its slot, wears that band's color, and its light answers that
+/// band and no other. Contour's is one color on one band, the fireflies'
+/// wander otherwise.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn by_band_each_particle_wears_and_follows_its_own() {
+    let knobs = Knobs {
+        brightness: 0.5,
+        music: 1.0,
+        ..three_hundred()
+    };
+    let lit = |theme: Theme, bands: [f32; 3], rms: f32| {
+        let mut sim = Sim::new(2_048, &[], &air_aux(Some(theme), &knobs, 0.0));
+        sim.bands = bands;
+        sim.rms = rms;
+        sim.run(8.0);
+        let all = sim.read();
+        sim.finish();
+        all
+    };
+    let quiet = lit(Theme::Classic, [0.0; 3], 0.0);
+    let mut seen = [0; 3];
+    for (band, color) in BAND_COLORS.iter().enumerate() {
+        let mut bands = [0.0; 3];
+        bands[band] = 1.0;
+        // The loudness full as well: an air by band does not read it.
+        let loud = lit(Theme::Classic, bands, 1.0);
+        for (i, (q, l)) in quiet.iter().zip(&loud).take(300).enumerate() {
+            assert!(q.firefly() && (q.motion - 0.0).abs() < 0.1);
+            assert!(
+                q.rgb.distance(Vec3::from(BAND_COLORS[i % 3])) < 1e-5,
+                "slot {i}"
+            );
+            if q.alpha < 1e-3 {
+                continue;
+            }
+            assert!(q.pos.distance(l.pos) < 1e-4);
+            let light = l.alpha / q.alpha;
+            if i % 3 == band {
+                seen[band] += 1;
+                assert!((light - 1.6).abs() < 0.01, "slot {i} on its band x{light}");
+                assert!(l.rgb.distance(Vec3::from(*color)) < 1e-5);
+            } else {
+                assert!((light - 1.0).abs() < 1e-3, "slot {i} off its band x{light}");
+            }
+        }
+    }
+    assert!(seen.iter().all(|n| *n > 80), "{seen:?}");
+    // Contour: green, a little toward white, on the highs alone, at the
+    // fireflies' own places and pace.
+    let (calm, high, bass) = (
+        lit(Theme::Contour, [0.0; 3], 0.0),
+        lit(Theme::Contour, [0.0, 0.0, 1.0], 0.0),
+        lit(Theme::Contour, [1.0, 1.0, 0.0], 1.0),
+    );
+    let mut lit_n = 0;
+    for ((c, h), b) in calm.iter().zip(&high).zip(&bass).take(300) {
+        assert!(c.firefly() && (c.motion - 0.0).abs() < 0.1);
+        assert!(
+            c.rgb.y > 0.99 && c.rgb.x >= 0.3 && c.rgb.x < 0.45 && c.rgb.z >= 0.5 && c.rgb.z < 0.61
+        );
+        if c.alpha < 1e-3 {
+            continue;
+        }
+        lit_n += 1;
+        assert!((h.alpha / c.alpha - 1.6).abs() < 0.01);
+        assert!((b.alpha / c.alpha - 1.0).abs() < 1e-3);
+    }
+    assert!(lit_n > 250, "{lit_n}");
+}
+
+/// A change of theme mid-song: the old air fades out where it is, in its
+/// own motion and color, within a second; the new one is born into its
+/// own and fades in. No particle changes its motion or its color while it
+/// is seen, none dies lit, and the light of all of them never steps.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn a_change_of_theme_fades_the_old_air_out_and_the_new_in() {
+    let knobs = three_hundred();
+    let mut sim = Sim::new(2_048, &[], &air_aux(None, &knobs, 0.0));
+    sim.run(8.0);
+    let mut before = sim.read();
+    assert_eq!(before.iter().filter(|s| s.firefly()).count(), 300);
+    assert!(
+        before
+            .iter()
+            .take(300)
+            .all(|s| s.stamp == 0.0 && s.motion == 0.0)
+    );
+    let total = |all: &[Sample]| all.iter().take(300).map(|s| s.alpha).sum::<f32>();
+    let lit = total(&before);
+    // Aurora comes: stars.
+    let aurora = Look::of(Some(Theme::Aurora));
+    sim.write_aux(AUX_FIREFLIES + 2, &aurora.rows(0.0));
+    let (mut step_most, mut gone_at, mut frames) = (0.0f32, None, 0u32);
+    let mut dimmest = lit;
+    for _ in 0..(8.0 * FPS) as u32 {
+        sim.step();
+        frames += 1;
+        let now = sim.read();
+        let (mut old, mut old_was, mut old_is) = (0, 0.0f32, 0.0f32);
+        for (a, b) in before.iter().zip(&now).take(300) {
+            if a.firefly() && b.firefly() && (a.stamp - b.stamp).abs() < 0.1 {
+                // The same particle a frame later: its motion and its
+                // color its own, and it moved by its velocity.
+                assert!((a.motion - b.motion).abs() < 0.1 && a.rgb.distance(b.rgb) < 1e-6);
+                assert!((b.pos - a.pos).distance(b.vel * DT) < 1e-5);
+                if b.stamp == 0.0 {
+                    old += 1;
+                    old_was += a.alpha;
+                    old_is += b.alpha;
+                }
+            }
+            if a.firefly() && !b.firefly() {
+                assert!(a.alpha < 0.02, "died lit at {}", a.alpha);
+            }
+            if !a.firefly() && b.firefly() {
+                assert!((b.stamp - aurora.stamp as f32).abs() < 0.1);
+                assert!((b.motion - 1.0).abs() < 0.1 && b.alpha == 0.0);
+                assert!(b.pos.y >= STAR_LOW_M - 1e-3);
+            }
+        }
+        // The old air's light only falls: each firefly keeps its own
+        // rhythm while it fades, so one may still rise a little, but not
+        // all of them together.
+        assert!(
+            old_is <= old_was + 1e-4,
+            "the old air brightened: {old_was} to {old_is}"
+        );
+        if old == 0 && gone_at.is_none() {
+            gone_at = Some(frames as f32 * DT);
+        }
+        step_most = step_most.max((total(&now) - total(&before)).abs());
+        dimmest = dimmest.min(total(&now));
+        before = now;
+    }
+    let gone_at = gone_at.expect("the old air left");
+    let stars = before
+        .iter()
+        .take(300)
+        .filter(|s| s.firefly() && (s.motion - 1.0).abs() < 0.1)
+        .count();
+    eprintln!(
+        "swap: the fireflies gone in {gone_at:.2} s, {stars} stars 8 s on, the light of all from {lit:.1} down to {dimmest:.1} and to {:.1}, its largest step in a frame {:.2}% of the start",
+        total(&before),
+        100.0 * step_most / lit
+    );
+    // The old air is out in the swap's 0.75 s and a frame or two.
+    assert!(gone_at > 0.5 && gone_at < 0.85, "{gone_at}");
+    assert_eq!(stars, 300);
+    // The room's air goes down and comes back, never on one frame.
+    assert!(step_most < 0.03 * lit, "{step_most} of {lit}");
+    sim.finish();
 }
 
 /// A thrown burst arcs and falls: in the air a hand particle's velocity

@@ -72,8 +72,8 @@ pub struct XrScene {
 /// board #3402), the surface lanes after it, one per box, ending at 213
 /// (`XR_AUX_SURFACE` + `XR_AUX_SURFACE_ROWS`, board #3326), then the box
 /// cell list's header and masks, ending at 1238 (`XR_AUX_CELLS` + 1 +
-/// `XR_AUX_CELL_ROWS`, board #3808), and the fireflies' rows at 1240
-/// (`XR_AUX_FIREFLIES` + `XR_AUX_FIREFLY_ROWS`, board #5470); core tests
+/// `XR_AUX_CELL_ROWS`, board #3808), and the fireflies' rows, ending at 1242
+/// (`XR_AUX_FIREFLIES` + `XR_AUX_FIREFLY_ROWS`, boards #5470, #5543); core tests
 /// pin the Flux and Murmur sims' side up to 173,
 /// `tests/depth_collide_gpu.rs` the rows after, and `fireflies.rs` the
 /// fireflies sim's.
@@ -113,8 +113,8 @@ const _: () = assert!(
 const FIREFLIES_AT: usize = CELLS_END;
 const WORLD_AUX_ROWS: usize = FIREFLIES_AT + crate::fireflies::ROWS;
 const _: () = assert!(
-    WORLD_AUX_ROWS == 1240,
-    "fireflies_xr_sim.wgsl reads the fireflies' rows 1238..1240"
+    WORLD_AUX_ROWS == 1242,
+    "fireflies_xr_sim.wgsl reads the fireflies' rows 1238..1242"
 );
 /// See [`crate::env_depth::ATLAS_MAX_AGE_MS`].
 const ATLAS_MAX_AGE: Duration = Duration::from_millis(crate::env_depth::ATLAS_MAX_AGE_MS);
@@ -377,8 +377,10 @@ impl XrScene {
     /// row per box in the obstacles' order; the weights follow the
     /// behaviors they give), the positions moved into the anchor's frame,
     /// and the fireflies' rows (`fireflies`, the live knobs, at this
-    /// scene's density, with `swell`, the loudness as the flash limit
-    /// glides it, 0..1). Call before [`Self::dispatch_world`].
+    /// scene's density, with `swell`, the air's band as the flash limit
+    /// glides it, 0..1, then `air`, what the room's theme makes of them,
+    /// board #5543, and the orbit's phase `orbit`). Call before
+    /// [`Self::dispatch_world`].
     #[allow(
         clippy::too_many_arguments,
         reason = "one call per frame, each argument a separate input"
@@ -398,6 +400,8 @@ impl XrScene {
         surface_lanes: &[[f32; 4]; crate::surfaces::SURFACE_LANE_ROWS],
         fireflies: &crate::fireflies::Knobs,
         swell: f32,
+        air: &crate::fireflies::Look,
+        orbit: f32,
     ) {
         let Some(world) = self.world.as_mut() else {
             return;
@@ -487,7 +491,7 @@ impl XrScene {
         debug_assert_eq!(world.aux.len(), FIREFLIES_AT);
         world.aux.extend(
             fireflies
-                .rows(world.density, swell)
+                .rows(world.density, swell, air, orbit)
                 .iter()
                 .map(|&home| ParticleAux { home }),
         );
