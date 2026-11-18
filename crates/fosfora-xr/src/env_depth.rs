@@ -606,8 +606,8 @@ struct EnvEye {
     // starts (a share of the radius), w the twinkle's depth
     light_size: vec4<f32>,
     // The look (depth_light.rs, board #5543). x its id: 0 the points, 1
-    // beams, 2 coals, 3 grass, 4 bubbles, 5 sparkle; y the music 0..1, z
-    // the gust 0..1
+    // beams, 2 coals, 3 grass, 4 bubbles, 5 sparkle, 6 glints; y the
+    // music 0..1, z the gust 0..1
     light_look: vec4<f32>,
     // The looks' clocks, each 0..1 of a cycle: x the beams' travel, y the
     // grass's sway, z the bubbles' rise
@@ -615,7 +615,9 @@ struct EnvEye {
     // What the look drawn reads of the room (depth_light::with_around).
     // The sparkle: the wash's front, x, y the way it travels over the
     // floor (world x and z, a unit), z where it is along that way (m), w
-    // one over the half-width the points flare in (0: no wash)
+    // one over the half-width the points flare in (0: no wash). The
+    // glints: x, y the center they turn about (world x and z), z, w the
+    // cosine and the sine of the turn (the air's orbit)
     light_more: vec4<f32>,
     // The sweep (sonar.rs), read by fs_mesh_light_sonar alone. x the
     // line's peak alpha (0: no sweep and no standing line this frame; the
@@ -1030,6 +1032,12 @@ const LOOK_BUBBLES: i32 = 4;
 const LOOK_SPARKLE: i32 = 5;
 const SPARKLE_DIM: f32 = 0.25;
 const SPARKLE_QUIET: f32 = 0.3;
+const LOOK_GLINTS: i32 = 6;
+const GLINT_DIM: f32 = 0.25;
+const GLINT_SPACING_M: f32 = 0.45;
+const GLINT_TILT: vec2<f32> = vec2<f32>(0.8, -0.6);
+const GLINT_EDGE: vec2<f32> = vec2<f32>(0.3, 0.7);
+const GLINT_QUIET: f32 = 0.5;
 
 // The id of the look drawn.
 fn look_id() -> i32 {
@@ -1177,6 +1185,27 @@ fn sparkle(g: vec2<f32>, k: u32, o: i32, radius_scale: f32, front: f32) -> vec2<
     return vec2<f32>(light, light * flare);
 }
 
+// The glints' light over world point p, 0..1: a mirror ball's specks,
+// turning about the center with the air's orbit. The point is turned
+// back by the orbit's phase, and there two sets of leaning sheets cross
+// in slanted shafts; a speck is where the product of their waves is high.
+fn glint_speck(p: vec3<f32>) -> f32 {
+    let m = env.light_more;
+    let d = p.xz - m.xy;
+    let a = light_wave((m.z * d.x + m.w * d.y + GLINT_TILT.x * p.y) / GLINT_SPACING_M);
+    let b = light_wave((m.z * d.y - m.w * d.x + GLINT_TILT.y * p.y) / GLINT_SPACING_M);
+    return smoothstep(GLINT_EDGE.x, GLINT_EDGE.y, a * b) * mix(GLINT_QUIET, 1.0, env.light_look.y);
+}
+
+// Glints at g (cells) on any plane, under the speck light: x the light, y
+// the light times its tint. A point, dim until a speck sweeps over it.
+fn glint(g: vec2<f32>, k: u32, o: i32, radius_scale: f32, speck: f32) -> vec2<f32> {
+    let pt = look_point(g, k, o, radius_scale);
+    let core = 1.0 - smoothstep(pt.y * env.light_size.z, pt.y, pt.x);
+    let light = select(0.0, core * mix(GLINT_DIM, 1.0, speck), pt.y > 0.0);
+    return vec2<f32>(light, light * speck);
+}
+
 // The radius factor a look's points are read at, for a vertex keeping
 // keep under the sweep's light under (0 without a sweep): the points'
 // own, wider for the beams and the coals, swollen under a sweep, within
@@ -1196,11 +1225,11 @@ fn look_radius(keep: f32, under: f32) -> f32 {
 }
 
 // How the music lifts a look's light: the crests' gain for the beams,
-// the grass and the bubbles; the coals carry it in their heat and the
-// sparkle in its flares.
+// the grass and the bubbles; the coals carry it in their heat, the
+// sparkle in its flares and the glints in their specks.
 fn look_band() -> f32 {
     let look = look_id();
-    return select(env.light.w, 1.0, look == LOOK_COALS || look == LOOK_SPARKLE);
+    return select(env.light.w, 1.0, look == LOOK_COALS || look == LOOK_SPARKLE || look == LOOK_GLINTS);
 }
 
 // A look's color at tint: the sides' at 0 toward the tops' at 1, and
@@ -1222,6 +1251,7 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
     let grass = look == LOOK_GRASS;
     let bubbles = look == LOOK_BUBBLES;
     let sparkles = look == LOOK_SPARKLE;
+    let glints = look == LOOK_GLINTS;
     let n2 = n * n;
     let tri = n2 * n2 / dot(n2, n2);
     let l = clamp(log2(max(length(p - env.eye.xyz), 1e-3)), OCTAVE_MIN, OCTAVE_MAX);
@@ -1234,6 +1264,10 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
     var front = 0.0;
     if sparkles {
         front = sparkle_front(p);
+    }
+    var speck = 0.0;
+    if glints {
+        speck = glint_speck(p);
     }
     var sum = vec2<f32>(0.0);
     var used = 0.0;
@@ -1284,6 +1318,8 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
                     }
                 } else if sparkles {
                     s = sparkle(g, k, o, radius_scale, front);
+                } else if glints {
+                    s = glint(g, k, o, radius_scale, speck);
                 } else {
                     s = coal(g, k, o, radius_scale);
                 }

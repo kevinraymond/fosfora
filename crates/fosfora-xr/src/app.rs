@@ -5589,7 +5589,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         audio.key_tint,
                         immerse_level,
                         &sonar.rows(&sonar_opts, immerse_level),
-                        // Board #5543: what the look reads of the room,
+                        // Board #5543: what the look reads of the room:
                         // the wash's front for Tide's sparkle.
                         &crate::depth_light::Around {
                             front: crate::depth_light::front(
@@ -5597,6 +5597,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 audio.bar_phase,
                                 head,
                             ),
+                            // The glints turn with the air's orbit,
+                            // about the effect anchor as it does.
+                            orbit: firefly_orbit,
+                            center: [anchor[0], anchor[2]],
                         },
                     )));
                     if depth_light_colors != Some(light_theme) {

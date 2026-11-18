@@ -1958,7 +1958,7 @@ fragment for the grass's wind. No hash, no transcendental, no discard.
 
 **Not yet.** The grass's rows show on a large flat surface, as shelves of
 tufts; a chair or a pile breaks them up, and walls are the room's boxes
-in a scanned room. Glints and meters have ids and draw as the points. Renders of a recorded room in each look come from
+in a scanned room. Meters have an id and draw as the points. Renders of a recorded room in each look come from
 `the_recorded_room_in_each_look` (`FOSFORA_LOOK_REC`, `FOSFORA_LOOK_DUMP`).
 
 ### The other themes' looks
@@ -1996,6 +1996,21 @@ Built the same way, one at a time, for the four themes outside the video.
   often, about forty-five operations around each read, and once a
   fragment a dot product and a smoothstep for the front. On the pulse
   trains the worst is 1.0 flashes a second, with the sweep.
+- **Glints** (Mirror: warm white, high). The points, dim, a quarter of
+  their light, and a mirror ball's specks sweeping over them. A speck is
+  a slanted shaft of light: the room is turned back by the orbit's phase
+  about a center, and in that turned room two sets of leaning sheets, one
+  every 45 cm, cross; where both waves are high a thing's surface cuts
+  the shaft as a spot. The phase and the center are the air's
+  (`fireflies::orbit_step`, the effect anchor), handed to the light as a
+  cosine and a sine, so the shader takes neither, and a speck keeps its
+  place beside an orbiting particle of the air at every phase
+  (`the_glints_turn_about_the_center_with_the_airs_orbit`). A speck has
+  half its light in silence and all of it at full highs. Cost by the
+  source: the tile read as often, about thirty operations around each
+  read, and once a fragment two waves and a smoothstep. At the default
+  drift a spot 2 m from the center passes a place under once a second.
+  On the pulse trains the worst is 1.5 flashes a second, with the sweep.
 
 ## The air per theme (Nov 18, board #5543)
 

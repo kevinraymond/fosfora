@@ -2305,6 +2305,7 @@ fn sweep_run(
     let mut counters = vec![Counter::new(); surfaces.len()];
     let mut limiter = Limiter::new(true);
     let mut drive = Drive::default();
+    let mut orbit = 0.0f32;
     let mut sonar = crate::sonar::Sonar::default();
     let mut beat_env = 0.0f32;
     let (mut starts, mut lines) = (0, 0.0f32);
@@ -2349,6 +2350,8 @@ fn sweep_run(
         );
         drive.step_wind(dt, depth_light::band_level(&audio, surface_fx::BAND_RMS));
         let shown = drive.with_music(limiter.follow(follower::DEPTH_MUSIC, drive.music()));
+        // The glints turn with the air's orbit, at the default drift.
+        orbit = crate::fireflies::orbit_step(orbit, dt, crate::fireflies::DRIFT_M_S);
         let started = sonar.step(
             sonar_opts,
             crate::sonar::Input {
@@ -2374,6 +2377,8 @@ fn sweep_run(
             // As `app.rs`: the wash's front for Tide's sparkle.
             &depth_light::Around {
                 front: depth_light::front(theme, f.bar_phase, eye),
+                orbit,
+                center: [eye.x, eye.z],
             },
         )
         .rows;
@@ -2522,13 +2527,15 @@ fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
 
 /// The themes whose depth light draws a look of its own (board #5543),
 /// each with that look: Aurora's beams, Flint's coals, Contour's grass,
-/// Drift's bubbles and Tide's sparkle, on the band the theme gives them.
-const DEPTH_LOOKS: [(Theme, crate::themes::DepthLook); 5] = [
+/// Drift's bubbles, Tide's sparkle and Mirror's glints, on the band the
+/// theme gives them.
+const DEPTH_LOOKS: [(Theme, crate::themes::DepthLook); 6] = [
     (Theme::Aurora, crate::themes::DepthLook::Beams),
     (Theme::Flint, crate::themes::DepthLook::Coals),
     (Theme::Contour, crate::themes::DepthLook::Grass),
     (Theme::Drift, crate::themes::DepthLook::Bubbles),
     (Theme::Tide, crate::themes::DepthLook::Sparkle),
+    (Theme::Mirror, crate::themes::DepthLook::Glints),
 ];
 
 /// The beams, the coals and the grass behind the limiter as `app.rs` runs

@@ -177,7 +177,8 @@
 //! grass about fifty (two more smoothsteps, a floor and a fract), the
 //! grass one wave more per fragment for the wind, the bubbles about
 //! fifty-five and one wave for the lane's snake, the sparkle about
-//! forty-five and a dot product a fragment for the wash's front. No look adds a
+//! forty-five and a dot product a fragment for the wash's front, the
+//! glints about thirty and two waves a fragment for the specks. No look adds a
 //! transcendental, a hash or a read, and the vertex stage is the same.
 //! These are counts of the source, not a device number.
 //! The eye pass's mesh adds a constant fragment where the veil erases (0 <
@@ -253,8 +254,9 @@ pub const LOOK_ROW: usize = 9;
 /// the grass's sway and the bubbles' rise, each 0..1 of a cycle.
 pub const MOVE_ROW: usize = LOOK_ROW + 1;
 /// What the look drawn reads of the room, `light_more` in `struct EnvEye`
-/// ([`Around`], [`with_around`]): for the sparkle the wash's front. All 0
-/// for a look that reads nothing there.
+/// ([`Around`], [`with_around`]): for the sparkle the wash's front, for
+/// the glints the center they turn about and the turn. All 0 for a look
+/// that reads nothing there.
 pub const MORE_ROW: usize = MOVE_ROW + 1;
 /// The first of the sweep's rows, `sonar` in `struct EnvEye`.
 pub const SONAR_ROW: usize = MORE_ROW + 1;
@@ -362,6 +364,21 @@ pub const SPARKLE_FRONT_M: f32 = 0.3;
 /// Sparkle: how far the stand-in front travels to each side of the
 /// wearer (m), until the wash gives its own ([`wash_front`]).
 pub const SPARKLE_REACH_M: f32 = 2.5;
+/// Glints: a point's light away from a speck, as a share of its light
+/// under one.
+pub const GLINT_DIM: f32 = 0.25;
+/// Glints: the distance from one speck to the next (m).
+pub const GLINT_SPACING_M: f32 = 0.45;
+/// Glints: how far the specks' two sets of sheets lean per meter of
+/// height (m), so a speck is a slanted shaft of light and a wall cuts it
+/// as a spot, as a floor does.
+pub const GLINT_TILT: [f32; 2] = [0.8, -0.6];
+/// Glints: where a speck's edge starts and where it is all there, in the
+/// product of the two sheets' waves.
+pub const GLINT_EDGE: [f32; 2] = [0.3, 0.7];
+/// Glints: a speck's light with the band silent, as a share of its light
+/// at a full band.
+pub const GLINT_QUIET: f32 = 0.5;
 
 /// The height of one band of the wave (m).
 pub const BAND_SPACING_M: f32 = 0.2;
@@ -1030,13 +1047,29 @@ pub struct Around {
     /// over the floor (x, z, a unit), where it is along that way (m) and
     /// one over the half-width the points flare in (1/m). All 0 for none.
     pub front: [f32; 4],
+    /// The air's orbit, for the glints: its phase (radians,
+    /// `fireflies::orbit_step`) and the point it turns about, the effect
+    /// anchor (world x and z).
+    pub orbit: f32,
+    pub center: [f32; 2],
 }
 
 /// `rows` with what their look reads of `around` in [`MORE_ROW`]: the
-/// wash's front for the sparkle, nothing for a look that reads none.
+/// wash's front for the sparkle; for the glints the center and the
+/// orbit's phase as its cosine and sine, so the shader takes neither;
+/// nothing for a look that reads none.
 pub fn with_around(mut rows: [[f32; 4]; ROWS], around: &Around) -> [[f32; 4]; ROWS] {
     rows[MORE_ROW] = match look_of(&rows) {
         DepthLook::Sparkle => around.front,
+        DepthLook::Glints => {
+            let phase = if around.orbit.is_finite() {
+                around.orbit
+            } else {
+                0.0
+            };
+            let [x, z] = around.center;
+            [x, z, phase.cos(), phase.sin()]
+        }
         _ => [0.0; 4],
     };
     rows
@@ -1706,6 +1739,46 @@ pub fn sparkle(
     Vec2::new(light, light * flare)
 }
 
+/// The glints' light over world point `p`, 0..1: the specks a mirror ball
+/// throws, turning about the center with the air's orbit ([`MORE_ROW`]).
+/// The point is turned back by the orbit's phase about the center, and
+/// in that turned room two sets of leaning sheets ([`GLINT_TILT`]), one
+/// every [`GLINT_SPACING_M`], cross in slanted shafts: a speck is where
+/// the product of their waves passes [`GLINT_EDGE`]. Its light is
+/// [`GLINT_QUIET`] of itself in silence and all at a full band. The
+/// WGSL's `glint_speck`.
+pub fn glint_speck(rows: &[[f32; 4]; ROWS], p: Vec3) -> f32 {
+    let [cx, cz, cos, sin] = rows[MORE_ROW];
+    let (dx, dz) = (p.x - cx, p.z - cz);
+    let inv = 1.0 / GLINT_SPACING_M;
+    let a = wave((cos * dx + sin * dz + GLINT_TILT[0] * p.y) * inv);
+    let b = wave((cos * dz - sin * dx + GLINT_TILT[1] * p.y) * inv);
+    smoothstep(GLINT_EDGE[0], GLINT_EDGE[1], a * b)
+        * (GLINT_QUIET + (1.0 - GLINT_QUIET) * rows[LOOK_ROW][1])
+}
+
+/// Glints at `g` (cells) on any plane, under the speck light `speck`
+/// ([`glint_speck`]): the light and the light times its tint. A point,
+/// dim ([`GLINT_DIM`]) until a speck sweeps over it. The tint is the
+/// speck. The WGSL's `glint`.
+pub fn glint(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    g: Vec2,
+    k: u32,
+    o: i32,
+    radius_scale: f32,
+    speck: f32,
+) -> Vec2 {
+    let [d, radius, ..] = look_point(rows, tile, g, k, o, radius_scale);
+    if radius <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let core = 1.0 - smoothstep(radius * rows[8][2], radius, d);
+    let light = core * (GLINT_DIM + (1.0 - GLINT_DIM) * speck);
+    Vec2::new(light, light * speck)
+}
+
 /// The radius factor a look's points are read at, for a vertex keeping
 /// `keep` under the sweep's light `under` (0 without): the points' own
 /// (the fill's radius, the music's swell, the keep), wider for the beams
@@ -1724,11 +1797,12 @@ pub fn look_radius(rows: &[[f32; 4]; ROWS], keep: f32, under: f32) -> f32 {
 }
 
 /// How the music lifts a look's light: by the crests' gain for the
-/// beams, the grass and the bubbles; the coals carry it in their heat and
-/// the sparkle in its flares. The WGSL's `look_band`.
+/// beams, the grass and the bubbles; the coals carry it in their heat,
+/// the sparkle in its flares and the glints in their specks. The WGSL's
+/// `look_band`.
 pub fn look_band(rows: &[[f32; 4]; ROWS]) -> f32 {
     match look_of(rows) {
-        DepthLook::Coals | DepthLook::Sparkle => 1.0,
+        DepthLook::Coals | DepthLook::Sparkle | DepthLook::Glints => 1.0,
         _ => rows[0][3],
     }
 }
@@ -1752,7 +1826,7 @@ pub fn look_color(rows: &[[f32; 4]; ROWS], tint: f32) -> [f32; 3] {
 /// read the look's own: on an upright plane the beams' streaks or the
 /// grass's blades, on the level plane their points seen from the end
 /// (the beams' in the tops' color, the grass's moved by the wind); the
-/// coals and the sparkle on every plane; the bubbles on an upright plane,
+/// coals, the sparkle and the glints on every plane; the bubbles on an upright plane,
 /// the points on the level one. The fade for small cells counts the closer
 /// packing across and the longer features along up. The WGSL's
 /// `look_light`.
@@ -1784,6 +1858,11 @@ pub fn look_light(
     };
     let front = if look == DepthLook::Sparkle {
         sparkle_front(rows, p)
+    } else {
+        0.0
+    };
+    let speck = if look == DepthLook::Glints {
+        glint_speck(rows, p)
     } else {
         0.0
     };
@@ -1828,6 +1907,7 @@ pub fn look_light(
                         Vec2::new(v, 0.5 * v * v)
                     }
                     DepthLook::Sparkle => sparkle(rows, tile, g, k, o, radius_scale, front),
+                    DepthLook::Glints => glint(rows, tile, g, k, o, radius_scale, speck),
                     _ => coal(rows, tile, g, k, o, radius_scale),
                 };
                 sum += wo * wk * aa * s;
@@ -2277,6 +2357,8 @@ mod tests {
             &NO_SONAR,
             &Around {
                 front: front(Some(theme), 0.35, eye),
+                orbit: 0.9,
+                center: [eye.x, eye.z],
             },
         )
         .rows
@@ -2293,12 +2375,13 @@ mod tests {
         (eye, grid)
     }
 
-    const BUILT: [(Theme, DepthLook); 5] = [
+    const BUILT: [(Theme, DepthLook); 6] = [
         (Theme::Aurora, DepthLook::Beams),
         (Theme::Flint, DepthLook::Coals),
         (Theme::Contour, DepthLook::Grass),
         (Theme::Drift, DepthLook::Bubbles),
         (Theme::Tide, DepthLook::Sparkle),
+        (Theme::Mirror, DepthLook::Glints),
     ];
 
     #[test]
@@ -2318,8 +2401,8 @@ mod tests {
             assert_eq!(look_of(&look_rows(theme, 1.0, 0.5, 0.5)), want);
         }
         // A theme whose look is not built draws the points.
-        assert_eq!(look(Some(Theme::Mirror)), DepthLook::Points);
-        assert_close!(look_rows(Theme::Mirror, 1.0, 0.5, 0.5)[LOOK_ROW][0], 0.0);
+        assert_eq!(look(Some(Theme::Classic)), DepthLook::Points);
+        assert_close!(look_rows(Theme::Classic, 1.0, 0.5, 0.5)[LOOK_ROW][0], 0.0);
         // The look's rows: the id, the music and the gust; the clocks.
         let mut d = Drive::default();
         d.step(0.5, 0.8, 0.0);
@@ -2369,6 +2452,9 @@ mod tests {
             ("BUBBLE_SHINE_SIZE", BUBBLE_SHINE_SIZE),
             ("SPARKLE_DIM", SPARKLE_DIM),
             ("SPARKLE_QUIET", SPARKLE_QUIET),
+            ("GLINT_DIM", GLINT_DIM),
+            ("GLINT_SPACING_M", GLINT_SPACING_M),
+            ("GLINT_QUIET", GLINT_QUIET),
         ] {
             let line = format!("const {name}: f32 = {value:?};");
             assert!(ENV_DEPTH_WGSL.contains(&line), "{line}");
@@ -2377,6 +2463,8 @@ mod tests {
             format!("const COAL_EMBER: vec3<f32> = {};", vec(&COAL_EMBER)),
             format!("const GRASS_WIND: vec2<f32> = {};", vec(&GRASS_WIND)),
             format!("const BUBBLE_RIM: vec2<f32> = {};", vec(&BUBBLE_RIM)),
+            format!("const GLINT_TILT: vec2<f32> = {};", vec(&GLINT_TILT)),
+            format!("const GLINT_EDGE: vec2<f32> = {};", vec(&GLINT_EDGE)),
         ] {
             assert!(ENV_DEPTH_WGSL.contains(&line), "{line}");
         }
@@ -2748,10 +2836,12 @@ mod tests {
         // Only the sparkle reads the front.
         let around = Around {
             front: wash_front(0.35, eye),
+            ..Around::default()
         };
         for look in DepthLook::ALL {
             let rows = with_around(with_look(lit_rows(), look), &around);
-            let reads = look == DepthLook::Sparkle;
+            // The glints read the orbit: at none, a cosine of 1.
+            let reads = [DepthLook::Sparkle, DepthLook::Glints].contains(&look);
             assert_eq!(!none(rows[MORE_ROW]), reads, "{}", look.name());
         }
         // The light over the wall with the front far away, quiet and
@@ -2794,6 +2884,95 @@ mod tests {
         // Brief: loud, with no front, the flares add under a third to the
         // dim light of all the points.
         assert!(loud < 1.6 * quiet, "{loud} {quiet}");
+    }
+
+    #[test]
+    fn the_glints_turn_about_the_center_with_the_airs_orbit() {
+        let center = [0.4f32, -0.7];
+        let rows_at = |phase: f32, music: f32| {
+            let mut rows = with_around(
+                with_look(lit_rows(), DepthLook::Glints),
+                &Around {
+                    orbit: phase,
+                    center,
+                    ..Around::default()
+                },
+            );
+            rows[LOOK_ROW][1] = music;
+            rows
+        };
+        assert_close!(rows_at(0.0, 0.0)[MORE_ROW], [0.4, -0.7, 1.0, 0.0]);
+        assert_close!(rows_at(f32::NAN, 0.0)[MORE_ROW], [0.4, -0.7, 1.0, 0.0]);
+        // A speck rides the orbit: what a particle of the air sees at its
+        // place (`fireflies::orbit_place`, which the sim mirrors) is the
+        // same at every phase, so the glints and the air turn in step.
+        let mut lit = 0;
+        for k in 0..400 {
+            let own = (
+                0.05 + 0.9 * (k % 20) as f32 / 20.0,
+                0.31 * k as f32,
+                (k / 20) as f32 / 20.0,
+            );
+            let at = |phase: f32| {
+                let [x, y, z] = crate::fireflies::orbit_place(phase, own, 3.0, 0.9, [-0.3, 0.55]);
+                Vec3::new(center[0] + x, 1.0 + y, center[1] + z)
+            };
+            let first = glint_speck(&rows_at(0.0, 1.0), at(0.0));
+            lit += usize::from(first > 0.5);
+            for phase in [0.4f32, 1.7, 3.9, 6.1] {
+                let v = glint_speck(&rows_at(phase, 1.0), at(phase));
+                assert!((v - first).abs() < 2e-3, "{k} {phase}: {v} {first}");
+            }
+            assert!((0.0..=1.0).contains(&first));
+        }
+        // The specks are sparse and there: between a twentieth and a
+        // third of the places are under one.
+        eprintln!("glints: {lit} of 400 places under a speck");
+        assert!(lit > 20 && lit < 130, "{lit}");
+        // Silent, a speck keeps a share of its light.
+        let p = (0..2000)
+            .map(|k| Vec3::new(0.013 * k as f32 - 13.0, 1.0, 0.007 * k as f32))
+            .max_by(|a, b| {
+                glint_speck(&rows_at(0.0, 1.0), *a).total_cmp(&glint_speck(&rows_at(0.0, 1.0), *b))
+            })
+            .expect("a point");
+        let (loud, quiet) = (
+            glint_speck(&rows_at(0.0, 1.0), p),
+            glint_speck(&rows_at(0.0, 0.0), p),
+        );
+        assert!(loud > 0.95, "{loud}");
+        assert_close!(quiet, loud * GLINT_QUIET);
+        // Over the wall: dim points everywhere, bright ones under the
+        // specks, and the bright ones move as the orbit turns.
+        let fw = Vec3::splat(5e-4);
+        let (eye, grid) = wall_grid();
+        let rows = look_rows(Theme::Mirror, 1.0, 0.8, 0.0);
+        assert_eq!(look_of(&rows), DepthLook::Glints);
+        let radius = look_radius(&rows, 1.0, 0.0);
+        let wall = |rows: &[[f32; 4]; ROWS]| -> Vec<f32> {
+            grid.iter()
+                .map(|&p| look_light(rows, tile(), eye, p, Vec3::Z, radius, fw).x)
+                .collect()
+        };
+        let now = wall(&rows);
+        let mut turned = rows;
+        turned[MORE_ROW][2] = 0.4f32.cos();
+        turned[MORE_ROW][3] = 0.4f32.sin();
+        let later = wall(&turned);
+        let bright = |v: &[f32]| v.iter().filter(|x| **x > 0.6).count();
+        let dim = now.iter().filter(|x| **x > 0.15 && **x < 0.3).count();
+        let moved = now
+            .iter()
+            .zip(&later)
+            .filter(|(a, b)| (**a > 0.6) != (**b > 0.6))
+            .count();
+        eprintln!(
+            "glints over the wall: {dim} points dim, {} bright, {} bright a turn of 0.4 rad on, {moved} changed",
+            bright(&now),
+            bright(&later)
+        );
+        assert!(dim > bright(&now) && bright(&now) > 0 && bright(&later) > 0);
+        assert!(moved > 0);
     }
 
     #[test]
@@ -3324,8 +3503,8 @@ mod tests {
             "depth light: beams, teal sides, the key's tint on top, bass, occluding (theme aurora)"
         );
         assert_eq!(
-            colors_line(Some(Theme::Mirror)),
-            "depth light: glints as points, warm white sides, the same on top, high, occluding (theme mirror)"
+            colors_line(Some(Theme::Classic)),
+            "depth light: meters as points, other's own sides, the same on top, rms, occluding (theme classic)"
         );
         assert_eq!(
             colors_line(None),

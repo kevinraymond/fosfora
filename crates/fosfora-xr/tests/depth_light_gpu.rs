@@ -1534,8 +1534,13 @@ fn look_rows(
     // What the look reads of the room: the wash's front for a theme that
     // has one, a third of a bar in, 1 m ahead of the eye, over the known
     // surfaces.
+    // The glints turn about the eye's place, the orbit a little on with
+    // the time.
+    let at = eye().eye_pos;
     let around = depth_light::Around {
-        front: depth_light::front(Some(theme), 0.35, eye().eye_pos),
+        front: depth_light::front(Some(theme), 0.35, at),
+        orbit: 0.3 + 0.15 * secs,
+        center: [at.x, at.z],
     };
     depth_light::with_around(
         depth_light::with_look(
@@ -1553,12 +1558,13 @@ fn look_rows(
 }
 
 /// The video's three themes, each with the look its depth light draws.
-const LOOKS: [(Theme, DepthLook); 5] = [
+const LOOKS: [(Theme, DepthLook); 6] = [
     (Theme::Aurora, DepthLook::Beams),
     (Theme::Flint, DepthLook::Coals),
     (Theme::Contour, DepthLook::Grass),
     (Theme::Drift, DepthLook::Bubbles),
     (Theme::Tide, DepthLook::Sparkle),
+    (Theme::Mirror, DepthLook::Glints),
 ];
 
 /// Board #5543: the beams, the coals and the grass over the known
