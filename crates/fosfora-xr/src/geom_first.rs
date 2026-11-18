@@ -561,6 +561,19 @@ impl Keep {
     /// unexplained, has data and is nearer to the camera. Mirrors
     /// [`KEEP_WGSL`].
     pub fn drops(&self, values: &[f32]) -> Vec<bool> {
+        self.marks(values)
+            .into_iter()
+            .map(|m| m == MARK_DROPPED)
+            .collect()
+    }
+
+    /// What the keep pass writes per vertex of both layers, in
+    /// [`Self::drops`]' order: 0 for a vertex no box explains,
+    /// [`MARK_DROPPED`] for one the vertex stage drops, [`MARK_RIM`] for an
+    /// explained one the keep rule kept, the rim of something no box
+    /// explains, where the depth light's soft edge ends
+    /// (`depth_light::with_edge`). Mirrors [`KEEP_WGSL`].
+    pub fn marks(&self, values: &[f32]) -> Vec<u32> {
         let [nx, ny] = self.grid;
         let [ex, ey] = self.explain_grid;
         let at = |layer: u32, x: i32, y: i32| -> f32 {
@@ -583,13 +596,22 @@ impl Keep {
                             let n = at(layer, x + dx, y + dy);
                             n > 0.0 && n < -v
                         });
-                    out.push(v < 0.0 && !kept);
+                    out.push(match (v < 0.0, kept) {
+                        (false, _) => 0,
+                        (true, false) => MARK_DROPPED,
+                        (true, true) => MARK_RIM,
+                    });
                 }
             }
         }
         out
     }
 }
+
+/// The keep pass's mark for a vertex the vertex stage drops.
+pub const MARK_DROPPED: u32 = 1;
+/// The keep pass's mark for an explained vertex the keep rule kept.
+pub const MARK_RIM: u32 = 2;
 
 /// The clip position the vertex stage gives a dropped vertex at `clip`:
 /// z moved to [`DROP_Z`] times w, past the far plane.
@@ -829,7 +851,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
             for (var j = 0; j < 6; j++) {
                 let n = value_at(id.z, x + around[j].x, y + around[j].y);
                 if n > 0.0 && n < -v {
-                    dropped = 0u;
+                    // Kept: the rim of something no box explains.
+                    dropped = 2u;
                 }
             }
         }
@@ -859,7 +882,14 @@ const TINT: vec4<f32> = vec4<f32>({r:?}, {g:?}, {b:?}, {a:?});
 // drops per layer, not 0).
 fn dropped(i: u32) -> bool {{
     let per_layer = u32(env.mesh.z);
-    return per_layer > 0u && drops[u32(env.misc.x) * per_layer + i] != 0u;
+    return per_layer > 0u && drops[u32(env.misc.x) * per_layer + i] == 1u;
+}}
+
+// Whether vertex i is the rim the keep rule kept: an explained vertex beside
+// a nearer thing no box explains (the keep pass's 2).
+fn rim(i: u32) -> bool {{
+    let per_layer = u32(env.mesh.z);
+    return per_layer > 0u && drops[u32(env.misc.x) * per_layer + i] == 2u;
 }}
 
 // vs_mesh, and a dropped vertex past the far plane: the clipper removes
@@ -880,6 +910,11 @@ fn vs_mesh_geom_light(@builtin(vertex_index) i: u32) -> LightOut {{
     var out = mesh_light(i);
     if dropped(i) {{
         out.pos.z = out.pos.w * DROP_Z;
+    }}
+    // The soft edge (depth_light.rs, board #5543): the erase falls to
+    // nothing at the rim.
+    if rim(i) {{
+        out.edge = 0.0;
     }}
     return out;
 }}
@@ -1187,7 +1222,7 @@ mod runtime {
                         "xr-env-depth-mesh-geom-light",
                     ),
                     (
-                        ["vs_mesh_geom", "fs_mesh_veil"],
+                        ["vs_mesh_geom_light", "fs_mesh_veil"],
                         "xr-env-depth-mesh-geom-veil",
                     ),
                     (
@@ -1960,6 +1995,36 @@ mod tests {
         ] {
             assert!(!at(x, y), "({x}, {y}) kept");
         }
+        // The kept ones are marked as the rim, where the depth light's
+        // soft edge ends; the person's own vertices carry no mark.
+        let k = Keep {
+            grid: [5, 5],
+            ratio: 1,
+            explain_grid: [5, 5],
+            keep: true,
+        };
+        let mut values: Vec<f32> = person.iter().flatten().copied().collect();
+        values.extend([0.0; 25]);
+        let marks = k.marks(&values);
+        for (x, y) in [
+            (1, 0),
+            (1, 1),
+            (1, 2),
+            (2, 2),
+            (2, 3),
+            (3, 3),
+            (3, 4),
+            (4, 4),
+        ] {
+            assert_eq!(marks[y * 5 + x], MARK_RIM, "({x}, {y})");
+        }
+        assert_eq!(marks[2], 0);
+        assert_eq!(marks[3 * 5 + 4], 0);
+        assert_eq!(marks[0], MARK_DROPPED);
+        assert_eq!(
+            k.drops(&values),
+            marks.iter().map(|&m| m == MARK_DROPPED).collect::<Vec<_>>()
+        );
         // Those that share none go.
         for (x, y) in [
             (0, 0),

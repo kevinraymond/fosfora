@@ -847,7 +847,12 @@ fn the_light_writes_the_occluders_depth_bit_for_bit() {
         &rows,
         Some(&drops),
     );
-    let dropped_veil = draw_with(&geom, ["vs_mesh_geom", "fs_mesh_veil"], &rows, Some(&drops));
+    let dropped_veil = draw_with(
+        &geom,
+        ["vs_mesh_geom_light", "fs_mesh_veil"],
+        &rows,
+        Some(&drops),
+    );
     assert_eq!(differ(&dropped.depth, &dropped_lit.depth), 0);
     assert_eq!(differ(&dropped.depth, &dropped_veil.depth), 0);
     assert!(differ(&dropped.depth, &own.depth) > 1000);
@@ -876,6 +881,70 @@ fn the_light_writes_the_occluders_depth_bit_for_bit() {
     );
 }
 
+/// The soft edge (board #5543): with the veil's share at 1 (a theme that
+/// occludes) the mesh erases the sky whole inside a mass and by a falling
+/// share across its rim, in the veil's fragment and the light's alike;
+/// with the switch off it erases whole wherever it draws, as before.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn the_soft_edge_fades_the_erase_at_the_rim() {
+    let (device, queue, _guard) = gpu();
+    let tri = wgpu::PrimitiveTopology::TriangleList;
+    let sky = [0.1, 0.5, 0.4, 0.6];
+    let mut counts = Vec::new();
+    for edge in [false, true] {
+        for stages in [
+            ["vs_mesh_light", "fs_mesh_veil"],
+            ["vs_mesh_light", "fs_mesh_light"],
+        ] {
+            let light = depth_light::with_edge(light_rows_at(0.0, 1.0), edge);
+            let rows = uniform_with(&light, 0);
+            let got = draw(
+                device,
+                queue,
+                ENV_DEPTH_WGSL,
+                stages[0],
+                stages[1],
+                tri,
+                &rows,
+                None,
+                Over::Sky(sky),
+            );
+            let (mut whole, mut part, mut clear) = (0usize, 0usize, 0usize);
+            for (c, &d) in got.color.iter().zip(&got.depth) {
+                if d.to_bits() == SKY_DEPTH.to_bits() {
+                    clear += 1;
+                    continue;
+                }
+                // Never more than the sky, and its channels fall together.
+                assert!(c[3] <= sky[3] + 2e-3, "{c:?}");
+                let kept = c[3] / sky[3];
+                for k in 0..3 {
+                    assert!((c[k] - sky[k] * kept).abs() < 4e-3, "{c:?}");
+                }
+                if kept < 2e-3 {
+                    whole += 1;
+                } else {
+                    part += 1;
+                }
+            }
+            eprintln!(
+                "edge {edge}, {}: {whole} pixels erased whole, {part} in part, {clear} sky alone",
+                stages[1]
+            );
+            assert!(clear > 1000 && whole > 1000);
+            counts.push((edge, whole, part));
+        }
+    }
+    // Off: whole wherever the mesh drew. On: a rim in part, and the inside
+    // still whole; the veil's fragment and the light's agree.
+    assert_eq!((counts[0].2, counts[1].2), (0, 0), "{counts:?}");
+    assert!(counts[2].2 > 200, "{counts:?}");
+    assert!(counts[2].1 > 4 * counts[2].2, "{counts:?}");
+    assert_eq!(counts[2], counts[3], "{counts:?}");
+    assert_eq!(counts[0].1, counts[2].1 + counts[2].2, "{counts:?}");
+}
+
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn the_veil_leaves_the_sky_by_the_level() {
@@ -888,7 +957,7 @@ fn the_veil_leaves_the_sky_by_the_level() {
         // light): the sky where the mesh is not, its kept share where it
         // is, once per fragment there (a fold of the mesh erases twice).
         for (stages, peak) in [
-            (["vs_mesh", "fs_mesh_veil"], 1.0),
+            (["vs_mesh_light", "fs_mesh_veil"], 1.0),
             (["vs_mesh_light", "fs_mesh_light"], 0.0),
         ] {
             let rows = uniform_with(&light_rows_at(peak, v), 0);

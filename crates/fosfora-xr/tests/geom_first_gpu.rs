@@ -405,7 +405,7 @@ fn run_keep(
     queue: &wgpu::Queue,
     values: &wgpu::Buffer,
     k: &Keep,
-) -> Vec<bool> {
+) -> Vec<u32> {
     let pipeline = compute(device, KEEP_WGSL);
     let params = uniform(device, queue, &k.rows());
     let drops = storage(device, u64::from(2 * k.grid[0] * k.grid[1]) * 4);
@@ -421,9 +421,6 @@ fn run_keep(
     dispatch(device, queue, &pipeline, &g, k.grid);
     let back = read_buffer(device, queue, &drops);
     bytemuck::pod_collect_to_vec::<u8, u32>(&back)
-        .into_iter()
-        .map(|d| d != 0)
-        .collect()
 }
 
 /// Whether the CPU's verdict on vertex `i` flips when the margins move
@@ -510,11 +507,14 @@ fn the_keep_pass_matches_its_cpu_mirror() {
                 let k = Keep::of([MAP, MAP], eye, step, keep).expect("a multiple");
                 let gpu = run_keep(device, queue, &values, &k);
                 // From the GPU's own values: the comparisons are exact.
-                let cpu = k.drops(&gpu_values);
+                // The marks: dropped, or the rim the keep rule kept.
+                let cpu = k.marks(&gpu_values);
                 assert_eq!(gpu.len(), cpu.len());
                 let differ = gpu.iter().zip(&cpu).filter(|(g, c)| g != c).count();
                 assert_eq!(differ, 0, "eye {eye} step {step} keep {keep}");
-                let dropped = cpu.iter().filter(|&&d| d).count();
+                let rim = cpu.iter().filter(|&&m| m == 2).count();
+                assert_eq!(rim > 0, keep, "eye {eye} step {step} keep {keep}");
+                let dropped = cpu.iter().filter(|&&m| m == 1).count();
                 eprintln!(
                     "eye step {eye}, mesh step {step}, keep rule {keep}: {dropped} of {} dropped",
                     cpu.len()
@@ -751,10 +751,7 @@ fn the_mesh_with_the_drop_off_is_the_occluder_and_on_hides_less() {
     let e = explain(2, false);
     let (values, _) = run_explain(device, queue, &map, &e, &boxes);
     let k = Keep::of([MAP, MAP], 2, 2, true).expect("same step");
-    let drops: Vec<u32> = run_keep(device, queue, &values, &k)
-        .into_iter()
-        .map(u32::from)
-        .collect();
+    let drops: Vec<u32> = run_keep(device, queue, &values, &k);
     let got = render_mesh(
         device,
         queue,

@@ -611,7 +611,8 @@ struct EnvEye {
     // (beams, grass, bubbles, meters) draw the points on a top, 0 nothing
     light_look: vec4<f32>,
     // The looks' clocks, each 0..1 of a cycle: x the beams' travel, y the
-    // grass's sway, z the bubbles' rise
+    // grass's sway, z the bubbles' rise; w 1 with the soft edge on: the
+    // erase falls to nothing at a mass's rim (depth_light::with_edge)
     light_move: vec4<f32>,
     // What the look drawn reads of the room (depth_light::with_around).
     // The sparkle: the wash's front, x, y the way it travels over the
@@ -862,6 +863,16 @@ struct LightOut {
     // xyz the surface's normal turned toward the eye (unit), w the light
     // left at the vertex's distance from the eye
     @location(1) normal: vec4<f32>,
+    // The soft edge (depth_light::with_edge): how much of the surfaces'
+    // light behind the vertex the mesh hides, 1 inside a mass, 0 at its rim
+    @location(2) edge: f32,
+}
+
+// The share of the light behind that a fragment erases: the veil's, and
+// with the soft edge on (light_move.w) falling to nothing at a mass's rim
+// (the vertex's edge, interpolated).
+fn hidden(edge: f32) -> f32 {
+    return env.light_fade.w * select(1.0, edge, env.light_move.w > 0.5);
 }
 
 // The depth light's vertex (depth_light::vertex_light in depth_light.rs
@@ -929,6 +940,12 @@ fn mesh_light(i: u32) -> LightOut {
     }
     n = select(n, -n, dot(n, to_eye) < 0.0);
     let len = length(n);
+    // The soft edge: nothing hidden at a vertex without data or beside one
+    // without (a neighbor past the map's border does not count), all of it
+    // elsewhere. Geometry first adds its own rim (vs_mesh_geom_light).
+    let beside = (d < vec4<f32>(0.0))
+        & vec4<bool>(t.x > 0u, t.x < last.x, t.y > 0u, t.y < last.y);
+    out.edge = select(1.0, 0.0, dist < 0.0 || any(beside));
     out.world = vec4<f32>(p, keep);
     out.normal = vec4<f32>(select(vec3<f32>(0.0, 0.0, 1.0), n / len, len > 0.0), bright);
     return out;
@@ -1502,7 +1519,7 @@ fn fs_mesh_light(in: LightOut) -> @location(0) vec4<f32> {
             s = look_light(p, fw, n, look_radius(keep, 0.0));
         }
         let a = clamp(weight * look_band() * s.x, 0.0, 1.0);
-        return vec4<f32>(look_color(s.y) * a, env.light_fade.w);
+        return vec4<f32>(look_color(s.y) * a, hidden(in.edge));
     }
     var points = 0.0;
     var up = 0.0;
@@ -1547,7 +1564,7 @@ fn fs_mesh_light(in: LightOut) -> @location(0) vec4<f32> {
     let band = env.light_side.w + (1.0 - env.light_side.w) * crest * env.light.w;
     let tint = clamp(up + env.light_top.w * crest, 0.0, 1.0);
     let a = clamp(weight * band * points, 0.0, 1.0);
-    return vec4<f32>(mix(env.light_side.rgb, env.light_top.rgb, tint) * a, env.light_fade.w);
+    return vec4<f32>(mix(env.light_side.rgb, env.light_top.rgb, tint) * a, hidden(in.edge));
 }
 
 // The depth light under the sweep (sonar.rs; depth_light::fragment is the
@@ -1596,7 +1613,7 @@ fn fs_mesh_light_sonar(in: LightOut) -> @location(0) vec4<f32> {
         let solid = clamp(env.sonar.x * flat * max(sweep.x, env.sonar.y * sweep.y), 0.0, 1.0);
         let rgb = look_color(clamp(s.y + crest_tint, -1.0, 1.0)) * lifted
             + look_color(clamp(crest_tint, 0.0, 1.0)) * solid * (1.0 - lifted);
-        return vec4<f32>(rgb, env.light_fade.w);
+        return vec4<f32>(rgb, hidden(in.edge));
     }
     var points = 0.0;
     var up = 0.0;
@@ -1647,15 +1664,15 @@ fn fs_mesh_light_sonar(in: LightOut) -> @location(0) vec4<f32> {
     let solid = clamp(env.sonar.x * flat * max(sweep.x, env.sonar.y * sweep.y), 0.0, 1.0);
     let rgb = mix(env.light_side.rgb, env.light_top.rgb, clamp(tint + crest_tint, 0.0, 1.0)) * lifted
         + mix(env.light_side.rgb, env.light_top.rgb, clamp(crest_tint, 0.0, 1.0)) * solid * (1.0 - lifted);
-    return vec4<f32>(rgb, env.light_fade.w);
+    return vec4<f32>(rgb, hidden(in.edge));
 }
 
 // The veil alone, for the faces pass: erases the veil's share of the
 // surfaces' light behind the map (blend: Zero, OneMinusSrcAlpha for rgb
 // and alpha), adding nothing.
 @fragment
-fn fs_mesh_veil() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.0, 0.0, 0.0, env.light_fade.w);
+fn fs_mesh_veil(in: LightOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, hidden(in.edge));
 }
 
 // The diagnostic gray of fs_main, off the interpolated distance; where a
@@ -3011,7 +3028,9 @@ mod runtime {
                 && self.geom.as_ref().is_none_or(Geom::can_light);
             let draws = crate::depth_light::mesh_draws(
                 lit,
-                light.is_some_and(|f| f.veil),
+                light.map_or(crate::depth_light::Hides::Hard, |f| {
+                    crate::depth_light::Hides::of(f.veil, f.edge)
+                }),
                 light.map_or(1.0, |f| f.rows[4][3]),
                 faces_extents.is_some(),
             );
@@ -4293,7 +4312,7 @@ mod runtime {
                     ["vs_mesh_light", "fs_mesh_light"],
                     "xr-env-depth-mesh-light",
                 ),
-                (["vs_mesh", "fs_mesh_veil"], "xr-env-depth-mesh-veil"),
+                (["vs_mesh_light", "fs_mesh_veil"], "xr-env-depth-mesh-veil"),
                 (
                     ["vs_mesh_light", "fs_mesh_light_sonar"],
                     "xr-env-depth-mesh-light-sonar",

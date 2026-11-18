@@ -2072,6 +2072,29 @@ the points back, live, to compare. The coals, the sparkle and the glints
 are points themselves and keep every plane, so Flint, Tide and Mirror
 still show dots on tops, each in its own way.
 
+### The soft edge of what occludes (Nov 18)
+
+Every theme's depth light occludes, and worn at full dark the black
+masses ended in stair-steps (the owner: "the occlude depth jagged edges -
+anything to do about that?"). The steps are the mesh's grid: the map hid
+the surfaces' light by drawing first, so the depth test cut the light at
+the last triangle, a cell of four texels in the faces layer.
+
+Now the surfaces draw first where a theme occludes, as they do under the
+veil, and the mesh erases their light by a share it carries at each
+vertex: all of it inside a mass, none at its rim, so the cutout fades
+across the mesh's last cell. The rim is a vertex without data or beside
+one without, and under geometry first the explained vertex its keep rule
+kept beside a nearer thing (the keep pass now marks those 2, dropped
+vertices 1). A step between two depth-detected masses is no rim. The
+depth written does not change, so the particles are hidden as before.
+
+The cost is the veil's order: the surfaces behind a thing shade and are
+then erased, where the depth test rejected them before, at every
+immersion level. With the room visible the last cell of a real thing lets
+a share of the light behind through. `debug.fosfora.depthedge 0` puts the
+hard cutout back, live. Not measured on the headset.
+
 ## The air per theme (Nov 18, board #5543)
 
 **Why.** The fireflies were the same in every theme. The owner's rule for

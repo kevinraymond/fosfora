@@ -40,6 +40,24 @@
 //! second draw for. `depthlightveil 0` keeps the hard cutout at every
 //! level: the mesh draws before the surfaces, as in the first version.
 //!
+//! **The soft edge** ([`with_edge`], [`Hides`], board #5543). Where the
+//! map hides the surfaces' light at every level (a theme that occludes,
+//! or the veil's knob at 0) it did so by drawing first and letting the
+//! depth test reject what lay behind, and worn the black masses ended in
+//! stair-steps: the mesh's grid, a cell of four texels in the faces
+//! layer. Now the surfaces draw first there too, and the mesh erases them
+//! by a share of its own at each vertex ([`VertexLight::edge`],
+//! [`hidden`]): all of it inside a mass, none at its rim, so the cutout
+//! fades across the mesh's last cell in place of stepping. The rim is a
+//! vertex without data or beside one without, and under geometry first
+//! the explained vertex the keep rule kept beside a nearer thing
+//! (`geom_first::MARK_RIM`). A step between two masses is no rim: both
+//! hide what is behind. The depth written is the same, so the particles
+//! are hidden as before. It costs what the veil's order costs with the
+//! room visible: the surfaces behind a thing shade and are erased, where
+//! the depth test rejected them. `debug.fosfora.depthedge 0` is the hard
+//! cutout again.
+//!
 //! **The points** ([`fragment`], [`plane_points`], [`points_tile`]). A
 //! tile of soft points made once and uploaded as a small texture
 //! ([`TILE`] texels, [`TILE_CELLS`] cells a side, a point anywhere in each
@@ -280,6 +298,7 @@ pub const KNOB_FILL: &str = "debug.fosfora.depthlightfill";
 pub const KNOB_VEIL: &str = "debug.fosfora.depthlightveil";
 pub const KNOB_POINTS: &str = "debug.fosfora.depthlightpoints";
 pub const KNOB_TOPS: &str = "debug.fosfora.depthlighttops";
+pub const KNOB_EDGE: &str = "debug.fosfora.depthedge";
 
 /// Rows of [`rows`], the end of `struct EnvEye` from `light` on
 /// (`env_depth::LIGHT_ROW`): the light's own, the look's two from
@@ -566,6 +585,11 @@ pub struct DepthLightOptions {
     /// the grass, the bubbles and the meters fall back to the points
     /// (on), or draw nothing there (off, the default; [`with_tops`]).
     pub tops: bool,
+    /// `debug.fosfora.depthedge`: where the map hides the surfaces' light
+    /// at every level (a theme that occludes, or the veil's knob at 0), it
+    /// hides it with a soft edge (on, the default; [`with_edge`]) or with
+    /// the hard cutout (off).
+    pub edge: bool,
 }
 
 impl Default for DepthLightOptions {
@@ -578,6 +602,7 @@ impl Default for DepthLightOptions {
             veil_forced: false,
             points: true,
             tops: false,
+            edge: true,
         }
     }
 }
@@ -589,7 +614,7 @@ impl DepthLightOptions {
     /// range the nearest end. `depthlightpoints` off only at `0` too. The
     /// veil's knob at `0` or `1` also takes the veil from the room's theme
     /// ([`Self::under`]); unset or empty leaves it the theme's.
-    /// `depthlighttops` on only at `1`.
+    /// `depthlighttops` on only at `1`, `depthedge` off only at `0`.
     pub fn from_knobs(prop: impl Fn(&str) -> Option<String>) -> Self {
         let d = Self::default();
         let number = |name: &str| {
@@ -606,7 +631,15 @@ impl DepthLightOptions {
             veil_forced: matches!(prop(KNOB_VEIL).as_deref().map(str::trim), Some("0" | "1")),
             points: !off(KNOB_POINTS),
             tops: prop(KNOB_TOPS).as_deref().map(str::trim) == Some("1"),
+            edge: !off(KNOB_EDGE),
         }
+    }
+
+    /// Whether the map hides the surfaces' light with the soft edge this
+    /// frame ([`with_edge`]): asked for, and the hard cutout is what the
+    /// veil leaves (call it on the options [`Self::under`] the theme).
+    pub fn soft_edge(&self) -> bool {
+        self.edge && !self.veil
     }
 
     /// These options in a room whose saved theme is `theme` (board
@@ -633,7 +666,7 @@ impl DepthLightOptions {
             return "off (debug.fosfora.depthlight 0): the depth map writes depth only".to_owned();
         }
         format!(
-            "on, points · gain {} · fill {} · {} · {} · a point's peak alpha {ALPHA_LOW} with the room plain to {ALPHA_HIGH} black · cells {CELL_M} m at 1 m, doubling each octave · the light falls to {FAR_FLOOR} from {} to {} m · two masses part at {JUMP_MIN_M} m or {JUMP_REL} of the distance",
+            "on, points · gain {} · fill {} · {} · {} · {} · a point's peak alpha {ALPHA_LOW} with the room plain to {ALPHA_HIGH} black · cells {CELL_M} m at 1 m, doubling each octave · the light falls to {FAR_FLOOR} from {} to {} m · two masses part at {JUMP_MIN_M} m or {JUMP_REL} of the distance",
             self.gain,
             self.fill,
             match (self.veil, self.points) {
@@ -650,6 +683,11 @@ impl DepthLightOptions {
                 "points on the tops under a look of upright things (debug.fosfora.depthlighttops 1)"
             } else {
                 "nothing on the tops under a look of upright things"
+            },
+            if self.edge {
+                "a soft edge where the map hides the surfaces' light"
+            } else {
+                "the hard edge (debug.fosfora.depthedge 0)"
             },
             FADE_M[0],
             FADE_M[1],
@@ -725,9 +763,39 @@ pub struct VeilPasses {
     pub faces_mesh: bool,
 }
 
-/// [`VeilPasses`] for the veil asked for (`on`) at share `v`.
-pub fn veil_passes(on: bool, v: f32) -> VeilPasses {
-    let surfaces_first = on && v < 1.0 - VEIL_EPS;
+/// How the map hides the surfaces' light behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hides {
+    /// By the immersion level: the veil.
+    Veil,
+    /// All of it at every level, by the depth test: the hard cutout.
+    Hard,
+    /// All of it at every level, falling to none at a mass's rim: the
+    /// soft edge ([`with_edge`]).
+    Soft,
+}
+
+impl Hides {
+    /// From a frame's switches: the veil where it is on, else the soft
+    /// edge where that is on, else the hard cutout.
+    pub fn of(veil: bool, edge: bool) -> Self {
+        match (veil, edge) {
+            (true, _) => Self::Veil,
+            (false, true) => Self::Soft,
+            (false, false) => Self::Hard,
+        }
+    }
+}
+
+/// [`VeilPasses`] for how the map hides (`hides`) at share `v`. With the
+/// soft edge the surfaces draw first at every share: the mesh erases them
+/// by its own share at each fragment, and a depth test cannot fade.
+pub fn veil_passes(hides: Hides, v: f32) -> VeilPasses {
+    let surfaces_first = match hides {
+        Hides::Veil => v < 1.0 - VEIL_EPS,
+        Hides::Hard => false,
+        Hides::Soft => v > VEIL_EPS,
+    };
     VeilPasses {
         surfaces_first,
         faces_mesh: !surfaces_first || v > VEIL_EPS,
@@ -766,7 +834,7 @@ pub struct MeshDraws {
 /// through and erases some, depth alone otherwise. Without a faces layer
 /// the eye pass draws the points. Without the light, as before: depth
 /// alone, first.
-pub fn mesh_draws(lit: bool, veil_on: bool, v: f32, faces_layer: bool) -> MeshDraws {
+pub fn mesh_draws(lit: bool, hides: Hides, v: f32, faces_layer: bool) -> MeshDraws {
     if !lit {
         return MeshDraws {
             eye: MeshDraw::Depth,
@@ -774,7 +842,7 @@ pub fn mesh_draws(lit: bool, veil_on: bool, v: f32, faces_layer: bool) -> MeshDr
             surfaces_first: false,
         };
     }
-    let passes = veil_passes(veil_on, v);
+    let passes = veil_passes(hides, v);
     if faces_layer {
         MeshDraws {
             eye: if passes.surfaces_first && v > VEIL_EPS {
@@ -1085,6 +1153,9 @@ pub struct Frame {
     pub rows: [[f32; 4]; ROWS],
     /// The surfaces draw before the mesh and show through it by the level.
     pub veil: bool,
+    /// The mesh hides the surfaces' light with the soft edge
+    /// ([`with_edge`]).
+    pub edge: bool,
 }
 
 /// The light's rows of `struct EnvEye` (from `light` on, written at
@@ -1151,6 +1222,27 @@ pub fn with_look(mut rows: [[f32; 4]; ROWS], look: DepthLook) -> [[f32; 4]; ROWS
 pub fn with_tops(mut rows: [[f32; 4]; ROWS], tops: bool) -> [[f32; 4]; ROWS] {
     rows[LOOK_ROW][3] = f32::from(u8::from(tops));
     rows
+}
+
+/// `rows` with the soft edge on or off in the clocks' spare lane
+/// ([`MOVE_ROW`]). Where a theme occludes, the map hid the surfaces' light
+/// with a depth test, and worn the black masses ended in stair-steps, the
+/// mesh's grid (the owner, Nov 18). With the edge on the mesh erases that
+/// light by a share of its own at each vertex ([`VertexLight::edge`]): all
+/// of it inside a mass, none at the rim, so the cutout fades across the
+/// mesh's last cell. The rim is a vertex without data or beside one
+/// without, and under geometry first the explained vertex its keep rule
+/// kept beside a nearer thing (`geom_first::MARK_RIM`).
+pub fn with_edge(mut rows: [[f32; 4]; ROWS], edge: bool) -> [[f32; 4]; ROWS] {
+    rows[MOVE_ROW][3] = f32::from(u8::from(edge));
+    rows
+}
+
+/// The share of the light behind a fragment that the mesh erases: the
+/// veil's (`rows[4][3]`), times the vertices' `edge` interpolated there
+/// while the soft edge is on. Mirrors the WGSL's `hidden`.
+pub fn hidden(rows: &[[f32; 4]; ROWS], edge: f32) -> f32 {
+    rows[4][3] * if rows[MOVE_ROW][3] > 0.5 { edge } else { 1.0 }
 }
 
 /// Whether `look` draws on upright surfaces alone, so that off one it has
@@ -1296,28 +1388,32 @@ pub fn frame(
     Frame {
         rows: with_sonar(
             with_around(
-                with_tops(
-                    with_look(
-                        rows(
-                            drive,
-                            if opts.points {
-                                peak_alpha(level, opts.gain)
-                            } else {
-                                0.0
-                            },
-                            colors(theme, key),
-                            opts.fill,
-                            veil_share(level, opts.veil),
+                with_edge(
+                    with_tops(
+                        with_look(
+                            rows(
+                                drive,
+                                if opts.points {
+                                    peak_alpha(level, opts.gain)
+                                } else {
+                                    0.0
+                                },
+                                colors(theme, key),
+                                opts.fill,
+                                veil_share(level, opts.veil),
+                            ),
+                            look(theme),
                         ),
-                        look(theme),
+                        opts.tops,
                     ),
-                    opts.tops,
+                    opts.soft_edge(),
                 ),
                 around,
             ),
             sonar,
         ),
         veil: opts.veil,
+        edge: opts.soft_edge(),
     }
 }
 
@@ -1335,6 +1431,10 @@ pub struct VertexLight {
     pub normal: Vec3,
     /// The light left at the vertex's distance, 0..1.
     pub bright: f32,
+    /// The soft edge ([`with_edge`]): how much of the surfaces' light
+    /// behind the vertex the mesh hides, 1 inside a mass, 0 at a vertex
+    /// without data or beside one without.
+    pub edge: f32,
 }
 
 /// The vertex stage of the light (`mesh_light` in
@@ -1416,12 +1516,14 @@ pub fn vertex_light(
         n = -n;
     }
     let len = n.length();
+    let beside = (0..4).any(|k| d[k].is_none() && inside[k]);
     VertexLight {
         clip,
         world: p,
         keep,
         normal: if len > 0.0 { n / len } else { Vec3::Z },
         bright,
+        edge: if dist.is_none() || beside { 0.0 } else { 1.0 },
     }
 }
 
@@ -2430,7 +2532,8 @@ mod tests {
         assert_close!(veil_share(f32::NAN, true), 1.0);
         // The passes: the veil's order only while it lets some light
         // through, the faces pass's mesh only while it erases some.
-        let passes = |level: f32, on: bool| veil_passes(on, veil_share(level, on));
+        let passes =
+            |level: f32, on: bool| veil_passes(Hides::of(on, false), veil_share(level, on));
         assert_eq!(
             passes(0.0, true),
             VeilPasses {
@@ -2475,8 +2578,9 @@ mod tests {
         assert_close!(half[0], base[0]);
         // Where the points draw: the faces layer when there is one, the
         // eye pass then holding the depth and its own veil.
-        let draws =
-            |level: f32, on: bool, faces: bool| mesh_draws(true, on, veil_share(level, on), faces);
+        let draws = |level: f32, on: bool, faces: bool| {
+            mesh_draws(true, Hides::of(on, false), veil_share(level, on), faces)
+        };
         use MeshDraw::{Depth, Light, Veil};
         let want = |eye, faces, surfaces_first| MeshDraws {
             eye,
@@ -2490,7 +2594,7 @@ mod tests {
         assert_eq!(draws(0.5, true, false), want(Light, None, true));
         assert_eq!(draws(0.0, true, false), want(Light, None, false));
         assert_eq!(
-            mesh_draws(false, true, 0.5, true),
+            mesh_draws(false, Hides::Veil, 0.5, true),
             want(Depth, Some(Depth), false)
         );
         // The rows carry it, and the fragment hands it on as its alpha.
@@ -3443,6 +3547,147 @@ mod tests {
                 .sum();
             assert!(under > 0.0, "{}: {under}", look.name());
         }
+    }
+
+    #[test]
+    fn the_soft_edge_hides_all_inside_a_mass_and_none_at_its_rim() {
+        let rows = lit_rows();
+        let r = eye_at(Vec3::new(0.0, 1.2, 0.0), Quat::IDENTITY);
+        // One thing 1.2 m ahead on the left of the view, nothing (no data)
+        // on the right.
+        let map = map_of(&r, |o, d| {
+            let t = plane(o, d, Vec3::new(0.0, 0.0, -1.2), Vec3::Z)?;
+            ((o + d * t).x < 0.0).then_some(t)
+        });
+        let mid = vertex_near(&r, Vec3::new(0.0, 1.2, -1.2));
+        let edges: Vec<f32> = (0..12)
+            .map(|k| [mid[0] + k * STEP - 6 * STEP, mid[1]])
+            .map(|t| vertex_light(&r, &rows, t, &map).edge)
+            .collect();
+        // All of it inside the thing, none at its last vertex (the one
+        // beside a vertex without data) and none without data: the erase
+        // falls across the mesh's last cell.
+        let last = edges.iter().rposition(|&e| e > 0.0).expect("a mass");
+        assert!(last >= 2 && last + 2 < edges.len(), "{edges:?}");
+        assert!(edges[..=last].iter().all(|&e| e > 0.999), "{edges:?}");
+        assert!(edges[last + 1..].iter().all(|&e| e < 0.001), "{edges:?}");
+        let rim = [mid[0] + (last as u32 + 1) * STEP - 6 * STEP, mid[1]];
+        assert!(r.texel_distance(map(rim)).is_some(), "the rim has data");
+        let inside = vertex_light(&r, &rows, [rim[0] - 3 * STEP, rim[1]], &map);
+        assert_close!(inside.keep, 1.0);
+        // A step between two masses is no rim: both hide what is behind.
+        let two = map_of(&r, |o, d| {
+            let t = plane(o, d, Vec3::new(0.0, 0.0, -1.2), Vec3::Z)?;
+            if (o + d * t).x < 0.0 {
+                Some(t)
+            } else {
+                plane(o, d, Vec3::new(0.0, 0.0, -2.7), Vec3::Z)
+            }
+        });
+        for k in 0..12 {
+            let v = vertex_light(&r, &rows, [mid[0] + k * STEP - 6 * STEP, mid[1]], &two);
+            assert_close!(v.edge, 1.0);
+        }
+        // The fragment's share: the veil's, times the edge with it on.
+        let mut on = with_edge(lit_rows(), true);
+        on[4][3] = 1.0;
+        assert_close!(on[MOVE_ROW][3], 1.0);
+        assert_close!(hidden(&on, 1.0), 1.0);
+        assert_close!(hidden(&on, 0.25), 0.25);
+        assert_close!(hidden(&on, 0.0), 0.0);
+        let mut off = with_edge(lit_rows(), false);
+        off[4][3] = 1.0;
+        assert_close!(off[MOVE_ROW][3], 0.0);
+        assert_close!(hidden(&off, 0.25), 1.0);
+        off[4][3] = 0.4;
+        assert_close!(hidden(&off, 0.0), 0.4);
+    }
+
+    #[test]
+    fn the_soft_edge_draws_the_surfaces_first_where_a_theme_occludes() {
+        // The knob: on unless 0.
+        let d = DepthLightOptions::default();
+        let knob = |v: &'static str| {
+            DepthLightOptions::from_knobs(|name| (name == KNOB_EDGE).then(|| v.to_owned()))
+        };
+        assert!(d.edge && knob("1").edge && knob("").edge && !knob("0").edge);
+        assert!(d.describe().contains("a soft edge"));
+        assert!(knob("0").describe().contains("debug.fosfora.depthedge 0"));
+        // Only where the map hides the light at every level: under a theme
+        // (every theme occludes) or with the veil's knob at 0. A room with
+        // no theme keeps the veil, which the edge leaves alone.
+        assert!(!d.soft_edge());
+        assert!(!d.under(None).soft_edge());
+        for t in Theme::ALL {
+            assert!(d.under(Some(t)).soft_edge(), "{t:?}");
+            assert!(!knob("0").under(Some(t)).soft_edge(), "{t:?}");
+        }
+        assert_eq!(Hides::of(true, true), Hides::Veil);
+        assert_eq!(Hides::of(false, true), Hides::Soft);
+        assert_eq!(Hides::of(false, false), Hides::Hard);
+        // The frame says so, and its rows carry the switch.
+        let drive = Drive::default();
+        let frame_of = |opts: DepthLightOptions, theme: Option<Theme>| {
+            frame(
+                &opts.under(theme),
+                &drive,
+                theme,
+                [1.0; 3],
+                1.0,
+                &[[0.0; 4]; crate::sonar::ROWS],
+                &Around::default(),
+            )
+        };
+        let soft = frame_of(d, Some(Theme::Aurora));
+        assert!(soft.edge && !soft.veil);
+        assert_close!(soft.rows[MOVE_ROW][3], 1.0);
+        assert_close!(soft.rows[4][3], 1.0);
+        let hard = frame_of(knob("0"), Some(Theme::Aurora));
+        assert!(!hard.edge && !hard.veil);
+        assert_close!(hard.rows[MOVE_ROW][3], 0.0);
+        let veiled = frame_of(d, None);
+        assert!(!veiled.edge && veiled.veil);
+        assert_close!(veiled.rows[MOVE_ROW][3], 0.0);
+        // The passes. Soft: the surfaces first at every level, the mesh
+        // after them in both passes, erasing by its own share. Hard: the
+        // mesh first, as before the edge.
+        for level in [0.0, 0.5, 1.0] {
+            let v = veil_share(level, false);
+            assert_close!(v, 1.0);
+            let soft = veil_passes(Hides::Soft, v);
+            assert!(soft.surfaces_first && soft.faces_mesh, "{level}");
+            assert_eq!(
+                mesh_draws(true, Hides::Soft, v, true),
+                MeshDraws {
+                    eye: MeshDraw::Veil,
+                    faces: Some(MeshDraw::Light),
+                    surfaces_first: true,
+                }
+            );
+            assert_eq!(
+                mesh_draws(true, Hides::Soft, v, false),
+                MeshDraws {
+                    eye: MeshDraw::Light,
+                    faces: None,
+                    surfaces_first: true,
+                }
+            );
+            let hard = veil_passes(Hides::Hard, v);
+            assert!(!hard.surfaces_first && hard.faces_mesh, "{level}");
+            assert_eq!(
+                mesh_draws(true, Hides::Hard, v, true),
+                MeshDraws {
+                    eye: MeshDraw::Depth,
+                    faces: Some(MeshDraw::Light),
+                    surfaces_first: false,
+                }
+            );
+        }
+        // Without the light, depth alone and first, whatever the edge.
+        assert_eq!(
+            mesh_draws(false, Hides::Soft, 1.0, true),
+            mesh_draws(false, Hides::Hard, 1.0, true)
+        );
     }
 
     #[test]

@@ -551,6 +551,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       which is every theme, and the veil in a room with none; live)
     //   adb shell setprop debug.fosfora.depthlightpoints 0|1     (depth light: 0 draws no points, the mesh still drawn in the light's passes and order,
     //       to cost the points apart from the veil; default 1; live)
+    //   adb shell setprop debug.fosfora.depthedge 0|1            (board #5543, depth light: where a theme's depth light occludes, 1 = the map hides
+    //       the surfaces' light with a soft edge, the erase falling to nothing across the mesh's last cell at a mass's rim; 0 = the hard
+    //       cutout by the depth test, stair-stepped at the mesh's grid; default 1; live)
     //   adb shell setprop debug.fosfora.depthlighttops 0|1       (board #5543, depth light: the beams, the grass, the bubbles and the meters draw on upright
     //       surfaces; 1 = off one, on a top or a slant, they draw the points as they did; default 0, nothing there, the thing's dark
     //       base alone; live)
