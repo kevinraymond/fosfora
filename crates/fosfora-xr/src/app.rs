@@ -556,7 +556,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       cutout by the depth test, stair-stepped at the mesh's grid; default 1; live)
     //   adb shell setprop debug.fosfora.depthlighttops 0..1      (board #5543, depth light: the beams, the grass, the bubbles and the meters draw on upright
     //       surfaces; off one, on a top or a slant, they draw the points at this share of their size: 1 as they did, 0.25 a quarter;
-    //       default 0, nothing there, the thing's dark base alone; live)
+    //       0 nothing there, the thing's dark base alone; default 0.25, the owner's worn pick; live)
     //   adb shell setprop debug.fosfora.sonar 0|1|2              (board #5511, sonar.rs: on each downbeat a shell of light leaves the wearer and travels out, and
     //       what the depth light draws shows a bright line where the shell crosses it, with a short tail behind; standing lines of equal
     //       distance come up while the song builds and fade on the drop; 0 off, the depth light as it was; 1 the depth light's things;

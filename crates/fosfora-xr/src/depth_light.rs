@@ -144,15 +144,16 @@
 //!   A top shows nothing, or with the switch on the points, each as
 //!   bright as its band.
 //!
-//! **Nothing on a top** ([`with_tops`], `debug.fosfora.depthlighttops`).
-//! The beams, the grass, the bubbles and the meters are looks of upright
-//! things, and off an upright surface they fell back to the points. Worn,
-//! every theme then showed the same dots, since from a chair most of what
-//! the depth map sees is tops and slants. Now they draw nothing there and
-//! the thing stays its dark base; the light fades out as a surface turns
+//! **Small points on a top** ([`with_tops`], [`TOPS`],
+//! `debug.fosfora.depthlighttops`). The beams, the grass, the bubbles and
+//! the meters are looks of upright things, and off an upright surface they
+//! fell back to the points. Worn, every theme then showed the same dots,
+//! since from a chair most of what the depth map sees is tops and slants,
+//! and the dots cluttered the scene. With none there the thing was its
+//! dark base alone. The owner wore both and chose between them: the points
+//! at a quarter of their size ([`TOPS`]), fading in as a surface turns
 //! from upright to level, by the planes' own weights. The knob is the
-//! points' size there, 0 to 1, live: 1 puts them back as they were, 0.25 a
-//! quarter of their size (the owner asked to try that). The coals, the
+//! size, 0 to 1, live: 1 the points as they were, 0 none. The coals, the
 //! sparkle and the glints are points themselves and keep every plane.
 //!
 //! What a look reads of the room beside the drive rides one more row
@@ -299,6 +300,11 @@ pub const KNOB_FILL: &str = "debug.fosfora.depthlightfill";
 pub const KNOB_VEIL: &str = "debug.fosfora.depthlightveil";
 pub const KNOB_POINTS: &str = "debug.fosfora.depthlightpoints";
 pub const KNOB_TOPS: &str = "debug.fosfora.depthlighttops";
+/// The size of the points on a top or a slant under a look of upright
+/// things, as a share of their own ([`with_tops`]): a quarter. The owner,
+/// worn on Nov 18, with the points at full size, at none and at a quarter:
+/// "dots 25 needs to be default."
+pub const TOPS: f32 = 0.25;
 pub const KNOB_EDGE: &str = "debug.fosfora.depthedge";
 
 /// Rows of [`rows`], the end of `struct EnvEye` from `light` on
@@ -584,8 +590,8 @@ pub struct DepthLightOptions {
     pub points: bool,
     /// `debug.fosfora.depthlighttops`: off an upright surface the beams,
     /// the grass, the bubbles and the meters fall back to the points at
-    /// this share of their size, 0 to 1 ([`with_tops`]): 0, the default,
-    /// is nothing there, 1 the points as they were.
+    /// this share of their size, 0 to 1 ([`with_tops`]): [`TOPS`] unless
+    /// the knob says, 0 nothing there, 1 the points as they were.
     pub tops: f32,
     /// `debug.fosfora.depthedge`: where the map hides the surfaces' light
     /// at every level (a theme that occludes, or the veil's knob at 0), it
@@ -603,7 +609,7 @@ impl Default for DepthLightOptions {
             veil: true,
             veil_forced: false,
             points: true,
-            tops: 0.0,
+            tops: TOPS,
             edge: true,
         }
     }
@@ -1219,10 +1225,11 @@ pub fn with_look(mut rows: [[f32; 4]; ROWS], look: DepthLook) -> [[f32; 4]; ROWS
 /// The beams, the grass, the bubbles and the meters draw on upright
 /// surfaces. Off one, on a top or a slant, they drew the points, and worn
 /// every theme then showed the same dots: from a chair most of what the
-/// depth map sees is tops (the owner, Nov 18). With `tops` at 0, the
-/// default, they draw nothing there and the thing stays its dark base; at
-/// 1 (`debug.fosfora.depthlighttops 1`), the points as before; between,
-/// the points at that share of their size (he asked to try a quarter).
+/// depth map sees is tops (the owner, Nov 18). With `tops` at 0 they draw
+/// nothing there and the thing stays its dark base; at 1
+/// (`debug.fosfora.depthlighttops 1`), the points as before; between, the
+/// points at that share of their size. The default is a quarter
+/// ([`TOPS`]).
 /// The points, the coals, the sparkle and the glints are made of points
 /// and draw on every plane at their own size either way.
 pub fn with_tops(mut rows: [[f32; 4]; ROWS], tops: f32) -> [[f32; 4]; ROWS] {
@@ -3002,7 +3009,7 @@ mod tests {
     }
 
     #[test]
-    fn a_look_of_upright_things_draws_nothing_on_a_top_unless_asked() {
+    fn a_look_of_upright_things_draws_small_points_on_a_top_and_none_when_asked() {
         let fw = Vec3::splat(5e-4);
         let (eye, grid) = wall_grid();
         // The wall's points laid level, as a top 0.5 m up, and the wall
@@ -3015,14 +3022,16 @@ mod tests {
                 .sum::<f64>()
         };
         let slant = Vec3::new(0.0, 1.0, 1.0);
-        // Beams, grass, bubbles and meters: nothing on a top by default,
-        // the points there with the switch on, the wall the same either
-        // way, and a slant between the two, never brighter for the
-        // switch being off.
+        // Beams, grass, bubbles and meters: the points at a quarter of
+        // their size on a top by default, nothing there at 0, whole ones
+        // at 1, the wall the same either way, and a slant between the
+        // two, never brighter for the size being 0.
         for theme in [Theme::Aurora, Theme::Contour, Theme::Drift, Theme::Classic] {
-            let off = look_rows(theme, 1.0, 1.0, 0.0);
-            let look = look_of(&off);
+            let default = look_rows(theme, 1.0, 1.0, 0.0);
+            let look = look_of(&default);
             assert!(upright_look(look), "{}", look.name());
+            assert_close!(default[LOOK_ROW][3], TOPS);
+            let off = with_tops(default, 0.0);
             assert_close!(off[LOOK_ROW][3], 0.0);
             let on = with_tops(off, 1.0);
             assert_close!(on[LOOK_ROW][3], 1.0);
@@ -3063,15 +3072,25 @@ mod tests {
         let knob = |v: Option<&'static str>| {
             DepthLightOptions::from_knobs(|name| v.filter(|_| name == KNOB_TOPS).map(str::to_owned))
         };
-        assert_close!(DepthLightOptions::default().tops, 0.0);
-        for none in [None, Some("0"), Some(""), Some("x"), Some("-1")] {
+        // A quarter unless the knob says; 0 is none.
+        assert_close!(TOPS, 0.25);
+        assert_close!(DepthLightOptions::default().tops, TOPS);
+        for unset in [None, Some(""), Some("x")] {
+            assert_close!(knob(unset).tops, TOPS);
+        }
+        for none in [Some("0"), Some("-1")] {
             assert_close!(knob(none).tops, 0.0);
         }
         assert_close!(knob(Some("1")).tops, 1.0);
         assert_close!(knob(Some(" 1 ")).tops, 1.0);
         assert_close!(knob(Some("0.25")).tops, 0.25);
         assert_close!(knob(Some("3")).tops, 1.0);
-        assert!(knob(None).describe().contains("nothing on the tops"));
+        assert!(knob(Some("0")).describe().contains("nothing on the tops"));
+        assert!(
+            knob(None)
+                .describe()
+                .contains("points at 0.25 of their size on the tops")
+        );
         assert!(
             knob(Some("0.25"))
                 .describe()
@@ -3090,7 +3109,8 @@ mod tests {
             )
             .rows
         };
-        assert_close!(rows_of(&knob(None))[LOOK_ROW][3], 0.0);
+        assert_close!(rows_of(&knob(None))[LOOK_ROW][3], TOPS);
+        assert_close!(rows_of(&knob(Some("0")))[LOOK_ROW][3], 0.0);
         assert_close!(rows_of(&knob(Some("1")))[LOOK_ROW][3], 1.0);
         assert_close!(rows_of(&knob(Some("0.25")))[LOOK_ROW][3], 0.25);
     }

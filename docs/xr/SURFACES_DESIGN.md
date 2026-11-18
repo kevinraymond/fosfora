@@ -2061,16 +2061,17 @@ four draws at exactly `ALPHA_LOW / ALPHA_HIGH` of its light with the room
 black, over the hard cutout
 (`every_look_draws_with_the_room_visible_and_with_it_black`).
 
-**Nothing on a top.** The beams, the grass, the bubbles and the meters
-draw on upright surfaces, and off one they fell back to the points. The
-owner, worn on Nov 18: "All the themes have the same dots on the depth
+**Small points on a top.** The beams, the grass, the bubbles and the
+meters draw on upright surfaces, and off one they fell back to the points.
+The owner, worn on Nov 18: "All the themes have the same dots on the depth
 detected stuff." From a chair most of what the depth map sees is tops and
-slants, so the fallback was most of what he saw. Now those four draw
-nothing there and the thing stays its dark base, the light fading out as a
-surface turns from upright to level. `debug.fosfora.depthlighttops` is
-the points' size there, 0 to 1, live: 1 puts the points back as they were,
-0.25 draws them at a quarter of their size (the owner asked to try that),
-0, the default, nothing. The coals, the sparkle and the glints are points
+slants, so the fallback was most of what he saw. He wore it three ways:
+the points at full size ("too cluttered"), none ("I like it"), and a
+quarter of their size, and chose the quarter: "dots 25 needs to be
+default." So off an upright surface those four looks draw the points at
+0.25 of their size, fading in as a surface turns from upright to level.
+`debug.fosfora.depthlighttops` is the size, 0 to 1, live: 1 the points as
+they were, 0 none. The coals, the sparkle and the glints are points
 themselves and keep every plane at their own size, so Flint, Tide and
 Mirror still show dots on tops, each in its own way.
 
