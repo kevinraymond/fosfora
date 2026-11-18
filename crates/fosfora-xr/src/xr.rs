@@ -1003,6 +1003,12 @@ impl XrSession {
         self.room.is_some()
     }
 
+    /// Whether the session has the wearer's focus: not while a system
+    /// dialog or the system menu is in front.
+    pub fn focused(&self) -> bool {
+        self.state == xr::SessionState::FOCUSED
+    }
+
     /// Where the room's scene query is (`Room::scan_state`); `None`
     /// without a room.
     pub fn scan_state(&self) -> Option<crate::label::ScanState> {

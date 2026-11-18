@@ -2658,16 +2658,30 @@ wearer steps round an end of the songs or says "scan my music"`. The app
 asks once a run, when the wearer goes for music the list does not hold
 (`music::asks_storage`): a `<` or `>` (or a spoken "next song") that would
 go round an end of the list, or "scan my music", while the shared folder is
-unread. The label reads "Allow storage to add your own music." as the
-dialog comes up. The step that asks does not step, so after the grant the
-same step lands on the wearer's own first or last song. A wearer who says
-no is not asked again that run, and the next step wraps as it always did.
+unread. The system's dialog does not say why it came or where songs go,
+and once up it covers the view. So the app tells first (board #5555): the
+label reads "To add your own music, / allow storage next. / Songs go in the
+headset's / Music folder." for its reading time, and only then is the
+dialog asked for (`music::StorageAsk::due`). A spoken "next song" or "scan
+my music" that asks replies with the same words and names no song
+(`intent::Tracks::asks`). The step that started the ask is owed. After the
+grant it is made once the scan is in, so it lands on the wearer's own first
+or last song, and the label reads "next: " and that song's title. With no
+songs in the folders it goes round the end, and the label says "No songs in
+the headset's Music folder yet." above the title. After a "no", or when the
+system shows no dialog, it goes round the end too: two polls in a row with
+the session focused and the permission still missing
+(`music::UNANSWERED_POLLS`). A step of the wearer's own in between replaces
+it. Worn on Nov 17 the first build of #5549 dropped the step and asked with
+no warning: the label named the first bundled track while the third played
+on, and the wearer had to ask twice.
+A wearer who says no is not asked again that run.
 The grant is polled once a second for as long as the folder is unread,
 whether it comes from the app's ask, from Settings or from `pm grant`. It
 logs `permission READ_EXTERNAL_STORAGE granted: scanning Music/` and adds
-that folder's tracks after the bundled ones without a relaunch, the playing
-track left alone. Denied, the bundled tracks and the app's own music folder
-still play.
+that folder's tracks after the bundled ones without a relaunch. With no
+step owed the playing track is left alone. Denied, the bundled tracks and
+the app's own music folder still play.
 
 Device check (the reviewer's recipe):
 

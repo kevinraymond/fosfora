@@ -227,6 +227,16 @@ struct Held {
     took: Duration,
 }
 
+/// A step the player made for the wearer (`Music::step_and_tell`): the
+/// way it went, the title it came to, and how many of the wearer's own
+/// songs the list holds then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Told {
+    pub by: isize,
+    pub title: String,
+    pub own: usize,
+}
+
 /// The decode the player waits for: its job, the track, and whether it
 /// swaps in at once (a step the wearer asked for) or where the playing
 /// one ends (the next track of a playlist playing through).
@@ -263,6 +273,12 @@ pub struct Music {
     /// The way the wearer last stepped (1 or -1): a refused track is
     /// skipped this way.
     direction: isize,
+    /// The step owed once the scan the storage grant started is in
+    /// (`storage_granted`, board #5555).
+    after_scan: Option<isize>,
+    /// A step the player made for the wearer, for the label
+    /// (`take_told`).
+    told: Option<Told>,
     worker: Option<Worker>,
     /// Declared before `analysis` so the stream stops feeding the tap
     /// before its analysis thread is joined.
@@ -314,6 +330,8 @@ impl Music {
             next_id: 1,
             bad: HashSet::new(),
             direction: 1,
+            after_scan: None,
+            told: None,
             worker,
             playback: None,
             analysis: None,
@@ -390,6 +408,7 @@ impl Music {
             current: self.playlist.current().filter(|_| !self.on_fallback),
             playing: self.want,
             blocked: self.shared_blocked(),
+            asks: false,
         }
     }
 
@@ -621,9 +640,36 @@ impl Music {
     }
 
     /// The storage permission arrived: the shared folder joins the scan.
-    pub fn storage_granted(&mut self) {
+    /// `then` is the step that asked for it (`music::StorageAsk`, board
+    /// #5555), made once the scan is in: from the last bundled track a
+    /// step forward lands on the wearer's first song, and with no songs
+    /// of theirs it goes round the end.
+    pub fn storage_granted(&mut self, then: Option<isize>) {
         self.folders.shared_readable = true;
-        self.rescan();
+        if self.worker.is_some() {
+            self.after_scan = then;
+            self.rescan();
+        } else if let Some(by) = then {
+            self.step_and_tell(by);
+        }
+    }
+
+    /// A step the wearer asked for earlier, made now (board #5555): as
+    /// [`Self::step`], and the title it came to is kept for the label.
+    pub fn step_and_tell(&mut self, by: isize) {
+        self.step(by);
+        if let Some(title) = self.track_title() {
+            self.told = Some(Told {
+                by,
+                title: title.to_owned(),
+                own: self.playlist.own_len(),
+            });
+        }
+    }
+
+    /// The step [`Self::step_and_tell`] made since the last call.
+    pub fn take_told(&mut self) -> Option<Told> {
+        self.told.take()
     }
 
     /// Ask the music thread for the clip at `path`; `now`: it swaps in at
@@ -876,6 +922,11 @@ impl Music {
         }
         if let (Some(p), Some(h)) = (&self.playback, &self.held) {
             p.set_looping(self.loops(&h.path));
+        }
+        // Board #5555: the step that asked for the storage permission,
+        // now that the wearer's songs are in the list.
+        if let Some(by) = self.after_scan.take() {
+            self.step_and_tell(by);
         }
     }
 

@@ -130,6 +130,10 @@ pub struct Tracks<'a> {
     pub current: Option<usize>,
     pub playing: bool,
     pub blocked: bool,
+    /// A step round an end of the list, or "scan my music", asks for the
+    /// storage permission first (`music::asks_storage`, board #5555): the
+    /// reply says what the dialog is for and names no song.
+    pub asks: bool,
 }
 
 impl Vocabulary<'_> {
@@ -2058,6 +2062,7 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
                 (None, false) => "music off".to_owned(),
             }
         }
+        Intent::ScanMusic if vocab.tracks.asks => crate::music::ASK_STORAGE_LABEL.to_owned(),
         Intent::ScanMusic => "looking for new music".to_owned(),
         Intent::Rescan => "rescanning the room".to_owned(),
         Intent::Recenter => "recentered".to_owned(),
@@ -2207,9 +2212,14 @@ pub fn theme_reply(theme: crate::themes::Theme) -> String {
 /// The reply to a track step `by` (1 next, -1 previous): the track the
 /// Music row steps to, "next: One More Time", as `playlist::stepped`
 /// finds it; with no tracks, the Music row's own words for it
-/// (`music::no_songs`, board #5461).
+/// (`music::no_songs`, board #5461). A step that asks for the storage
+/// permission first (`Tracks::asks`, board #5555) says what the dialog is
+/// for: the song is named once the step is made.
 fn track_step(vocab: &Vocabulary<'_>, by: isize, word: &str) -> String {
     let t = vocab.tracks;
+    if t.asks && crate::playlist::wraps(t.titles.len(), t.current, by) {
+        return crate::music::ASK_STORAGE_LABEL.to_owned();
+    }
     match crate::playlist::stepped(t.titles.len(), t.current, by) {
         Some(i) => format!("{word}: {}", t.titles[i]),
         None => crate::music::no_songs(t.blocked).to_owned(),
@@ -3593,11 +3603,37 @@ mod tests {
                 current: Some(0),
                 playing: true,
                 blocked,
+                asks: false,
             };
             assert_eq!(reply(&Intent::NextTrack, &v), "next: Bundled Two");
             assert_eq!(reply(&Intent::PrevTrack, &v), "previous: Bundled Two");
             assert_eq!(reply(&Intent::NowPlaying, &v), "playing: Bundled One");
         }
+        // Board #5555: a step round an end that asks for storage first
+        // names no song (the step is made after the dialog); a step
+        // inside the list is a step.
+        v.tracks = Tracks {
+            titles: &bundled,
+            current: Some(1),
+            playing: true,
+            blocked: true,
+            asks: true,
+        };
+        assert_eq!(
+            reply(&Intent::NextTrack, &v),
+            crate::music::ASK_STORAGE_LABEL
+        );
+        assert_eq!(reply(&Intent::PrevTrack, &v), "previous: Bundled One");
+        assert_eq!(
+            crate::music::step_reply(-1, "Bundled One"),
+            reply(&Intent::PrevTrack, &v)
+        );
+        assert_eq!(
+            reply(&Intent::ScanMusic, &v),
+            crate::music::ASK_STORAGE_LABEL
+        );
+        v.tracks.asks = false;
+        assert_eq!(reply(&Intent::ScanMusic, &v), "looking for new music");
         // No songs (board #5461): where to put them, or the permission
         // when the shared folder goes unread for want of it; the words of
         // the Music row's `<` `>`. Only with no bundled track either.

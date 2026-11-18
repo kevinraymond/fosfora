@@ -174,9 +174,97 @@ pub fn asks_storage(wants_more: bool, blocked: bool, asked: bool) -> bool {
     wants_more && blocked && !asked
 }
 
-/// What the label says as the system's storage dialog comes up, so the
-/// wearer knows what it is for.
-pub const ASK_STORAGE_LABEL: &str = "Allow storage to add your own music.";
+/// What the label says before the system's storage dialog comes up
+/// (board #5555): why it is coming and where the songs go. The dialog
+/// itself speaks of "media files, including audio, photos and videos" and
+/// says nothing of either, and it covers the label once it is up, so the
+/// label shows first, for its reading time ([`StorageAsk::due`]).
+pub const ASK_STORAGE_LABEL: &str =
+    "To add your own music,\nallow storage next.\nSongs go in the headset's\nMusic folder.";
+
+/// What the label says when storage was granted and the music folders
+/// hold no songs: the step that asked went round the end, and this is why.
+pub const NO_OWN_SONGS_LABEL: &str = "No songs in the headset's Music folder yet.";
+
+/// How many polls in a row (one a second) the session has the wearer's
+/// focus with the permission still missing before a [`StorageAsk`] counts
+/// as unanswered. Two: the system's dialog takes the focus within a
+/// fraction of a second of the ask, so one poll can land before it, and a
+/// grant shows on the first poll after it closes.
+pub const UNANSWERED_POLLS: u32 = 2;
+
+/// The ask for the storage permission, from the step or the "scan my
+/// music" that started it to the wearer's answer (board #5555).
+///
+/// It tells first: [`ASK_STORAGE_LABEL`] shows for its reading time, and
+/// only then is the system's dialog asked for ([`Self::due`]), so the
+/// wearer knows what the dialog is for before it covers the view.
+///
+/// A step that started it is owed ([`Self::step`]): the grant makes it
+/// once the wearer's songs are in the list, where it lands on their first
+/// (or last) one, and a "no" or a dialog that never came makes it round
+/// the end of the list ([`Self::unanswered`]). Either way the song changes
+/// on the one "next song", and the label names the song it changed to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StorageAsk {
+    by: isize,
+    tell_s: f32,
+    asked: bool,
+    focused_polls: u32,
+}
+
+impl StorageAsk {
+    /// `by`: the step that started it (1 next, -1 previous), 0 for "scan
+    /// my music".
+    pub fn new(by: isize) -> Self {
+        Self {
+            by,
+            tell_s: crate::label::read_s(ASK_STORAGE_LABEL),
+            asked: false,
+            focused_polls: 0,
+        }
+    }
+
+    /// The step owed, `None` for "scan my music".
+    pub fn step(self) -> Option<isize> {
+        (self.by != 0).then_some(self.by)
+    }
+
+    /// Whether the system's dialog was asked for yet.
+    pub fn asked(self) -> bool {
+        self.asked
+    }
+
+    /// Once a frame while it tells: true on the frame the label has had
+    /// its reading time, which is when to ask the system. Once.
+    pub fn due(&mut self, dt: f32) -> bool {
+        if self.asked {
+            return false;
+        }
+        self.tell_s -= dt;
+        self.asked = self.tell_s <= 0.0;
+        self.asked
+    }
+
+    /// One poll with the permission still missing, `focused` while the
+    /// session has the wearer's focus (the dialog takes it). True once the
+    /// ask went unanswered: [`UNANSWERED_POLLS`] focused polls in a row
+    /// after the dialog was asked for.
+    pub fn unanswered(&mut self, focused: bool) -> bool {
+        self.focused_polls = if focused && self.asked {
+            self.focused_polls + 1
+        } else {
+            0
+        };
+        self.focused_polls >= UNANSWERED_POLLS
+    }
+}
+
+/// The label for a step made, in the voice reply's words: "next: High
+/// Meadow", "previous: High Meadow".
+pub fn step_reply(by: isize, title: &str) -> String {
+    format!("{}: {title}", if by < 0 { "previous" } else { "next" })
+}
 
 /// [`no_songs`]' words: no songs anywhere it can read, and the shared
 /// folder unread.
@@ -228,9 +316,73 @@ mod tests {
         assert!(!asks_storage(true, false, false));
         // Once a run: a wearer who said no is not asked at every wrap.
         assert!(!asks_storage(true, true, true));
-        // The label fits one line or two and says what the dialog is for.
+        // The label says what the dialog is for and where the songs go,
+        // on the lines it is written in, whole.
         assert!(ASK_STORAGE_LABEL.contains("your own music"));
-        assert!(crate::label::layout(ASK_STORAGE_LABEL).lines.len() <= 2);
+        assert!(ASK_STORAGE_LABEL.contains("Music folder"));
+        let shown = crate::label::layout(ASK_STORAGE_LABEL);
+        assert_eq!(
+            shown.lines,
+            ASK_STORAGE_LABEL.lines().collect::<Vec<_>>(),
+            "no line wraps"
+        );
+        // The longest answer after a grant: no songs, and the song the
+        // step went round to.
+        let none = format!(
+            "{NO_OWN_SONGS_LABEL}\n{}",
+            step_reply(1, "Let the Night Come In")
+        );
+        let shown = crate::label::layout(&none);
+        assert!(
+            shown.lines.len() <= crate::label::MAX_LINES,
+            "{:?}",
+            shown.lines
+        );
+        assert!(
+            !shown.lines.concat().contains('\u{2026}'),
+            "{:?}",
+            shown.lines
+        );
+    }
+
+    #[test]
+    fn the_ask_tells_first_and_the_step_that_started_it_is_owed() {
+        // Board #5555. The label shows for its reading time before the
+        // dialog is asked for, and the ask is made once.
+        let mut ask = StorageAsk::new(1);
+        assert_eq!((ask.step(), ask.asked()), (Some(1), false));
+        let frames = (crate::label::read_s(ASK_STORAGE_LABEL) * 72.0).ceil() as usize;
+        assert!(frames > 3 * 72, "{frames}: long enough to read two lines");
+        let due: Vec<bool> = (0..frames + 72).map(|_| ask.due(1.0 / 72.0)).collect();
+        assert_eq!(due.iter().filter(|d| **d).count(), 1);
+        let at = due.iter().position(|d| *d).unwrap();
+        assert!(at + 2 >= frames && at <= frames, "{at} of {frames}");
+        assert!(ask.asked());
+        // The dialog comes up after one focused poll and holds the focus
+        // for eight seconds: nothing is decided, and the first poll back
+        // sees the grant before this is asked again.
+        assert!(!ask.unanswered(true));
+        for _ in 0..8 {
+            assert!(!ask.unanswered(false));
+        }
+        // A "no": back in focus with the permission still missing.
+        assert!(!ask.unanswered(true));
+        assert!(ask.unanswered(true));
+        // While it tells, focused polls decide nothing: the dialog has not
+        // been asked for.
+        let mut ask = StorageAsk::new(-1);
+        for _ in 0..5 {
+            assert!(!ask.unanswered(true));
+        }
+        // No dialog at all (the system stopped showing it): two polls.
+        assert!(ask.due(60.0));
+        assert!(!ask.unanswered(true));
+        assert!(ask.unanswered(true));
+        // "scan my music" owes no step.
+        assert_eq!(StorageAsk::new(0).step(), None);
+        // The label is the voice reply's for the same step.
+        assert_eq!(step_reply(1, "High Meadow"), "next: High Meadow");
+        assert_eq!(step_reply(-1, "High Meadow"), "previous: High Meadow");
     }
 
     #[test]

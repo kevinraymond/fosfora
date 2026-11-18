@@ -737,6 +737,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
     );
     let mut storage_asked = false;
+    // Board #5555: the ask from its label to the wearer's answer, and
+    // the step that started it, owed until then.
+    let mut storage_ask: Option<crate::music::StorageAsk> = None;
     let missing = crate::permissions::to_ask(&audio_source, voice_on, scene_granted, mic_granted);
     if ask
         && !missing.is_empty()
@@ -3219,9 +3222,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // Board #5549: a step round an end of the list, or
                     // "scan my music", with the shared folder unread asks
                     // for the storage permission, once a run. The step
-                    // that asks does not step, so after the grant the
-                    // same step lands on the wearer's own first (or
-                    // last) song.
+                    // that asks is owed (board #5555): made after the
+                    // grant, where it lands on the wearer's own first (or
+                    // last) song, or round the end after a "no".
                     Action::PrevTrack | Action::NextTrack | Action::ScanMusic => {
                         let by = match action {
                             Action::PrevTrack => -1,
@@ -3236,21 +3239,24 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 music.shared_blocked(),
                                 storage_asked,
                             );
-                        if asking && let Some(p) = &permissions {
+                        if asking {
+                            // The label first, for its reading time; the
+                            // system's dialog after it (`StorageAsk::due`,
+                            // below), since the dialog covers the view
+                            // and does not say what it is for.
                             storage_asked = true;
-                            match p.request(&[storage_permission]) {
-                                Ok(()) => info!(
-                                    "permissions: asked for {} ({}), the label reads \"{}\"",
-                                    crate::permissions::short(storage_permission),
-                                    if by == 0 {
-                                        "scan my music"
-                                    } else {
-                                        "a step round the end of the songs"
-                                    },
-                                    crate::music::ASK_STORAGE_LABEL
-                                ),
-                                Err(e) => error!("permissions: {e:#}"),
-                            }
+                            storage_ask = Some(crate::music::StorageAsk::new(by));
+                            info!(
+                                "permissions: {} to be asked for ({}), the label reads \"{}\" for {:.1} s first",
+                                crate::permissions::short(storage_permission),
+                                if by == 0 {
+                                    "scan my music"
+                                } else {
+                                    "a step round the end of the songs"
+                                },
+                                crate::music::ASK_STORAGE_LABEL.replace('\n', " | "),
+                                crate::label::read_s(crate::music::ASK_STORAGE_LABEL)
+                            );
                             let (point, normal) = crate::label::menu_reply_at(
                                 glam::Vec3::from(input.head),
                                 glam::Quat::from_array(input.head_rot),
@@ -3264,7 +3270,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         match by {
                             0 => music.rescan(),
                             _ if asking => {}
-                            _ => music.step(by),
+                            // A step of the wearer's own while one is
+                            // owed replaces it. Before the dialog was
+                            // asked for, the ask is off too, and a later
+                            // step round the end starts it again.
+                            _ => {
+                                if storage_ask.take().is_some_and(|a| !a.asked()) {
+                                    storage_asked = false;
+                                }
+                                music.step(by);
+                            }
                         }
                     }
                     Action::PlayTrack(i) => music.play_track(i),
@@ -4366,7 +4381,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .hit()
                         .filter(|_| controls.edit_room)
                         .map(|h| h.index),
-                    tracks: music.tracks(),
+                    // Board #5555: a step round an end asks for storage
+                    // first, as `Action::NextTrack` decides it.
+                    tracks: crate::intent::Tracks {
+                        asks: ask
+                            && permissions.is_some()
+                            && crate::music::asks_storage(
+                                true,
+                                music.shared_blocked(),
+                                storage_asked,
+                            ),
+                        ..music.tracks()
+                    },
                 };
                 // V4: the sentence as clauses ("amber on the desk and the
                 // walls on the bass"), applied in order; "what can I say"
@@ -4963,6 +4989,48 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // failed decode or start turns the row back to "Music: play".
             music.poll();
             controls.music = music.wanted();
+            // Board #5555: the step that asked for storage was made, on
+            // the grant or after a "no". The label names the song, in
+            // place of the voice's "Allow storage" if that still shows.
+            // Board #5555: the storage label has had its reading time:
+            // the system's dialog now.
+            if let Some(a) = storage_ask.as_mut()
+                && a.due(dt)
+                && let Some(p) = &permissions
+            {
+                match p.request(&[storage_permission]) {
+                    Ok(()) => info!(
+                        "permissions: asked for {}",
+                        crate::permissions::short(storage_permission)
+                    ),
+                    Err(e) => error!("permissions: {e:#}"),
+                }
+            }
+            if let Some(told) = music.take_told() {
+                // Granted with no songs of the wearer's in the folders:
+                // say so, since the step went round the end.
+                let step = crate::music::step_reply(told.by, &told.title);
+                let text = if told.own == 0 && !music.shared_blocked() {
+                    format!("{}\n{step}", crate::music::NO_OWN_SONGS_LABEL)
+                } else {
+                    step
+                };
+                info!(
+                    "music: the step that asked for storage, the label reads \"{}\"",
+                    text.replace('\n', " | ")
+                );
+                if voice_label
+                    .now()
+                    .is_some_and(|l| l.text == crate::music::ASK_STORAGE_LABEL)
+                {
+                    voice_label.clear();
+                }
+                let (point, normal) = crate::label::menu_reply_at(
+                    glam::Vec3::from(input.head),
+                    glam::Quat::from_array(input.head_rot),
+                );
+                menu_reply.show(text, point, normal);
+            }
             // Board #5460: the interface sounds' gain, the knob read live
             // and 0 while the analysis is on the microphones (they would
             // hear the cues); their own stream while the music's is not
@@ -5965,13 +6033,36 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // while the shared folder is unread: after the app's own ask,
             // from Settings, or by `pm grant`. The folder joins the
             // playlist after the bundled tracks, the playing track left
-            // alone.
+            // alone, unless a step asked for it (board #5555): that step
+            // is made once the scan is in, or round the end of the list
+            // when the ask went unanswered.
             if music.shared_blocked() && granted_now(storage_permission) {
+                let then = storage_ask.take().and_then(crate::music::StorageAsk::step);
                 info!(
-                    "permission {} granted: scanning Music/",
-                    crate::permissions::short(storage_permission)
+                    "permission {} granted: scanning Music/{}",
+                    crate::permissions::short(storage_permission),
+                    match then {
+                        Some(_) => ", then the step that asked",
+                        None => "",
+                    }
                 );
-                music.storage_granted();
+                music.storage_granted(then);
+            } else if let Some(a) = storage_ask.as_mut()
+                && a.unanswered(session.focused())
+            {
+                let then = a.step();
+                storage_ask = None;
+                info!(
+                    "permission {} not granted{}",
+                    crate::permissions::short(storage_permission),
+                    match then {
+                        Some(_) => ": the step that asked goes round the end",
+                        None => "",
+                    }
+                );
+                if let Some(by) = then {
+                    music.step_and_tell(by);
+                }
             }
             for change in permission_watch.poll(asked_at.elapsed().as_secs_f32(), granted_now) {
                 match change {
