@@ -452,7 +452,7 @@ impl DepthLook {
     /// Whether the depth light draws this look yet. One that is not built
     /// draws as the points, in the theme's colors and on its band.
     pub fn built(self) -> bool {
-        self == Self::Points
+        matches!(self, Self::Points | Self::Beams | Self::Coals | Self::Grass)
     }
 }
 
@@ -1138,9 +1138,11 @@ mod tests {
             (D::Coals, [AMBER, WARM_WHITE], BAND_BASS)
         );
         assert_eq!(depth(Theme::Contour), (D::Grass, [GREEN, WARM_WHITE], MID));
-        // Only the points are built: every other look draws as them.
+        // The points and the three looks of the video's themes are
+        // built: every other look draws as the points.
         for look in DepthLook::ALL {
-            assert_eq!(look.built(), look == D::Points, "{}", look.name());
+            let built = [D::Points, D::Beams, D::Coals, D::Grass].contains(&look);
+            assert_eq!(look.built(), built, "{}", look.name());
         }
         // The air row: the color, the band, the count and the motion.
         let air = |t: Theme| {

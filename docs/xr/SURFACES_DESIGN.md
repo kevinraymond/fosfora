@@ -1890,6 +1890,76 @@ light shades the depth map's mesh and nothing else, so a beam is a streak
 running up a chair and a bubble a point sliding up it; nothing leaves the
 thing for the air.
 
+## Beams, coals and grass (Nov 18, board #5543)
+
+**Why.** Each theme's depth light names a look, and only the points were
+built. The video's three themes need theirs: beams under Aurora's sky,
+coals in Flint's forge, grass in Contour's meadow. Every look stays on the
+surface of the thing (the owner, Nov 18): the depth light shades the depth
+map's mesh and nothing else.
+
+**How a look is drawn** (`depth_light.rs`, `fs_mesh_light` and
+`fs_mesh_light_sonar` in `env_depth.rs`). A look is the points' machinery
+read another way. It uses the same tile of soft points, one read per
+plane and octave, the same plane weights, octave blend, fades and vertex
+stage. The look's id rides in two new rows of the light's uniform
+(`light_look`, `light_move`), and the fragment branches on it once. With
+the id at 0 the points draw what they drew, bit for bit
+(`with_the_sweep_off_the_light_draws_what_it_drew_bit_for_bit` still
+holds).
+
+- **Beams** (Aurora: teal, the key's tint, bass). On an upright surface
+  the tile is read twice as close across and drawn out six times along
+  up, so a point is a lane. A streak runs up each lane, its head four
+  cells from the next, teal along its length and the key's tint at the
+  head. The heads' travel is a clock the bass drives: 0.1 periods a
+  second in silence, 2 at a full band, so a kick launches them. The
+  streak is 0.3 of a period long in silence and all of it at a full
+  band. A top shows the points in the key's tint.
+- **Coals** (Flint: bass). The points as lumps: heat falls from each
+  center, each lump smolders on its own slow clock, and the bass squared
+  lifts all of them, so a kick flares. The color is a ramp by the heat:
+  a dark red, then amber, then warm white. Flint's row gives amber for
+  the sides and warm white for the tops; the dark red is made from the
+  amber, so the row needs no third color.
+- **Grass** (Contour: green, warm white, mid). An upright surface is cut
+  into rows two cells high (8 cm at 1 m). Each row reads one line of the
+  tile, three times as close across, so nearly every lane grows a blade
+  from the row's foot: green at the root, warm white at the tip. The
+  tips sway with a wave that crosses the room, wider with the mids, and
+  lean one way with the gust, the overall loudness smoothed over about
+  half a second up and a second down. A top shows the points, moved a
+  little by the same wind.
+
+**The flash rule.** A kick reaches a look through the music value the
+points' crests take, the one the limiter follows
+(`flash::follower::DEPTH_MUSIC`), so nothing new goes round the limiter.
+The beams' travel and the wind are motion. Counted on the depth light's
+Rust copy, which the GPU test holds to the shader
+(`flash_room::the_depth_lights_looks_stay_within_three_flashes`): on the
+pulse trains at 2, 4, 8 and 16 Hz no look flashes at all without the
+sweep, and with the sweep the worst is 1.5 general and, for the coals at
+four times the gain, 1.0 red. Over the eleven songs with the sweep as it
+ships the worst is 2.5 general (the far wall, the same under all three
+looks, so the sweep's) and 0.5 red (the coals). The limit is 3.
+
+**Stable.** A look is a function of the world point and its clocks. 4 mm
+of depth noise moves a streak 0.06 of its packing, a coal 0.03 and a
+blade 0.09, and a head move inside an octave changes nothing
+(`a_look_stays_put_under_depth_jitter_and_a_head_move`).
+
+**Cost.** Not measured on the headset yet. By the source: the same reads
+as the points (one per plane and octave, one typical, six at most), about
+thirty-five operations around each for the coals against the points'
+forty, about fifty for the beams and the grass, and one more wave per
+fragment for the grass's wind. No hash, no transcendental, no discard.
+
+**Not yet.** The grass's rows show on a large flat surface, as shelves of
+tufts; a chair or a pile breaks them up, and walls are the room's boxes
+in a scanned room. Bubbles, sparkle, glints and meters have ids and draw
+as the points. Renders of a recorded room in each look come from
+`the_recorded_room_in_each_look` (`FOSFORA_LOOK_REC`, `FOSFORA_LOOK_DUMP`).
+
 ## The contours (Nov 16, board #5533)
 
 **Why.** The owner asked for "gentle rolling and topographic scenery"

@@ -2266,10 +2266,12 @@ impl<S: Source> Source for Building<S> {
 }
 
 /// The depth light with the sweep over `source`, as `app.rs` feeds it
-/// behind the limiter, at immersion level 1 in Aurora's colors, the
-/// regions of `surfaces` counted: the worst region's transitions, the
-/// sweeps that started and the standing lines' greatest strength.
+/// behind the limiter, at immersion level 1 in `theme`'s colors, look and
+/// band (board #5543), the regions of `surfaces` counted: the worst
+/// region's transitions, the sweeps that started and the standing lines'
+/// greatest strength.
 fn sweep_run(
+    theme: Theme,
     source: &mut dyn Source,
     sonar_opts: &crate::sonar::SonarOptions,
     light_gain: f32,
@@ -2278,7 +2280,7 @@ fn sweep_run(
     use crate::depth_light::{self, DepthLightOptions, Drive};
     use crate::flash::{Triggers, follower};
     let eye = Vec3::new(0.0, 1.2, 0.0);
-    let theme = Some(Theme::Aurora);
+    let theme = Some(theme);
     let light_opts = DepthLightOptions {
         gain: light_gain,
         ..DepthLightOptions::default().under(theme)
@@ -2330,6 +2332,7 @@ fn sweep_run(
             depth_light::band_level(&audio, depth_light::band(theme)),
             beat_shown,
         );
+        drive.step_wind(dt, depth_light::band_level(&audio, surface_fx::BAND_RMS));
         let shown = drive.with_music(limiter.follow(follower::DEPTH_MUSIC, drive.music()));
         let started = sonar.step(
             sonar_opts,
@@ -2401,19 +2404,11 @@ fn sweep_run(
     (worst, at, starts, lines)
 }
 
-/// The sweep and the standing lines over the depth light's points, behind
-/// the limiter as `app.rs` runs them, on the depth light's Rust copy
-/// (which the GPU test holds to the shader): a wall that faces the wearer
-/// and lights all at once, the floor ahead in the key's tint (red, on the
-/// pulse trains), a far wall and a wall seen at a slant. On the pulse
-/// trains, with the test knob starting sweeps as fast as the gap allows
-/// and both gains at their most, and through a build with drops asked on
-/// every frame, no region passes three general or three red flashes in
-/// any second.
-#[test]
-fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
-    use crate::sonar::{MIN_GAP_S, SonarOptions};
-    let surfaces = [
+/// What the depth light is counted on: a wall that faces the wearer and
+/// lights all at once, the floor ahead (a top, in the tops' color), a far
+/// wall and a wall seen at a slant.
+fn depth_surfaces() -> [Lit; 4] {
+    [
         Lit {
             name: "a wall 1.2 m ahead",
             at: Vec3::new(0.0, 1.2, -1.2),
@@ -2434,7 +2429,22 @@ fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
             at: Vec3::new(1.4, 1.0, -1.4),
             normal: Vec3::new(-0.9, 0.0, 0.436).normalize(),
         },
-    ];
+    ]
+}
+
+/// The sweep and the standing lines over the depth light's points, behind
+/// the limiter as `app.rs` runs them, on the depth light's Rust copy
+/// (which the GPU test holds to the shader): a wall that faces the wearer
+/// and lights all at once, the floor ahead in the key's tint (red, on the
+/// pulse trains), a far wall and a wall seen at a slant. On the pulse
+/// trains, with the test knob starting sweeps as fast as the gap allows
+/// and both gains at their most, and through a build with drops asked on
+/// every frame, no region passes three general or three red flashes in
+/// any second.
+#[test]
+fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
+    use crate::sonar::{MIN_GAP_S, SonarOptions};
+    let surfaces = depth_surfaces();
     let on = SonarOptions::default();
     let fastest = SonarOptions {
         test_s: Some(MIN_GAP_S),
@@ -2444,7 +2454,7 @@ fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
     let secs = 8.0;
     let mut failed = Vec::new();
     let mut run = |what: &str, source: &mut dyn Source, opts: &SonarOptions, gain: f32| {
-        let (worst, at, starts, lines) = sweep_run(source, opts, gain, &surfaces);
+        let (worst, at, starts, lines) = sweep_run(Theme::Aurora, source, opts, gain, &surfaces);
         eprintln!(
             "| {what} | {starts} | {lines:.2} | {:.1} | {:.1} | {at} |",
             worst.general_flashes(),
@@ -2473,7 +2483,10 @@ fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
     let mut still = Still { level: 0.6, secs };
     let (starts, _) = run("no beat, a sweep every 0.7 s", &mut still, &fastest, 4.0);
     assert!(starts >= 8, "{starts}");
-    assert_eq!(sweep_run(&mut still, &on, 1.0, &surfaces).2, 0);
+    assert_eq!(
+        sweep_run(Theme::Aurora, &mut still, &on, 1.0, &surfaces).2,
+        0
+    );
     // A full build, and drops asked on every frame from 5 s on.
     for hz in [2.0, 8.0] {
         let what = format!("pulse {hz} Hz, a full build, drops from 5 s");
@@ -2484,6 +2497,105 @@ fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
         };
         let (_, lines) = run(&what, &mut source, &on, 1.0);
         assert!(lines > 0.9, "{what}: the standing lines reached {lines}");
+    }
+    assert!(failed.is_empty(), "over three flashes: {failed:?}");
+}
+
+/// The video's three themes, each with the look its depth light draws
+/// (board #5543): Aurora's beams, Flint's coals and Contour's grass, on
+/// the band the theme gives them.
+const DEPTH_LOOKS: [(Theme, crate::themes::DepthLook); 3] = [
+    (Theme::Aurora, crate::themes::DepthLook::Beams),
+    (Theme::Flint, crate::themes::DepthLook::Coals),
+    (Theme::Contour, crate::themes::DepthLook::Grass),
+];
+
+/// The beams, the coals and the grass behind the limiter as `app.rs` runs
+/// them, on the depth light's Rust copy (which the GPU test holds to the
+/// shader), each in its theme's colors and on its band: on the pulse
+/// trains, with the sweep as it ships and without it, at the light's gain
+/// and at its most, no region passes three general or three red flashes
+/// in any second. A kick launches the beams and flares the coals through
+/// the music the limiter follows (`flash::follower::DEPTH_MUSIC`), so the
+/// limiter holds them as it holds the points.
+#[test]
+fn the_depth_lights_looks_stay_within_three_flashes() {
+    use crate::sonar::SonarOptions;
+    let surfaces = depth_surfaces();
+    let on = SonarOptions::default();
+    let off = SonarOptions { mode: 0, ..on };
+    let mut failed = Vec::new();
+    eprintln!("| theme | look | source | general flashes | red flashes | worst region |");
+    eprintln!("|---|---|---|---|---|---|");
+    for (theme, look) in DEPTH_LOOKS {
+        assert_eq!(crate::depth_light::look(Some(theme)), look);
+        for hz in [2.0, 4.0, 8.0, 16.0] {
+            for (sweep, opts, gain) in [
+                ("no sweep", &off, 1.0),
+                ("the sweep", &on, 1.0),
+                (
+                    "the sweep, the gain at 4",
+                    &on,
+                    crate::depth_light::GAIN_MAX,
+                ),
+            ] {
+                let what = format!("pulse {hz} Hz, {sweep}");
+                let (worst, at, ..) =
+                    sweep_run(theme, &mut Pulse::new(hz, 8.0), opts, gain, &surfaces);
+                eprintln!(
+                    "| {} | {} | {what} | {:.1} | {:.1} | {at} |",
+                    theme.name(),
+                    look.name(),
+                    worst.general_flashes(),
+                    worst.red_flashes()
+                );
+                if !worst.passes() {
+                    failed.push(format!("{} {what}", look.name()));
+                }
+            }
+        }
+    }
+    assert!(failed.is_empty(), "over three flashes: {failed:?}");
+}
+
+/// The same looks over the songs dumped into `FOSFORA_FLASH_DUMPS`
+/// (`*.bin`), the sweep as it ships. Nothing runs without the directory;
+/// no song is in the repo.
+#[test]
+#[ignore = "needs song dumps"]
+fn the_depth_lights_looks_on_the_dumped_songs_stay_within_three_flashes() {
+    let Some(dir) = std::env::var_os("FOSFORA_FLASH_DUMPS") else {
+        eprintln!("FOSFORA_FLASH_DUMPS unset: no songs");
+        return;
+    };
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .expect("the dumps' directory")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "bin"))
+        .collect();
+    paths.sort();
+    let surfaces = depth_surfaces();
+    let opts = crate::sonar::SonarOptions::default();
+    let mut failed = Vec::new();
+    eprintln!("| song | theme | look | general flashes | red flashes | worst region |");
+    eprintln!("|---|---|---|---|---|---|");
+    for path in &paths {
+        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+        let name = name.unwrap_or_default();
+        for (theme, look) in DEPTH_LOOKS {
+            let mut dump = Dump::read(path).expect("a dump");
+            let (worst, at, ..) = sweep_run(theme, &mut dump, &opts, 1.0, &surfaces);
+            eprintln!(
+                "| {name} | {} | {} | {:.1} | {:.1} | {at} |",
+                theme.name(),
+                look.name(),
+                worst.general_flashes(),
+                worst.red_flashes()
+            );
+            if !worst.passes() {
+                failed.push(format!("{name} {}", look.name()));
+            }
+        }
     }
     assert!(failed.is_empty(), "over three flashes: {failed:?}");
 }

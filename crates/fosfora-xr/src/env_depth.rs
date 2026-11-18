@@ -605,6 +605,12 @@ struct EnvEye {
     // x, y a point's radius as factors of the base, z where its soft edge
     // starts (a share of the radius), w the twinkle's depth
     light_size: vec4<f32>,
+    // The look (depth_light.rs, board #5543). x its id: 0 the points, 1
+    // beams, 2 coals, 3 grass; y the music 0..1, z the gust 0..1
+    light_look: vec4<f32>,
+    // The looks' clocks, each 0..1 of a cycle: x the beams' travel, y the
+    // grass's sway
+    light_move: vec4<f32>,
     // The sweep (sonar.rs), read by fs_mesh_light_sonar alone. x the
     // line's peak alpha (0: no sweep and no standing line this frame; the
     // mesh then draws with fs_mesh_light and nothing from here on is
@@ -975,6 +981,217 @@ fn plane_points(g: vec2<f32>, k: u32, o: i32, radius_scale: f32) -> f32 {
     return select(0.0, core * twinkle, s.a < env.light_point.y && radius > 1e-4);
 }
 
+// ---- The looks other than the points (board #5543) ---------------------
+// depth_light.rs has each constant's meaning and each function's CPU
+// mirror, under the same names.
+const BEAM_PACK: f32 = 2.0;
+const BEAM_STRETCH: f32 = 6.0;
+const BEAM_PERIOD: f32 = 4.0;
+const BEAM_TAIL_MIN: f32 = 0.3;
+const BEAM_HEAD: f32 = 0.08;
+const BEAM_WIDE: f32 = 1.25;
+const COAL_WIDE: f32 = 1.2;
+const COAL_FLOOR: f32 = 0.45;
+const COAL_SMOLDER: f32 = 0.6;
+const COAL_EMBER: vec3<f32> = vec3<f32>(0.9, 0.12, 0.02);
+const GRASS_PACK: f32 = 3.0;
+const GRASS_ROW: f32 = 2.0;
+const GRASS_ROW_STEP: f32 = 2.37;
+const GRASS_SHORT: f32 = 0.75;
+const GRASS_NEAR: f32 = 0.7;
+const GRASS_REACH: f32 = 0.33;
+const GRASS_ROOT: f32 = 0.1;
+const GRASS_SWAY: f32 = 0.3;
+const GRASS_SWAY_BAND: f32 = 0.9;
+const GRASS_LEAN: f32 = 1.0;
+const GRASS_WIND: vec2<f32> = vec2<f32>(0.9, 0.5);
+const GRASS_TOP_SHIFT: f32 = 0.25;
+
+// Across and up (m) in the cells' plane k: on an upright plane (0 or 2)
+// the second is the world's up; the level plane (1) has none.
+fn look_plane(v: vec3<f32>, k: u32) -> vec2<f32> {
+    if k == 0u {
+        return v.zy;
+    }
+    if k == 1u {
+        return v.xz;
+    }
+    return v.xy;
+}
+
+// One read of the tile at uv (cells) for plane k at octave o: x the
+// distance to the nearest point's center (cells), y its radius at
+// radius_scale (0 where its rank is past the fill's share), z its phase,
+// w its size.
+fn look_point(uv: vec2<f32>, k: u32, o: i32, radius_scale: f32) -> vec4<f32> {
+    let s = textureSampleLevel(light_points, light_sampler, uv / TILE_CELLS + light_offset(k, o), 0.0);
+    let radius = radius_scale * mix(env.light_size.x, env.light_size.y, s.b);
+    let there = s.a < env.light_point.y && radius > 1e-4;
+    return vec4<f32>((1.0 - s.r) * env.light_point.z, select(0.0, radius, there), s.g, s.b);
+}
+
+// Beams on an upright plane at g (across and up, cells), the plane moving
+// by f across a pixel: x the light, y the light times its tint. A point,
+// read closer across and drawn out along up, is a lane; in it a streak's
+// head passes every BEAM_PERIOD cells, moving up with the travel, the
+// light falling behind it over the streak's length.
+fn beam(g: vec2<f32>, f: vec2<f32>, k: u32, o: i32, radius_scale: f32) -> vec2<f32> {
+    let pt = look_point(vec2<f32>(g.x * BEAM_PACK, g.y / BEAM_STRETCH), k, o, radius_scale);
+    let core = 1.0 - smoothstep(pt.y * env.light_size.z, pt.y, pt.x);
+    let rate = 1.0 + floor(pt.w * 2.999);
+    let t = fract(g.y / BEAM_PERIOD - rate * env.light_move.x + pt.z);
+    let tail = mix(BEAM_TAIL_MIN, 1.0, env.light_look.y);
+    let rise = smoothstep(1.0 - tail, 1.0, t);
+    let edge = clamp(2.0 * f.y / BEAM_PERIOD, BEAM_HEAD, 0.5);
+    let head = 1.0 - smoothstep(1.0 - edge, 1.0, t);
+    let light = select(0.0, core * rise * head, pt.y > 0.0);
+    let r2 = rise * rise;
+    return vec2<f32>(light, light * r2 * r2);
+}
+
+// Coals at g (cells) on any plane: x the light, y the light times its
+// tint. A lump's heat is a cone from the point's center, times its own
+// smolder and the music's, which a kick flares; the tint runs from -1
+// (ember) at no heat to 1 (the tops' color) at full.
+fn coal(g: vec2<f32>, k: u32, o: i32, radius_scale: f32) -> vec2<f32> {
+    let pt = look_point(g, k, o, radius_scale);
+    let c = clamp(1.0 - pt.x / max(pt.y, 1e-4), 0.0, 1.0);
+    let cone = c * (2.0 - c);
+    let rate = 1.0 + floor(pt.w * 2.999);
+    let smolder = 1.0 - COAL_SMOLDER + COAL_SMOLDER * light_wave(rate * env.light_wave.w + pt.z);
+    let m = env.light_look.y;
+    let heat = select(0.0, cone * smolder * mix(COAL_FLOOR, 1.0, m * m), pt.y > 0.0);
+    let light = heat * (2.0 - heat);
+    return vec2<f32>(light, light * (2.0 * heat * heat - 1.0));
+}
+
+// How far the grass's tips bend at world point p (packed cells): a wave
+// that travels across the room on the sway's clock, wider with the band
+// and the gust, and the gust's lean one way.
+fn grass_bend(p: vec3<f32>) -> f32 {
+    let osc = 2.0 * light_wave(env.light_move.y + p.x * GRASS_WIND.x + p.z * GRASS_WIND.y) - 1.0;
+    return (GRASS_SWAY + GRASS_SWAY_BAND * env.light_look.y) * (1.0 + env.light_look.z) * osc
+        + GRASS_LEAN * env.light_look.z;
+}
+
+// Grass on an upright plane at g (across and up, cells), the tips bent by
+// bend: x the light, y the light times its tint. The plane is cut into
+// rows; each reads one line of the tile, closer across, so a point near
+// the line is a blade rooted at the row's foot, tapering to its tip and
+// bending with the square of the height.
+fn blade(g: vec2<f32>, k: u32, o: i32, radius_scale: f32, bend: f32) -> vec2<f32> {
+    let r = g.y / GRASS_ROW;
+    let row = floor(r);
+    let u = r - row;
+    let pt = look_point(
+        vec2<f32>(g.x * GRASS_PACK + bend * u * u, row * GRASS_ROW_STEP + 0.5),
+        k,
+        o,
+        radius_scale
+    );
+    let h = clamp(u / mix(GRASS_SHORT, 1.0, pt.w), 0.0, 1.0);
+    let radius = min(pt.y, GRASS_REACH) * (1.0 - h * h);
+    let core = 1.0 - smoothstep(radius * env.light_size.z, max(radius, 1e-6), pt.x * GRASS_NEAR);
+    let light = select(0.0, core * smoothstep(0.0, GRASS_ROOT, u), radius > 1e-4);
+    return vec2<f32>(light, light * h * h);
+}
+
+// The radius factor a look's points are read at, for a vertex keeping
+// keep under the sweep's light under (0 without a sweep): the points'
+// own, wider for the beams and the coals, swollen under a sweep, within
+// the tile's reach.
+fn look_radius(keep: f32, under: f32) -> f32 {
+    let look = env.light_look.x;
+    let wide = select(select(1.0, COAL_WIDE, look > 1.5 && look < 2.5), BEAM_WIDE, look < 1.5);
+    return min(
+        env.light_point.x * env.light_point.w * sqrt(keep) * wide * (1.0 + env.sonar.z * under),
+        env.light_point.z / env.light_size.y
+    );
+}
+
+// How the music lifts a look's light: the crests' gain for the beams and
+// the grass; the coals carry it in their heat.
+fn look_band() -> f32 {
+    return select(env.light.w, 1.0, env.light_look.x > 1.5 && env.light_look.x < 2.5);
+}
+
+// A look's color at tint: the sides' at 0 toward the tops' at 1, and
+// toward the ember color at -1.
+fn look_color(tint: f32) -> vec3<f32> {
+    let hot = mix(env.light_side.rgb, env.light_top.rgb, clamp(tint, 0.0, 1.0));
+    return mix(hot, env.light_side.rgb * COAL_EMBER, clamp(-tint, 0.0, 1.0));
+}
+
+// A look's light at world point p with the unit normal n, read at
+// radius_scale, the world moving by fw across a pixel: x the light, 0..1,
+// y its tint. The points' planes, octaves and fades, each plane reading
+// the look's own: on an upright plane the beams' streaks or the grass's
+// blades, on the level plane their points seen from the end; the coals on
+// every plane.
+fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> vec2<f32> {
+    let look = env.light_look.x;
+    let beams = look < 1.5;
+    let grass = look > 2.5;
+    let n2 = n * n;
+    let tri = n2 * n2 / dot(n2, n2);
+    let l = clamp(log2(max(length(p - env.eye.xyz), 1e-3)), OCTAVE_MIN, OCTAVE_MAX);
+    let li = floor(l);
+    let next = smoothstep(env.light_cell.y, 1.0, l - li);
+    var bend = 0.0;
+    if grass {
+        bend = grass_bend(p);
+    }
+    var sum = vec2<f32>(0.0);
+    var used = 0.0;
+    for (var j = 0; j < 2; j++) {
+        let wo = select(1.0 - next, next, j == 1);
+        if wo <= 0.0 {
+            continue;
+        }
+        let o = i32(li) + j;
+        let cell = ldexp(env.light_cell.x, o);
+        for (var k = 0u; k < 3u; k++) {
+            let wk = tri[k] - PLANE_MIN;
+            if wk <= 0.0 {
+                continue;
+            }
+            let g = look_plane(p, k) / cell;
+            let f = look_plane(fw, k) / cell;
+            let upright = k != 1u;
+            var fine = max(f.x, f.y);
+            if beams && upright {
+                fine = max(f.x * BEAM_PACK, f.y / BEAM_STRETCH);
+            } else if grass && upright {
+                fine = max(f.x * GRASS_PACK, f.y / GRASS_ROW);
+            }
+            let aa = 1.0 - smoothstep(env.light_cell.z, env.light_cell.w, fine);
+            if aa > 0.0 {
+                var s = vec2<f32>(0.0);
+                if beams {
+                    if upright {
+                        s = beam(g, f, k, o, radius_scale);
+                    } else {
+                        let v = plane_points(g, k, o, radius_scale);
+                        s = vec2<f32>(v, v);
+                    }
+                } else if grass {
+                    if upright {
+                        s = blade(g, k, o, radius_scale, bend);
+                    } else {
+                        let v = plane_points(g + vec2<f32>(GRASS_TOP_SHIFT * bend), k, o, radius_scale);
+                        s = vec2<f32>(v, v * v);
+                    }
+                } else {
+                    s = coal(g, k, o, radius_scale);
+                }
+                sum += wo * wk * aa * s;
+            }
+            used += wo * wk;
+        }
+    }
+    return vec2<f32>(sum.x / max(used, 1e-6), sum.y / max(sum.x, 1e-6));
+}
+
 // One sweep's light at world point p: x its crest, y its tail's glow. The
 // crest sits at the sweep's radius from where it began, one half-width to
 // each side, eased; the tail runs behind it, 1 at the shell and falling as
@@ -1054,6 +1271,17 @@ fn fs_mesh_light(in: LightOut) -> @location(0) vec4<f32> {
     let fw = fwidth(p);
     let keep = in.world.w;
     let weight = env.light.z * in.normal.w;
+    if env.light_look.x > 0.5 {
+        // A look other than the points (board #5543).
+        var s = vec2<f32>(0.0);
+        if keep > 0.0 && weight > 0.0 {
+            let nn = in.normal.xyz;
+            let n = select(vec3<f32>(0.0, 0.0, 1.0), normalize(nn), dot(nn, nn) > 1e-12);
+            s = look_light(p, fw, n, look_radius(keep, 0.0));
+        }
+        let a = clamp(weight * look_band() * s.x, 0.0, 1.0);
+        return vec4<f32>(look_color(s.y) * a, env.light_fade.w);
+    }
     var points = 0.0;
     var up = 0.0;
     if keep > 0.0 && weight > 0.0 {
@@ -1132,6 +1360,22 @@ fn fs_mesh_light_sonar(in: LightOut) -> @location(0) vec4<f32> {
     let facing = toward * toward / max(dot(face, face) * dot(to_eye, to_eye), 1e-30);
     let flat = smoothstep(env.sonar_fade.x, env.sonar_fade.y, facing)
         * smoothstep(env.sonar_fade.z, env.sonar_fade.w, keep);
+    if env.light_look.x > 0.5 {
+        // A look other than the points (board #5543): swollen and lifted
+        // under the sweep as they are, the line solid under it.
+        var s = vec2<f32>(0.0);
+        if keep > 0.0 && weight > 0.0 {
+            let nn = in.normal.xyz;
+            let n = select(vec3<f32>(0.0, 0.0, 1.0), normalize(nn), dot(nn, nn) > 1e-12);
+            s = look_light(p, fw, n, look_radius(keep, under));
+        }
+        let lifted = clamp(max(weight * look_band(), env.sonar.x * under) * s.x, 0.0, 1.0);
+        let crest_tint = env.sonar.w * sweep.x;
+        let solid = clamp(env.sonar.x * flat * max(sweep.x, env.sonar.y * sweep.y), 0.0, 1.0);
+        let rgb = look_color(clamp(s.y + crest_tint, -1.0, 1.0)) * lifted
+            + look_color(clamp(crest_tint, 0.0, 1.0)) * solid * (1.0 - lifted);
+        return vec4<f32>(rgb, env.light_fade.w);
+    }
     var points = 0.0;
     var up = 0.0;
     if keep > 0.0 && weight > 0.0 {
