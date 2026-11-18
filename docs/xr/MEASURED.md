@@ -4221,3 +4221,39 @@ turns their edge bars off. The sides are the next commit's.
 
 Not measured: anything worn.
 
+## Sides, and every theme's depth look (board #5543, Nov 18)
+
+Debug 79bdeab (xr-themes3: windows and terraces on a box's sides, all
+seven depth looks, Classic on the mids; the wash not yet in), the same
+headset (9 h up), knobs and procedure as the passes before it, one launch
+per theme. `debug.fosfora.edgebarsdepth` was at 2.0, the owner's setting
+from a worn look at Mirror's tunnels; it reaches Mirror and Classic's
+tables alone here.
+
+| theme | App med / p90 / max (ms) | min fps | before, same day |
+| --- | --- | --- | --- |
+| Aurora, 25 sides | 8.65 / 9.77 / 10.45 | 71 | 8.36 / 9.06 / 9.23 (eb99b43, tops) |
+| Contour, sides | 7.38 / 8.10 / 8.61 | 72 | 7.92 / 8.37 / 8.90 (eb99b43) |
+| Flint | 7.92 / 8.28 / 8.47 | 72 | 7.98 / 8.67 / 8.98 (eb99b43) |
+| Mirror, glints, tunnels at 2.0 | 8.00 / 8.39 / 8.53 | 71 | 7.88 / 8.40 / 8.59 (ef5d5ad) |
+| Drift, bubbles | 7.82 / 8.12 / 8.31 | 72 | 7.86 / 8.28 / 9.12 (ef5d5ad) |
+| Tide, sparkle | 8.11 / 8.44 / 8.59 | 72 | 7.81 / 8.48 / 8.85 (ef5d5ad) |
+| Classic, meters | 7.96 / 8.41 / 8.59 | 72 | 7.75 / 8.36 / 9.10 (ef5d5ad) |
+
+The sides cost Aurora about 0.3 ms at the median and 1.2 ms at the worst
+frame, with 25 side faces drawn (the log's `surfaces: 22 lit (… ports 8,
+…) · 25 sides`). Contour's sides read no cost. The four new depth looks
+cost what the points did, inside the spread between launches. Mirror's
+tunnels at 2.0 read no cost either. Every theme is under 10.5 ms against
+the 13.9 ms budget.
+
+Captures: `recordings/themes3/sides-79bdeab/` (`sheet.jpg`,
+`aurora-left.jpg`). Under Aurora the storage units stand as buildings
+with amber windows on two faces and the tables as low blocks in warm
+white, where they were black shapes on eb99b43. One side seen at a low
+angle shows as an even gray face: the panes fade into their mean there
+instead of sparkling.
+
+Not measured: anything worn, the wash (merged after this build), and
+Mirror's deeper tunnels.
+
