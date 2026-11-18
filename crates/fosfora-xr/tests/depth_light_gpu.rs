@@ -32,6 +32,7 @@ use fosfora_xr::geom_first::{mesh_geom_wgsl, set_drop_vertices};
 use fosfora_xr::math::{self, Fov};
 use fosfora_xr::sonar::{self, Sonar, SonarOptions};
 use fosfora_xr::surfaces::TEAL;
+use fosfora_xr::themes::{DepthLook, Theme};
 use glam::{Quat, Vec2, Vec3};
 
 const MAP: u32 = 320;
@@ -1514,6 +1515,75 @@ fn a_line_sits_at_its_radius_from_where_the_sweep_began() {
 
 /// The fragment with two sweeps crossing the known surfaces and the
 /// standing lines at a full build matches `depth_light::fragment`.
+/// The light's rows drawing `look` in `theme`'s colors (a violet key), at
+/// immersion `level`, the band at `music` and the loudness at `gust`,
+/// `secs` in: the travel, the sway and the twinkle part way.
+fn look_rows(
+    theme: Theme,
+    look: DepthLook,
+    level: f32,
+    music: f32,
+    gust: f32,
+    secs: f32,
+) -> [[f32; 4]; ROWS] {
+    let mut d = Drive::default();
+    for _ in 0..(secs * 72.0) as usize {
+        d.step(1.0 / 72.0, music, 0.0);
+        d.step_wind(1.0 / 72.0, gust);
+    }
+    depth_light::with_look(
+        depth_light::rows(
+            &d,
+            depth_light::peak_alpha(level, 1.0),
+            depth_light::colors(Some(theme), [0.7, 0.3, 1.0]),
+            depth_light::FILL,
+            0.0,
+        ),
+        look,
+    )
+}
+
+/// The video's three themes, each with the look its depth light draws.
+const LOOKS: [(Theme, DepthLook); 3] = [
+    (Theme::Aurora, DepthLook::Beams),
+    (Theme::Flint, DepthLook::Coals),
+    (Theme::Contour, DepthLook::Grass),
+];
+
+/// Board #5543: the beams, the coals and the grass over the known
+/// surfaces match `depth_light::fragment`, quiet and loud, and under a
+/// sweep `depth_light::fragment_swept`. Each theme's row names the look,
+/// and the look is built.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn each_look_matches_its_cpu_mirror() {
+    let (device, queue, _guard) = gpu();
+    let opts = SonarOptions::default();
+    let sweep = one_sweep(&opts, eye().eye_pos, 1.25).rows(&opts, 1.0);
+    for (theme, look) in LOOKS {
+        assert_eq!(theme.depth().look, look);
+        assert_eq!(
+            depth_light::look(Some(theme)),
+            look,
+            "{} is built",
+            look.name()
+        );
+        for (music, gust) in [(0.1, 0.0), (0.9, 0.7)] {
+            let rows = look_rows(theme, look, 1.0, music, gust, 3.7);
+            assert_eq!(depth_light::look_of(&rows), look);
+            eprintln!("{} at music {music}, gust {gust}", look.name());
+            // Of 739 200 pixels a case. More than the points' handful:
+            // where two points' channels meet, a streak's phase and rate
+            // or a blade's height step, not only a twinkle.
+            fragment_matches(device, queue, &rows, 200);
+        }
+        eprintln!("{} under a sweep", look.name());
+        let rows = depth_light::with_sonar(look_rows(theme, look, 1.0, 0.5, 0.3, 3.7), &sweep);
+        assert!(depth_light::swept(&rows));
+        fragment_matches(device, queue, &rows, 300);
+    }
+}
+
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn the_swept_fragment_matches_its_cpu_mirror() {
@@ -1685,7 +1755,7 @@ fn the_recorded_room_under_the_sweep() {
         std::path::Path::new(&path).display(),
         rec.records.len()
     );
-    let colors = depth_light::colors(Some(fosfora_xr::themes::Theme::Aurora), [0.7, 0.3, 1.0]);
+    let colors = depth_light::colors(Some(Theme::Aurora), [0.7, 0.3, 1.0]);
     let light_at = |level: f32, points: bool, sonar: &[[f32; 4]; sonar::ROWS]| {
         let mut d = Drive::default();
         d.step(0.37 / 0.1, 0.5, 0.0);
@@ -1860,5 +1930,141 @@ fn the_recorded_room_under_the_sweep() {
                 );
             }
         }
+    }
+}
+
+/// The recorded room in each look, for the eye (board #5543).
+/// `FOSFORA_LOOK_REC` names a depth recording (`live_rec.rs`; they stay
+/// out of the repository) and `FOSFORA_LOOK_DUMP` a folder for the
+/// pictures (PPM): the points and each of the three looks in its theme's
+/// colors, quiet and loud, with the room black and with it visible (the
+/// light at its lowest over the stand-in room), and each look a third of
+/// a second on, to see what moved. The view and the target are the
+/// sweep's pictures' (`the_recorded_room_under_the_sweep`).
+#[test]
+#[ignore = "needs a GPU adapter and a depth recording"]
+fn the_recorded_room_in_each_look() {
+    let Some(path) = std::env::var_os("FOSFORA_LOOK_REC") else {
+        eprintln!("FOSFORA_LOOK_REC is not set: nothing rendered");
+        return;
+    };
+    let dump = std::env::var_os("FOSFORA_LOOK_DUMP").map(std::path::PathBuf::from);
+    let bytes = std::fs::read(&path).expect("the recording reads");
+    let rec = fosfora_xr::live_rec::decode(&bytes).expect("the recording decodes");
+    let (device, queue, _guard) = gpu();
+    let tri = wgpu::PrimitiveTopology::TriangleList;
+    let target = [W, H];
+    let side = rec.cols as u32;
+    let k = rec.records.len() * 3 / 4;
+    let g = &rec.records[k].grid;
+    let scene = Scene {
+        map: g
+            .depth
+            .iter()
+            .map(|&d| (d.clamp(0.0, 1.0) * 65535.0).round() as u16)
+            .collect(),
+        side,
+        step: 1,
+        target,
+    };
+    let eye = EyeReprojection {
+        view_proj: math::view_projection(
+            g.view.orientation,
+            g.view.position,
+            g.view.fov,
+            0.05,
+            100.0,
+        ),
+        eye_pos: Vec3::from(g.view.position),
+        depth_view: g.view.view_matrix(),
+        depth_fov: g.view.fov,
+        near: g.near,
+        far: g.far,
+        depth_size: [side, side],
+        target_size: target,
+        layer: 0,
+        near_cut_m: NEAR_CUT_M,
+        flip_v: rec.reading == fosfora_xr::env_depth::Reading::RowTop,
+        filter_edge_m: FILTER_SOFT_M,
+        mesh_step: 1,
+    };
+    let render = |light: &[[f32; 4]; ROWS], source: &str, fragment: &str| {
+        let mut rows = eye.uniform();
+        // The faces layer's pixels are twice the eye's.
+        rows[LIGHT_ROW..].copy_from_slice(&depth_light::scale_fades(*light, 2.0));
+        draw_scene(
+            device,
+            queue,
+            &scene,
+            source,
+            "vs_mesh_light",
+            fragment,
+            tri,
+            &rows,
+            None,
+            Over::Nothing,
+        )
+        .color
+    };
+    let room = render(&light_rows(), &room_wgsl(), "fs_room");
+    let sum =
+        |pixels: &[[f32; 4]]| -> f64 { pixels.iter().map(|c| f64::from(c[0] + c[1] + c[2])).sum() };
+    let shot = |name: String, light: &[[f32; 4]; ROWS], level: f32| {
+        let got = render(light, ENV_DEPTH_WGSL, light_fragment(light));
+        let lit = got
+            .iter()
+            .filter(|c| c[0].max(c[1]).max(c[2]) > 0.02)
+            .count();
+        eprintln!("{name}: {lit} pixels lit, light {:.0}", sum(&got));
+        if let Some(dir) = &dump {
+            std::fs::create_dir_all(dir).expect("the folder");
+            write_ppm(
+                &dir.join(format!("{name}.ppm")),
+                &got,
+                &room,
+                1.0 - level,
+                W,
+            );
+        }
+        got
+    };
+    let mut cases = vec![(Theme::Aurora, DepthLook::Points)];
+    cases.extend(LOOKS);
+    for (theme, look) in cases {
+        let name = |what: &str| format!("{}-{}-{what}", theme.name(), look.name());
+        let quiet = shot(
+            name("black-quiet"),
+            &look_rows(theme, look, 1.0, 0.1, 0.1, 3.7),
+            1.0,
+        );
+        let loud_rows = look_rows(theme, look, 1.0, 0.9, 0.8, 3.7);
+        let loud = shot(name("black-loud"), &loud_rows, 1.0);
+        let later = shot(
+            name("black-loud-later"),
+            &look_rows(theme, look, 1.0, 0.9, 0.8, 3.7 + 1.0 / 3.0),
+            1.0,
+        );
+        let plain = shot(
+            name("visible-loud"),
+            &look_rows(theme, look, 0.0, 0.9, 0.8, 3.7),
+            0.0,
+        );
+        // Every look draws, louder with the music, and still draws with
+        // the room visible, at the lowest peak.
+        assert!(
+            sum(&quiet) > 0.0 && sum(&loud) > sum(&quiet),
+            "{}",
+            look.name()
+        );
+        assert!(
+            sum(&plain) > 0.0 && sum(&plain) < sum(&loud),
+            "{}",
+            look.name()
+        );
+        assert!(
+            differ(&bits(&loud), &bits(&later)) > 1000,
+            "{}",
+            look.name()
+        );
     }
 }

@@ -5503,6 +5503,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         ),
                         beat_shown,
                     );
+                    // Board #5543: the grass's wind, by the loudness.
+                    depth_drive.step_wind(
+                        dt,
+                        crate::depth_light::band_level(&audio, crate::surface_fx::BAND_RMS),
+                    );
                     // Board #5451: the music the light swells with, as the
                     // flash limit lets it through.
                     let shown_drive = depth_drive.with_music(flash_limit.follow(
