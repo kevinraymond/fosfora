@@ -4257,3 +4257,44 @@ instead of sparkling.
 Not measured: anything worn, the wash (merged after this build), and
 Mirror's deeper tunnels.
 
+## Every theme as its file has it (board #5543, Nov 18)
+
+Debug 0906b16 (xr-themes3: everything above, the wash, and Mirror's deeper
+tunnels, bezel, astrolabe, fenestra and the floor's dial), the same
+headset (10 h up), knobs and procedure, one launch per theme.
+`debug.fosfora.edgebarsdepth` cleared, so the tunnels are at their new
+default, 3 times the face's smaller side.
+
+| theme | App med / p90 / max (ms) | min fps |
+| --- | --- | --- |
+| Mirror, 39 tunnels | 8.08 / 8.65 / 9.29 | 72 |
+| Tide, the wash | 7.79 / 8.39 / 8.93 | 72 |
+| Aurora | 8.73 / 9.19 / 9.23 | 72 |
+| Flint | 7.78 / 8.36 / 8.53 | 72 |
+| Contour | 7.80 / 8.25 / 8.65 | 72 |
+| Drift | 7.75 / 8.29 / 8.77 | 71 |
+| Classic | 7.78 / 8.47 / 8.69 | 71 |
+
+Mirror with tunnels five times deeper and twenty rungs costs what it did
+at 2.0 and ten (8.00 on 79bdeab). The wash costs Tide nothing that shows
+(8.11 before it). Every theme is under 9.3 ms against the 13.9 ms budget.
+
+On the desktop, this commit: the depth light's 11 GPU tests, the edge
+bars' tunnel against its Rust copy, the sky's 4 and the surface ports'
+pipelines pass. Flash, limiter on, eleven songs by seven themes: 77 rows,
+0 failing regions; worst general 3.0 (Aurora, Classic, Flint, and Mirror
+now, with the astrolabe on its ceiling), 2.5 (Drift, Tide), 2.0
+(Contour); worst red 2.0 (Aurora). The pulse trains pass for every theme.
+Output `recordings/themes3/final-0906b16/flash/`.
+
+Captures: `recordings/themes3/final-0906b16/` (`sheet.jpg`,
+`mirror-left.jpg`, `tide-left.jpg`). Mirror's ceiling and walls recede as
+nested frames into a dark center and its boxes are blue tunnels; the
+floor's dial shows as large pale arcs over the tiles, plainer than
+"barely". Tide's water lies violet on the floor with a rose line at its
+edge. Under Tide and Drift the tables and storage units are dark shapes
+from the desk: their looks are on their tops and the file turns their
+edge bars off, and only windows and terraces draw on sides.
+
+Not measured: anything worn.
+
