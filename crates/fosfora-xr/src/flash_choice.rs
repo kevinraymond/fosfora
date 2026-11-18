@@ -159,6 +159,28 @@ pub fn countdown_line(left_s: u32, limit: bool) -> String {
     )
 }
 
+/// The line over the answers once a hand has dwelt over `answer`: what a
+/// pinch would choose.
+pub fn choose_line(answer: Answer) -> String {
+    format!("Pinch to choose {}", answer.words())
+}
+
+/// The answers on a card laid out as `lines` (`label::layout`), for the
+/// label's painter (board #5553), which draws each as a button: the
+/// answers' line by its index, and the answer the line over it names
+/// ([`choose_line`]), which draws as the control under the pointer does on
+/// the hand menu. `None` for any text that is not the question.
+pub fn card_answers<S: AsRef<str>>(lines: &[S]) -> Option<(usize, Option<Answer>)> {
+    let answers = answers_line();
+    let at = lines.iter().rposition(|l| l.as_ref() == answers)?;
+    let named = at.checked_sub(1).and_then(|over| {
+        Answer::ALL
+            .into_iter()
+            .find(|a| lines[over].as_ref() == choose_line(*a))
+    });
+    Some((at, named))
+}
+
 /// The answers' line: the two answers, the gap between them.
 pub fn answers_line() -> String {
     format!(
@@ -179,7 +201,7 @@ pub fn answers_line() -> String {
 /// controllers down, in the controllers label's own words.
 pub fn card_text(over: Option<Answer>, no_hands: bool, countdown: Option<(u32, bool)>) -> String {
     let how = match over {
-        Some(answer) => format!("Pinch to choose {}", answer.words()),
+        Some(answer) => choose_line(answer),
         None if no_hands => {
             let down = HANDS_LABEL.split_once(". ").map_or(HANDS_LABEL, |s| s.0);
             format!("{down}.")
@@ -657,6 +679,40 @@ mod tests {
         assert_eq!(at(ends[1][1] - 0.05, y - 3.1 * line), None);
         // The warning's first line, at the top of the card.
         assert_eq!(at(ends[1][1] - 0.05, y + 5.0 * line), None);
+    }
+
+    #[test]
+    fn the_painter_finds_the_answers_and_the_one_a_hand_is_over() {
+        // Board #5553: the label draws the two answers as buttons, the
+        // one the line above names in the pointer's fill. Every state of
+        // the card, with and without the countdown.
+        for over in [None, Some(Answer::Limit), Some(Answer::Full)] {
+            for countdown in [None, Some((45, true))] {
+                let laid = layout(&card_text(over, false, countdown));
+                assert_eq!(card_answers(&laid.lines), Some((6, over)));
+            }
+        }
+        // No hands: the line above says to put the controllers down, and
+        // neither answer is named.
+        let laid = layout(&card_text(None, true, Some((60, true))));
+        assert_eq!(card_answers(&laid.lines), Some((6, None)));
+        // No other label is the question.
+        for text in [
+            "Pinch to begin",
+            MENU_WAITS,
+            "Limit flashing: on",
+            "Pinch to choose Full show",
+        ] {
+            assert_eq!(card_answers(&layout(text).lines), None, "{text}");
+        }
+        // A button's plate reaches past its words by the pad at each end.
+        // Between the answers that leaves the dead band clear, with room:
+        // a plate never says "press here" where a pinch answers nothing.
+        let px_per_half_w = 0.5 * LABEL_TEX[0] as f32;
+        let gap = crate::text_width::em(&" ".repeat(GAP_SPACES)) * LINES_FONT_PX;
+        let between_plates = gap - 2.0 * crate::panel_style::ANSWER_PAD_PX;
+        let dead = 2.0 * DEAD_HALF_W * px_per_half_w;
+        assert!(between_plates > dead + 40.0, "{between_plates} over {dead}");
     }
 
     #[test]

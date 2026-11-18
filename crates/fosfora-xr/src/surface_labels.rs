@@ -669,6 +669,17 @@ mod render {
                         CORNER_PX,
                         PALETTE.panel.gamma_multiply(GROUND_ALPHA * alpha),
                     );
+                    // The plate's outline, as the label's and the hand
+                    // menu's (board #5553).
+                    painter.rect_stroke(
+                        ground,
+                        CORNER_PX,
+                        egui::Stroke::new(
+                            crate::panel_style::TAG_OUTLINE_PX,
+                            PALETTE.line.gamma_multiply(alpha),
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
                     let room = ground.width() - 2.0 * MARGIN_PX;
                     for (text, px, line_y) in [
                         (tag.name.as_str(), NAME_PX, NAME_Y_PX),

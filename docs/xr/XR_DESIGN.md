@@ -1981,6 +1981,50 @@ surface's six and nine (284 and 404). The debug panel is 12 and 15 rows,
 which uses the header's last row of headroom. The row went in at the top,
 so the rows a wearer already reaches for are where they were.
 
+### Blue rests, orange is on: the menu's colors and one plate (board #5553)
+
+The menu and the labels have drawn with the desktop's Blue and orange
+theme since board #3523, but orange showed only under the pointer and on
+a press. At rest the menu was one blue, and whether Voice or Roam was on
+stood in the words alone. `panel_style.rs` holds the rules now, as plain
+data with desktop tests for the contrast of every text on its fill:
+
+| A cell is | Fill | Words | Outline |
+|---|---|---|---|
+| off | blue block `#26405E` | light `#EEF2F7` | none |
+| on (a toggle that is on, the music playing) | the same block | the value in orange `#F0A830` | orange, 2 pt |
+| under the pointer | orange `#E69F00` | dark `#1A1203` | dark, 2 pt, only on a toggle that is on |
+| pressed | near white `#EEF2F7` | dark | orange, 3 pt |
+
+The Theme control's value is orange at rest with no outline: it names the
+theme the room wears now, and a control that steps through several values
+is never "on". The playing track's title is orange with the Music
+button's outline. "Voice: no mic" is not on. Nothing is told apart by hue
+alone: on is an outline as well as a color, the pointer and a press are
+fills a step apart in lightness, and the words still say "on" and "off".
+The pointer used to be an orange outline and a press the orange fill. The
+outline is what on needs, so the pointer took the fill, which is also the
+easier of the two to find with one eye.
+
+A status cell with nothing to say draws nothing. Beside "Edit room: off"
+it was an empty dark box that read as a control that had lost its words.
+
+Everything that floats sits on one plate: the navy ground `#15253B` with a
+thin outline in the theme's line blue `#5B8FC7`, so it keeps its edge over
+a bright sky. That is the hand menu (2 pt), the label with every card,
+hint and reply it shows (4 px of its texture, about 1.5 mm on the 0.4 m
+card) and the surface labels (3 px). On the flash question the two answers
+draw as buttons: the blue block with a line-blue outline at rest, and the
+pointer's orange fill for the answer a hand has dwelt over
+(`flash_choice::card_answers`, `label.rs`). The words are drawn where the
+line of text drew them, so the hit test, the gap and the dead band are
+unchanged; a plate reaches 22 px past its words and stays clear of the
+dead band.
+
+Nothing moved: no row, cell, hit box, size, distance, wording or timing.
+Checked by the desktop tests and the Android build only; not yet seen on
+the headset.
+
 ### The hand menu: the palm shows it and hides it (board #5459, #5539)
 
 The app is used lying back in a chair. The menu first lived on the left
@@ -2284,6 +2328,10 @@ asked before anything flashes. The rules are `flash_choice.rs`.
   is the label showing. The countdown has a line of its own. Beside
   "Limit flashing" it would halve the gap between the answers, and a hand
   on one answer could then read as the other for one eye.
+- **The answers as buttons** (board #5553). Each answer has a plate
+  around its words, outlined at rest and filled orange once a hand has
+  dwelt over it, as the control under the pointer is on the hand menu.
+  The words did not move.
 - **Answering by hand.** The wearer holds a hand over one answer, as they
   see it, and pinches. The app reads the line from the head through the
   pinching fingers to the card (`flash_choice::over`). Left of the gap

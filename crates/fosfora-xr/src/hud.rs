@@ -46,8 +46,15 @@
 //! target under the pointer when a press starts fires at once and stays
 //! locked until release, so drift during the press changes nothing;
 //! holding a -/+ repeats. egui only lays out and paints; it gets no pointer
-//! input. Nothing is told apart by hue alone: the control under the
-//! pointer has a thick outline, a pressed one turns orange with dark text.
+//! input.
+//!
+//! The colors are `panel_style.rs`'s (board #5553): blue rests, orange is
+//! on or now. A toggle that is on has an orange outline and its value in
+//! orange, the playing track's title and the current theme's name are
+//! orange, the control under the pointer is filled orange with dark text,
+//! and a pressed one turns near white. Nothing is told apart by hue
+//! alone: on is an outline, the pointer and a press are fills, and the
+//! words still say "on" and "off".
 
 use std::collections::VecDeque;
 
@@ -56,11 +63,13 @@ use fosfora_app::ui::theme::palette::Palette;
 use glam::{Quat, Vec3};
 
 use crate::gfx::{Beam, Gfx, PanelPose};
+use crate::label::color;
 use crate::palm_panel::{At, PalmPanel, Touch};
 use crate::panel_grid::{
     self as grid, FONT_BUTTON, FONT_END, FONT_GRAPH, FONT_LABEL, FONT_TITLE, FONT_VALUE,
     PIXELS_PER_POINT, TEX_H, TEX_W,
 };
+use crate::panel_style::{self as style, Look, Style};
 use crate::perf::PerfSample;
 
 /// The texture's width keeps a row at a multiple of 256 bytes, which a
@@ -339,6 +348,27 @@ const PALETTE: Palette = Palette::BLUE_ORANGE;
 /// `c` at alpha `a`.
 fn with_alpha(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+
+/// The toggles that are on (board #5553), which draw with an orange
+/// outline and their value in orange: the two-state controls only. A
+/// control that steps through several values (Agent, Immersion, Edges,
+/// Theme) is never "on". Voice counts while it can listen: "Voice: no
+/// mic" is on in the file and deaf.
+fn lit(controls: &Controls, debug: bool) -> Vec<Target> {
+    [
+        (controls.flash_limit, Target::ToggleFlashLimit),
+        (controls.roam.is_on(), Target::ToggleRoam),
+        (controls.edit_room, Target::ToggleEdit),
+        (controls.cloud, Target::ToggleCloud),
+        (controls.music, Target::ToggleMusic),
+        (controls.voice && controls.mic, Target::ToggleVoice),
+        (controls.pitcher, Target::TogglePitcher),
+        (debug, Target::ToggleDebug),
+    ]
+    .into_iter()
+    .filter_map(|(on, target)| on.then_some(target))
+    .collect()
 }
 
 pub struct Hud {
@@ -720,19 +750,31 @@ impl Hud {
         let mut crowded = false;
         let debug = self.debug;
         let surface = self.surface;
+        let lit = lit(controls, debug);
         let output = self.ctx.run(raw, |ctx| {
+            // The frame only keeps the margin: the plate is painted below,
+            // over the part of the texture the quad shows.
             egui::CentralPanel::default()
-                .frame(
-                    egui::Frame::new()
-                        .fill(with_alpha(PALETTE.panel, 245))
-                        .inner_margin(10.0)
-                        .corner_radius(10.0),
-                )
+                .frame(egui::Frame::new().inner_margin(10.0))
                 .show(ctx, |ui| {
+                    // The plate (board #5553): the navy ground and a thin
+                    // outline in the line blue, as the labels', so the
+                    // menu keeps its edge over a bright sky. It ends where
+                    // the quad does, so the outline closes at the bottom.
+                    let plate = Rect::from_min_size(Pos2::ZERO, Vec2::new(size.x, visible));
+                    let ground = ui.ctx().layer_painter(egui::LayerId::background());
+                    ground.rect_filled(plate, 10.0, with_alpha(PALETTE.panel, 245));
+                    ground.rect_stroke(
+                        plate,
+                        10.0,
+                        Stroke::new(style::PLATE_OUTLINE_PT, PALETTE.line),
+                        egui::StrokeKind::Inside,
+                    );
                     let rows = Rows {
                         cursor,
                         locked,
                         hovered: &mut hovered,
+                        lit: &lit,
                     };
                     if debug {
                         crowded = panel_ui(ui, view, &history, controls, rows);
@@ -927,6 +969,8 @@ struct Rows<'a> {
     locked: Option<Target>,
     /// Out: the target under the pointer.
     hovered: &'a mut Option<Target>,
+    /// The toggles that are on ([`lit`]).
+    lit: &'a [Target],
 }
 
 /// A row of controls.
@@ -1151,8 +1195,17 @@ impl Rows<'_> {
         }
     }
 
-    /// A left and a right action at the ends of `area`, the half under the
-    /// pointer (`Some(true)`: the right) outlined.
+    /// The look of the cell for `target`, `hovered` when the pointer is on
+    /// it, and its colors (`panel_style.rs`, board #5553).
+    fn style(&self, target: Target, hovered: bool) -> (Look, Style) {
+        let on = self.lit.contains(&target);
+        let look = style::look(self.locked == Some(target), hovered, on);
+        (look, style::style(look, on))
+    }
+
+    /// A left and a right action at the ends of `area`: the half under the
+    /// pointer (`Some(true)`: the right) lifted and outlined in the line
+    /// blue, its end box in the pointer's fill.
     fn two_way(
         &self,
         painter: &egui::Painter,
@@ -1172,24 +1225,20 @@ impl Rows<'_> {
             if hovered {
                 painter.rect_filled(rect(half), 6.0, PALETTE.rule);
             }
-            let (fill, text) = if self.locked == Some(target) {
-                (PALETTE.sel_bg, PALETTE.sel_fg)
-            } else {
-                (PALETTE.rule, PALETTE.text)
-            };
-            painter.rect_filled(rect(boxed), 6.0, fill);
+            let (_, s) = self.style(target, hovered);
+            cell(painter, rect(boxed), s);
             painter.text(
                 rect(boxed).center(),
                 egui::Align2::CENTER_CENTER,
                 label,
                 egui::FontId::proportional(FONT_END),
-                text,
+                color(s.text),
             );
             if hovered {
                 painter.rect_stroke(
                     rect(half),
                     6.0,
-                    Stroke::new(3.0_f32, PALETTE.accent),
+                    Stroke::new(style::ON_OUTLINE_PT, PALETTE.line),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -1200,6 +1249,8 @@ impl Rows<'_> {
     /// boxes, drawn as a stepper's -/+, and the play/stop button between
     /// them, the press's words ("Music: stop") over the track's title cut
     /// to fit. `under` is the part under the pointer, by its target.
+    /// Board #5553: while the music plays the button is on, outlined in
+    /// orange, and the title is orange: what is playing now.
     fn music(
         &self,
         painter: &egui::Painter,
@@ -1208,136 +1259,124 @@ impl Rows<'_> {
         title: &str,
         under: Option<Target>,
     ) {
-        let outline = |r: Rect| {
-            painter.rect_stroke(
-                r,
-                6.0,
-                Stroke::new(3.0_f32, PALETTE.accent),
-                egui::StrokeKind::Inside,
-            );
-        };
-        let colors = |t: Target| {
-            if self.locked == Some(t) {
-                (PALETTE.sel_bg, PALETTE.sel_fg, PALETTE.sel_fg)
-            } else {
-                (PALETTE.rule, PALETTE.text, PALETTE.sub)
-            }
-        };
         painter.rect_filled(rect(area), 6.0, PALETTE.well);
         let (lb, rb) = area.end_boxes();
         for (target, glyph, boxed) in [(Target::PrevTrack, "<", lb), (Target::NextTrack, ">", rb)] {
-            let (fill, text, _) = colors(target);
+            let (_, s) = self.style(target, under == Some(target));
             let r = rect(boxed);
-            painter.rect_filled(r, 6.0, fill);
+            cell(painter, r, s);
             painter.text(
                 r.center(),
                 egui::Align2::CENTER_CENTER,
                 glyph,
                 egui::FontId::proportional(FONT_END),
-                text,
+                color(s.text),
             );
-            if under == Some(target) {
-                outline(r);
-            }
         }
         let mid = rect(area.middle()).shrink2(Vec2::new(2.0, 0.0));
-        let (fill, text, sub) = colors(Target::ToggleMusic);
-        painter.rect_filled(mid, 6.0, fill);
+        let (_, s) = self.style(Target::ToggleMusic, under == Some(Target::ToggleMusic));
+        cell(painter, mid, s);
         painter.text(
             Pos2::new(mid.center().x, mid.top() + 2.0),
             egui::Align2::CENTER_TOP,
             crate::music::label(playing),
             egui::FontId::proportional(FONT_LABEL),
-            sub,
+            color(s.sub),
         );
         painter.text(
             Pos2::new(mid.center().x, mid.bottom() - 1.0),
             egui::Align2::CENTER_BOTTOM,
             fitted(painter, title, FONT_VALUE, mid.width() - 6.0),
             egui::FontId::proportional(FONT_VALUE),
-            text,
+            color(s.value),
         );
-        if under == Some(Target::ToggleMusic) {
-            outline(mid);
-        }
     }
 
-    /// One action filling `area`.
+    /// One action filling `area`, `hovered` when the pointer is on it. Its
+    /// words on one line, the value after a ": " in the value's color
+    /// ("Voice: on" with an orange "on" while it is on).
     fn button(
         &self,
         painter: &egui::Painter,
         area: grid::Rect,
         target: Target,
         label: &str,
-        on: bool,
+        hovered: bool,
     ) {
-        // Pressed inverts to orange on ink; under the pointer the outline
-        // says so; idle is the blue block every pressable thing is.
-        let (fill, text) = if self.locked == Some(target) {
-            (PALETTE.sel_bg, PALETTE.sel_fg)
-        } else {
-            (PALETTE.rule, PALETTE.text)
-        };
+        let (_, s) = self.style(target, hovered);
         let r = rect(area);
-        painter.rect_filled(r, 6.0, fill);
-        painter.text(
-            r.center(),
-            egui::Align2::CENTER_CENTER,
-            label,
-            egui::FontId::proportional(FONT_BUTTON),
-            text,
-        );
-        if on {
-            painter.rect_stroke(
-                r,
-                6.0,
-                Stroke::new(3.0_f32, PALETTE.accent),
-                egui::StrokeKind::Inside,
+        cell(painter, r, s);
+        let (name, value) = style::name_value(label);
+        let mut job = egui::text::LayoutJob::default();
+        for (part, ink) in [(name, s.text), (value, s.value)] {
+            if part.is_empty() {
+                continue;
+            }
+            job.append(
+                part,
+                0.0,
+                egui::TextFormat {
+                    font_id: egui::FontId::proportional(FONT_BUTTON),
+                    color: color(ink),
+                    ..egui::TextFormat::default()
+                },
             );
         }
+        // Centered as `Painter::text` centers one galley of the same words.
+        let galley = painter.layout_job(job);
+        painter.galley(r.center() - galley.size() * 0.5, galley, color(s.text));
     }
 
     /// One action filling `area` whose words are a name over a value
     /// (board #5415, the Theme control: "Theme" over "Drift*"), laid out
     /// as the Music cell's press words over its title: the name in the
-    /// label font, the value in the value font, cut to fit.
+    /// label font, the value in the value font, cut to fit. The Theme
+    /// control's value is orange at rest (board #5553): the theme the room
+    /// wears now.
     fn named_button(
         &self,
         painter: &egui::Painter,
         area: grid::Rect,
         target: Target,
         (name, value): (&str, &str),
-        on: bool,
+        hovered: bool,
     ) {
-        let (fill, text, sub) = if self.locked == Some(target) {
-            (PALETTE.sel_bg, PALETTE.sel_fg, PALETTE.sel_fg)
+        let (look, s) = self.style(target, hovered);
+        let ink = if target == Target::CycleTheme {
+            style::now_value(look, s)
         } else {
-            (PALETTE.rule, PALETTE.text, PALETTE.sub)
+            s.value
         };
         let r = rect(area);
-        painter.rect_filled(r, 6.0, fill);
+        cell(painter, r, s);
         painter.text(
             Pos2::new(r.center().x, r.top() + 2.0),
             egui::Align2::CENTER_TOP,
             name,
             egui::FontId::proportional(FONT_LABEL),
-            sub,
+            color(s.sub),
         );
         painter.text(
             Pos2::new(r.center().x, r.bottom() - 1.0),
             egui::Align2::CENTER_BOTTOM,
             fitted(painter, value, FONT_VALUE, r.width() - 6.0),
             egui::FontId::proportional(FONT_VALUE),
-            text,
+            color(ink),
         );
-        if on {
-            painter.rect_stroke(
-                r,
-                6.0,
-                Stroke::new(3.0_f32, PALETTE.accent),
-                egui::StrokeKind::Inside,
-            );
-        }
+    }
+}
+
+/// A pressable cell's ground in `r`: its fill, and its outline just inside
+/// the edge when the style has one (a toggle that is on, a press).
+fn cell(painter: &egui::Painter, r: Rect, s: Style) {
+    painter.rect_filled(r, 6.0, color(s.fill));
+    if let Some(outline) = s.outline {
+        painter.rect_stroke(
+            r,
+            6.0,
+            Stroke::new(outline.width, color(outline.color)),
+            egui::StrokeKind::Inside,
+        );
     }
 }
 
@@ -1345,8 +1384,13 @@ impl Rows<'_> {
 /// press), in the value font, or the label font when that does not fit.
 /// Board #5461: in the label font it wraps onto a second line rather than
 /// run past the cell ("invisible wall face 12: streamlines · armed"), and
-/// past two lines it is cut with an ellipsis.
+/// past two lines it is cut with an ellipsis. With nothing to say it draws
+/// nothing (board #5553): an empty dark box beside "Edit room: off" read
+/// as a control that had lost its words.
 fn label(painter: &egui::Painter, area: grid::Rect, text: &str) {
+    if text.is_empty() {
+        return;
+    }
     let r = rect(area);
     painter.rect_filled(r, 6.0, PALETTE.well);
     let room = r.width() - 2.0 * grid::STATUS_PAD;
@@ -1632,8 +1676,8 @@ fn surface_rows(params: Option<(u32, u32, f32)>) -> [Control<'static>; grid::SUR
 /// The music's row, the bottom row in both layouts: play or stop (board
 /// #3472) with the track's `title` and `<` `>` around it (board #5385,
 /// [`Cell::Music`]), and the voice path's toggle in the right cell (board
-/// #3751, V4), so no row count changes. The state is in the words, not a
-/// color.
+/// #3751, V4), so no row count changes. The state is in the words, and
+/// in the outline and the orange of what is on (board #5553).
 ///
 /// Board #5415: the Theme control shares the right cell with Voice, a half
 /// each, as Recenter and Rescan share theirs: "Theme" over the theme
@@ -1682,7 +1726,8 @@ fn music_row<'a>(
 /// no row the wearer already reaches for moved (the quad keeps its bottom
 /// edge and grows upward). It has the row to itself, so no control shares
 /// a cell with it that a press meant for the other half could land on.
-/// The state is in the words, not a color.
+/// The state is in the words, and in the outline and the orange of "on"
+/// (board #5553).
 fn flash_row(on: bool) -> Control<'static> {
     Control::Button(Target::ToggleFlashLimit, crate::flash_choice::row_label(on))
 }
@@ -1726,7 +1771,7 @@ fn recenter_row(room: bool, roam: crate::roam::Roam) -> Control<'static> {
 /// the menu (the Recenter row has been over it since board #4192), so
 /// adding it moved no row the wearer already reaches for
 /// (the quad keeps its bottom edge and grows upward). The state is in the
-/// words, not a color; "Agent: none" with nothing to pick, and a press then
+/// words (a control that steps through several values is never "on"); "Agent: none" with nothing to pick, and a press then
 /// does nothing. Board #5384: the Agent control takes the left cell, and
 /// the Immersion control the right one, each press the next of off, low,
 /// full and black ("Immersion: full"), so the row count does not change.
@@ -1750,7 +1795,8 @@ fn agent_row(
 /// theme's or the mode forced on every kind), a half each, as Recenter and
 /// Rescan share theirs. Without `all_none` (the release surface, board
 /// #4204) the edge bars' choice has the cell to itself. The state is in
-/// the words, not a color.
+/// the words, and Particles on has the outline and the orange of "on"
+/// (board #5553).
 fn cloud_row(on: bool, edges: crate::edge_bars::Choice, all_none: bool) -> Control<'static> {
     Control::Pair([
         Some(Cell::Button(
@@ -1773,7 +1819,8 @@ fn cloud_row(on: bool, edges: crate::edge_bars::Choice, all_none: bool) -> Contr
 }
 
 /// The room editor's row, over the particles' in both layouts: its toggle and
-/// its status (board #3326). The state is in the words, not a color.
+/// its status (board #3326). The state is in the words, and in the outline
+/// and the orange of "on" (board #5553).
 fn edit_row(on: bool, status: &str) -> Control<'_> {
     Control::Pair([
         Some(Cell::Button(
@@ -1789,7 +1836,8 @@ fn edit_row(on: bool, status: &str) -> Control<'_> {
 }
 
 /// The row over it in both layouts: the pitcher's toggle and the debug
-/// panel's. Their state is in the words, not a color.
+/// panel's. Their state is in the words, and in the outline and the orange
+/// of "on" (board #5553).
 fn menu_row(debug: bool, pitcher: bool) -> Control<'static> {
     Control::Pair([
         Some(Cell::Button(

@@ -813,22 +813,40 @@ impl ScanLabel {
 #[cfg(target_os = "android")]
 pub use render::LabelTexture;
 #[cfg(target_os = "android")]
-pub(crate) use render::{PALETTE, TextureCanvas};
+pub(crate) use render::{PALETTE, TextureCanvas, color};
 
 #[cfg(target_os = "android")]
 mod render {
-    use egui::{FontId, Pos2, Rect, Vec2};
+    use egui::{Color32, FontId, Pos2, Rect, Stroke, Vec2};
     use fosfora_app::ui::theme::palette::Palette;
 
     use super::{
         Billboard, GROUND_ALPHA, INSET_PX, LABEL_TEX, LABEL_TEX_H_MAX, LINE_PX, Layout, MARGIN_PX,
         MIN_FONT_PX, layout, tex_h,
     };
+    use crate::flash_choice::Answer;
     use crate::gfx::{Gfx, PanelPose};
+    use crate::panel_style::{self as style, Token};
 
     /// The label's colors: the hand menu's theme (board #3523). The
     /// surface labels' too (board #5378).
     pub(crate) const PALETTE: Palette = Palette::BLUE_ORANGE;
+
+    /// A style token's color in that theme (`panel_style.rs`), the hand
+    /// menu's too.
+    pub(crate) const fn color(token: Token) -> Color32 {
+        match token {
+            Token::Panel => PALETTE.panel,
+            Token::Well => PALETTE.well,
+            Token::Rule => PALETTE.rule,
+            Token::Line => PALETTE.line,
+            Token::Text => PALETTE.text,
+            Token::Sub => PALETTE.sub,
+            Token::SelBg => PALETTE.sel_bg,
+            Token::SelFg => PALETTE.sel_fg,
+            Token::Accent => PALETTE.accent,
+        }
+    }
 
     /// The meter under "Listening…": its height, its bottom's distance
     /// from the ground's, and how far the text moves up for it (px).
@@ -1019,15 +1037,18 @@ mod render {
     }
 
     /// Render `laid` at `alpha` into the texture's top [`tex_h`]: the
-    /// rounded ground filling it, the text centered on it a line at a
-    /// time at the layout's size (shrunk further should egui measure a
-    /// line wider than the layout did, never under [`MIN_FONT_PX`]); with
-    /// `meter` (0..1), a bar that long under a one-line text over its dim
-    /// track.
+    /// rounded ground filling it with its outline (the plate every
+    /// floating thing sits on, board #5553), the text centered on it a
+    /// line at a time at the layout's size (shrunk further should egui
+    /// measure a line wider than the layout did, never under
+    /// [`MIN_FONT_PX`]); with `meter` (0..1), a bar that long under a
+    /// one-line text over its dim track. The flash question's two answers
+    /// draw as buttons ([`answers`]).
     fn draw(canvas: &mut TextureCanvas, gfx: &Gfx, laid: &Layout, alpha: f32, meter: Option<f32>) {
         let tex_w = LABEL_TEX[0] as f32;
         let lines = &laid.lines;
         let shown_h = tex_h(lines.len()) as f32;
+        let question = crate::flash_choice::card_answers(lines);
         canvas.paint(gfx, |painter| {
             let ground =
                 Rect::from_min_size(Pos2::ZERO, Vec2::new(tex_w, shown_h)).shrink(INSET_PX);
@@ -1035,6 +1056,12 @@ mod render {
                 ground,
                 CORNER_PX,
                 PALETTE.panel.gamma_multiply(GROUND_ALPHA * alpha),
+            );
+            painter.rect_stroke(
+                ground,
+                CORNER_PX,
+                Stroke::new(style::PLATE_OUTLINE_PX, PALETTE.line.gamma_multiply(alpha)),
+                egui::StrokeKind::Inside,
             );
             let ink = PALETTE.text.gamma_multiply(alpha);
             let room = ground.width() - 2.0 * MARGIN_PX;
@@ -1044,10 +1071,12 @@ mod render {
                     .map(|l| painter.layout_no_wrap(l.clone(), FontId::proportional(px), ink))
                     .collect()
             };
-            let mut galleys = galleys_at(laid.px);
+            let mut px = laid.px;
+            let mut galleys = galleys_at(px);
             let widest = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max);
             if widest > room {
-                galleys = galleys_at((laid.px * room / widest).max(MIN_FONT_PX));
+                px = (laid.px * room / widest).max(MIN_FONT_PX);
+                galleys = galleys_at(px);
             }
             let lift = if meter.is_some() && galleys.len() == 1 {
                 METER_LIFT_PX
@@ -1060,7 +1089,19 @@ mod render {
                 } else {
                     ground.center() - Vec2::new(0.0, lift)
                 };
-                painter.galley(center - galley.size() * 0.5, galley, ink);
+                let min = center - galley.size() * 0.5;
+                match question {
+                    Some((at, named)) if at == i => {
+                        answers(
+                            painter,
+                            Rect::from_min_size(min, galley.size()),
+                            px,
+                            named,
+                            alpha,
+                        );
+                    }
+                    _ => painter.galley(min, galley, ink),
+                }
             }
             if let Some(width) = meter {
                 let bottom = ground.bottom() - METER_BOTTOM_PX;
@@ -1078,6 +1119,51 @@ mod render {
                 }
             }
         });
+    }
+
+    /// The flash question's two answers as buttons (board #5553), in
+    /// place of their line of text. `line` is where that line's text sat,
+    /// centered on the card: "Limit flashing" starts at its left end and
+    /// "Full show" ends at its right end, with the gap between them, so
+    /// each word is drawn where the one line drew it and the hit test
+    /// (`flash_choice::over`) reads the same card. Around each goes a
+    /// plate: the menu's blue block with an outline at rest, and the
+    /// pointer's orange fill with dark text for the answer a hand has
+    /// dwelt over (`named`, the one the line above names).
+    fn answers(painter: &egui::Painter, line: Rect, px: f32, named: Option<Answer>, alpha: f32) {
+        for answer in Answer::ALL {
+            let over = named == Some(answer);
+            let s = style::style(style::look(false, over, false), false);
+            let ink = color(s.text).gamma_multiply(alpha);
+            let words =
+                painter.layout_no_wrap(answer.words().to_owned(), FontId::proportional(px), ink);
+            let left = match answer {
+                Answer::Limit => line.left(),
+                Answer::Full => line.right() - words.size().x,
+            };
+            let at = Pos2::new(left, line.top());
+            let plate = Rect::from_center_size(
+                Pos2::new(left + words.size().x * 0.5, line.center().y),
+                Vec2::new(
+                    words.size().x + 2.0 * style::ANSWER_PAD_PX,
+                    LINE_PX as f32 - style::ANSWER_SHORT_PX,
+                ),
+            );
+            painter.rect_filled(
+                plate,
+                style::ANSWER_CORNER_PX,
+                color(s.fill).gamma_multiply(alpha),
+            );
+            if !over {
+                painter.rect_stroke(
+                    plate,
+                    style::ANSWER_CORNER_PX,
+                    Stroke::new(style::ANSWER_OUTLINE_PX, PALETTE.line.gamma_multiply(alpha)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            painter.galley(at, words, ink);
+        }
     }
 }
 

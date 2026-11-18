@@ -64,6 +64,7 @@ pub mod microgestures;
 pub mod music;
 pub mod palm_panel;
 pub mod panel_grid;
+pub mod panel_style;
 #[cfg(target_os = "android")]
 mod particles3d;
 #[cfg(target_os = "android")]
