@@ -487,6 +487,14 @@ impl SurfaceBehavior {
         matches!(self, Self::Embers | Self::Sparks)
     }
 
+    /// Whether a volume running it is lit on its sides too (board #5543,
+    /// `surface_fx::side_faces`): the windows, since a building is seen by
+    /// its faces, and the terraces, whose strata run down them. Every other
+    /// look is on the acting face alone ([`acting_face`]), a volume's top.
+    pub fn on_sides(self) -> bool {
+        matches!(self, Self::Windows | Self::Terraces)
+    }
+
     /// Whether the surfaces pass draws every surface running it: the
     /// embers, the sparks, the rings, the streamlines, the curls, the
     /// pulse, the contours, the windows and the terraces (`surface_fx.rs`)

@@ -481,6 +481,15 @@ fn scene() -> Scene {
             rot: upright,
             half: Vec3::new(0.25, 0.25, 0.45),
         },
+        // A storage unit ahead and to the right, taller than the eye
+        // (board #5543): a look lit on a volume's sides fills more of the
+        // view on it than on anything else in a room.
+        RoomBox {
+            kind: KIND_OTHER,
+            center: Vec3::new(1.3, 0.9, -1.45),
+            rot: upright,
+            half: Vec3::new(0.4, 0.25, 0.9),
+        },
     ];
     let room = Room::fit(
         boxes
@@ -752,6 +761,8 @@ impl Show {
             e.advance(dt * motion);
         }
         let mut slots = Vec::new();
+        let mut sides = Vec::new();
+        let mut side_scratch = Vec::new();
         let mut ported = Vec::new();
         let mut sign = 1.0;
         for (k, (b, look)) in self.scene.boxes.iter().zip(&looks).enumerate() {
@@ -783,15 +794,31 @@ impl Show {
                 ));
                 continue;
             }
-            slots.push(Slot {
-                face,
+            let slot = Slot {
+                face: surface_fx::lit_face(behavior, face),
                 kind: b.kind,
                 behavior,
                 strength: self.drawn(b.kind, look),
                 color: look.color,
                 band: look.band,
-            });
+                seed: surface_fx::face_seed(k, 0),
+            };
+            // As `app.rs` (board #5543): a volume's sides for a look lit
+            // on them, after every acting face.
+            surface_fx::push_sides(
+                &slot,
+                k,
+                b.center,
+                b.rot,
+                b.half,
+                head,
+                &mut side_scratch,
+                &mut sides,
+            );
+            slots.push(slot);
         }
+        surface_fx::keep_sides(&mut sides, head, surface_fx::MAX_SIDES);
+        slots.append(&mut sides);
         let sky = &self.scene.sky;
         let sky_faces: Vec<Face> = ported
             .iter()
@@ -1014,7 +1041,7 @@ struct Gpu {
 }
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-const MAX_FX: usize = 16;
+const MAX_FX: usize = 24;
 const MAX_PORTS: usize = 12;
 
 impl Gpu {

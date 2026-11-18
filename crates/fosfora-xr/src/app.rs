@@ -2002,7 +2002,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // the log (`None` before the first frame, so the first count is logged
     // too).
     let mut surface_clock = crate::surface_fx::Clock::default();
-    let mut surfaces_lit: Option<([usize; 7], usize)> = None;
+    // The looks' counts, then the sides drawn, the sides left out and the
+    // faces dropped.
+    let mut surfaces_lit: Option<[usize; 10]> = None;
     // Board #5436: the sky (`sky.rs`). Its knob, polled once a second
     // below; the facing its seam is behind, taken at launch (the first
     // frame) and at each recenter, with which of the two it was; what the
@@ -5350,6 +5352,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 };
                 let mut counts = [0usize; 7];
                 let mut slots = Vec::new();
+                let mut sides = Vec::new();
+                let mut side_scratch = Vec::new();
                 // The ported effects' rates integrate every frame, lit or
                 // not, one state per effect: two walls on aurora drift in
                 // step, and an effect picks up where the clock is.
@@ -5483,15 +5487,36 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         SurfaceBehavior::Contours => counts[6] += 1,
                         _ => counts[4] += 1,
                     }
-                    slots.push(crate::surface_fx::Slot {
-                        face,
+                    let slot = crate::surface_fx::Slot {
+                        face: crate::surface_fx::lit_face(behavior, face),
                         kind: b.kind,
                         behavior,
                         strength,
                         color,
                         band,
-                    });
+                        seed: crate::surface_fx::face_seed(k, 0),
+                    };
+                    // Board #5543: a volume running a look lit on sides
+                    // (the windows, the terraces) draws it on the sides
+                    // the head sees too, in slots after every acting
+                    // face's.
+                    crate::surface_fx::push_sides(
+                        &slot,
+                        k,
+                        glam::Vec3::from(b.center),
+                        glam::Quat::from_array(b.rot),
+                        glam::Vec3::from(b.half),
+                        head,
+                        &mut side_scratch,
+                        &mut sides,
+                    );
+                    slots.push(slot);
                 }
+                let sides_dropped = crate::surface_fx::keep_sides(
+                    &mut sides,
+                    head,
+                    crate::surface_fx::MAX_SIDES,
+                );
                 // Board #5420: an outlined scanned box's color index is its
                 // lane's, whatever its behavior draws (a live shape takes
                 // its kind's palette color, below).
@@ -5690,21 +5715,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     gain: c.gain,
                     sign: spectrum_sign,
                 });
-                let faces: Vec<_> = slots
-                    .iter()
-                    .map(|slot| crate::surface_fx::rows(slot, audio, ripple.as_ref(), spectrum, t))
-                    .map(|rows| crate::immerse::lift_rows(rows, immerse_level))
-                    .map(|rows| crate::themes::veil_rows(rows, bringing.veil()))
-                    .collect();
+                let lit_rows = |slot: &crate::surface_fx::Slot| {
+                    crate::themes::veil_rows(
+                        crate::immerse::lift_rows(
+                            crate::surface_fx::rows(slot, audio, ripple.as_ref(), spectrum, t),
+                            immerse_level,
+                        ),
+                        bringing.veil(),
+                    )
+                };
+                let mut faces: Vec<_> = slots.iter().map(lit_rows).collect();
                 // One budget: a ported face and a `SurfaceFx` face both
                 // count against the pass's slots, the ported ones last.
                 let max = crate::surface_fx::MAX_SLOTS;
                 let lit = faces.len() + port_faces.len();
                 let dropped = lit.saturating_sub(max);
                 port_faces.truncate(max.saturating_sub(faces.len()));
-                if Some((counts, dropped)) != surfaces_lit {
+                // Board #5543: the sides after them, in slots of their own
+                // (`surface_fx::MAX_SIDES`), so a side never takes an
+                // acting face's or a port's.
+                faces.truncate(max);
+                faces.extend(sides.iter().map(lit_rows));
+                let mut lit_key = [0usize; 10];
+                lit_key[..7].copy_from_slice(&counts);
+                lit_key[7..].copy_from_slice(&[sides.len(), sides_dropped, dropped]);
+                if Some(lit_key) != surfaces_lit {
+                    let side_count = sides.len();
                     info!(
-                        "surfaces: {lit} lit (rings {}, streamlines {}, curls {}, pulse {}, spectrum {}, ports {}, contours {})",
+                        "surfaces: {lit} lit (rings {}, streamlines {}, curls {}, pulse {}, spectrum {}, ports {}, contours {}) · {side_count} sides",
                         counts[0],
                         counts[1],
                         counts[2],
@@ -5713,13 +5751,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         counts[5],
                         counts[6]
                     );
+                    if sides_dropped > 0 {
+                        info!(
+                            "surfaces: left out {sides_dropped} sides, the ones covering the least of the view (the pass holds {})",
+                            crate::surface_fx::MAX_SIDES
+                        );
+                    }
                     if dropped > 0 {
                         info!(
                             "surfaces: dropped {dropped} (the pass holds {})",
                             crate::surface_fx::MAX_SLOTS
                         );
                     }
-                    surfaces_lit = Some((counts, dropped));
+                    surfaces_lit = Some(lit_key);
                 }
                 gfx.set_surfaces(&faces);
                 gfx.set_surface_ports(&port_faces);
