@@ -11,7 +11,7 @@
 
 use fosfora_xr::edge_bars::{
     EDGE_BARS_WGSL, HISTORY_STEP_S, History, LIFT_M, Outline, RUNG_FILL, RUNGS, Tunnel, rows,
-    rung_at, tunnel_alpha_at, tunnel_hit,
+    rung_at, rung_slope, tunnel_alpha_at, tunnel_hit,
 };
 use fosfora_xr::math::{self, Fov};
 use glam::{Mat4, Quat, Vec3};
@@ -252,8 +252,7 @@ fn the_tunnel_shader_matches_its_rust_copy() {
     };
     let local = |p: Vec3| p - tunnel.center;
     let depth_at = |p: Vec3| tunnel_hit(tunnel.half, tunnel.depth, 1.0, local(eye), local(p));
-    let spacing = tunnel.depth / RUNGS as f32;
-    let w = RUNG_FILL * spacing;
+    let w = RUNG_FILL;
     let (mut compared, mut lit, mut dark_end, mut worst) = (0, 0, 0, 0.0f32);
     let mut skipped = [0usize; 3];
     let mut walls = [false; 4];
@@ -280,7 +279,9 @@ fn the_tunnel_shader_matches_its_rust_copy() {
             // pixel's cover is the derivative's to say: the cover is then 1
             // or 0 for any derivative up to twice this one.
             let (_, dz) = rung_at(hit.depth, tunnel.depth);
-            if (dz.abs() - 0.5 * w).abs() < fw {
+            // The rung's edge is in rung coordinates, so the pixel's worth
+            // of depth is too.
+            if (dz.abs() - 0.5 * w).abs() < fw * rung_slope(hit.depth, tunnel.depth) {
                 skipped[2] += 1;
                 continue;
             }

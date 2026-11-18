@@ -871,11 +871,11 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     face's own box never hides its strips: the 1 cm lift alone keeps a
     strip over 400 float steps in front of the face's depth at 4 m, more
     at grazing angles, and the bias only adds to that. One uniform of
-    33,456 bytes holds up to 384 strips and tunnels together, a tunnel in
+    36,176 bytes holds up to 384 strips and tunnels together, a tunnel in
     a strip's 80 bytes, after the strips. A frame writes only the rows it
-    uses: 2,736 bytes of bar sums (this frame's and the in mode's
-    history, 2,448 more than before the in mode, in every mode) and 80 per
-    strip or tunnel. Each eye draws the strips in one instanced call and
+    uses: 5,456 bytes of bar sums (this frame's and the in mode's
+    history of twenty rungs, in every mode; 2,736 while there were ten)
+    and 80 per strip or tunnel. Each eye draws the strips in one instanced call and
     the tunnels in another, so a frame of mixed modes is still one write
     and at most two draws per eye. The strips cover 27 % of a 4 x 2.5 m
     wall, up to 46 % of a square face under 1.7 m, and 24 % of a 4 x 4 x
@@ -909,36 +909,45 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
       the rim, which holds with one eye, by motion alone.
     - *Rungs.* On each inner wall the spectrum runs along the edge as on
       the face: the same bands, ends, merging and corners. A bar is a
-      stack of lit rungs at even depths, like the mirror's receding
-      frames, not a solid fill: ten at full height, each 0.3 of the
-      spacing wide, a rung lit where its bar reached its depth (half lit
-      when the bar's height times the depth is exactly there). The rungs
+      stack of lit rungs, like the mirror's receding frames, not a solid
+      fill: twenty at full height (ten until board #5543), each 0.3 of
+      the gap to the next wide, a rung lit where its bar reached it (half
+      lit when the bar's height times twenty is exactly there). The gaps
+      spread with the depth, each 1.12 of the one in front: 10 cm at a
+      wall's rim and 90 cm at its end, 7.5 m back. Drawn in perspective
+      the frames nest toward one point and leave a small dark center,
+      which is what makes a mirror read as endless. Even gaps over that
+      depth would be a few thick bands. The rungs
       line up across all four walls, so a loud moment reads as whole
       frames lit deep into the wall and a quiet one as the rim alone. The
       rim rung runs along the whole edge while music plays, gaps included,
-      at the line's 0.6 and up to 1 where its bar is loud. Each rung is 0.8
-      of the one in front (the last 0.13), so the far end fades into dark.
+      at the line's 0.6 and up to 1 where its bar is loud. Each rung is 0.9
+      of the one in front, times a straight fall to nothing at the tunnel's
+      end (the tenth 0.17, the last 0.007), so the tunnel dissolves into the
+      dark and has no lit back wall.
       A rung thinner than a pixel dims by the share of the pixel it covers
       instead of flickering, and a face seen nearly edge-on fades out
       between 0.05 and 0.2 of the cosine of the view ray to its normal
       (87 to 78 degrees off it).
     - *Sound travels in.* Rung k shows the bars from k steps of 60 ms ago,
-      so a hit starts at the rim and reaches the last rung in 0.54 s. The
+      so a hit starts at the rim and reaches the last rung in 1.14 s. The
       history keeps each bar's loudest over each step, so a hit between
       two steps is not lost, and steps by time, so 72 and 90 Hz behave
       alike. Its rows' running sums go in the same uniform as this
       frame's, one block of 17 rows per rung. The fragment reads one row's
       two sums either way, so the history is the mode, not a knob.
-    - *Scale.* The tunnel's depth is `edgebarsdepth` (default 0.6) of the
-      face's smaller side, clamped to 0.15 to 1.5 m, so a 40 cm box and a
-      4 m wall both read as a tunnel: 24 cm into the box, 1.5 m into a 4 x
-      2.5 m wall. `edgebarsgain` applies as on the face.
+    - *Scale.* The tunnel's depth is `edgebarsdepth` (default 3, range 0
+      to 8) of the face's smaller side, clamped to 0.3 to 8 m: 1.2 m
+      behind a 40 cm box's face and 7.5 m behind a 4 x 2.5 m wall. It was
+      0.6 of the side and at most 1.5 m until board #5543, when the owner
+      asked for the mirror to go deeper and ran the knob to its old top of
+      2. `edgebarsgain` applies as on the face.
     - *Cost.* A tunnel covers its whole face, where the strips covered
       its rims. Seated in a room whose walls and ceiling go in, that is
       most of each eye's 1680 x 1760 pixels, each shaded once (what stands
       in front fails the depth test, and the shader never discards, so
-      early depth testing holds). The fragment: one intersection, a floor
-      for the rung, the bar's mean from two running sums of that rung's
+      early depth testing holds). The fragment: one intersection, a
+      logarithm and a floor for the rung, the bar's mean from two running sums of that rung's
       row, two smoothsteps across the bar's slot, a power for the dimming
       and a square root for the grazing fade; no texture, no loop. That
       is less work than the surfaces pass's rings (a loop of eight) or
@@ -993,8 +1002,8 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
     is: the rim floats off the real edge, and the passthrough through the
     dark center shows the mismatch. A face at a grazing angle shows a
     sliver of the far wall's first rungs and then fades out. A tunnel is
-    drawn whatever is behind the face, so 1.5 m behind a thin wall, or 24
-    cm behind the front of a shallow shelf, it reaches into the next room
+    drawn whatever is behind the face, so 7.5 m behind a thin wall, or
+    1.2 m behind the front of a shallow shelf, it reaches into the next room
     or out through the back; the illusion does not know. A volume's
     tunnels behind two of its faces cross inside it, each seen only
     through its own face. `edgebars 3` forces the floor in too, a pit

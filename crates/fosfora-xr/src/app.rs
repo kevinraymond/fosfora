@@ -572,8 +572,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       immersion; live)
     //   adb shell setprop debug.fosfora.edgebarsheight 0.12      (edge bars: the tallest bar as a fraction of its face's smaller side, 0..0.5, then clamped
     //       to 2..20 cm; live)
-    //   adb shell setprop debug.fosfora.edgebarsdepth 0.6        (edge bars in: the tunnel's depth as a fraction of its face's smaller side, 0..2, then
-    //       clamped to 0.15..1.5 m; live)
+    //   adb shell setprop debug.fosfora.edgebarsdepth 3          (edge bars in: the tunnel's depth as a fraction of its face's smaller side, 0..8, then
+    //       clamped to 0.3..8 m; default 3 since board #5543, 0.6 and at most 1.5 m before; live)
     //   adb shell setprop debug.fosfora.sky 0|1                  (board #5436, sky.rs: Aurora on the walls and the ceiling as one sky mapped from the
     //       room's center at a seated eye height, the seam behind the facing at launch or the last recenter, and its reflection
     //       on a floor; 0 puts Aurora back on per-face mapping everywhere, so the two can be captured and costed in one launch;
