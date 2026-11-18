@@ -572,8 +572,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       immersion; live)
     //   adb shell setprop debug.fosfora.edgebarsheight 0.12      (edge bars: the tallest bar as a fraction of its face's smaller side, 0..0.5, then clamped
     //       to 2..20 cm; live)
-    //   adb shell setprop debug.fosfora.edgebarsdepth 0.6        (edge bars in: the tunnel's depth as a fraction of its face's smaller side, 0..2, then
-    //       clamped to 0.15..1.5 m; live)
+    //   adb shell setprop debug.fosfora.edgebarsdepth 3          (edge bars in: the tunnel's depth as a fraction of its face's smaller side, 0..8, then
+    //       clamped to 0.3..8 m; default 3 since board #5543, 0.6 and at most 1.5 m before; live)
     //   adb shell setprop debug.fosfora.sky 0|1                  (board #5436, sky.rs: Aurora on the walls and the ceiling as one sky mapped from the
     //       room's center at a seated eye height, the seam behind the facing at launch or the last recenter, and its reflection
     //       on a floor; 0 puts Aurora back on per-face mapping everywhere, so the two can be captured and costed in one launch;
@@ -5444,13 +5444,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     };
                     let spectrum = behavior == SurfaceBehavior::Spectrum;
                     // Board #5462: a look held back (astrolabe and
-                    // fenestra) shows nothing; the lanes log the surfaces
-                    // on one. Board #5543: embers and sparks, which the
+                    // fenestra) shows nothing but where the room's theme
+                    // gives it to the kind (board #5543, Mirror); the
+                    // lanes log the surfaces on one that shows nothing. Board #5543: embers and sparks, which the
                     // wearer's lists still leave out, and the looks only a
                     // theme gives draw.
                     if spectrum != (spectrum_box == Some(k))
                         || (!spectrum && !behavior.draws_on_face())
-                        || behavior.held_back()
+                        || (behavior.held_back()
+                            && !crate::themes::gives(
+                                surface_lanes.saved_theme(),
+                                b.kind,
+                                behavior,
+                            ))
                         || b.hidden
                         || (k == stage_k && scene_floor)
                         || (behavior == SurfaceBehavior::Rings && ripple.is_none())
@@ -5479,6 +5485,29 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     // audio bindings.
                     // Board #5436: Aurora on a wall or the ceiling is the
                     // sky, on a floor its reflection (`sky::Map`).
+                    // Board #5543: under a theme whose floor mirrors its
+                    // ceiling (Mirror: the astrolabe, barely), the
+                    // ceiling's look on the floor's face first, so the
+                    // floor's own look draws over it. It carries the
+                    // ceiling's kind, and with it the ceiling's color,
+                    // one color and cut.
+                    if b.kind == KIND_FLOOR
+                        && surface_ports.is_some()
+                        && let Some((mirrored, color, strength)) =
+                            crate::themes::floor_mirror(surface_lanes.saved_theme(), behavior)
+                        && let Some(i) = mirrored.port()
+                    {
+                        counts[5] += 1;
+                        ported.push((
+                            i,
+                            crate::surface_port::port_face(face),
+                            crate::surfaces::KIND_CEILING,
+                            mirrored,
+                            strength,
+                            color,
+                            Map::Face,
+                        ));
+                    }
                     if let (Some(i), Some(_)) = (behavior.port(), surface_ports.as_ref()) {
                         counts[5] += 1;
                         ported.push((
@@ -5737,6 +5766,35 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                     behavior.id(),
                                     crate::surface_port::tint(color, kind, audio.key_tint),
                                 );
+                                // Board #5543: a face whose edges go in
+                                // keeps its effect's bright parts round
+                                // the tunnel and drops its dim fill; and
+                                // one color is the wrapper's where the
+                                // effect has no input for it.
+                                let rows = match map {
+                                    Map::Face => {
+                                        let tunnel = edge_on
+                                            && occluders
+                                            && edge_bars
+                                                .choice
+                                                .mode(crate::themes::edge_mode(light_theme, kind))
+                                                == crate::edge_bars::Mode::In;
+                                        // A held-back look was counted
+                                        // for the flash rule without its
+                                        // fill, so it never draws it.
+                                        crate::surface_port::with_look(
+                                            rows,
+                                            if tunnel || behavior.held_back() {
+                                                crate::surface_port::TUNNEL_CUT
+                                            } else {
+                                                0.0
+                                            },
+                                            effect.wrapper_mono()
+                                                && crate::themes::mono(light_theme, kind, behavior),
+                                        )
+                                    }
+                                    _ => rows,
+                                };
                                 crate::gfx::PortFace {
                                     effect: i,
                                     uniforms: crate::surface_port::uniforms(

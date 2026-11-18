@@ -84,7 +84,11 @@
 //! becomes a window into a tunnel ([`Tunnel`]): a box behind the face with
 //! the face's outline as its opening, its four inner walls running straight
 //! back along the inward normal, [`tunnel_depth`] deep ([`DEPTH_FRACTION`]
-//! of the face's smaller side, [`MIN_DEPTH_M`] to [`MAX_DEPTH_M`]). Nothing
+//! of the face's smaller side, [`MIN_DEPTH_M`] to [`MAX_DEPTH_M`]). Since
+//! board #5543 that is three times the smaller side, 7.5 m behind a
+//! 4 x 2.5 m wall, where it was 0.6 of it and at most 1.5 m: the owner
+//! wanted the mirror to go deeper and set the depth knob to its old top. A
+//! tunnel is deeper than its box, as a mirror's reflections are. Nothing
 //! is drawn behind the face: the face's own occluder writes depth there,
 //! and whatever stands in front of the face must still hide the tunnel. The
 //! face's quad is drawn instead, lifted and depth-tested as the strips are,
@@ -101,16 +105,23 @@
 //! drawn (alpha 0), so the center stays dark and the passthrough or the
 //! surface's own effect shows there.
 //!
-//! **Rungs** ([`rung_light`]). On each inner wall the spectrum runs along
-//! the edge as on the face: the same bands, ends, merging and corners. A
-//! bar is a stack of lit rungs at even depths, like the mirror's receding
-//! frames: [`RUNGS`] at full height, each [`RUNG_FILL`] of the spacing wide
-//! and lit where its bar reached its depth (a bar's height times the
-//! tunnel's depth). The rungs line up across the four walls, so a loud
+//! **Rungs** ([`rung_light`], [`rung_coord`]). On each inner wall the
+//! spectrum runs along the edge as on the face: the same bands, ends,
+//! merging and corners. A bar is a stack of lit rungs, like the mirror's
+//! receding frames: [`RUNGS`] at full height, each [`RUNG_FILL`] of the gap
+//! to the next wide and lit where its bar reached it (a bar's height times
+//! the rung count). The gaps are not even: each is [`RUNG_GROWTH`] of the
+//! one in front, 10 cm at a wall's rim and 90 cm at its end, so twenty
+//! rungs carry the eye 7.5 m back and, drawn in perspective, nest toward
+//! one point with a small dark center. Ten even rungs over that depth
+//! would be 75 cm apart from the rim on, a few thick bands and not a
+//! mirror. The rungs line up across the four walls, so a loud
 //! moment reads as whole frames lit deep into the wall and a quiet one as
 //! the rim alone. The rim rung runs along the whole edge while the music
 //! plays, brighter where its bar is loud. Each rung is [`RUNG_DIM`] of the
-//! one in front, so the far end fades into dark. A rung thinner than a
+//! one in front, times a straight fall to nothing at the tunnel's end
+//! ([`rung_dim`]), so the tunnel dissolves into the dark and has no lit
+//! back wall. A rung thinner than a
 //! pixel dims by the share of the pixel it covers ([`rung_cover`]) instead
 //! of flickering, and a face seen nearly edge-on fades out over
 //! [`GRAZE_LO`] to [`GRAZE_HI`] of the cosine to its normal ([`graze`]).
@@ -134,8 +145,8 @@
 //! written once a frame (only its used rows), at most two draws per eye, no
 //! loop in either fragment. At most [`MAX_STRIPS`] strips and tunnels
 //! together (32 boxes, three faces of four edges each): [`UNIFORM_BYTES`]
-//! bytes, of which a frame writes 2,736 (the head and ten rungs of sums)
-//! plus 80 per strip or tunnel. A strip of length L and height h covers
+//! bytes, of which a frame writes 5,456 (the head and twenty rungs of
+//! sums; 2,736 with the first version's ten) plus 80 per strip or tunnel. A strip of length L and height h covers
 //! (L - h) h, so a face's strips cover 27 % of a 4 x 2.5 m wall, up to
 //! 46 % of a square face under 1.67 m, and all of a face under 4.4 cm
 //! across; the walls, floor and ceiling of a 4 x 4 x 2.5 m room 24 %.
@@ -144,7 +155,8 @@
 //! whose walls and ceiling go in, that is most of each eye's pixels, each
 //! shaded once (what stands in front fails the depth test). Its fragment
 //! does one intersection (two divisions and a minimum), one rung lookup
-//! (a floor), the bar's mean from two running sums of that rung's row, two
+//! (a logarithm and a floor; a division and a floor while the rungs were
+//! even), the bar's mean from two running sums of that rung's row, two
 //! smoothsteps across the slot, a power for the dimming and a square root
 //! for the grazing fade: no texture, no loop.
 //!
@@ -213,17 +225,23 @@ pub const MIN_FACE_HALF_M: f32 = 0.01;
 pub const PRESENCE_S: f32 = 0.3;
 /// The in mode's tunnel: its depth against the face's smaller side
 /// (`debug.fosfora.edgebarsdepth`), the knob's range, and the clamps (m).
-pub const DEPTH_FRACTION: f32 = 0.6;
-pub const DEPTH_FRACTION_MAX: f32 = 2.0;
-pub const MIN_DEPTH_M: f32 = 0.15;
-pub const MAX_DEPTH_M: f32 = 1.5;
-/// The rungs a full bar lights, evenly spaced from the rim to the tunnel's
-/// end, and the history's rows: rung k shows the bars from k steps ago.
-pub const RUNGS: usize = 10;
-/// A rung's width against the spacing between rungs.
+pub const DEPTH_FRACTION: f32 = 3.0;
+pub const DEPTH_FRACTION_MAX: f32 = 8.0;
+pub const MIN_DEPTH_M: f32 = 0.3;
+pub const MAX_DEPTH_M: f32 = 8.0;
+/// The rungs a full bar lights, from the rim to the tunnel's end, and the
+/// history's rows: rung k shows the bars from k steps ago.
+pub const RUNGS: usize = 20;
+/// Each gap between rungs against the one in front of it ([`rung_coord`]):
+/// the rungs sit close at the rim and spread with the depth, so twenty of
+/// them reach several times the face's width back and still nest toward
+/// one point on screen.
+pub const RUNG_GROWTH: f32 = 1.12;
+/// A rung's width against the gap to the next rung.
 pub const RUNG_FILL: f32 = 0.3;
-/// Each rung's light against the one in front of it.
-pub const RUNG_DIM: f32 = 0.8;
+/// Each rung's light against the one in front of it, before the fade to
+/// nothing at the tunnel's end ([`rung_dim`]).
+pub const RUNG_DIM: f32 = 0.9;
 /// The light of a rung along its whole edge while music plays, before the
 /// dimming: every rung is a faint frame, as the copies of a mirror's lights
 /// are, so the tunnel reads at any level and the bars light it further.
@@ -263,6 +281,7 @@ const _: () = assert!(
     RUNG_FILL > 0.0 && RUNG_FILL < 1.0,
     "rungs with dark between them"
 );
+const _: () = assert!(RUNG_GROWTH > 1.0, "the rung coordinate is a logarithm");
 
 /// How one shape's edges draw: what a theme names per kind of surface
 /// (`themes.rs`) or the Edges control and `debug.fosfora.edgebars` force on
@@ -1321,32 +1340,69 @@ pub fn tunnel_hit(half: [f32; 2], depth: f32, low: f32, eye: Vec3, point: Vec3) 
     }
 }
 
-/// The rung nearest a point `z` m deep in a tunnel `depth` deep, and how
-/// far the point is from the rung's middle (m). Rung k spans k to
-/// k + [`RUNG_FILL`] spacings deep, the spacing `depth /` [`RUNGS`].
-pub fn rung_at(z: f32, depth: f32) -> (usize, f32) {
-    let spacing = depth.max(1e-4) / RUNGS as f32;
-    let w = RUNG_FILL * spacing;
-    let k = ((z - 0.5 * w) / spacing + 0.5)
-        .floor()
-        .clamp(0.0, (RUNGS - 1) as f32);
-    (k as usize, z - (k * spacing + 0.5 * w))
+/// [`RUNG_GROWTH`] to the power [`RUNGS`], less 1: the last gap's end
+/// against the first gap, summed (`RUNG_SPREAD` in the WGSL).
+pub fn rung_spread() -> f32 {
+    RUNG_GROWTH.powi(RUNGS as i32) - 1.0
 }
 
-/// How much of a pixel `px` m deep (its footprint along the wall's depth)
-/// a rung `w` m wide covers, the pixel's middle `dz` from the rung's: the
+/// The rung coordinate of a point `z` m deep in a tunnel `depth` deep:
+/// rung k starts at k, and the tunnel ends at [`RUNGS`]. Each gap between
+/// rungs is [`RUNG_GROWTH`] of the one in front, so the coordinate is a
+/// logarithm of the depth: an infinity mirror's frames, which sit at even
+/// depths, drawn further apart the deeper they are so that a few reach far.
+pub fn rung_coord(z: f32, depth: f32) -> f32 {
+    (1.0 + z.max(0.0) * rung_spread() / depth.max(1e-4)).ln() / RUNG_GROWTH.ln()
+}
+
+/// How deep (m) the rung coordinate `u` is in a tunnel `depth` deep:
+/// [`rung_coord`] the other way.
+pub fn rung_depth(u: f32, depth: f32) -> f32 {
+    depth.max(1e-4) * (RUNG_GROWTH.powf(u) - 1.0) / rung_spread()
+}
+
+/// The rung coordinate's change per meter of depth at `z` m deep: what
+/// turns a pixel's worth of depth into a pixel's worth of the coordinate.
+pub fn rung_slope(z: f32, depth: f32) -> f32 {
+    let c = rung_spread() / depth.max(1e-4);
+    c / ((1.0 + z.max(0.0) * c) * RUNG_GROWTH.ln())
+}
+
+/// The rung nearest a point `z` m deep in a tunnel `depth` deep, and how
+/// far the point is from the rung's middle, in rung coordinates
+/// ([`rung_coord`]). Rung k spans k to k + [`RUNG_FILL`].
+pub fn rung_at(z: f32, depth: f32) -> (usize, f32) {
+    let u = rung_coord(z, depth);
+    let k = (u - 0.5 * RUNG_FILL + 0.5)
+        .floor()
+        .clamp(0.0, (RUNGS - 1) as f32);
+    (k as usize, u - (k + 0.5 * RUNG_FILL))
+}
+
+/// How much of a pixel `px` deep (its footprint along the wall's depth)
+/// a rung `w` wide covers, the pixel's middle `dz` from the rung's, all
+/// three in rung coordinates: the
 /// box filter, so a rung thinner than a pixel dims instead of flickering.
 pub fn rung_cover(dz: f32, w: f32, px: f32) -> f32 {
     let px = px.max(1e-6);
     (((dz + 0.5 * px).min(0.5 * w) - (dz - 0.5 * px).max(-0.5 * w)) / px).clamp(0.0, 1.0)
 }
 
+/// How much of its light rung `k` keeps: [`RUNG_DIM`] of the rung in front,
+/// as a mirror loses a share at each bounce, times a straight fall to
+/// nothing at the tunnel's end, so the tunnel dissolves into the dark and
+/// never shows a lit back wall (the owner, worn, Nov 18: "make it fade out
+/// the deeper it goes").
+pub fn rung_dim(k: usize) -> f32 {
+    RUNG_DIM.powi(k as i32) * (1.0 - k as f32 / RUNGS as f32)
+}
+
 /// Rung `k`'s light `f` across its bar's slot (0..1), the bar's height
 /// k steps ago `h` (0..1): the rim (rung 0) along the whole edge, brighter
 /// where its bar is loud; a deeper rung a faint frame along the whole edge
 /// ([`FRAME_LIGHT`]), brighter in its bar's slot where the bar reached it
-/// (half lit at a height of k / [`RUNGS`]); each dimmer by [`RUNG_DIM`] a
-/// rung.
+/// (half lit at a height of k / [`RUNGS`]); each dimmer with its depth
+/// ([`rung_dim`]).
 pub fn rung_light(k: usize, f: f32, h: f32) -> f32 {
     let gap = 0.5 * (1.0 - BAR_FILL);
     let across = smoothstep(gap, gap + SIDE_SOFT, f)
@@ -1358,7 +1414,7 @@ pub fn rung_light(k: usize, f: f32, h: f32) -> f32 {
     } else {
         (across * lit * level).max(FRAME_LIGHT)
     };
-    RUNG_DIM.powf(k as f32) * rung
+    rung_dim(k) * rung
 }
 
 /// How much of a tunnel shows for a view ray at `facing` (the cosine of
@@ -1391,7 +1447,7 @@ pub fn tunnel_light_at(rows: &[[f32; 4]], k: usize, eye: Vec3, point: Vec3, px: 
     };
     let m = ((bars + 0.5) as u32).max(1);
     let (rung, dz) = rung_at(hit.depth, depth);
-    let cover = rung_cover(dz, RUNG_FILL * depth / RUNGS as f32, px);
+    let cover = rung_cover(dz, RUNG_FILL, px * rung_slope(hit.depth, depth));
     let x = (hit.along / hit.length).clamp(0.0, 0.99999) * m as f32;
     let i = (x as u32).min(m - 1);
     let n = (rows[0][0] + 0.5) as u32;
@@ -1447,7 +1503,7 @@ struct EdgeBars {
     // each rung's bars' running sums, four to a row: the k-th is the first
     // k bars' heights summed. Rung 0 is this frame's bars, rung k the bars
     // k steps ago.
-    sums: array<array<vec4<f32>, 17>, 10>,
+    sums: array<array<vec4<f32>, 17>, 20>,
     // the strips, then the tunnels
     strips: array<Strip, 384>,
 }
@@ -1470,9 +1526,14 @@ const LINE_LIGHT: f32 = 0.6;
 // the one in front; the cosines of the view ray to the normal over which
 // it fades in.
 const LIFT_M: f32 = 0.01;
-const RUNGS: u32 = 10u;
+const RUNGS: u32 = 20u;
+// Each gap between rungs is RUNG_GROWTH (1.12) of the one in front:
+// RUNG_SPREAD is RUNG_GROWTH to the power RUNGS, less 1, and RUNG_INV_LN
+// 1 over its natural logarithm (edge_bars.rs, rung_coord).
+const RUNG_SPREAD: f32 = 8.646293;
+const RUNG_INV_LN: f32 = 8.823891;
 const RUNG_FILL: f32 = 0.3;
-const RUNG_DIM: f32 = 0.8;
+const RUNG_DIM: f32 = 0.9;
 const FRAME_LIGHT: f32 = 0.25;
 const GRAZE_LO: f32 = 0.05;
 const GRAZE_HI: f32 = 0.2;
@@ -1604,9 +1665,9 @@ fn vs_tunnel(@builtin(vertex_index) i: u32, @builtin(instance_index) k: u32) -> 
     return out;
 }
 
-// How much of a pixel px m deep a rung w m wide covers, the pixel's middle
-// dz from the rung's: the box filter, so a rung thinner than a pixel dims
-// instead of flickering.
+// How much of a pixel px deep a rung w wide covers, the pixel's middle dz
+// from the rung's, all in rung coordinates: the box filter, so a rung
+// thinner than a pixel dims instead of flickering.
 fn rung_cover(dz: f32, w: f32, px: f32) -> f32 {
     return clamp((min(dz + 0.5 * px, 0.5 * w) - max(dz - 0.5 * px, -0.5 * w)) / px, 0.0, 1.0);
 }
@@ -1614,7 +1675,8 @@ fn rung_cover(dz: f32, w: f32, px: f32) -> f32 {
 // Rung k's light f across its bar's slot, the bar's height k steps ago h:
 // the rim (rung 0) along the whole edge, brighter where its bar is loud; a
 // deeper rung a faint frame along the whole edge (FRAME_LIGHT), brighter in
-// its bar's slot where the bar reached it; each dimmer by RUNG_DIM a rung.
+// its bar's slot where the bar reached it; each RUNG_DIM of the rung in
+// front, times a straight fall to nothing at the tunnel's end.
 fn rung_light(k: u32, f: f32, h: f32) -> f32 {
     let gap = 0.5 * (1.0 - BAR_FILL);
     let across = smoothstep(gap, gap + SIDE_SOFT, f)
@@ -1626,7 +1688,7 @@ fn rung_light(k: u32, f: f32, h: f32) -> f32 {
         LINE_LIGHT + (1.0 - LINE_LIGHT) * h * across,
         k == 0u,
     );
-    return pow(RUNG_DIM, f32(k)) * rung;
+    return pow(RUNG_DIM, f32(k)) * (1.0 - f32(k) / f32(RUNGS)) * rung;
 }
 
 @fragment
@@ -1646,10 +1708,13 @@ fn fs_tunnel(in: TunnelOut) -> @location(0) vec4<f32> {
     let ty = (half.y - sy * in.eye.y) / max(abs(d.y), 1e-6);
     let on_x = tx < ty;
     let t = min(tx, ty);
-    // How deep behind the face it meets the wall (m), and a pixel's worth
-    // of that, taken before any branch, where the derivatives are defined.
+    // How deep behind the face it meets the wall (m), as a rung coordinate
+    // (rung k starts at k, each gap RUNG_GROWTH of the one in front), and a
+    // pixel's worth of that, taken before any branch, where the derivatives
+    // are defined.
     let z = max(t * down - in.eye.z, 0.0);
-    let px = max(fwidth(z), 1e-6);
+    let u = log(1.0 + z * RUNG_SPREAD / depth) * RUNG_INV_LN;
+    let px = max(fwidth(u), 1e-6);
     // The wall's edge: the point along it from its low end, its half
     // length, its bar count.
     let x = select(in.eye.x + t * d.x, in.eye.y + t * d.y, on_x);
@@ -1658,10 +1723,8 @@ fn fs_tunnel(in: TunnelOut) -> @location(0) vec4<f32> {
     let along = clamp(h - in.shape.w * side * x, 0.0, 2.0 * h);
     let m = max(u32(select(in.bars.x, in.bars.y, on_x) + 0.5), 1u);
     // The nearest rung, and how much of the pixel it covers.
-    let spacing = depth / f32(RUNGS);
-    let w = RUNG_FILL * spacing;
-    let k = u32(clamp(floor((z - 0.5 * w) / spacing + 0.5), 0.0, f32(RUNGS - 1u)));
-    let cover = rung_cover(z - (f32(k) * spacing + 0.5 * w), w, px);
+    let k = u32(clamp(floor(u - 0.5 * RUNG_FILL + 0.5), 0.0, f32(RUNGS - 1u)));
+    let cover = rung_cover(u - (f32(k) + 0.5 * RUNG_FILL), RUNG_FILL, px);
     // The bar under the point, as it was k steps ago.
     let xb = clamp(along / (2.0 * h), 0.0, 0.99999) * f32(m);
     let i = min(u32(xb), m - 1u);
@@ -2421,7 +2484,7 @@ mod tests {
             (KNOB, " 2 "),
             (KNOB_GAIN, "99"),
             (KNOB_HEIGHT, "-3"),
-            (KNOB_DEPTH, "7"),
+            (KNOB_DEPTH, "99"),
         ]));
         assert_eq!(o.choice, Choice::Force(Mode::Standing));
         assert_close!(
@@ -2444,7 +2507,7 @@ mod tests {
         let on = d;
         assert!(off.line(true).starts_with("edge bars: off · gain 1"));
         assert!(on.line(true).contains("in its theme's mode"));
-        assert!(on.line(true).contains("tunnel 0.6 of it, 0.15 to 1.5 m"));
+        assert!(on.line(true).contains("tunnel 3 of it, 0.3 to 8 m"));
         assert!(
             EdgeBarsOptions::from_knobs(set(&[(KNOB, "1")]))
                 .line(true)
@@ -2569,9 +2632,9 @@ mod tests {
         let module = module();
         assert_eq!(span(&module, "Strip"), STRIP_ROWS * 16);
         assert_eq!(span(&module, "EdgeBars"), UNIFORM_ROWS * 16);
-        assert_eq!(UNIFORM_BYTES, 33_456);
-        assert_eq!(SUM_ROWS, 17, "sums: array<array<vec4<f32>, 17>, 10>");
-        assert_eq!(RUNGS, 10, "sums: array<array<vec4<f32>, 17>, 10>");
+        assert_eq!(UNIFORM_BYTES, 36_176);
+        assert_eq!(SUM_ROWS, 17, "sums: array<array<vec4<f32>, 17>, 20>");
+        assert_eq!(RUNGS, 20, "sums: array<array<vec4<f32>, 17>, 20>");
         assert_eq!(MAX_STRIPS, 384, "strips: array<Strip, 384>");
         for (name, value) in [
             ("REACH", REACH),
@@ -2583,6 +2646,8 @@ mod tests {
             ("LINE_LIGHT", LINE_LIGHT),
             ("LIFT_M", LIFT_M),
             ("RUNG_FILL", RUNG_FILL),
+            ("RUNG_SPREAD", rung_spread()),
+            ("RUNG_INV_LN", 1.0 / RUNG_GROWTH.ln()),
             ("RUNG_DIM", RUNG_DIM),
             ("FRAME_LIGHT", FRAME_LIGHT),
             ("GRAZE_LO", GRAZE_LO),
@@ -2727,13 +2792,13 @@ mod tests {
 
     #[test]
     fn a_far_rung_holds_its_place_as_the_head_moves() {
-        // A point on the right inner wall at rung 7's middle, seen from two
+        // A point on the right inner wall at rung 15's middle, seen from two
         // head positions: the same wall, the same place along it and the
         // same depth from both, while the point of the face it shows
         // through moves; the rim does not. Real parallax, one eye at a
         // time.
         let t = tunnel(0.5);
-        let z7 = 7.0 * t.depth / RUNGS as f32 + 0.5 * RUNG_FILL * t.depth / RUNGS as f32;
+        let z7 = rung_depth(15.0 + 0.5 * RUNG_FILL, t.depth);
         let w = Vec3::new(2.0, 1.9, -1.98 - z7);
         let eyes = [Vec3::new(0.0, 1.2, 0.0), Vec3::new(0.4, 1.35, 0.25)];
         let hits = eyes.map(|e| {
@@ -2747,7 +2812,7 @@ mod tests {
         }
         let shift = on_quad(eyes[0], w).distance(on_quad(eyes[1], w));
         assert!(shift > 0.1, "{shift}");
-        // Lit the same from both: rung 7 of full bars.
+        // Lit the same from both: rung 15 of full bars.
         let mut hist = History::default();
         let full = [1.0f32; 24];
         for _ in 0..RUNGS {
@@ -2764,38 +2829,63 @@ mod tests {
     }
 
     #[test]
-    fn rungs_are_evenly_spaced_and_dim_with_depth() {
-        let depth = 1.5;
-        let spacing = depth / RUNGS as f32;
-        let w = RUNG_FILL * spacing;
+    fn rungs_spread_and_dim_with_depth() {
+        let depth = 7.5;
+        // The coordinate and the depth are each other's inverse: rung 0
+        // starts at the face and the last gap ends at the tunnel's end.
+        assert_close!(rung_depth(0.0, depth), 0.0);
+        assert_close!(rung_depth(RUNGS as f32, depth), depth);
+        assert_close!(rung_coord(depth, depth), RUNGS as f32);
+        for u in [0.3f32, 4.0, 11.5, 19.9] {
+            assert!((rung_coord(rung_depth(u, depth), depth) - u).abs() < 1e-3);
+        }
+        // Each gap is RUNG_GROWTH of the one in front: close at the rim (a
+        // tenth of a meter for a wall's 7.5 m), wide at the end.
+        let gap = |k: usize| rung_depth(k as f32 + 1.0, depth) - rung_depth(k as f32, depth);
+        for k in 1..RUNGS {
+            assert!((gap(k) / gap(k - 1) - RUNG_GROWTH).abs() < 1e-3, "{k}");
+        }
+        assert!((gap(0) - 0.104).abs() < 1e-3, "{}", gap(0));
+        assert!(gap(RUNGS - 1) > 0.8, "{}", gap(RUNGS - 1));
+        // The slope turns a step of depth into a step of the coordinate.
+        for z in [0.05f32, 1.0, 5.0] {
+            let step = (rung_coord(z + 1e-3, depth) - rung_coord(z - 1e-3, depth)) / 2e-3;
+            assert!((step / rung_slope(z, depth) - 1.0).abs() < 1e-2, "{z}");
+        }
+        let w = RUNG_FILL;
         for k in 0..RUNGS {
-            let middle = k as f32 * spacing + 0.5 * w;
+            let middle = rung_depth(k as f32 + 0.5 * w, depth);
             let (at, dz) = rung_at(middle, depth);
             assert_eq!(at, k);
-            assert!(dz.abs() < 1e-5);
+            assert!(dz.abs() < 1e-3);
             // Dark between rungs.
-            let (_, dz) = rung_at(middle + 0.5 * spacing - 1e-3, depth);
+            let between = rung_depth(k as f32 + w + 0.5 * (1.0 - w), depth);
+            let (_, dz) = rung_at(between, depth);
             assert_close!(rung_cover(dz, w, 1e-6), 0.0);
             // A full bar lights every rung, each RUNG_DIM of the one in
             // front, in the middle of its slot.
-            assert!((rung_light(k, 0.5, 1.0) - RUNG_DIM.powf(k as f32)).abs() < 1e-5);
+            assert!((rung_light(k, 0.5, 1.0) - rung_dim(k)).abs() < 1e-5);
         }
-        assert!(rung_light(RUNGS - 1, 0.5, 1.0) < 0.15);
+        // The last rung is nearly dark, and no rung is brighter than the
+        // one in front.
+        assert!(rung_light(RUNGS - 1, 0.5, 1.0) < 0.01);
+        assert!((1..RUNGS).all(|k| rung_dim(k) < rung_dim(k - 1)));
+        assert_close!(rung_dim(0), 1.0);
         // A rung covers a pixel inside it; one thinner than a pixel dims
         // by the share it covers.
         assert_close!(rung_cover(0.0, w, 1e-6), 1.0);
         assert_close!(rung_cover(0.0, w, 4.0 * w), 0.25);
         assert_close!(rung_cover(0.5 * w, w, 0.5 * w), 0.5);
-        // A bar's height is how deep its light reaches: 0.45 of the depth
-        // lights rungs 0 to 4 (0.4 of it), not 5 (0.5); half at 0.5.
-        // Past its bar a rung is the faint frame alone.
-        let frame = |k: usize| FRAME_LIGHT * RUNG_DIM.powf(k as f32);
+        // A bar's height is how many rungs its light reaches: 0.45 lights
+        // rungs 0 to 9 (the tenth half), not rung 10. Past its bar a rung is
+        // the faint frame alone.
+        let frame = |k: usize| FRAME_LIGHT * rung_dim(k);
         let lit: Vec<bool> = (0..RUNGS)
             .map(|k| rung_light(k, 0.5, 0.45) > frame(k) + 1e-6)
             .collect();
-        assert_eq!(lit.iter().filter(|&&l| l).count(), 5, "{lit:?}");
-        assert!(lit[..5].iter().all(|&l| l));
-        assert!((rung_light(5, 0.5, 0.5) - 0.5 * 0.8 * RUNG_DIM.powi(5)).abs() < 1e-5);
+        assert_eq!(lit.iter().filter(|&&l| l).count(), 10, "{lit:?}");
+        assert!(lit[..10].iter().all(|&l| l));
+        assert!((rung_light(10, 0.5, 0.5) - 0.5 * 0.8 * rung_dim(10)).abs() < 1e-5);
         // Silence: the rim alone, along the whole edge, gaps included.
         assert_close!(rung_light(0, 0.5, 0.0), LINE_LIGHT);
         assert_close!(rung_light(0, 0.0, 0.0), LINE_LIGHT);
@@ -2858,26 +2948,27 @@ mod tests {
 
     #[test]
     fn the_tunnel_depth_scales_with_the_face_and_is_clamped() {
-        // A 40 cm box face: 0.6 of 40 cm.
-        assert_close!(tunnel_depth([0.3, 0.2], DEPTH_FRACTION), 0.24);
-        // A 4 x 2.5 m wall: 1.5 m, at the clamp; a 4 x 3 m one clamped.
-        assert_close!(tunnel_depth([2.0, 1.25], DEPTH_FRACTION), MAX_DEPTH_M);
+        // A 40 cm box face: three times 40 cm, deeper than the box, as an
+        // infinity mirror reads deeper than its frame.
+        assert_close!(tunnel_depth([0.3, 0.2], DEPTH_FRACTION), 1.2);
+        // A 4 x 2.5 m wall: 7.5 m; a 4 x 3 m one at the clamp.
+        assert_close!(tunnel_depth([2.0, 1.25], DEPTH_FRACTION), 7.5);
         assert_close!(tunnel_depth([2.0, 1.5], DEPTH_FRACTION), MAX_DEPTH_M);
-        // A 10 cm frame: 6 cm, raised to 15.
-        assert_close!(tunnel_depth([0.05, 0.4], DEPTH_FRACTION), MIN_DEPTH_M);
-        // The knob: 1.2 doubles the box's; past the range clamped; not a
-        // number, the default.
-        assert_close!(tunnel_depth([0.3, 0.2], 1.2), 0.48);
-        assert_close!(tunnel_depth([0.3, 0.2], 9.0), 0.8);
+        // A 6 cm frame: 18 cm, raised to 30.
+        assert_close!(tunnel_depth([0.03, 0.4], DEPTH_FRACTION), MIN_DEPTH_M);
+        // The knob: 0.6, the first version's, a fifth of the box's; past
+        // the range clamped; not a number, the default.
+        assert_close!(tunnel_depth([0.3, 0.2], 0.6), MIN_DEPTH_M);
+        assert_close!(tunnel_depth([2.0, 1.25], 0.6), 1.5);
+        assert_close!(tunnel_depth([0.3, 0.2], 99.0), 3.2);
         assert_close!(tunnel_depth([0.3, 0.2], -1.0), MIN_DEPTH_M);
-        assert_close!(tunnel_depth([0.3, 0.2], f32::NAN), 0.24);
+        assert_close!(tunnel_depth([0.3, 0.2], f32::NAN), 1.2);
     }
 
     #[test]
     fn the_fragment_lights_rungs_into_depth_and_leaves_the_center_dark() {
         let t = tunnel(0.5);
-        let spacing = t.depth / RUNGS as f32;
-        let middle = |k: usize| k as f32 * spacing + 0.5 * RUNG_FILL * spacing;
+        let middle = |k: usize| rung_depth(k as f32 + 0.5 * RUNG_FILL, t.depth);
         // Bar 5 of the right wall's 24 (each 2.5 / 24 m), in the middle of
         // its slot: along the edge from its low end (the top, +Y) 5.5 bars.
         let y = 1.25 + 1.25 - 5.5 * 2.5 / 24.0;
@@ -2899,17 +2990,15 @@ mod tests {
         rows(&full, &hist, &outline, &mut r);
         for k in 0..RUNGS {
             let got = light(&r, at(k));
-            assert!(
-                (got - RUNG_DIM.powf(k as f32)).abs() < 1e-3,
-                "rung {k}: {got}"
-            );
+            assert!((got - rung_dim(k)).abs() < 1e-3, "rung {k}: {got}");
             // Dark between rungs.
-            let between = at(k) - Vec3::Z * 0.5 * spacing;
+            let gap = rung_depth(k as f32 + 0.5 + 0.5 * RUNG_FILL, t.depth) - middle(k);
+            let between = at(k) - Vec3::Z * gap;
             assert!(light(&r, between) < 1e-4, "after rung {k}");
         }
         // The alpha: the peak times the light.
         let a = tunnel_alpha_at(&r, 0, eye, on_quad(eye, at(2)), 1e-6);
-        assert!((a - 0.5 * RUNG_DIM.powi(2)).abs() < 1e-3, "{a}");
+        assert!((a - 0.5 * rung_dim(2)).abs() < 1e-3, "{a}");
         // The center reaches the end: nothing, so the surface shows.
         let center = Vec3::new(0.0, 1.25, -1.97);
         assert_close!(light(&r, center), 0.0);
@@ -2918,7 +3007,7 @@ mod tests {
         rows(&quiet, &History::default(), &outline, &mut r);
         assert!((light(&r, at(0)) - LINE_LIGHT).abs() < 1e-3);
         // Past the rim, quiet rungs are the faint frames alone.
-        let frame = |k: usize| FRAME_LIGHT * RUNG_DIM.powf(k as f32);
+        let frame = |k: usize| FRAME_LIGHT * rung_dim(k);
         assert!((1..RUNGS).all(|k| (light(&r, at(k)) - frame(k)).abs() < 1e-3));
         // No bars at all: the rim alone too.
         rows(&[], &History::default(), &outline, &mut r);
@@ -2933,10 +3022,8 @@ mod tests {
         let lit: Vec<bool> = (1..RUNGS)
             .map(|k| light(&r, at(k)) > frame(k) + 1e-3)
             .collect();
-        assert_eq!(
-            lit,
-            [false, false, true, false, false, false, false, false, false]
-        );
+        let third: Vec<bool> = (1..RUNGS).map(|k| k == 3).collect();
+        assert_eq!(lit, third);
         // From a grazing eye, nothing.
         rows(&full, &hist, &outline, &mut r);
         let low = Vec3::new(30.0, 1.25, -1.98 + 0.5);
@@ -2991,8 +3078,13 @@ mod tests {
         );
         let t = out.tunnels[0];
         assert!(near(t.normal, Vec3::Z));
-        // 0.6 of its smaller side, 2.5 m less the 2.5 cm clear of the floor.
-        assert!((t.depth - 0.6 * 2.475).abs() < 1e-5, "{}", t.depth);
+        // Three times its smaller side, 2.5 m less the 2.5 cm clear of the
+        // floor.
+        assert!(
+            (t.depth - DEPTH_FRACTION * 2.475).abs() < 1e-4,
+            "{}",
+            t.depth
+        );
         // Its opening is the face the strips would outline: moved clear of
         // the floor's slab at the bottom and the side wall's on the left,
         // 2.5 cm each.

@@ -68,11 +68,19 @@
 //! - **Mirror**, a club of infinity mirrors: tables and other surfaces run
 //!   no behavior and their edges go in, each face a tunnel of light. The
 //!   floor is tessera's lit tiles in one color, with the bars on its
-//!   face. The ceiling waits for astrolabe and the frames for fenestra,
-//!   held back for flashing, and keep their tunnels. The walls keep
-//!   theirs too: the file gives them bezel, chrome round each tunnel, but
-//!   in unworn captures on the headset the two together showed no chrome
-//!   and a fainter tunnel.
+//!   face. The walls run bezel in one color with their edges in, a chrome
+//!   frame round each tunnel: on a face whose edges go in a ported effect
+//!   keeps its bright parts and drops its dim fill
+//!   (`surface_port::with_look`), which at first lay over the whole wall
+//!   as a haze and made the tunnel read faint. The ceiling adds
+//!   astrolabe, the mirror ball as a dial of rings, warm white, and the
+//!   frames fenestra's panels, blue, both in one color over their
+//!   tunnels. Those two looks are held back from the wearer's lists for
+//!   flashing (`SurfaceBehavior::held_back`); in this look, on these
+//!   kinds, they count 3.0 and 2.0 at worst over eleven songs, and they
+//!   draw nowhere else ([`gives`]). The floor mirrors the ceiling's dial
+//!   under its tiles at [`MIRROR_FLOOR`] of its strength, barely
+//!   ([`Theme::floor_mirror`]).
 //! - **Flint** (board #5533), a forge in a cave: the walls and the
 //!   ceiling are shards, cells whose edges jump with the kick, drawn in
 //!   one color ([`Look::mono`]), warm white, so they read as glowing
@@ -322,16 +330,18 @@ impl Theme {
                 KIND_FRAME => look(B::Windows, AMBER, BAND_MID, 0.6, Mode::Off),
                 _ => look(B::Windows, AMBER, BAND_MID, 1.0, Mode::Off),
             },
-            // Board #5543: a club of infinity mirrors. The ceiling waits
-            // for astrolabe and the frames for fenestra, both held back
-            // (`SurfaceBehavior::held_back`), and keep their tunnels. So
-            // do the walls: with bezel on them the headset showed no
-            // chrome and a fainter tunnel than the ceiling's (Nov 18).
+            // Board #5543: a club of infinity mirrors. Bezel frames each
+            // wall's tunnel in chrome, astrolabe is the mirror ball over
+            // the ceiling's and fenestra's panels sit in the frames'. The
+            // last two are held back (`SurfaceBehavior::held_back`) and
+            // draw only here ([`gives`]).
             Self::Mirror => match kind {
                 KIND_FLOOR => look(B::Tessera, BLUE, BAND_BASS, 1.0, face).in_one_color(),
-                KIND_WALL => look(B::None, WARM_WHITE, BAND_RMS, 1.0, Mode::In),
-                KIND_CEILING => look(B::None, WARM_WHITE, BAND_RMS, 1.0, Mode::In),
-                KIND_FRAME => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
+                KIND_WALL => look(B::Bezel, WARM_WHITE, BAND_RMS, 1.0, Mode::In).in_one_color(),
+                KIND_CEILING => {
+                    look(B::Astrolabe, WARM_WHITE, BAND_RMS, 1.0, Mode::In).in_one_color()
+                }
+                KIND_FRAME => look(B::Fenestra, BLUE, BAND_RMS, 1.0, Mode::In).in_one_color(),
                 _ => look(B::None, BLUE, BAND_MID, 1.0, Mode::In),
             },
             // Boards #5533, #5543: a forge in a cave. Warm white fissures
@@ -433,6 +443,13 @@ pub fn built_in(file: &RoomFile) -> bool {
                 || built_in(e.kind).runs(file.resolve(&e.uuid, e.kind))
         })
 }
+
+/// The share of the ceiling's astrolabe Mirror's floor shows. The theme
+/// file says 0.5; the owner said "a slight astrolabe, but barely so it
+/// doesn't take over the tessera", so it is the least that still reads in
+/// the stills.
+pub const MIRROR_FLOOR: f32 = 0.15;
+const _: () = assert!(MIRROR_FLOOR <= 0.2, "barely");
 
 /// How the depth light draws what the depth map sees (board #5543,
 /// `depth_light.rs`). Every look stays on the thing's surface.
@@ -620,9 +637,47 @@ impl Theme {
         match self {
             Self::Aurora => 0.3,
             Self::Tide => 0.2,
+            Self::Mirror => MIRROR_FLOOR,
             _ => 1.0,
         }
     }
+
+    /// What a floor mirrors of the ceiling's look under this theme, beside
+    /// its own look (board #5543): the behavior, the color index and the
+    /// strength, the ceiling's at the theme's share ([`Self::reflection`]).
+    /// Mirror's floor shows the ceiling's astrolabe, barely, under its
+    /// tiles. Aurora's floor mirrors its sky by a look of its own
+    /// (`sky::Map::Reflection`), so it has none here.
+    pub fn floor_mirror(self) -> Option<(SurfaceBehavior, u32, f32)> {
+        match self {
+            Self::Mirror => self
+                .look(KIND_CEILING)
+                .map(|l| (l.behavior, l.color, l.strength * self.reflection())),
+            _ => None,
+        }
+    }
+}
+
+/// Whether the room's saved theme `theme` gives `behavior` to surfaces of
+/// `kind`: its look for the kind runs it. A look that is held back
+/// (`SurfaceBehavior::held_back`) draws there and nowhere else.
+pub fn gives(theme: Option<Theme>, kind: u32, behavior: SurfaceBehavior) -> bool {
+    theme
+        .and_then(|t| t.look(kind))
+        .is_some_and(|l| l.behavior == behavior)
+}
+
+/// What a floor mirrors of the ceiling in a room whose saved theme is
+/// `theme` ([`Theme::floor_mirror`]), while the floor still runs the
+/// theme's own look `behavior`; nothing with no theme or on a floor edited
+/// to another look.
+pub fn floor_mirror(
+    theme: Option<Theme>,
+    behavior: SurfaceBehavior,
+) -> Option<(SurfaceBehavior, u32, f32)> {
+    theme
+        .filter(|t| gives(Some(*t), KIND_FLOOR, behavior))
+        .and_then(Theme::floor_mirror)
 }
 
 /// The share of the sky's reflection a floor shows in a room whose saved
@@ -1106,19 +1161,44 @@ mod tests {
                 (B::Windows, AMBER, MID, 1.0, off, false),
             ]
         );
-        // The ceiling waits for astrolabe, the frames for fenestra and
-        // the walls for a bezel that draws with a tunnel.
+        // Every row as the file has it.
         assert_eq!(
             table(Theme::Mirror),
             [
                 (B::None, BLUE, MID, 1.0, into, false),
                 (B::Tessera, BLUE, bass, 1.0, face, true),
-                (B::None, WARM_WHITE, rms, 1.0, into, false),
-                (B::None, WARM_WHITE, rms, 1.0, into, false),
-                (B::None, BLUE, rms, 1.0, into, false),
+                (B::Bezel, WARM_WHITE, rms, 1.0, into, true),
+                (B::Astrolabe, WARM_WHITE, rms, 1.0, into, true),
+                (B::Fenestra, BLUE, rms, 1.0, into, true),
                 (B::None, BLUE, MID, 1.0, into, false),
             ]
         );
+        // The two held-back looks draw where Mirror gives them and
+        // nowhere else: not on another kind, under another theme or in a
+        // room with none.
+        assert!(gives(Some(Theme::Mirror), KIND_CEILING, B::Astrolabe));
+        assert!(gives(Some(Theme::Mirror), KIND_FRAME, B::Fenestra));
+        assert!(!gives(Some(Theme::Mirror), KIND_FLOOR, B::Astrolabe));
+        assert!(!gives(Some(Theme::Mirror), KIND_WALL, B::Fenestra));
+        assert!(!gives(Some(Theme::Flint), KIND_CEILING, B::Astrolabe));
+        assert!(!gives(None, KIND_CEILING, B::Astrolabe));
+        assert!(!gives(
+            Some(Theme::Mirror),
+            crate::surfaces::KIND_NONE,
+            B::Astrolabe
+        ));
+        for theme in Theme::ALL {
+            for (kind, l) in theme.looks() {
+                assert!(gives(Some(theme), kind, l.behavior));
+                assert_eq!(
+                    l.behavior.held_back(),
+                    (theme, kind) == (Theme::Mirror, KIND_CEILING)
+                        || (theme, kind) == (Theme::Mirror, KIND_FRAME),
+                    "{theme:?} {}",
+                    kind_name(kind)
+                );
+            }
+        }
         // Sparks on the tables and embers on other surfaces, drawn on
         // the face. The ceiling's shards are under their cap for the
         // flash rule.
@@ -1148,16 +1228,16 @@ mod tests {
             ]
         );
         // Only Classic runs the wall spectrum, and no theme a look that
-        // draws nothing: none is held back, and each is none, the
-        // spectrum or a look the surfaces pass draws. Embers, sparks,
-        // windows and terraces are a theme's to give though the wearer's
-        // lists leave them out (`SurfaceBehavior::offered`).
+        // draws nothing: each is none, the spectrum or a look the
+        // surfaces pass draws. Embers, sparks, windows and terraces are a
+        // theme's to give though the wearer's lists leave them out
+        // (`SurfaceBehavior::offered`), and so are Mirror's two held-back
+        // looks, above.
         for theme in Theme::ALL {
             let spectrum = theme.looks().any(|(_, l)| l.behavior == B::Spectrum);
             assert_eq!(spectrum, theme == Theme::Classic, "{theme:?}");
             for (_, l) in theme.looks() {
                 let b = l.behavior;
-                assert!(!b.held_back(), "{theme:?} {b:?}");
                 assert!(
                     b.draws_on_face() || matches!(b, B::None | B::Spectrum),
                     "{theme:?} {b:?}"
@@ -1238,17 +1318,37 @@ mod tests {
         );
         assert_eq!(air(Theme::Flint), (index(AMBER), BAND_BASS, 1500, M::Rise));
         assert_eq!(air(Theme::Contour), (index(GREEN), HIGH, 2000, M::Wander));
-        // The share of its sky a floor mirrors: Aurora's reflection
-        // dimmed, Tide's wash a slight mirror of its dusk; all of it
-        // elsewhere and with no theme.
+        // The share a floor mirrors: Aurora's reflection dimmed, Tide's
+        // wash a slight mirror of its dusk, Mirror's astrolabe barely
+        // there; all of it elsewhere and with no theme.
         assert_close!(Theme::Aurora.reflection(), 0.3);
         assert_close!(reflection(Some(Theme::Aurora)), 0.3);
         assert_close!(Theme::Tide.reflection(), 0.2);
-        let sky = [Theme::Aurora, Theme::Tide];
-        for t in Theme::ALL.into_iter().filter(|t| !sky.contains(t)) {
+        assert_close!(Theme::Mirror.reflection(), MIRROR_FLOOR);
+        let mirrors = [Theme::Aurora, Theme::Tide, Theme::Mirror];
+        for t in Theme::ALL.into_iter().filter(|t| !mirrors.contains(t)) {
             assert_close!(t.reflection(), 1.0);
         }
         assert_close!(reflection(None), 1.0);
+        // What a floor mirrors of its ceiling: Mirror's alone, the
+        // ceiling's astrolabe in the ceiling's color at the share, and only
+        // while the floor runs Mirror's own tiles.
+        use SurfaceBehavior as B;
+        assert_eq!(
+            Theme::Mirror.floor_mirror(),
+            Some((B::Astrolabe, WARM_WHITE, MIRROR_FLOOR))
+        );
+        for t in Theme::ALL.into_iter().filter(|t| *t != Theme::Mirror) {
+            assert_eq!(t.floor_mirror(), None, "{t:?}");
+        }
+        let mirror = Some(Theme::Mirror);
+        assert_eq!(
+            floor_mirror(mirror, B::Tessera),
+            Theme::Mirror.floor_mirror()
+        );
+        assert_eq!(floor_mirror(mirror, B::Rings), None);
+        assert_eq!(floor_mirror(Some(Theme::Flint), B::Tessera), None);
+        assert_eq!(floor_mirror(None, B::Tessera), None);
     }
 
     #[test]
@@ -1404,7 +1504,7 @@ mod tests {
         assert!(
             Theme::Mirror
                 .summary()
-                .contains("wall none@1.00 warm white rms edges in")
+                .contains("wall bezel@1.00 warm white rms edges in")
         );
         assert!(
             Theme::Mirror

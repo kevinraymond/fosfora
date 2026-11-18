@@ -792,6 +792,25 @@ impl Show {
             } else if b.kind == KIND_FLOOR {
                 face = surface_fx::level_floor(face, None);
             }
+            // As `app.rs`: what the floor mirrors of the ceiling, under the
+            // floor's own look, as the ceiling's kind.
+            if b.kind == KIND_FLOOR
+                && self.every.is_none()
+                && let Some((mirrored, color, strength)) =
+                    themes::floor_mirror(Some(self.theme), behavior)
+                && let Some(i) = mirrored.port()
+            {
+                ported.push((
+                    i,
+                    surface_port::port_face(face),
+                    KIND_CEILING,
+                    mirrored,
+                    strength,
+                    color,
+                    Map::Face,
+                    self.look(KIND_CEILING).mono,
+                ));
+            }
             if let Some(i) = behavior.port() {
                 ported.push((
                     i,
@@ -869,6 +888,23 @@ impl Show {
                 behavior.id(),
                 surface_port::tint(color, kind, audio.key_tint),
             );
+            // As `app.rs`: the cut on a face whose edges go in, and the
+            // wrapper's one color.
+            let rows = match map {
+                Map::Face => {
+                    let tunnel = self.edges.mode(self.look(kind).edges) == edge_bars::Mode::In;
+                    surface_port::with_look(
+                        rows,
+                        if tunnel || behavior.held_back() {
+                            surface_port::TUNNEL_CUT
+                        } else {
+                            0.0
+                        },
+                        effect.wrapper_mono() && mono,
+                    )
+                }
+                _ => rows,
+            };
             let features = if surface_port::PORTS[i].shapes {
                 &f_shapes
             } else {
@@ -2198,8 +2234,8 @@ fn flints_ceiling_raised_by_hand_stays_within_three_flashes() {
 /// <seconds>[,<seconds>…][:<part>]` plays the dump's song on the theme
 /// (or on one part of it alone) with the
 /// limiter on and writes, at each of those times, the view ahead, the
-/// view to the right and down and the view to the left and down (the
-/// chair) as `<theme>_<seconds>_<view>.ppm`, 1280 by
+/// view to the right and down, the view to the left and down (the
+/// chair) and the view up at the ceiling as `<theme>_<seconds>_<view>.ppm`, 1280 by
 /// 720 across 100 degrees. The room is black and nothing hides anything:
 /// the harness draws no occluder, so a wall shows through the table.
 #[test]
@@ -2232,6 +2268,8 @@ fn stills_of_a_theme() {
         ("ahead", Vec3::new(0.0, -0.05, -1.0)),
         ("right", Vec3::new(0.8, -0.3, -0.6)),
         ("left", Vec3::new(-0.9, -0.45, -0.45)),
+        // Lying back: the ceiling and the top of the wall ahead.
+        ("up", Vec3::new(0.0, 1.0, -0.35)),
     ];
     let last = times.last().copied().unwrap_or(0.0);
     for n in 0..=(last * FPS).ceil() as usize {

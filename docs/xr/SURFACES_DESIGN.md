@@ -1857,10 +1857,10 @@ for an effect that is not built and is as it was.
 | kind | Drift | Tide | Aurora | Mirror | Flint | Contour |
 | --- | --- | --- | --- | --- | --- | --- |
 | table | curls, teal, mid, 1, off | rings, rose, bass, 1, off | windows, warm white, mid, 1, off | none, blue, mid, 1, in | sparks, amber, bass, 1, face | terraces, green, mid, 1, off |
-| floor | contours, teal, bass, 0.3, off | wash, violet with rose foam, bass, 1, off (the dusk sky mirrored at 0.2) | aurora (the reflection at 0.3), key, rms, 1, off | tessera, blue, bass, 1, face, one color | tessera, blue, bass, 0.5, off, one color | contours, green, rms, 1, off |
-| wall | streamlines, blue, rms, 1, off | pulse, violet, bass, 1, off | aurora (the sky), key, rms, 1, off | *none, warm white, rms, 1, in (bezel)* | shards, warm white, rms, 1, face, one color | contours, green, rms, 1, off |
-| ceiling | rings, blue, bass, 1, off | pulse, violet, bass, 0.6, off | aurora (the sky), key, rms, 1, off | *none, warm white, rms, 1, in (astrolabe)* | shards, warm white, rms, 0.4, off, one color | streamlines, warm white, rms, 0.4, off |
-| frame | pulse, teal, rms, 0.6, face | rings, rose, bass, 1, face | windows, amber, mid, 0.6, off | *none, blue, rms, 1, in (fenestra)* | pulse, amber, bass, 0.8, face | pulse, warm white, rms, 0.6, face |
+| floor | contours, teal, bass, 0.3, off | wash, violet with rose foam, bass, 1, off (the dusk sky mirrored at 0.2) | aurora (the reflection at 0.3), key, rms, 1, off | tessera, blue, bass, 1, face, one color (the ceiling's astrolabe mirrored at 0.15) | tessera, blue, bass, 0.5, off, one color | contours, green, rms, 1, off |
+| wall | streamlines, blue, rms, 1, off | pulse, violet, bass, 1, off | aurora (the sky), key, rms, 1, off | bezel, warm white, rms, 1, in, one color | shards, warm white, rms, 1, face, one color | contours, green, rms, 1, off |
+| ceiling | rings, blue, bass, 1, off | pulse, violet, bass, 0.6, off | aurora (the sky), key, rms, 1, off | astrolabe, warm white, rms, 1, in, one color | shards, warm white, rms, 0.4, off, one color | streamlines, warm white, rms, 0.4, off |
+| frame | pulse, teal, rms, 0.6, face | rings, rose, bass, 1, face | windows, amber, mid, 0.6, off | fenestra, blue, rms, 1, in, one color | pulse, amber, bass, 0.8, face | pulse, warm white, rms, 0.6, face |
 | other | curls, teal, mid, 1, off | curls, rose, mid, 1, off | windows, amber, mid, 1, off | none, blue, mid, 1, in | embers, amber, mid, 1, off | terraces, green, mid, 1, off |
 | depth light | bubbles, teal and warm white, bass | sparkle, rose, high | beams, teal and the key, bass | glints, warm white, high | coals, the heat ramp, bass | grass, green and warm white, mid |
 | air | teal, high, 1500, drift | rose, bass, 1000, rise | warm white, high, 2000, twinkle | warm white, high, 1500, orbit | amber, bass, 1500, rise | green, high, 2000, wander |
@@ -1885,12 +1885,15 @@ count and five motions ("The air per theme"). Every theme's depth light
 now draws its own look: bubbles, sparkle, glints and meters followed
 ("The other themes' looks"), the meters in the bands' colors. Tide's
 floor is the wash ("The wash"), and windows and terraces draw on a box's
-sides ("Sides"). Astrolabe and fenestra are held
-back for flashing (board #5462). Mirror's walls
-were tried with bezel and the tunnel together (ef5d5ad, unworn captures
-`recordings/themes3/groundwork-ef5d5ad/mirror*.png`): no chrome showed and
-the wall's tunnel was fainter than the ceiling's, so they keep the tunnel
-alone until bezel draws with one. Tide's tables run
+sides ("Sides"). Mirror has its rows too ("Mirror, deeper"): the tunnels
+go three times the face's smaller side deep and fade to nothing, bezel
+draws round each wall's tunnel, astrolabe is on the ceiling and fenestra
+in the frames (both counted within three flashes a second in Mirror's
+look, so they are in this theme and still off the wearer's lists, board
+#5462), and the floor's tiles show the ceiling's dial faintly, at 0.15.
+The first try of bezel with a tunnel (ef5d5ad) showed no chrome: bezel
+was gold, since "one color" reached shards alone, and it laid a haze over
+the wall. Tide's tables run
 the rings, which a table's list in the room editor does not carry: the
 one pairing off the catalogue.
 
@@ -2410,6 +2413,115 @@ on the CPU.
 
 **Not measured:** the device. The foam line is 6 cm wide; whether it
 holds in the half-size faces layer at the far wall is for the headset.
+
+## Mirror, deeper (Nov 18, board #5543)
+
+**Why.** The owner wore Mirror with the depth knob at its top, 2, and
+wanted more: "2.0 is looking pretty good, though maybe 3.0 if we can also
+make it fade out the deeper it goes." His walls had not moved with the
+knob at all, since a wall was at the 1.5 m clamp already at the default
+0.6. What he saw at 2 was the boxes.
+
+**Deeper tunnels** (`edge_bars.rs`, `XR_DESIGN.md`'s edge bars). A tunnel
+is three times its face's smaller side deep, 0.3 to 8 m: 7.5 m behind a
+4 x 2.5 m wall, 1.2 m behind a 40 cm box. The knob
+`debug.fosfora.edgebarsdepth` runs 0 to 8 and is live. Twenty rungs where
+there were ten, and their gaps spread with the depth, each 1.12 of the one
+in front (`rung_coord`): 10 cm at a wall's rim, 90 cm at its end. Drawn in
+perspective the frames nest toward one point and leave a small dark
+center. Ten even rungs over that depth were 75 cm apart from the rim on:
+a few thick bands. Each rung keeps 0.9 of the one in front, times a
+straight fall to nothing at the end (`rung_dim`), so the tunnel dissolves
+into the dark and has no lit back wall.
+
+The depth is the same for every theme. Only Mirror's rows go in now; the
+Edges control can still force the tunnels on any theme.
+
+**A face's effect with its tunnel** (`surface_port::with_look`). Mirror's
+walls were tried as bezel with their edges in (ef5d5ad). On the headset no
+chrome showed and the wall's tunnel read fainter than the ceiling's. The
+tunnel was as bright as before: a pixel count on the desktop gives the
+same rungs with bezel and without. What bezel adds is its own dim fill
+over the whole wall, a haze of about 8 % that lifts the dark between the
+rungs and in the center, so the tunnel loses its contrast. And its frame
+came out gold, not chrome: "one color" was shards' alone, an input of
+that effect, and did nothing for the other ports.
+
+Two values in the port's rows fix both, and the wrapper's `xr_light`
+reads them:
+
+- **The cut.** On a face whose edges go in, a ported effect draws nothing
+  under a luminance of 0.12 and all of its light from 0.24
+  (`TUNNEL_CUT`). Bezel keeps its frame, its corner brackets and its
+  ticks, and its fill is gone, so the tunnel's dark stays dark.
+- **One color in the wrapper.** Where an effect has no input that takes
+  its hues away, the wrapper draws its luminance in place of its color,
+  and the row's color tints that. Shards keeps its own input. So
+  tessera's tiles are blue in Mirror and Flint and bezel's frame is warm
+  white.
+
+The cost is a compare, a smoothstep and a select per fragment of a ported
+face, no texture. The walls now run the file's row: bezel, warm white,
+rms, 1, edges in, one color.
+
+**Astrolabe and fenestra, bounded** (`surfaces::SurfaceBehavior::held_back`,
+`themes::gives`). Both are held back from the wearer's lists: on every
+surface, in their own colors, each reached 3.5 flashes a second in one
+region on one song (board #5462). The file gives Mirror's ceiling
+astrolabe, "the mirror ball", and its frames fenestra, both in one color
+with their edges in. In that look, with the limiter on, each alone over
+the eleven songs:
+
+| look, where | worst general | failing regions |
+| --- | --- | --- |
+| astrolabe on the ceiling, strength 1 | 3.0 (erofex, systemcrash) | 0 |
+| the same at 0.8 and at 0.6 | 3.0 on the same two songs | 0 |
+| fenestra on the model's frame, 0.8 x 0.6 m | 0 | 0 |
+| fenestra on a door, 1.2 x 2 m | 2.0 (systemcrash) | 0 |
+
+Astrolabe's 3.0 is at the limit and inside it, as Aurora's, Classic's and
+Flint's worst are. It does not fall with the strength, so a cap would buy
+nothing and the row keeps the file's 1. The count that was 3.5 on erofex
+is 3.0 here: one face and not six, one color, and no fill.
+
+So a held-back look draws in one place: where the room's saved theme
+gives it to the surface's kind, which is Mirror's ceiling and frames.
+There it always draws with the cut, whatever the Edges control forces,
+since it was counted without its fill. Anywhere else it shows nothing, as
+before: on another kind, under another theme, in a room with none. The
+wearer's lists, the voice and the agent still leave both out.
+
+On the ceiling the dial's rings, ticks and sweeping arcs lie over the
+tunnel's nested frames (`recordings/themes3/mirror/step3/sheet-up.jpg`).
+The stills gained a fourth view, up, for it.
+
+**The floor's mirror** (`themes::Theme::floor_mirror`, `MIRROR_FLOOR`).
+The owner on Mirror's floor: "maybe a slight astrolabe, but barely so it
+doesn't take over the tessera." The floor draws the ceiling's look on its
+own face first, at 0.15 of the ceiling's strength, and its tiles over it,
+so the dial shows in the dark between the tiles and where a wave has not
+lit them. The file's value is 0.5; 0.15 is the least that still read in
+the stills. It is the ceiling's look laid flat on the floor, turning with
+the ceiling's, and not a mirror image with depth: the sky's reflection
+under Aurora solves the reflected ray, and a dial this faint does not
+earn that. It draws only while the floor runs Mirror's own tiles. One
+more ported face a frame, the floor's size, at the cut.
+
+**The whole theme, counted.** Limiter on, Mirror with every row above on
+the eleven songs: worst 3.0 general (erofex, systemcrash; the ceiling's
+dial), 0 red, 0 failing regions, the same with the floor's mirror and
+without it. On the pulse trains at 4 to 16 Hz: 1.5 for the theme, and
+each part alone no more (bezel 1.5, astrolabe 1.5, tessera 1.0, the
+tunnels 0.5, fenestra 0). A track's theme coming and the bars' free
+heights pass. Flint, whose floor is now in one color too: worst 3.0
+(meadow, psykovsky), 0 failing, as before. Output:
+`recordings/themes3/mirror/flash/`. Stills:
+`recordings/themes3/mirror/final/sheet.jpg`.
+
+**Not yet.** The headset: the tunnels' cost at three times the depth
+(they cover the same pixels as before, with a logarithm more in each),
+the cut's edge on bezel's thin lines in the half-size faces layer, and
+all of it worn.
 
 ## The contours (Nov 16, board #5533)
 
