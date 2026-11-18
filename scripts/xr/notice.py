@@ -33,10 +33,15 @@ What goes in, in order:
   * The MIT text (LICENSE-MIT without its copyright line) and the Apache
     License 2.0 (LICENSE-APACHE).
 
-Both cargo commands run `--locked --offline`: they read Cargo.lock and the
-crate sources cargo already has, so nothing is fetched. After a dependency
-changes, build once (`run.sh build` or `run.sh lint` downloads the
-sources) and run this script.
+Both cargo commands run `--locked`, so they read Cargo.lock as it is.
+`cargo tree` also runs `--offline`: it needs only the crates the build
+already downloaded. `cargo metadata` does not, because it resolves every
+package the workspace could use on the target, with features the XR build
+leaves off, and a fresh machine (CI) has not downloaded those: offline it
+fails there on the first one it lacks. With them all on disk, as on a
+developer's machine, it fetches nothing. After a dependency changes, build
+once (`run.sh build` or `run.sh lint` downloads the sources) and run this
+script.
 """
 
 from __future__ import annotations
@@ -74,8 +79,9 @@ PLACEHOLDER = re.compile(r"\[yyyy\]|\{yyyy\}|<year>|\[name of|\{name of|<name of
 RULE = "=" * 72
 
 
-def cargo(*args: str) -> str:
-    """Run cargo offline and locked in the repo's root; its stdout.
+def cargo(*args: str, offline: bool = True) -> str:
+    """Run cargo locked (and offline unless told not to) in the repo's root;
+    its stdout.
 
     Without color whatever the caller's environment says: the output is
     parsed, and CI sets CARGO_TERM_COLOR=always, which wraps cargo tree's
@@ -83,7 +89,7 @@ def cargo(*args: str) -> str:
     """
     try:
         return subprocess.run(
-            ["cargo", *args, "--locked", "--offline"],
+            ["cargo", *args, "--locked", *(["--offline"] if offline else [])],
             cwd=ROOT,
             check=True,
             capture_output=True,
@@ -130,7 +136,14 @@ def linked() -> list[tuple[str, str]]:
 def packages() -> dict[tuple[str, str], dict]:
     """Every package `cargo metadata` knows for the target, by (name, version)."""
     meta = json.loads(
-        cargo("metadata", "--format-version", "1", "--filter-platform", TARGET)
+        cargo(
+            "metadata",
+            "--format-version",
+            "1",
+            "--filter-platform",
+            TARGET,
+            offline=False,
+        )
     )
     return {(p["name"], p["version"]): p for p in meta["packages"]}
 
