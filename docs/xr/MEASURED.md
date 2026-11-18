@@ -3888,6 +3888,45 @@ the track that was playing, half the rises never show, a third of the beats
 go through, and the bars' changes are more alike than the music makes them
 (0.61 against 0.44).
 
+**The beats first (board #5557, Nov 18).** Worn with the limit on, the show
+read as dead: "basically no audio reactivity left in anything". The tables
+above say why. The direction turned 3.6 to 3.8 times a second on every
+song, of the 4 it may, on the levels' asks, so a beat seldom found a turn
+left. The limiter now keeps the beats' period, and a rise a level asks for
+between two beats is made only when the light can fall again and the next
+beat still has its two turns (`Limiter::spares_the_beat`). Which turns are
+made changed. How many did not, so the rule's proof stands as it was.
+
+The same harness, the eight songs kept outside the repo, beats fired and
+let through:
+
+| Song | Before | After | Turns a second, before and after |
+|---|---|---|---|
+| edm | 200 of 749, 27 % | 394, 53 % | 3.8, 2.3 |
+| erofex | 162 of 796, 20 % | 402, 51 % | 3.6, 2.7 |
+| prison | 233 of 722, 32 % | 379, 52 % | 3.8, 3.0 |
+| psykovsky | 52 of 1,079, 5 % | 991, 92 % | 3.8, 3.6 |
+| systemcrash | 505 of 1,247, 40 % | 623, 50 % | 3.7, 3.1 |
+| tiesto | 134 of 495, 27 % | 248, 50 % | 3.8, 2.6 |
+| tripnotizer | 168 of 801, 21 % | 403, 50 % | 3.6, 2.8 |
+| tropical | 45 of 307, 15 % | 294, 96 % | 3.6, 3.6 |
+
+The songs at about half are the fast ones, in half time as designed: a
+pulse is a rise and a fall, two turns, so four turns a second carry every
+beat only up to about 119 BPM. The bars' own rises between the beats show
+no more than before (never shown 52 to 76 % before, 57 to 76 % after),
+since those turns are now refused. A made-up kick with hi-hats seven times
+a second between the beats (`cargo test`,
+`busy_levels_between_the_beats_do_not_take_the_beats_turns`): 100 % of the
+beats at 90 and 110 BPM and 49 % at 128, where the rule switched off lets
+66 % through at 90.
+
+The flash count after the change, `flash_room.rs` on an RTX 4090
+(`the_dumped_songs_stay_within_three_flashes`, the eight songs, the seven
+themes, 54 runs counted): no run over three with the limit on. The worst
+general count is 3.0 on 4 runs, 2.5 on 33, 2.0 or less on 17. The worst red
+is 2.0. With the limit off the same runs reach 16. Not yet worn.
+
 **What else it could have been.**
 
 - *A clock offset in the analysis.* A click track at 120 BPM through the

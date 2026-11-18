@@ -58,7 +58,12 @@
 //! turns allow, and the direction falls again once something wants to
 //! fall. A level falls quickly after a sparse hit and more slowly the more
 //! often it is hit ([`RELEASE_S`], by its own pace, [`PACE_HZ`]), so a run
-//! of hi-hats rides on a swell instead of strobing. Beats up to 120 BPM all
+//! of hi-hats rides on a swell instead of strobing. The beats come first
+//! (board #5557): the limiter keeps the beats' period, and a rise a level
+//! asks for between two beats is made only when the light can fall again
+//! and the next beat still has its two turns ([`Limiter::spares_the_beat`]).
+//! Without that the levels' asks spent the turns, and on real songs 5 to
+//! 41 % of the beats went through. Beats up to 120 BPM all
 //! go through, each one rise and one fall. Faster, every other beat goes
 //! through (half time, [`HALF_TIME_S`]), and the beats held back leave the
 //! light as it is for a moment ([`BEAT_FALL_S`]) so the next one has its
@@ -471,6 +476,18 @@ pub const BEAT_FALL_S: f64 = 0.25;
 /// Beats closer than the first (s, 125 BPM) go through every other one
 /// (half time) until they are further apart than the second (120 BPM).
 pub const HALF_TIME_S: [f64; 2] = [0.48, 0.5];
+/// The beat periods the limiter keeps turns for (s, 300 to 40 BPM): a
+/// period outside them is no beat to wait for.
+pub const BEAT_PERIOD_S: [f64; 2] = [0.2, 1.5];
+/// How much of a new period the kept one takes each beat, and how far a
+/// period may be from the kept one and still be the same tempo (a share
+/// of it).
+const PERIOD_FOLLOW: f64 = 0.25;
+const PERIOD_SAME: f64 = 0.2;
+/// How early the next beat may fire against the kept period (s): two
+/// frames at 72 Hz, the analysis's own jitter. A turn that would leave the
+/// beat no room if it came this early is not made.
+pub const BEAT_EARLY_S: f64 = 0.03;
 pub const DROP_GAP_S: f64 = 2.0;
 /// A level's fall time constant (s) at a sparse pace and at a dense one:
 /// a single hit clears at once, a fast run of them rides on a swell.
@@ -718,6 +735,9 @@ pub struct Limiter {
     beat_kept: bool,
     last_raw_beat: f64,
     half_time: bool,
+    /// The beats' period as the analysis fires them (s), following it
+    /// ([`PERIOD_FOLLOW`]); 0 while there is none to go by.
+    period: f64,
     /// Until when a beat held back keeps the light from turning up: its hit
     /// rides on the light as it is, and the turns are left for the next
     /// beat.
@@ -747,6 +767,7 @@ impl Limiter {
             beat_kept: true,
             last_raw_beat: f64::NEG_INFINITY,
             half_time: false,
+            period: 0.0,
             hold_until: f64::NEG_INFINITY,
             beats_kept: 0,
             beats_held: 0,
@@ -823,6 +844,14 @@ impl Limiter {
         if raw.beat {
             let period = now - self.last_raw_beat;
             self.last_raw_beat = now;
+            self.period = if !(BEAT_PERIOD_S[0]..=BEAT_PERIOD_S[1]).contains(&period) {
+                0.0
+            } else if self.period > 0.0 && (period - self.period).abs() <= PERIOD_SAME * self.period
+            {
+                self.period + (period - self.period) * PERIOD_FOLLOW
+            } else {
+                period
+            };
             if period < HALF_TIME_S[0] {
                 self.half_time = true;
             } else if period > HALF_TIME_S[1] {
@@ -855,9 +884,15 @@ impl Limiter {
             }
             false
         } else {
+            // A fall is always the levels' to ask for. A rise between
+            // two beats is made only when it leaves the next beat its
+            // turns ([`Self::spares_the_beat`]).
             let wants = match self.phase {
                 Phase::Rise => self.down >= SWITCH_GAP,
-                Phase::Fall => (self.up >= SWITCH_GAP || gated.downbeat) && now >= self.hold_until,
+                Phase::Fall => {
+                    now >= self.hold_until
+                        && (gated.downbeat || (self.up >= SWITCH_GAP && self.spares_the_beat(now)))
+                }
             };
             wants && settled && room >= 1
         };
@@ -876,6 +911,55 @@ impl Limiter {
         self.up = 0.0;
         self.down = 0.0;
         gated
+    }
+
+    /// When the next beat that goes through is due, by the kept period:
+    /// the next one the analysis fires, or the one after it in half time
+    /// when the last one went through. `None` with no period to go by, or
+    /// once the beats have stopped coming.
+    fn next_beat(&self, now: f64) -> Option<f64> {
+        if self.period <= 0.0 || now - self.last_raw_beat > 1.5 * self.period {
+            return None;
+        }
+        let beats = if self.half_time && self.beat_kept {
+            2.0
+        } else {
+            1.0
+        };
+        Some(self.last_raw_beat + beats * self.period)
+    }
+
+    /// Whether a rise now that a level asks for, between two beats, leaves
+    /// the next beat its own two turns, the rise on the beat and the fall
+    /// after it (board #5557).
+    ///
+    /// The turns are few, four a second, and every level may ask for one.
+    /// On real songs the levels asked all the time and took them (3.6 to
+    /// 3.9 turns a second on every song measured), so when a beat fired
+    /// there was seldom a turn left: 5 to 41 % of the beats went through,
+    /// and with the limit on the light no longer moved with the music. So
+    /// the beat comes first. A rise between two beats is made only if the
+    /// light can also fall again before the beat, a turn more, and the
+    /// beat still has its two after that. A fall is never held back: a
+    /// light that stays up hides the next beat as surely as a spent turn
+    /// does. With no beat to wait for, any level may turn as before.
+    ///
+    /// This only says which of the allowed turns are made, never more of
+    /// them, so the rule holds as it did (the module docs).
+    fn spares_the_beat(&self, now: f64) -> bool {
+        let Some(beat) = self.next_beat(now) else {
+            return true;
+        };
+        // The beat may come a little early: count the window from there.
+        let at = beat - BEAT_EARLY_S;
+        // The turns in the window that ends at `end`, this one with them.
+        let turns = |end: f64| {
+            self.turns.iter().filter(|&&t| in_window(end - t)).count()
+                + usize::from(in_window(end - now))
+        };
+        at - now >= 2.0 * BEAT_FALL_S
+            && turns(at) + 2 <= TURNS_PER_WINDOW
+            && turns(at + BEAT_FALL_S) + 3 <= TURNS_PER_WINDOW
     }
 
     /// The share of their speed the looks' clocks run at this frame (the
@@ -1674,6 +1758,56 @@ mod tests {
             let got = f64::from(through) / f64::from(all);
             eprintln!("{bpm} BPM: {through} of {all} beats through ({got:.2})");
             assert!((got - share).abs() < 0.03, "{bpm} BPM: {got}");
+        }
+    }
+
+    /// Board #5557: the beats keep their turns when other levels ask all
+    /// the time, as they do in a real song. A kick on the beat and a run
+    /// of hi-hats between the beats, seven a second: before, the hats took
+    /// the turns and a third of the beats or fewer went through.
+    #[test]
+    fn busy_levels_between_the_beats_do_not_take_the_beats_turns() {
+        for (bpm, least, most) in [(90.0, 0.95, 1.0), (110.0, 0.95, 1.0), (128.0, 0.47, 0.53)] {
+            let mut l = Limiter::new(true);
+            let hz = bpm / 60.0;
+            let (mut all, mut through) = (0u32, 0u32);
+            let mut turns = VecDeque::new();
+            let mut phase = l.phase();
+            for n in 0..(40.0 * FPS) as u32 {
+                let t = f64::from(n) / FPS;
+                let beat = ((t - 1.0 / FPS) * hz + 1e-9).floor() < (t * hz + 1e-9).floor();
+                // The kick: every level up for a fifth of the beat.
+                let kick = if (t * hz + 1e-9).fract() < 0.2 {
+                    1.0
+                } else {
+                    0.1
+                };
+                let mut i = input(kick, beat);
+                // The hats: the onset and the top bands, on their own
+                // clock.
+                let hat = if (t * 7.0).fract() < 0.3 { 0.9 } else { 0.05 };
+                i.f[slot::ONSET] = hat;
+                i.f[slot::BRILLIANCE] = hat;
+                for m in &mut i.mel[48..] {
+                    *m = hat;
+                }
+                let o = step(&mut l, i);
+                if o.phase != phase {
+                    phase = o.phase;
+                    turns.push_back(t);
+                }
+                while turns.front().is_some_and(|&x| !in_window(t - x)) {
+                    turns.pop_front();
+                }
+                assert!(turns.len() <= TURNS_PER_WINDOW, "{bpm} BPM at {t}");
+                if t > 4.0 {
+                    all += u32::from(beat);
+                    through += u32::from(o.gated.beat);
+                }
+            }
+            let got = f64::from(through) / f64::from(all);
+            eprintln!("{bpm} BPM with hats: {through} of {all} beats through ({got:.2})");
+            assert!((least..=most).contains(&got), "{bpm} BPM: {got}");
         }
     }
 
