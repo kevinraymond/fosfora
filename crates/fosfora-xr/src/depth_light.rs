@@ -175,7 +175,8 @@
 //! and octave, and counts about the same around each read: the coals about
 //! thirty-five operations (no soft edge, one wave), the beams and the
 //! grass about fifty (two more smoothsteps, a floor and a fract), the
-//! grass one wave more per fragment for the wind. No look adds a
+//! grass one wave more per fragment for the wind, the bubbles about
+//! fifty-five and one wave for the lane's snake. No look adds a
 //! transcendental, a hash or a read, and the vertex stage is the same.
 //! These are counts of the source, not a device number.
 //! The eye pass's mesh adds a constant fragment where the veil erases (0 <
@@ -247,8 +248,8 @@ pub const ROWS: usize = SONAR_ROW + crate::sonar::ROWS;
 /// The look's row, `light_look` in `struct EnvEye`: the look's id
 /// ([`look_id`]), the music 0..1 and the gust 0..1.
 pub const LOOK_ROW: usize = 9;
-/// The looks' clocks, `light_move` in `struct EnvEye`: the beams' travel
-/// and the grass's sway, each 0..1 of a cycle.
+/// The looks' clocks, `light_move` in `struct EnvEye`: the beams' travel,
+/// the grass's sway and the bubbles' rise, each 0..1 of a cycle.
 pub const MOVE_ROW: usize = LOOK_ROW + 1;
 /// The first of the sweep's rows, `sonar` in `struct EnvEye`.
 pub const SONAR_ROW: usize = MOVE_ROW + 1;
@@ -318,6 +319,34 @@ pub const SWAY_HZ: f32 = 0.35;
 /// Grass: how fast the gust follows the loudness up and down (s).
 pub const GUST_ATTACK_S: f32 = 0.4;
 pub const GUST_RELEASE_S: f32 = 1.2;
+/// Bubbles: how the tile is read across, under 1 so a lane is wider than
+/// a point and a bubble up to 1.7 cells across.
+pub const BUBBLE_PACK: f32 = 0.6;
+/// Bubbles: how many times a point is drawn out along the world's up, so
+/// it is the lane its bubbles rise in.
+pub const BUBBLE_STRETCH: f32 = 8.0;
+/// Bubbles: the height (cells) between one bubble and the next in its
+/// lane.
+pub const BUBBLE_PERIOD: f32 = 3.0;
+/// Bubbles: how far a lane snakes to each side (cells), and the height of
+/// one turn of it (cells), so a bubble wobbles as it rises.
+pub const BUBBLE_WOBBLE: f32 = 0.35;
+pub const BUBBLE_WOBBLE_CELLS: f32 = 5.0;
+/// Bubbles: the light inside a bubble as a share of its rim's, and where
+/// the rim rises, as shares of the radius squared.
+pub const BUBBLE_FILL: f32 = 0.3;
+pub const BUBBLE_RIM: [f32; 2] = [0.2, 0.6];
+/// Bubbles: where a bubble's soft edge starts, a share of the radius
+/// squared.
+pub const BUBBLE_EDGE: f32 = 0.6;
+/// Bubbles: how far over the center the highlight sits (a share of the
+/// radius) and its size (a share of the radius squared).
+pub const BUBBLE_SHINE: f32 = 0.45;
+pub const BUBBLE_SHINE_SIZE: f32 = 0.12;
+/// Bubbles: the rise (periods a second, up) in silence and at a full
+/// band, so the band lets them go; the beat envelope adds up to as much
+/// again. A bubble rises at 1, 2 or 3 times it by its size.
+pub const BUBBLE_RISE_HZ: [f32; 2] = [0.04, 0.4];
 
 /// The height of one band of the wave (m).
 pub const BAND_SPACING_M: f32 = 0.2;
@@ -765,6 +794,8 @@ pub struct Drive {
     sway: f32,
     /// The loudness the grass gusts with, smoothed, 0..1.
     gust: f32,
+    /// The bubbles' rise, 0..1 of a period.
+    rise: f32,
 }
 
 impl Drive {
@@ -775,7 +806,8 @@ impl Drive {
     /// by [`TWINKLE_HZ`] times one plus the music, both times one plus the
     /// beat and wrapped to a whole cycle. The beams' travel goes on by
     /// [`BEAM_TRAVEL_HZ`] at that music squared, times one plus the beat:
-    /// slow in silence and launched by a kick.
+    /// slow in silence and launched by a kick. The bubbles' rise goes on
+    /// by [`BUBBLE_RISE_HZ`] at that music, times one plus the beat.
     pub fn step(&mut self, dt: f32, level: f32, beat: f32) {
         let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
         let level = unit(level);
@@ -792,6 +824,8 @@ impl Drive {
         let launch =
             BEAM_TRAVEL_HZ[0] + (BEAM_TRAVEL_HZ[1] - BEAM_TRAVEL_HZ[0]) * self.music * self.music;
         self.travel = (self.travel + dt * launch * beat).fract();
+        let rise = BUBBLE_RISE_HZ[0] + (BUBBLE_RISE_HZ[1] - BUBBLE_RISE_HZ[0]) * self.music;
+        self.rise = (self.rise + dt * rise * beat).fract();
     }
 
     /// Advance the wind by `dt` seconds with the overall loudness
@@ -846,6 +880,11 @@ impl Drive {
     /// The gust, 0..1.
     pub fn gust(&self) -> f32 {
         self.gust
+    }
+
+    /// The bubbles' rise, 0..1 of a period.
+    pub fn rise(&self) -> f32 {
+        self.rise
     }
 }
 
@@ -952,7 +991,7 @@ pub fn rows(
         [SIZE[0], SIZE[1], SOFT_CORE, TWINKLE_DEPTH],
         // The look: the points until `with_look` names another.
         [0.0, music, unit(drive.gust), 0.0],
-        [drive.travel, drive.sway, 0.0, 0.0],
+        [drive.travel, drive.sway, drive.rise, 0.0],
     ];
     // The sweep's rows stay 0, no sweep, until `with_sonar` sets them.
     let mut rows = [[0.0f32; 4]; ROWS];
@@ -1511,6 +1550,49 @@ pub fn blade(
     Vec2::new(light, light * h * h)
 }
 
+/// Bubbles on an upright plane at `g` (across and up, cells): the light
+/// and the light times its tint. The tile is read [`BUBBLE_STRETCH`] times
+/// drawn out along up and [`BUBBLE_PACK`] across, so a point is a wide
+/// lane, and the lane snakes
+/// ([`BUBBLE_WOBBLE`], on the sway's clock). In the lane a bubble passes
+/// every [`BUBBLE_PERIOD`] cells of height, moving up with the rise at 1,
+/// 2 or 3 times it by the point's size, from the point's phase. A bubble
+/// is a round rim, [`BUBBLE_FILL`] of it inside, the point's radius
+/// across, with a highlight over its center. The tint is the highlight:
+/// the sides' color on the rim, the tops' on the shine. Toward a lane's
+/// end the tile's distance grows, so a bubble swells in at the foot and
+/// shrinks out at the head. The WGSL's `bubble`.
+pub fn bubble(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    g: Vec2,
+    k: u32,
+    o: i32,
+    radius_scale: f32,
+) -> Vec2 {
+    let snake = 2.0 * wave(g.y / BUBBLE_WOBBLE_CELLS + rows[MOVE_ROW][1]) - 1.0;
+    let uv = Vec2::new(
+        (g.x + BUBBLE_WOBBLE * snake) * BUBBLE_PACK,
+        g.y / BUBBLE_STRETCH,
+    );
+    let [d, radius, phase, size] = look_point(rows, tile, uv, k, o, radius_scale);
+    if radius <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let rate = 1.0 + (size * 2.999).floor();
+    let x = g.y / BUBBLE_PERIOD - rate * rows[MOVE_ROW][2] + phase;
+    let up = (x - x.floor() - 0.5) * BUBBLE_PERIOD * BUBBLE_PACK;
+    let inv = 1.0 / (radius * radius);
+    let r2 = (d * d + up * up) * inv;
+    let body = 1.0 - smoothstep(BUBBLE_EDGE, 1.0, r2);
+    let rim = smoothstep(BUBBLE_RIM[0], BUBBLE_RIM[1], r2);
+    let shell = body * (BUBBLE_FILL + (1.0 - BUBBLE_FILL) * rim);
+    let over = up - BUBBLE_SHINE * radius;
+    let shine = 1.0 - smoothstep(0.0, BUBBLE_SHINE_SIZE, (d * d + over * over) * inv);
+    let light = shell.max(shine);
+    Vec2::new(light, light * shine)
+}
+
 /// The radius factor a look's points are read at, for a vertex keeping
 /// `keep` under the sweep's light `under` (0 without): the points' own
 /// (the fill's radius, the music's swell, the keep), wider for the beams
@@ -1558,7 +1640,8 @@ pub fn look_color(rows: &[[f32; 4]; ROWS], tint: f32) -> [f32; 3] {
 /// read the look's own: on an upright plane the beams' streaks or the
 /// grass's blades, on the level plane their points seen from the end
 /// (the beams' in the tops' color, the grass's moved by the wind); the
-/// coals on every plane. The fade for small cells counts the closer
+/// coals on every plane; the bubbles on an upright plane, the points on
+/// the level one. The fade for small cells counts the closer
 /// packing across and the longer features along up. The WGSL's
 /// `look_light`.
 pub fn look_light(
@@ -1621,6 +1704,11 @@ pub fn look_light(
                         let at = g + Vec2::splat(GRASS_TOP_SHIFT * bend);
                         let v = plane_points(rows, tile, at, k, o, radius_scale);
                         Vec2::new(v, v * v)
+                    }
+                    DepthLook::Bubbles if upright => bubble(rows, tile, g, k, o, radius_scale),
+                    DepthLook::Bubbles => {
+                        let v = plane_points(rows, tile, g, k, o, radius_scale);
+                        Vec2::new(v, 0.5 * v * v)
                     }
                     _ => coal(rows, tile, g, k, o, radius_scale),
                 };
@@ -2081,10 +2169,11 @@ mod tests {
         (eye, grid)
     }
 
-    const BUILT: [(Theme, DepthLook); 3] = [
+    const BUILT: [(Theme, DepthLook); 4] = [
         (Theme::Aurora, DepthLook::Beams),
         (Theme::Flint, DepthLook::Coals),
         (Theme::Contour, DepthLook::Grass),
+        (Theme::Drift, DepthLook::Bubbles),
     ];
 
     #[test]
@@ -2112,7 +2201,7 @@ mod tests {
         d.step_wind(0.5, 0.6);
         let rows = with_look(rows(&d, 0.2, [TEAL, GREEN], FILL, 0.0), DepthLook::Grass);
         assert_close!(rows[LOOK_ROW], [3.0, d.music(), d.gust(), 0.0]);
-        assert_close!(rows[MOVE_ROW], [d.travel(), d.sway(), 0.0, 0.0]);
+        assert_close!(rows[MOVE_ROW], [d.travel(), d.sway(), d.rise(), 0.0]);
         const { assert!(MOVE_ROW == LOOK_ROW + 1 && SONAR_ROW == MOVE_ROW + 1) };
         // The WGSL's constants are these.
         let vec = |v: &[f32]| {
@@ -2140,6 +2229,15 @@ mod tests {
             ("GRASS_SWAY_BAND", GRASS_SWAY_BAND),
             ("GRASS_LEAN", GRASS_LEAN),
             ("GRASS_TOP_SHIFT", GRASS_TOP_SHIFT),
+            ("BUBBLE_PACK", BUBBLE_PACK),
+            ("BUBBLE_STRETCH", BUBBLE_STRETCH),
+            ("BUBBLE_PERIOD", BUBBLE_PERIOD),
+            ("BUBBLE_WOBBLE", BUBBLE_WOBBLE),
+            ("BUBBLE_WOBBLE_CELLS", BUBBLE_WOBBLE_CELLS),
+            ("BUBBLE_FILL", BUBBLE_FILL),
+            ("BUBBLE_EDGE", BUBBLE_EDGE),
+            ("BUBBLE_SHINE", BUBBLE_SHINE),
+            ("BUBBLE_SHINE_SIZE", BUBBLE_SHINE_SIZE),
         ] {
             let line = format!("const {name}: f32 = {value:?};");
             assert!(ENV_DEPTH_WGSL.contains(&line), "{line}");
@@ -2147,6 +2245,7 @@ mod tests {
         for line in [
             format!("const COAL_EMBER: vec3<f32> = {};", vec(&COAL_EMBER)),
             format!("const GRASS_WIND: vec2<f32> = {};", vec(&GRASS_WIND)),
+            format!("const BUBBLE_RIM: vec2<f32> = {};", vec(&BUBBLE_RIM)),
         ] {
             assert!(ENV_DEPTH_WGSL.contains(&line), "{line}");
         }
@@ -2435,6 +2534,64 @@ mod tests {
         let top = Vec3::new(0.1, 0.5, -0.9);
         let v = look_light(&still, tile(), eye, top, Vec3::Y, radius, fw);
         assert!((0.0..=1.0).contains(&v.x) && (0.0..=1.0).contains(&v.y));
+    }
+
+    #[test]
+    fn the_bubbles_rise_and_carry_a_highlight() {
+        let fw = Vec3::splat(5e-4);
+        let (eye, grid) = wall_grid();
+        let rows = look_rows(Theme::Drift, 1.0, 0.6, 0.3);
+        assert_eq!(look_of(&rows), DepthLook::Bubbles);
+        let radius = look_radius(&rows, 1.0, 0.0);
+        let at = |rise: f32| -> Vec<Vec2> {
+            let mut r = rows;
+            r[MOVE_ROW][2] = rise;
+            grid.iter()
+                .map(|&p| look_light(&r, tile(), eye, p, Vec3::Z, radius, fw))
+                .collect()
+        };
+        // A whole period on, every bubble is where the last one was.
+        let (start, wrapped) = (at(0.2), at(1.2));
+        for (a, b) in start.iter().zip(&wrapped).step_by(11) {
+            assert!((*a - *b).abs().max_element() < 1e-3, "{a} {b}");
+        }
+        // A little on, the light has moved up: it matches the light a
+        // little lower before better than the light in place. Slowest
+        // bubbles move a twentieth of a period, 5 points of the grid.
+        let later = at(0.25);
+        let diff = |shift: usize| -> f32 {
+            (shift * 200..grid.len())
+                .map(|i| (later[i].x - start[i - shift * 200].x).abs())
+                .sum::<f32>()
+                / (grid.len() - shift * 200) as f32
+        };
+        let step = (0.05 * BUBBLE_PERIOD * CELL_M / 0.003).round() as usize;
+        assert!(step >= 2);
+        eprintln!(
+            "bubbles 0.05 of a period on: the light differs by {:.4} in place, {:.4} moved up {step} points",
+            diff(0),
+            diff(step)
+        );
+        assert!(diff(step) < diff(0));
+        // The shine is the tops' color and smaller than the bubble; the
+        // rim is the sides'. With the room black both show.
+        let lit = start.iter().filter(|v| v.x > 0.5).count();
+        let shine = start.iter().filter(|v| v.x > 0.5 && v.y > 0.6).count();
+        let rim = start.iter().filter(|v| v.x > 0.5 && v.y < 0.2).count();
+        eprintln!("bubbles: {lit} points lit, {shine} of them shine, {rim} rim");
+        assert!(shine > 0 && rim > shine, "{shine} {rim}");
+        // A top shows the points: a bubble seen from above is a dot.
+        let top = Vec3::new(0.01, 0.8, -1.0);
+        let v = look_light(&rows, tile(), eye, top, Vec3::Y, radius, fw);
+        assert!((0.0..=1.0).contains(&v.x) && (0.0..=1.0).contains(&v.y));
+        // The rise's clock: slow in silence, faster with the band.
+        let (mut quiet, mut loud) = (Drive::default(), Drive::default());
+        for _ in 0..72 {
+            quiet.step(1.0 / 72.0, 0.0, 0.0);
+            loud.step(1.0 / 72.0, 1.0, 0.0);
+        }
+        assert_close!(quiet.rise(), BUBBLE_RISE_HZ[0]);
+        assert!(loud.rise() > 0.8 * BUBBLE_RISE_HZ[1] && loud.rise() <= BUBBLE_RISE_HZ[1]);
     }
 
     #[test]

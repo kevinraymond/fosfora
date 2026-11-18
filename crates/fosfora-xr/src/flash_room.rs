@@ -2516,13 +2516,14 @@ fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
     assert!(failed.is_empty(), "over three flashes: {failed:?}");
 }
 
-/// The video's three themes, each with the look its depth light draws
-/// (board #5543): Aurora's beams, Flint's coals and Contour's grass, on
-/// the band the theme gives them.
-const DEPTH_LOOKS: [(Theme, crate::themes::DepthLook); 3] = [
+/// The themes whose depth light draws a look of its own (board #5543),
+/// each with that look: Aurora's beams, Flint's coals, Contour's grass
+/// and Drift's bubbles, on the band the theme gives them.
+const DEPTH_LOOKS: [(Theme, crate::themes::DepthLook); 4] = [
     (Theme::Aurora, crate::themes::DepthLook::Beams),
     (Theme::Flint, crate::themes::DepthLook::Coals),
     (Theme::Contour, crate::themes::DepthLook::Grass),
+    (Theme::Drift, crate::themes::DepthLook::Bubbles),
 ];
 
 /// The beams, the coals and the grass behind the limiter as `app.rs` runs

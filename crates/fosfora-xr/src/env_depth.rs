@@ -606,10 +606,11 @@ struct EnvEye {
     // starts (a share of the radius), w the twinkle's depth
     light_size: vec4<f32>,
     // The look (depth_light.rs, board #5543). x its id: 0 the points, 1
-    // beams, 2 coals, 3 grass; y the music 0..1, z the gust 0..1
+    // beams, 2 coals, 3 grass, 4 bubbles; y the music 0..1, z the gust
+    // 0..1
     light_look: vec4<f32>,
     // The looks' clocks, each 0..1 of a cycle: x the beams' travel, y the
-    // grass's sway
+    // grass's sway, z the bubbles' rise
     light_move: vec4<f32>,
     // The sweep (sonar.rs), read by fs_mesh_light_sonar alone. x the
     // line's peak alpha (0: no sweep and no standing line this frame; the
@@ -1006,6 +1007,26 @@ const GRASS_SWAY_BAND: f32 = 0.9;
 const GRASS_LEAN: f32 = 1.0;
 const GRASS_WIND: vec2<f32> = vec2<f32>(0.9, 0.5);
 const GRASS_TOP_SHIFT: f32 = 0.25;
+const BUBBLE_PACK: f32 = 0.6;
+const BUBBLE_STRETCH: f32 = 8.0;
+const BUBBLE_PERIOD: f32 = 3.0;
+const BUBBLE_WOBBLE: f32 = 0.35;
+const BUBBLE_WOBBLE_CELLS: f32 = 5.0;
+const BUBBLE_FILL: f32 = 0.3;
+const BUBBLE_RIM: vec2<f32> = vec2<f32>(0.2, 0.6);
+const BUBBLE_EDGE: f32 = 0.6;
+const BUBBLE_SHINE: f32 = 0.45;
+const BUBBLE_SHINE_SIZE: f32 = 0.12;
+// The looks' ids (depth_light::look_id).
+const LOOK_BEAMS: i32 = 1;
+const LOOK_COALS: i32 = 2;
+const LOOK_GRASS: i32 = 3;
+const LOOK_BUBBLES: i32 = 4;
+
+// The id of the look drawn.
+fn look_id() -> i32 {
+    return i32(env.light_look.x + 0.5);
+}
 
 // Across and up (m) in the cells' plane k: on an upright plane (0 or 2)
 // the second is the world's up; the level plane (1) has none.
@@ -1096,13 +1117,45 @@ fn blade(g: vec2<f32>, k: u32, o: i32, radius_scale: f32, bend: f32) -> vec2<f32
     return vec2<f32>(light, light * h * h);
 }
 
+// Bubbles on an upright plane at g (across and up, cells): x the light,
+// y the light times its tint. A point, drawn out along up, is a lane that
+// snakes; in it a bubble passes every BUBBLE_PERIOD cells, moving up with
+// the rise: a round rim with a little light inside and a highlight over
+// its center, which takes the tops' color.
+fn bubble(g: vec2<f32>, k: u32, o: i32, radius_scale: f32) -> vec2<f32> {
+    let snake = 2.0 * light_wave(g.y / BUBBLE_WOBBLE_CELLS + env.light_move.y) - 1.0;
+    let pt = look_point(
+        vec2<f32>((g.x + BUBBLE_WOBBLE * snake) * BUBBLE_PACK, g.y / BUBBLE_STRETCH),
+        k,
+        o,
+        radius_scale
+    );
+    let rate = 1.0 + floor(pt.w * 2.999);
+    let up = (fract(g.y / BUBBLE_PERIOD - rate * env.light_move.z + pt.z) - 0.5)
+        * BUBBLE_PERIOD * BUBBLE_PACK;
+    let inv = 1.0 / max(pt.y * pt.y, 1e-8);
+    let r2 = (pt.x * pt.x + up * up) * inv;
+    let body = 1.0 - smoothstep(BUBBLE_EDGE, 1.0, r2);
+    let rim = smoothstep(BUBBLE_RIM.x, BUBBLE_RIM.y, r2);
+    let shell = body * mix(BUBBLE_FILL, 1.0, rim);
+    let over = up - BUBBLE_SHINE * pt.y;
+    let shine = 1.0 - smoothstep(0.0, BUBBLE_SHINE_SIZE, (pt.x * pt.x + over * over) * inv);
+    let light = select(0.0, max(shell, shine), pt.y > 0.0);
+    return vec2<f32>(light, light * shine);
+}
+
 // The radius factor a look's points are read at, for a vertex keeping
 // keep under the sweep's light under (0 without a sweep): the points'
 // own, wider for the beams and the coals, swollen under a sweep, within
 // the tile's reach.
 fn look_radius(keep: f32, under: f32) -> f32 {
-    let look = env.light_look.x;
-    let wide = select(select(1.0, COAL_WIDE, look > 1.5 && look < 2.5), BEAM_WIDE, look < 1.5);
+    let look = look_id();
+    var wide = 1.0;
+    if look == LOOK_BEAMS {
+        wide = BEAM_WIDE;
+    } else if look == LOOK_COALS {
+        wide = COAL_WIDE;
+    }
     return min(
         env.light_point.x * env.light_point.w * sqrt(keep) * wide * (1.0 + env.sonar.z * under),
         env.light_point.z / env.light_size.y
@@ -1112,7 +1165,7 @@ fn look_radius(keep: f32, under: f32) -> f32 {
 // How the music lifts a look's light: the crests' gain for the beams and
 // the grass; the coals carry it in their heat.
 fn look_band() -> f32 {
-    return select(env.light.w, 1.0, env.light_look.x > 1.5 && env.light_look.x < 2.5);
+    return select(env.light.w, 1.0, look_id() == LOOK_COALS);
 }
 
 // A look's color at tint: the sides' at 0 toward the tops' at 1, and
@@ -1129,9 +1182,10 @@ fn look_color(tint: f32) -> vec3<f32> {
 // blades, on the level plane their points seen from the end; the coals on
 // every plane.
 fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> vec2<f32> {
-    let look = env.light_look.x;
-    let beams = look < 1.5;
-    let grass = look > 2.5;
+    let look = look_id();
+    let beams = look == LOOK_BEAMS;
+    let grass = look == LOOK_GRASS;
+    let bubbles = look == LOOK_BUBBLES;
     let n2 = n * n;
     let tri = n2 * n2 / dot(n2, n2);
     let l = clamp(log2(max(length(p - env.eye.xyz), 1e-3)), OCTAVE_MIN, OCTAVE_MAX);
@@ -1180,6 +1234,13 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
                     } else {
                         let v = plane_points(g + vec2<f32>(GRASS_TOP_SHIFT * bend), k, o, radius_scale);
                         s = vec2<f32>(v, v * v);
+                    }
+                } else if bubbles {
+                    if upright {
+                        s = bubble(g, k, o, radius_scale);
+                    } else {
+                        let v = plane_points(g, k, o, radius_scale);
+                        s = vec2<f32>(v, 0.5 * v * v);
                     }
                 } else {
                     s = coal(g, k, o, radius_scale);

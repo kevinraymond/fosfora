@@ -1958,9 +1958,29 @@ fragment for the grass's wind. No hash, no transcendental, no discard.
 
 **Not yet.** The grass's rows show on a large flat surface, as shelves of
 tufts; a chair or a pile breaks them up, and walls are the room's boxes
-in a scanned room. Bubbles, sparkle, glints and meters have ids and draw
-as the points. Renders of a recorded room in each look come from
+in a scanned room. Sparkle, glints and meters have ids and draw as the
+points. Renders of a recorded room in each look come from
 `the_recorded_room_in_each_look` (`FOSFORA_LOOK_REC`, `FOSFORA_LOOK_DUMP`).
+
+### The other themes' looks
+
+Built the same way, one at a time, for the four themes outside the video.
+
+- **Bubbles** (Drift: teal, warm white, bass). On an upright surface the
+  tile is read wider across (0.6) and drawn out eight times along up, so
+  a point is a wide lane, and the lane snakes a third of a cell to each
+  side on the sway's clock. A bubble passes every three cells of the lane:
+  a round rim with a little light inside, up to 1.7 cells across, and a
+  small highlight over its center in warm white. The rise is a clock the
+  bass drives, 0.04 periods a second in silence and 0.4 at a full band,
+  so the band lets them go, and a bubble wobbles as it follows the lane.
+  Toward a lane's end the bubble swells in and shrinks out. A top shows
+  the points, mostly teal. Cost by the source: the tile read as often,
+  about fifty-five operations around each read, one wave for the snake,
+  no square root of its own (the round shape is compared squared). On
+  the pulse trains bubbles do not flash without the sweep.
+  Where two lanes meet, a bubble is cut by the seam; the GPU test allows
+  twice the beams' count of pixels there.
 
 ## The air per theme (Nov 18, board #5543)
 

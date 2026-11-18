@@ -1544,10 +1544,11 @@ fn look_rows(
 }
 
 /// The video's three themes, each with the look its depth light draws.
-const LOOKS: [(Theme, DepthLook); 3] = [
+const LOOKS: [(Theme, DepthLook); 4] = [
     (Theme::Aurora, DepthLook::Beams),
     (Theme::Flint, DepthLook::Coals),
     (Theme::Contour, DepthLook::Grass),
+    (Theme::Drift, DepthLook::Bubbles),
 ];
 
 /// Board #5543: the beams, the coals and the grass over the known
@@ -1574,13 +1575,18 @@ fn each_look_matches_its_cpu_mirror() {
             eprintln!("{} at music {music}, gust {gust}", look.name());
             // Of 739 200 pixels a case. More than the points' handful:
             // where two points' channels meet, a streak's phase and rate
-            // or a blade's height step, not only a twinkle.
-            fragment_matches(device, queue, &rows, 200);
+            // or a blade's height step, not only a twinkle. A bubble's
+            // lane is wider than a point, so two lanes meet more often
+            // and the seam between them, where the phase is two points'
+            // mixed, crosses lit bubbles.
+            let seams = if look == DepthLook::Bubbles { 2 } else { 1 };
+            fragment_matches(device, queue, &rows, 200 * seams);
         }
         eprintln!("{} under a sweep", look.name());
         let rows = depth_light::with_sonar(look_rows(theme, look, 1.0, 0.5, 0.3, 3.7), &sweep);
         assert!(depth_light::swept(&rows));
-        fragment_matches(device, queue, &rows, 300);
+        let seams = if look == DepthLook::Bubbles { 2 } else { 1 };
+        fragment_matches(device, queue, &rows, 300 * seams);
     }
 }
 
