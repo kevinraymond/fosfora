@@ -1858,7 +1858,7 @@ for an effect that is not built and is as it was.
 | --- | --- | --- | --- | --- | --- | --- |
 | table | curls, teal, mid, 1, off | rings, rose, bass, 1, off | *none, teal, rms, 1, in (windows)* | none, blue, mid, 1, in | *shards, warm white, rms, 1, stand (sparks)* | *none, warm white, rms, 1, face (terraces)* |
 | floor | contours, teal, bass, 0.3, off | *curls, violet, rms, 1, face (wash)* | aurora (the reflection at 0.3), key, rms, 1, off | tessera, blue, bass, 1, face, one color | tessera, blue, bass, 0.5, off, one color | contours, green, rms, 1, off |
-| wall | streamlines, blue, rms, 1, off | pulse, violet, bass, 1, off | aurora (the sky), key, rms, 1, off | bezel, warm white, rms, 1, in, one color | shards, warm white, rms, 1, face, one color | contours, green, rms, 1, off |
+| wall | streamlines, blue, rms, 1, off | pulse, violet, bass, 1, off | aurora (the sky), key, rms, 1, off | *none, warm white, rms, 1, in (bezel)* | shards, warm white, rms, 1, face, one color | contours, green, rms, 1, off |
 | ceiling | rings, blue, bass, 1, off | pulse, violet, bass, 0.6, off | aurora (the sky), key, rms, 1, off | *none, warm white, rms, 1, in (astrolabe)* | shards, warm white, rms, 0.4, off, one color | streamlines, warm white, rms, 0.4, off |
 | frame | pulse, teal, rms, 0.6, face | rings, rose, bass, 1, face | *none, teal, rms, 1, in (windows)* | *none, blue, rms, 1, in (fenestra)* | pulse, amber, bass, 0.8, face | pulse, warm white, rms, 0.6, face |
 | other | curls, teal, mid, 1, off | curls, rose, mid, 1, off | *none, teal, rms, 1, in (windows)* | none, blue, mid, 1, in | *shards, amber, rms, 1, stand (embers)* | *curls, warm white, rms, 0.4, face (terraces)* |
@@ -1877,7 +1877,11 @@ until it is built, in the theme's colors and on its band), four motions
 of the air, and the two colors that are not one color (the heat ramp, by
 band). Sparks and embers were the particle cloud's and draw nothing since
 the cloud went (board #5470); they come back drawn on the face. Astrolabe
-and fenestra are held back for flashing (board #5462). Tide's tables run
+and fenestra are held back for flashing (board #5462). Mirror's walls
+were tried with bezel and the tunnel together (ef5d5ad, unworn captures
+`recordings/themes3/groundwork-ef5d5ad/mirror*.png`): no chrome showed and
+the wall's tunnel was fainter than the ceiling's, so they keep the tunnel
+alone until bezel draws with one. Tide's tables run
 the rings, which a table's list in the room editor does not carry: the
 one pairing off the catalogue.
 

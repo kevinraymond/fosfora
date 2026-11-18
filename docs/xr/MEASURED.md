@@ -4126,3 +4126,42 @@ the show ran; "edit room on" and "off" logged `reach: on with Edit room` and
 
 Not measured: anything worn. The question answered by hand, the fist that
 holds the voice window, and the begin pinch cannot be made unworn.
+
+## Themes as scenes, the groundwork (board #5543, Nov 18)
+
+Debug ef5d5ad (xr-themes3), Quest 3 v209 on the desk, unworn, 7 h up and
+not rebooted, so read these against the 13.9 ms budget and not against
+another day's numbers. Seated (`roam 0`), the live room found (22 anchors,
+no replay), 72 Hz, `gov 0`, `music 1`, `immersefix 1`, `begin 1`, the faces
+layer at 0.5 with the quality filter, 2,000 fireflies alive. One launch per
+theme by `debug.fosfora.theme`, the last 30 VrApi lines of about 55 s each.
+Every theme's depth light occludes here and draws as the points.
+
+| theme | App med / p90 / max (ms) | min fps | stale, whole run |
+| --- | --- | --- | --- |
+| Aurora | 8.57 / 9.00 / 9.17 | 72 | 242 |
+| Flint | 7.91 / 8.36 / 9.43 | 71 | 97 |
+| Contour | 7.29 / 8.10 / 8.71 | 70 | 86 |
+| Mirror | 7.88 / 8.40 / 8.59 | 71 | 219 |
+| Drift | 7.86 / 8.28 / 9.12 | 71 | 67 |
+| Tide | 7.81 / 8.48 / 8.85 | 70 | 122 |
+| Classic | 7.75 / 8.36 / 9.10 | 71 | 63 |
+
+The stale counts include the launch and the room's load. The log of each
+run names the theme's depth row (`depth light: coals as points, amber
+sides, warm white on top, bass, occluding (theme flint)`).
+
+Captures, two per theme: `recordings/themes3/groundwork-ef5d5ad/` and
+`sheet.jpg`. In them the depth map's things stand as a black base under
+their points in every theme, Aurora's floor is dimmer than its sky, and
+Flint's walls are bright warm white cells over a blue grid. Mirror's
+walls ran bezel with the tunnel in this build: no chrome showed and the
+wall's tunnel was fainter than the ceiling's, so the next commit puts the
+walls back on the tunnel alone.
+
+The room's file was backed up before the runs and restored after, the same
+bytes (sha256). The theme knob writes the live room's file when the live
+room is found.
+
+Not measured: anything worn, and the edge of the hard cutout against a
+real thing, which a capture shows poorly.
