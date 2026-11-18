@@ -1979,8 +1979,16 @@ release surface's five and eight (244 and 364). Recenter and Rescan are the
 top row. The debug panel is 11 and 14 rows and its header keeps one row of
 headroom. The bottom rows are where they were.
 
+**Since board #5575.** The Tips control shares the top row with the
+Limit flashing toggle, a cell each: "Tips: on" or "Tips: off"
+(`first_run::tips_label`), saved in `hand_menu.json` as `"tips": false`
+once off. Off, the first run's hints stop. On, they start over 2 s
+later. "Tips on" and "tips off" are its spoken twin. The row count is
+unchanged.
+
 **Since board #5534.** The Limit flashing toggle is the top row, on both
-surfaces: one button across the row that reads "Limit flashing: on" or
+surfaces: one button across the row (the left cell since board #5575)
+that reads "Limit flashing: on" or
 "Limit flashing: off" (`flash_choice::row_label`). It is the wearer's
 photosensitive setting ("The first run" below, and `SURFACES_DESIGN.md`,
 "Photosensitive safety"). A press changes it at once and saves it in
@@ -2211,8 +2219,9 @@ What a wearer can meet, in the order of a first launch:
 | Room editor: a first hold | desk: hold again for all tables -> curls | at the surface | the arm's 2.5 s |
 | A voice reply or miss | theme: Aurora, Didn't catch that… | the voice window's place | its own time or its reading time |
 | A thumb swipe stepped the theme | Aurora | the voice window's place | its reading time |
-| A first run hint, the show on for 45 s and the label free for 5 s | Left palm to your face opens the menu, and closes it. | the voice window's place | until the gesture is made, 20 s at most |
+| A first run hint, the show on for 20 s and the label free for 5 s | Left palm to your face opens the menu, and closes it. | the voice window's place | until the gesture is made, 20 s at most |
 | The hint's gesture was made | Got it | same | 2.5 s |
+| The run's last hint has gone, the label free for 5 s | Tips show at every start. Menu: Tips turns them off. | same | 8 s |
 | The session ends on an error | Fosfora stopped: the session was lost | 1.2 m ahead, level | 4 s, then the app exits |
 
 **Reading time.** A label shows for 1.5 s and 0.3 s a word, at most 6 s
@@ -2306,7 +2315,8 @@ A wearer who had never seen the app had no say in when the show started
 and was never told what their hands could do. The music played while
 they were still settling, and the swipe, the thumb tap and the palm menu
 were found by accident or not at all. Now the show waits for them, and
-each gesture is taught once, when there is room on the label for it. The
+each gesture is taught on every launch (board #5575; once per install
+until then), when there is room on the label for it. The
 rules are `first_run.rs`, plain data tested on the desktop; `app.rs`
 feeds them once a frame.
 
@@ -2338,7 +2348,9 @@ not run on the headset yet.
 3. **The card.** When the scan's label has gone, or the question is
    over, a card sits at the
    center of the view, 1 m ahead and 0.4 m wide: **"Pinch to begin"**.
-   It follows the head the way the voice label does
+   With the tips on, **"Then listen and watch."** and **"Tips will
+   follow."** sit under it (board #5575), so the wearer knows help is
+   coming and that nothing is asked of them until then. It follows the head the way the voice label does
    (`voice::Follow::centered`), so it is in view lying back and never
    rigid on the head.
 4. **No hands.** If no hand has been tracked for 4 s with the card up,
@@ -2355,7 +2367,11 @@ not run on the headset yet.
    **"Sit back and relax"** for 4 s at the wait's 0.25, then the glide to
    0.35 over 3 s.
 6. **Nothing for the opening** (board #5547). No hint shows until the
-   show has been on for 45 s (`FIRST_HINT_S`). The first hint used to
+   show has been on for 20 s (`FIRST_HINT_S`; 45 s until board #5575,
+   by which time people trying the app had stopped expecting help. The
+   swipe is last of the three, so its hint still falls about where it
+   did). `debug.fosfora.hintwait <s>` sets another wait for a launch.
+   The first hint used to
    show about 9 s after the pinch and ask for a swipe, which stepped the
    theme away from the one the opening track brings. The opening belongs
    to the song and its look. A gesture made in that time still works and
@@ -2382,7 +2398,17 @@ not run on the headset yet.
    the caption names it: **"Mirror"**. Then "Got it" and the cue.
 
 A hint that has been in view for 20 s gives up. Made or given up, it is
-saved as taught and never shows again on that install.
+taught for that run and shows again on the next launch (board #5575).
+People trying the app had missed a hint and had no way to see it again.
+
+10. **Where the tips are turned off.** When the last hint of a run has
+    gone and the label has been free for 5 s: **"Tips show at every
+    start."** over **"Menu: Tips turns them off."**, for 8 s, once. The
+    hand menu's Tips control ("Tips: on", "Tips: off", beside Limit
+    flashing) and the spoken "tips off" stop the hints for good. "Tips
+    on" starts them over 2 s later, which is also how to look at them
+    again. A wearer who made every gesture before its hint saw no hint
+    and is not shown this label.
 
 ### The flash question (board #5534)
 
@@ -2544,7 +2570,7 @@ What was considered and left out for the hands' answer:
   still holding the controllers doesn't use them up.
 - **Taught by doing.** A swipe that steps the theme, a voice window with
   something said in it or the palm bringing the menu, made before its
-  hint, saves that hint as taught and it never shows. Talking counts
+  hint, teaches that hint and it does not show in that run. Talking counts
   during the wait too. The palm does not, since it brings nothing then.
 - **The talk hint teaches the fist** (board #5531, `VOICE_DESIGN.md`, "The
   fist holds the window"): "Make a fist, say a command," over "then open
@@ -2552,9 +2578,9 @@ What was considered and left out for the hands' answer:
   Until then the hint taught only the thumb tap and nothing taught the
   fist. A fist or a tap that opened a window nobody spoke in does not
   answer it.
-- **Saved** in `hand_menu.json` as `"taught":["swipe","talk","palm"]`,
-  written once one is taught. A file from before has taught none, and a
-  file with the old `tap` has not been taught the fist.
+- **Saved** (board #5575): only the Tips control, `"tips": false` in
+  `hand_menu.json` once off. What a run taught is not saved. A file with
+  the old `"taught"` list loads, and a save leaves the list out.
 - **The caption** (`first_run::swipe_caption`): every thumb swipe that
   steps the theme names the new one for its reading time, where the voice
   label floats: "Aurora", as the menu's Theme control shows it.
@@ -2599,10 +2625,10 @@ it waits, so the card names the pinch only.
 - `debug.fosfora.hints 1`, `handshint 0`, `swipe` and `voicetap` do
   nothing to the question. With `handshint 0` its fifth line never reads
   "Put the controllers down."
-- `debug.fosfora.hints 1`: the hints again this launch. The saved state
-  is left out and the hints show with no hand tracked. A hint made or
-  given up in such a launch is saved, and the file then holds only what
-  that launch taught.
+- `debug.fosfora.hints 1`: the hints this launch whatever `"tips"` says,
+  and with no hand tracked. Nothing is saved.
+- `debug.fosfora.hintwait <s>` (board #5575): how long the show is on
+  before its first hint, in place of 20.
 - `debug.fosfora.swipe right|left`: a thumb swipe from the right hand, for
   the caption and the swipe hint's "Got it". Right is the next theme, left
   the one before.
@@ -2611,7 +2637,7 @@ it waits, so the card names the pinch only.
 A capture of every step, with `ask 0` and `handshint 0` set: launch with
 `hints 1` and no `begin` to see the card (the controllers line joins it
 after 4 s unless `handshint 0`), then `say 'begin'`. The palm hint shows
-about 45 s later, and unworn it can only give up, 20 s on. The talk
+about 20 s later, and unworn it can only give up, 20 s on. The talk
 hint follows (it needs voice on and the microphone granted), then the
 swipe hint; `swipe right` gives the caption and "Got it".
 
@@ -2630,7 +2656,7 @@ The tests (`first_run.rs`):
 `got_it_waits_for_the_caption_and_is_dropped_behind_a_voice_window`,
 `a_hint_whose_gesture_does_not_work_is_passed_over_untaught`,
 `the_hints_wait_for_a_free_label_and_a_tracked_hand`,
-`the_taught_hints_round_trip_through_their_names`,
+`the_hints_show_every_launch_until_the_tips_are_turned_off`,
 `the_events_log_what_happened`,
 `the_swipe_caption_names_the_new_theme` and
 `the_swipe_hint_is_taught_by_a_swipe_that_changed_the_theme`. The flash
@@ -2653,7 +2679,7 @@ question's (`flash_choice.rs`):
 `intent.rs`'s `limit_flashing_and_full_show` and `panel_grid.rs`'s menu
 tests. Beside them:
 `immerse.rs`'s `the_room_is_dim_and_still_while_the_show_waits_and_the_opening_runs_from_there`,
-`palm_panel.rs`'s `the_menu_file_saves_the_hints_taught_and_reads_none_when_absent`
+`palm_panel.rs`'s `the_menu_file_saves_the_tips_off_and_reads_them_on_when_absent`
 and `held_back_the_menu_does_not_come_and_nothing_from_the_hold_is_read_after`,
 `voice.rs`'s `a_centered_label_sits_on_the_line_of_sight_and_follows_the_same_way`,
 `intent.rs`'s `begin_the_show`, and the under-card rule in `label.rs`'s
