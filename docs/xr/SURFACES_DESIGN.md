@@ -1856,12 +1856,12 @@ for an effect that is not built and is as it was.
 
 | kind | Drift | Tide | Aurora | Mirror | Flint | Contour |
 | --- | --- | --- | --- | --- | --- | --- |
-| table | curls, teal, mid, 1, off | rings, rose, bass, 1, off | *none, teal, rms, 1, in (windows)* | none, blue, mid, 1, in | *shards, warm white, rms, 1, stand (sparks)* | *none, warm white, rms, 1, face (terraces)* |
+| table | curls, teal, mid, 1, off | rings, rose, bass, 1, off | windows, warm white, mid, 1, off | none, blue, mid, 1, in | sparks, amber, bass, 1, face | terraces, green, mid, 1, off |
 | floor | contours, teal, bass, 0.3, off | *curls, violet, rms, 1, face (wash)* | aurora (the reflection at 0.3), key, rms, 1, off | tessera, blue, bass, 1, face, one color | tessera, blue, bass, 0.5, off, one color | contours, green, rms, 1, off |
 | wall | streamlines, blue, rms, 1, off | pulse, violet, bass, 1, off | aurora (the sky), key, rms, 1, off | *none, warm white, rms, 1, in (bezel)* | shards, warm white, rms, 1, face, one color | contours, green, rms, 1, off |
 | ceiling | rings, blue, bass, 1, off | pulse, violet, bass, 0.6, off | aurora (the sky), key, rms, 1, off | *none, warm white, rms, 1, in (astrolabe)* | shards, warm white, rms, 0.4, off, one color | streamlines, warm white, rms, 0.4, off |
-| frame | pulse, teal, rms, 0.6, face | rings, rose, bass, 1, face | *none, teal, rms, 1, in (windows)* | *none, blue, rms, 1, in (fenestra)* | pulse, amber, bass, 0.8, face | pulse, warm white, rms, 0.6, face |
-| other | curls, teal, mid, 1, off | curls, rose, mid, 1, off | *none, teal, rms, 1, in (windows)* | none, blue, mid, 1, in | *shards, amber, rms, 1, stand (embers)* | *curls, warm white, rms, 0.4, face (terraces)* |
+| frame | pulse, teal, rms, 0.6, face | rings, rose, bass, 1, face | windows, amber, mid, 0.6, off | *none, blue, rms, 1, in (fenestra)* | pulse, amber, bass, 0.8, face | pulse, warm white, rms, 0.6, face |
+| other | curls, teal, mid, 1, off | curls, rose, mid, 1, off | windows, amber, mid, 1, off | none, blue, mid, 1, in | embers, amber, mid, 1, off | terraces, green, mid, 1, off |
 | depth light | bubbles, teal and warm white, bass | sparkle, rose, high | beams, teal and the key, bass | glints, warm white, high | coals, the heat ramp, bass | grass, green and warm white, mid |
 | air | teal, high, 1500, drift | rose, bass, 1000, rise | warm white, high, 2000, twinkle | warm white, high, 1500, orbit | amber, bass, 1500, rise | green, high, 2000, wander |
 
@@ -1871,13 +1871,15 @@ file also moves its tables and other surfaces to the mids. That waits: a
 band that is not the behavior's own would end the rule that a room with no
 file runs Classic.
 
-**What is not built.** Three surface effects (windows, terraces, wash),
-seven depth looks (every one but the points; each draws as the points
-until it is built, in the theme's colors and on its band), four motions
-of the air, and the two colors that are not one color (the heat ramp, by
-band). Sparks and embers were the particle cloud's and draw nothing since
-the cloud went (board #5470); they come back drawn on the face. Astrolabe
-and fenestra are held back for flashing (board #5462). Mirror's walls
+**What is built since, and what is not.** The video's three themes have
+every row: windows, terraces, and sparks and embers drawn on the face
+("Windows, terraces, sparks and embers" below); beams, coals and grass on
+the depth light ("Beams, coals and grass"); and the air's color, band,
+count and five motions ("The air per theme"). Still waiting: the wash
+(Tide's floor), four depth looks (bubbles, sparkle, glints, meters, each
+drawing as the points in the theme's colors and on its band), and the
+depth light's color by band (Classic). Astrolabe and fenestra are held
+back for flashing (board #5462). Mirror's walls
 were tried with bezel and the tunnel together (ef5d5ad, unworn captures
 `recordings/themes3/groundwork-ef5d5ad/mirror*.png`): no chrome showed and
 the wall's tunnel was fainter than the ceiling's, so they keep the tunnel
@@ -2088,6 +2090,86 @@ sim itself behind the loader's preamble, 300 particles):
 air, and whether a count or a size wants tuning per theme. The depth
 light's glints reading the orbit's phase. The key's tint as an air's
 color: a color index is the palette's, and the key's reads as white.
+
+## Windows, terraces, sparks and embers (Nov 18, board #5543)
+
+**Why.** Three of the scenes ask for looks the surfaces pass did not
+have: windows for Aurora's city, terraces for Contour's hills, and sparks
+and embers for Flint's forge. Sparks and embers existed by name but drew
+nothing since the particle cloud went (board #5470).
+
+**One face per box.** The surfaces pass draws one quad per box: a
+volume's top face, or a plane's face toward the room
+(`surfaces::acting_face`). It draws no sides. So a table's windows are on
+its top, a city block seen from above, and a terraced table shows the
+rings on its top and no strata down its sides. A storage unit taller than
+the eye shows nothing of either. Sides need more faces in the pass, which
+is a change to its slots and its cost, and was left for a decision.
+
+**Windows** (`SurfaceBehavior::Windows`, id 17). A grid of cells 5 cm
+wide (4 cm on a frame) and 1.4 times as tall, a lit pane in the middle of
+each. Each window has its own level, a hash of its cell, and is lit when
+the lit share passes it. The share runs from 0.2 with the band silent to
+0.85 with it full, so the mids set how many are lit. Each third of a
+second another quarter of the windows is picked and the highs add up to
+0.3 to the share for those, so single windows come on and go off. The
+smallest cell is 6.6 pixels of the half-size faces layer at 3 m; under 4
+pixels the panes fade into their mean light and by 2 only the mean is
+left.
+
+**Terraces** (`SurfaceBehavior::Terraces`, id 18). The contours' land at
+half its relief plus a hill, 0.625 high at the face's middle (five
+contour intervals) and none from the ellipse the face's edges touch
+outward. The contours' own lines close into rings round the top, bent by
+the room's land and moving with it. The lines between the index lines
+stay at 0.45 at least, since a small top shows one index line at most.
+The slopes are the surface's green and the top the high land's warm white.
+
+**Sparks** (id 2) on the beat's envelope as the flash limit shows it. On
+the beat the face's middle flashes, the strike. As the envelope falls a
+front runs out to the corners and short streaks behind it point away from
+the strike and fade. Between strikes the middle glows with the band. The
+beat of the bar picks the set of sparks, so four strikes in a bar differ.
+
+**Embers** (id 1). A bed of coals, two octaves of value noise drifting
+slowly, glowing at 0.35 with the band silent and brighter with it; over
+it motes, one to an 8 cm cell, drifting one way, up to half the cells
+shedding one at a full band.
+
+**The heat ramp.** Sparks and embers color by their own light: the
+surface's color times (1, 0.45, 0.3) at no light, the color itself at
+0.65, and 0.7 of the way to white at full. For amber the deep end is an
+orange with a red share of 0.75, under the 0.8 the flash rule calls a
+saturated red, and the same holds for every palette color.
+
+**Who can give them.** Windows and terraces are a theme's alone
+(`SurfaceBehavior::theme_only`): they are on no kind's list, so the room
+editor never steps onto one and the voice and the agent do not know their
+names. "Windows" is also what a wearer calls a frame, so the voice must
+not hear it as a look. Embers and sparks stay off the wearer's lists as
+before, and the voice still gives their stand-ins (the curls, the pulse);
+a theme gives them and a saved room that names one now shows it. Only the
+held-back looks (astrolabe, fenestra) still show nothing.
+
+**The flash rule.** Windows and embers only gain light as their levels
+rise, so the limiter's rule covers them. Sparks move with the envelope
+(the front and the cells), which the rule does not cover, so they are
+counted like the themes (`flash_room.rs`), as is every part alone.
+
+**Cost per fragment**, counted from the shader, not measured on the
+device:
+
+| look | lattice hashes | sines and cosines | square roots | smoothsteps | texture reads |
+| --- | --- | --- | --- | --- | --- |
+| windows | 3 | 0 | 0 | 6 | 0 |
+| terraces | 0 | 10 (the contours') | 3 | 4 | 0 |
+| sparks | 3 | 0 | 3 | 6 | 0 |
+| embers | 11 | 0 | 0 | 7 | 0 |
+| streamlines, for scale | 8 off a line, 16 on one | 0 | 1 off a line, 2 on one | 2 off a line, 6 on one | 0 |
+
+No look loops over cells or reads a texture. A hash is five multiplies
+and nine shifts and xors on integers. The sparks' and the embers' counts
+include the heat ramp's two smoothsteps.
 
 ## The contours (Nov 16, board #5533)
 

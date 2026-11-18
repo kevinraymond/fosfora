@@ -25,8 +25,8 @@
 //! their `shape` is the land's clock, level, breath and traveling line's
 //! height, with the high land's color and that line's light in the first
 //! ring's row). The audio band ([`BAND_RMS`] to [`BAND_HIGH`]) is the
-//! level the streamlines, the curls and the pulse follow; the rings follow
-//! the ripple's own bass.
+//! level the streamlines, the curls, the pulse, the windows, the sparks and
+//! the embers follow; the rings follow the ripple's own bass.
 //!
 //! **Rings** (id 4): the floor ripple's look (`ripple.rs`: the ring width,
 //! the glow, the peak alpha 0.25 times `ripplegain`, the ripple's warm
@@ -113,6 +113,52 @@
 //! [`LAND_TRAVEL_GAP_S`], one faint line sets out from the low land and
 //! climbs to the peaks over [`LAND_TRAVEL_S`], fading in and out.
 //!
+//! **Windows** (id 17, board #5543): a building's windows, for a theme
+//! that makes the room a city. A grid of cells [`WINDOW_CELL_M`] wide and
+//! [`WINDOW_ASPECT`] times as tall, a lit pane in the middle of each and
+//! the face dark between. Every window has a level of its own, a hash of
+//! its cell, and is lit when the lit share passes it ([`windows_lit`]): the
+//! share runs from [`WINDOW_LIT`]'s low end with the band silent to its
+//! high end with it full, so the band sets how many are lit. Each tick of
+//! the clock picks another quarter of the windows and the highs push those
+//! over their level, so single windows come on and go off. More of the
+//! band or of the highs never takes light away, which is what the flash
+//! limiter's rule needs. Where a cell is under four pixels the panes fade
+//! into their mean light instead of sparkling. A fragment costs three
+//! lattice hashes and six smoothsteps, with no texture read, no loop and
+//! no sine.
+//!
+//! **Terraces** (id 18, board #5543): the contours' land climbing over the
+//! face, so a table reads as a hill in the room's landscape. The height is
+//! the room's land at [`TERRACE_LAND`] of its relief plus a hill,
+//! [`TERRACE_HILL`] at the face's middle and none from the ellipse its
+//! edges touch outward ([`terrace`]); the lines are the contours' own
+//! ([`terrace_light`]), which close into rings round the top, bent by the
+//! land and moving with it. The lines between the index lines never go
+//! under [`TERRACE_BETWEEN`], since a small top shows one index line at
+//! most. The slopes keep the surface's color and the top takes the high
+//! land's. A fragment costs the contours' plus two normalizes, a square
+//! root and four dot products.
+//!
+//! **Sparks** (id 2, board #5543) and **embers** (id 1). Until board
+//! #5470 these were the cloud's particles off a surface's top. Now the
+//! pass draws both on the face. Sparks ([`sparks_light`]): on the beat the
+//! face's middle flashes, the strike; as the beat's envelope falls a front
+//! runs out to the corners, and short streaks behind it, each in a cell
+//! that grows with the flight, point away from the strike and fade.
+//! Between strikes the middle glows with the band. Each beat of the bar
+//! has its own sparks. Embers ([`embers_light`]): a bed of coals, two
+//! octaves of the value noise drifting slowly, that glows with the band
+//! and never goes out, and motes over it, one to a cell, drifting one way,
+//! more of them the higher the band. Both color by a heat ramp
+//! ([`heat_rgb`]): a deep shade of the surface's color at no light, the
+//! color itself at [`HEAT_KNEE`] and most of the way to white at full. The
+//! deep shade of every palette color stays under the flash rule's
+//! saturated red. A fragment of sparks costs three hashes, three square
+//! roots and six smoothsteps; one of embers eleven hashes and seven
+//! smoothsteps, against the streamlines' eight to sixteen hashes. Neither
+//! reads a texture or takes a sine.
+//!
 //! **The clock** ([`Clock`]) runs at 1 + the beat envelope, so the flow
 //! and the drift double on the beat and settle back, without the jumps a
 //! speed multiplied into the time would make.
@@ -121,7 +167,7 @@ use glam::{Vec2, Vec3};
 
 use crate::canvas::{Canvas, MAX_BARS};
 use crate::ripple::{MAX_RINGS, Ripple};
-use crate::surfaces::{Face, KIND_FLOOR, SurfaceBehavior, surface_color};
+use crate::surfaces::{Face, KIND_FLOOR, KIND_FRAME, SurfaceBehavior, surface_color};
 
 /// Lit faces the pass holds, one per obstacle box.
 pub const MAX_SLOTS: usize = crate::surfaces::SURFACE_LANE_ROWS;
@@ -245,6 +291,118 @@ pub const LAND_TRAVEL_GAP_S: f32 = 12.0;
 pub const LAND_TRAVEL_HEIGHTS: [f32; 2] = [-0.9, 0.9];
 pub const LAND_TRAVEL_LIGHT: f32 = 0.35;
 pub const LAND_TRAVEL_MIN_LEVEL: f32 = 0.25;
+/// The windows' peak alpha (board #5543): a lit pane is small and the
+/// face around it dark, so it draws brighter than a flow's line.
+pub const WINDOW_PEAK_ALPHA: f32 = 0.8;
+/// A window cell's width (m): 13 pixels of the half-size faces layer at
+/// 1.5 m and 6 at 3 m. Under that a pane would be a pixel or two and
+/// sparkle.
+pub const WINDOW_CELL_M: f32 = 0.05;
+/// A frame's cell (m): a far-off building face, so smaller.
+pub const WINDOW_FRAME_CELL_M: f32 = 0.04;
+/// A cell's height over its width: windows are taller than wide.
+pub const WINDOW_ASPECT: f32 = 1.4;
+/// The lit pane's share of the cell along u and along v.
+pub const WINDOW_PANE: [f32; 2] = [0.55, 0.6];
+/// The share of the windows lit with the band silent and with it full.
+pub const WINDOW_LIT: [f32; 2] = [0.2, 0.85];
+/// How far past its own level a window fades on.
+pub const WINDOW_SOFT: f32 = 0.06;
+/// The dimmest window's light against the brightest's.
+pub const WINDOW_DIM: f32 = 0.5;
+/// How much of the lit share the highs add to the windows picked this
+/// tick, at full highs.
+pub const WINDOW_FLICKER: f32 = 0.3;
+/// The share of the windows picked each tick.
+pub const WINDOW_FLICKER_SHARE: f32 = 0.25;
+/// Ticks a second of the surfaces' clock, each window on its own phase.
+pub const WINDOW_FLICKER_HZ: f32 = 3.0;
+/// Cells per pixel where the panes start to fade into their mean light (a
+/// cell 4 pixels wide) and where only the mean is left (2 pixels).
+pub const WINDOW_FAR: [f32; 2] = [0.25, 0.5];
+
+/// The hill a terraced face adds to the land (board #5543), in the land's
+/// own height: five contour intervals from the face's middle down to the
+/// ellipse its edges touch. Past the ellipse, in the corners, the face is
+/// the room's land alone, so the rings do not crowd there.
+pub const TERRACE_HILL: f32 = 0.625;
+/// The room's land under the hill, as a share of its relief: enough to
+/// bend the rings so they belong to the land, not enough to break them.
+pub const TERRACE_LAND: f32 = 0.5;
+/// The least weight of a line between two index lines on a terraced face:
+/// a small top shows one index line at most, so the rings between stay lit
+/// when the music is quiet.
+pub const TERRACE_BETWEEN: f32 = 0.45;
+/// The share of the hill's height where a terraced face's tint is halfway
+/// from the surface's color to the high land's: the slopes keep the
+/// surface's color and the top takes the high land's.
+pub const TERRACE_TINT: f32 = 0.75;
+
+/// The sparks' peak alpha (board #5543).
+pub const SPARK_PEAK_ALPHA: f32 = 0.9;
+/// A spark's cell at the strike (m).
+pub const SPARK_CELL_M: f32 = 0.07;
+/// How much the cells have grown when the beat's envelope is gone: the
+/// sparks fly out from the strike.
+pub const SPARK_SPREAD: f32 = 0.5;
+/// The share of the cells that carry a spark.
+pub const SPARK_SHARE: f32 = 0.45;
+/// How far a spark sits from its cell's middle, in cells.
+pub const SPARK_JITTER: f32 = 0.2;
+/// A spark's half length along its flight (m) at the strike, and the
+/// share of it left when the envelope is gone.
+pub const SPARK_LEN_M: f32 = 0.028;
+pub const SPARK_SHORT: f32 = 0.4;
+/// A spark's half width (m), a pixel at least.
+pub const SPARK_WIDTH_M: f32 = 0.006;
+/// The front's soft edge (m): no spark past it.
+pub const SPARK_FRONT_M: f32 = 0.05;
+/// The strike's flash at the face's middle: its radius (m).
+pub const SPARK_STRIKE_M: f32 = 0.12;
+/// The hot metal between strikes: its light at a full band, and its reach
+/// as a share of the face's half diagonal.
+pub const SPARK_REST: f32 = 0.15;
+pub const SPARK_REST_REACH: f32 = 0.6;
+/// The sparks' light with the band silent, against a full band.
+pub const SPARK_FLOOR: f32 = 0.5;
+/// Cells per pixel where the sparks and the embers' motes start to fade
+/// out and where they are gone.
+pub const DOT_FAR: [f32; 2] = [0.2, 0.45];
+
+/// The embers' peak alpha (board #5543).
+pub const EMBER_PEAK_ALPHA: f32 = 0.7;
+/// A coal's size (m): the bed's noise cell.
+pub const EMBER_COAL_M: f32 = 0.07;
+/// The bed's drift, cells a second of the surfaces' clock.
+pub const EMBER_DRIFT: f32 = 0.05;
+/// The first octave's share of the bed.
+pub const EMBER_OCTAVE: f32 = 0.7;
+/// The bed's noise where a coal starts to glow and where it is full.
+pub const EMBER_BED: [f32; 2] = [0.35, 0.85];
+/// The bed's glow with the band silent, against a full band.
+pub const EMBER_FLOOR: f32 = 0.35;
+/// The bed's light at its fullest, under a mote's.
+pub const EMBER_BED_GAIN: f32 = 0.8;
+/// A mote's cell (m), its radius (m), how far it sits from the cell's
+/// middle (cells) and its drift (m/s of the surfaces' clock).
+pub const EMBER_MOTE_CELL_M: f32 = 0.08;
+pub const EMBER_MOTE_M: f32 = 0.006;
+pub const EMBER_MOTE_JITTER: f32 = 0.3;
+pub const EMBER_MOTE_M_S: f32 = 0.05;
+/// The share of the cells that shed a mote at a full band, and how softly
+/// one comes and goes.
+pub const EMBER_MOTE_SHARE: f32 = 0.5;
+pub const EMBER_MOTE_SOFT: f32 = 0.05;
+
+/// The heat ramp the sparks and the embers color by (board #5543): the
+/// surface's color times [`HEAT_LOW`] at no light, the color itself at
+/// [`HEAT_KNEE`], and [`HEAT_WHITE`] of the way to white at full. For
+/// amber the low end is a deep orange whose red share (0.75) stays under
+/// the flash rule's saturated red (`flash::RED_SHARE`).
+pub const HEAT_LOW: [f32; 3] = [1.0, 0.45, 0.3];
+pub const HEAT_KNEE: f32 = 0.65;
+pub const HEAT_WHITE: f32 = 0.7;
+
 /// The audio band a surface follows (`params.z`): the rms, the bass, the
 /// mid, the high (the larger of presence and brilliance).
 pub const BAND_RMS: u32 = 0;
@@ -395,10 +553,22 @@ pub fn contour_light(
     travel: [f32; 2],
     px: f32,
 ) -> f32 {
-    let smooth = |a: f32, b: f32, x: f32| {
-        let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
-    };
+    land_lines(height, slope, level, breath, travel, px, 0.0)
+}
+
+/// The land's lines for [`contour_light`] and [`terrace_light`]: the
+/// breath and the level applied to `height` and `slope`, then the WGSL's
+/// `land_lines`, where a line between two index lines weighs `between` at
+/// least.
+fn land_lines(
+    height: f32,
+    slope: f32,
+    level: f32,
+    breath: f32,
+    travel: [f32; 2],
+    px: f32,
+    between: f32,
+) -> f32 {
     let level = level.clamp(0.0, 1.0);
     let amp = 1.0 + LAND_BREATH * breath.clamp(0.0, 1.0);
     let slope = (amp * slope).max(LAND_SLOPE_MIN);
@@ -411,7 +581,7 @@ pub fn contour_light(
     let weight = if (m as i32).rem_euclid(LAND_INDEX_EVERY as i32) == 0 {
         1.0
     } else {
-        LAND_BETWEEN * smooth(LAND_FEW_FROM, LAND_FEW_TO, level)
+        between.max(LAND_BETWEEN * smooth(LAND_FEW_FROM, LAND_FEW_TO, level))
     };
     let light = (weight * line((v - m).abs() * LAND_INTERVAL / slope))
         .max(travel[1] * line((h - travel[0]).abs() / slope));
@@ -559,7 +729,10 @@ pub fn rows(
         ),
         SurfaceBehavior::Curls => (CURL_SPEED_M_S, CURL_PEAK_ALPHA),
         SurfaceBehavior::Pulse => (0.0, PULSE_PEAK_ALPHA),
-        SurfaceBehavior::Contours => (0.0, CONTOUR_PEAK_ALPHA),
+        SurfaceBehavior::Contours | SurfaceBehavior::Terraces => (0.0, CONTOUR_PEAK_ALPHA),
+        SurfaceBehavior::Windows => (0.0, WINDOW_PEAK_ALPHA),
+        SurfaceBehavior::Sparks => (0.0, SPARK_PEAK_ALPHA),
+        SurfaceBehavior::Embers => (EMBER_MOTE_M_S, EMBER_PEAK_ALPHA),
         SurfaceBehavior::Spectrum => (
             0.0,
             crate::canvas::PEAK_ALPHA * spectrum.map_or(0.0, |s| s.gain),
@@ -616,7 +789,17 @@ pub fn rows(
             }
         }
         SurfaceBehavior::Pulse => {}
-        SurfaceBehavior::Contours => {
+        SurfaceBehavior::Windows => {
+            let cell = if slot.kind == KIND_FRAME {
+                WINDOW_FRAME_CELL_M
+            } else {
+                WINDOW_CELL_M
+            };
+            rows[9] = [0.0, 0.0, 0.0, cell];
+        }
+        SurfaceBehavior::Sparks => rows[9] = [0.0, 0.0, 0.0, SPARK_CELL_M],
+        SurfaceBehavior::Embers => rows[9] = [0.0, 0.0, 0.0, EMBER_COAL_M],
+        SurfaceBehavior::Contours | SurfaceBehavior::Terraces => {
             let land = audio.land;
             rows[9] = [
                 land.clock,
@@ -764,6 +947,184 @@ pub fn flow(uv: Vec2, feature: f32, clock: f32) -> Vec2 {
     Vec2::new(g.y, -g.x)
 }
 
+/// `x` eased between `a` and `b`, the WGSL's `smoothstep`.
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The share of the windows lit at a band's `level` with the highs at
+/// `high`, for a window the tick `picked` (1) or not (0): the WGSL's `x`
+/// in `windows_light`. It only rises with either.
+pub fn windows_lit(level: f32, high: f32, picked: f32) -> f32 {
+    WINDOW_LIT[0]
+        + (WINDOW_LIT[1] - WINDOW_LIT[0]) * level.clamp(0.0, 1.0)
+        + WINDOW_FLICKER * high.clamp(0.0, 1.0) * picked
+}
+
+/// The windows' light, 0 to 1, at face point `uv` (m) for cells `cell`
+/// wide, a band's `level`, the highs `high`, the surfaces' `clock` (s) and
+/// a pixel `px` meters across, before the edge fade: the WGSL's
+/// `windows_light`. A grid of cells, each with a lit pane in its middle. A
+/// window is lit when the lit share ([`windows_lit`]) passes its own
+/// level, a hash of its cell, so the share lit follows the band. Each
+/// tick of the clock picks another quarter of the windows, and the highs
+/// push those over their level: single windows come on and go off. Where
+/// a cell is a few pixels the panes fade into their mean light.
+pub fn windows_light(uv: Vec2, cell: f32, level: f32, high: f32, clock: f32, px: f32) -> f32 {
+    let size = Vec2::new(cell, cell * WINDOW_ASPECT);
+    let p = uv / size;
+    let i = p.floor();
+    let f = p - i;
+    let (x, y) = (i.x as i32, i.y as i32);
+    let own = 0.5 + 0.5 * hash(x, y, 11);
+    let rank = 0.5 + 0.5 * hash(x, y, 12);
+    let tick = (clock * WINDOW_FLICKER_HZ + 8.0 * rank).max(0.0) as u32;
+    let picked = if hash(x, y, 13u32.wrapping_add(tick)) >= 1.0 - 2.0 * WINDOW_FLICKER_SHARE {
+        1.0
+    } else {
+        0.0
+    };
+    let on = smooth(
+        own - WINDOW_SOFT,
+        own + WINDOW_SOFT,
+        windows_lit(level, high, picked),
+    );
+    let soft = (Vec2::splat(px) / size).max(Vec2::splat(0.02));
+    let q = (f - 0.5).abs();
+    let half = 0.5 * Vec2::from(WINDOW_PANE);
+    let pane = (1.0 - smooth(half.x - soft.x, half.x + soft.x, q.x))
+        * (1.0 - smooth(half.y - soft.y, half.y + soft.y, q.y));
+    let near = pane * on * (WINDOW_DIM + (1.0 - WINDOW_DIM) * rank);
+    let mean = WINDOW_PANE[0]
+        * WINDOW_PANE[1]
+        * 0.5
+        * (WINDOW_DIM + 1.0)
+        * windows_lit(level, high, WINDOW_FLICKER_SHARE).clamp(0.0, 1.0);
+    let far = smooth(WINDOW_FAR[0], WINDOW_FAR[1], px / size.x);
+    near + (mean - near) * far
+}
+
+/// A terraced face's land at face point `uv` (m) on a face of half
+/// extents `half`, where the room's land ([`land`]) is `height` high with
+/// the gradient `grad` along the face's two axes: its height and its
+/// slope along the face, which [`terrace_light`] draws the lines of. The
+/// hill is [`TERRACE_HILL`] at the middle and 0 on the ellipse the face's
+/// edges touch and past it. The WGSL's `terraces_light`
+/// before the lines.
+pub fn terrace(uv: Vec2, half: [f32; 2], height: f32, grad: Vec2) -> (f32, f32) {
+    let half = Vec2::from(half).max(Vec2::splat(1e-3));
+    let r = uv / half;
+    let rr = r.dot(r);
+    let inside = if rr <= 1.0 { 1.0 } else { 0.0 };
+    (
+        TERRACE_LAND * height + TERRACE_HILL * (1.0 - rr.min(1.0)),
+        (TERRACE_LAND * grad - inside * 2.0 * TERRACE_HILL * r / half).length(),
+    )
+}
+
+/// The terraces' light: [`contour_light`] on a terraced face's height and
+/// slope ([`terrace`]), with the lines between the index lines never
+/// under [`TERRACE_BETWEEN`].
+pub fn terrace_light(
+    height: f32,
+    slope: f32,
+    level: f32,
+    breath: f32,
+    travel: [f32; 2],
+    px: f32,
+) -> f32 {
+    land_lines(height, slope, level, breath, travel, px, TERRACE_BETWEEN)
+}
+
+/// The sparks' light, 0 to 1, at face point `uv` (m) on a face of half
+/// extents `half`, for the beat's envelope `env`, a band's `level`, the
+/// bar's phase `bar` and a pixel `px` meters across, before the edge fade:
+/// the WGSL's `sparks_light`. On the beat the face's middle flashes, the
+/// strike. As the envelope falls a front runs out from the middle to the
+/// corners, and short streaks behind it, each in a cell that grows with
+/// the flight, point away from the strike and fade with the envelope.
+/// Between strikes the middle glows with the band. Each beat of the bar
+/// has its own sparks.
+pub fn sparks_light(uv: Vec2, half: [f32; 2], env: f32, level: f32, bar: f32, px: f32) -> f32 {
+    let env = env.clamp(0.0, 1.0);
+    let level = level.clamp(0.0, 1.0);
+    let reach = Vec2::from(half).length();
+    let r = uv.length();
+    let dir = uv / r.max(1e-4);
+    let fly = 1.0 - env;
+    let cell = SPARK_CELL_M * (1.0 + SPARK_SPREAD * fly);
+    let p = uv / cell;
+    let i = p.floor();
+    let f = p - i;
+    let (x, y) = (i.x as i32, i.y as i32);
+    let seed = 21 + (bar.clamp(0.0, 0.999) * 4.0) as u32;
+    let h1 = hash(x, y, seed);
+    let h2 = hash(x, y, seed + 4);
+    let present = if hash(x, y, seed + 8) >= 1.0 - 2.0 * SPARK_SHARE {
+        1.0
+    } else {
+        0.0
+    };
+    let q = (f - 0.5 - SPARK_JITTER * Vec2::new(h1, h2)) * cell;
+    let along = q.dot(dir) / (SPARK_LEN_M * (SPARK_SHORT + (1.0 - SPARK_SHORT) * env));
+    let across = q.dot(Vec2::new(-dir.y, dir.x)) / SPARK_WIDTH_M.max(px);
+    let d = (1.0 - along * along - across * across).max(0.0);
+    let front = reach * fly.sqrt();
+    let shown = 1.0 - smooth(front, front + SPARK_FRONT_M, r);
+    let small = 1.0 - smooth(DOT_FAR[0], DOT_FAR[1], px / SPARK_CELL_M);
+    let flight = d * d * present * shown * small * env;
+    let s = r / SPARK_STRIKE_M;
+    let strike = env * env * (1.0 - s * s).max(0.0);
+    let g = r / (SPARK_REST_REACH * reach).max(1e-3);
+    let rest = SPARK_REST * level * (1.0 - g * g).max(0.0);
+    (flight.max(strike) * (SPARK_FLOOR + (1.0 - SPARK_FLOOR) * level) + rest).clamp(0.0, 1.0)
+}
+
+/// The embers' light, 0 to 1, at face point `uv` (m) for a band's `level`,
+/// the surfaces' `clock` (s) and a pixel `px` meters across, before the
+/// edge fade: the WGSL's `embers_light`. A bed of coals, two octaves of
+/// [`noise`] drifting slowly, glowing where the noise is high and brighter
+/// with the band; over it motes, one to a cell, drifting one way, more of
+/// them the higher the band.
+pub fn embers_light(uv: Vec2, level: f32, clock: f32, px: f32) -> f32 {
+    let level = level.clamp(0.0, 1.0);
+    let drift = EMBER_DRIFT * clock;
+    let (n1, _) = noise(uv / EMBER_COAL_M + DRIFT1 * drift, 31);
+    let (n2, _) = noise(
+        2.0 * uv / EMBER_COAL_M + OCTAVE2_OFFSET + DRIFT2 * drift,
+        32,
+    );
+    let bed = 0.5 + 0.5 * (EMBER_OCTAVE * n1 + (1.0 - EMBER_OCTAVE) * n2);
+    let coal = EMBER_BED_GAIN
+        * smooth(EMBER_BED[0], EMBER_BED[1], bed)
+        * (EMBER_FLOOR + (1.0 - EMBER_FLOOR) * level);
+    let p = (uv - DRIFT1 * (EMBER_MOTE_M_S * clock)) / EMBER_MOTE_CELL_M;
+    let i = p.floor();
+    let f = p - i;
+    let (x, y) = (i.x as i32, i.y as i32);
+    let h1 = hash(x, y, 33);
+    let h2 = hash(x, y, 34);
+    let rank = 0.5 + 0.5 * hash(x, y, 35);
+    let q = (f - 0.5 - EMBER_MOTE_JITTER * Vec2::new(h1, h2)) * EMBER_MOTE_CELL_M;
+    let rad = EMBER_MOTE_M.max(px);
+    let d = (1.0 - q.dot(q) / (rad * rad)).max(0.0);
+    let shed = EMBER_MOTE_SHARE * level;
+    let on = 1.0 - smooth(shed - EMBER_MOTE_SOFT, shed + EMBER_MOTE_SOFT, rank);
+    let small = 1.0 - smooth(DOT_FAR[0], DOT_FAR[1], px / EMBER_MOTE_CELL_M);
+    coal.max(d * d * on * small)
+}
+
+/// The heat ramp: the color a light of `t` (0 to 1) draws in on a surface
+/// whose color is `color`. The WGSL's `heat_rgb`.
+pub fn heat_rgb(color: [f32; 3], t: f32) -> [f32; 3] {
+    let c = Vec3::from(color);
+    let low = c * Vec3::from(HEAT_LOW);
+    let hot = c + (Vec3::ONE - c) * HEAT_WHITE;
+    let warm = low + (c - low) * smooth(0.0, HEAT_KNEE, t);
+    (warm + (hot - warm) * smooth(HEAT_KNEE, 1.0, t)).to_array()
+}
+
 /// The surfaces pass's shader: group 0 is the eye pass's shared camera
 /// (`view_proj`), group 1 one slot's rows ([`rows`]). The vertex stage
 /// places the quad from its corners and hands the fragment its (u, v) on
@@ -788,9 +1149,10 @@ struct SurfaceFx {
     audio2: vec4<f32>,
     // rings: x, y their origin (m), z the glow; streamlines and curls: w
     // the feature size (m); spectrum: x the sign of u toward the wearer's
-    // right, y the bar count, z the bottom glow, w the bar fill; contours:
-    // x the land's clock (s), y its level, z its breath, w the traveling
-    // line's height
+    // right, y the bar count, z the bottom glow, w the bar fill; contours
+    // and terraces: x the land's clock (s), y its level, z its breath, w
+    // the traveling line's height; windows and sparks: w the cell (m);
+    // embers: w a coal's size (m)
     shape: vec4<f32>,
     // origin u, v (m), radius (m), intensity; 0 intensity for an empty slot
     // (contours: the first row is the high land's color, w the traveling
@@ -802,12 +1164,16 @@ struct SurfaceFx {
 @group(0) @binding(0) var<uniform> eye: Eye;
 @group(1) @binding(0) var<uniform> fx: SurfaceFx;
 
+const BEHAVIOR_EMBERS: u32 = 1u;
+const BEHAVIOR_SPARKS: u32 = 2u;
 const BEHAVIOR_SPECTRUM: u32 = 3u;
 const BEHAVIOR_RINGS: u32 = 4u;
 const BEHAVIOR_STREAMLINES: u32 = 5u;
 const BEHAVIOR_CURLS: u32 = 6u;
 const BEHAVIOR_PULSE: u32 = 7u;
 const BEHAVIOR_CONTOURS: u32 = 16u;
+const BEHAVIOR_WINDOWS: u32 = 17u;
+const BEHAVIOR_TERRACES: u32 = 18u;
 const BAND_BASS: u32 = 1u;
 const BAND_MID: u32 = 2u;
 const BAND_HIGH: u32 = 3u;
@@ -855,6 +1221,70 @@ const LAND_THIN: f32 = 0.6;
 const LAND_FLOOR: f32 = 0.35;
 const LAND_SLOPE_MIN: f32 = 0.15;
 const LAND_TINT_HALF: f32 = 0.5;
+// The windows (surface_fx.rs has each constant's meaning under the same
+// name): a cell's height over its width, the pane's share of the cell, the
+// share lit from silence to a full band, a window's fade on, the dimmest
+// window, the highs' flicker and the share it picks, its ticks a second,
+// and the cells per pixel the panes fade into their mean between.
+const WINDOW_ASPECT: f32 = 1.4;
+const WINDOW_PANE_U: f32 = 0.55;
+const WINDOW_PANE_V: f32 = 0.6;
+const WINDOW_LIT_FLOOR: f32 = 0.2;
+const WINDOW_LIT_FULL: f32 = 0.85;
+const WINDOW_SOFT: f32 = 0.06;
+const WINDOW_DIM: f32 = 0.5;
+const WINDOW_FLICKER: f32 = 0.3;
+const WINDOW_FLICKER_SHARE: f32 = 0.25;
+const WINDOW_FLICKER_HZ: f32 = 3.0;
+const WINDOW_FAR_FROM: f32 = 0.25;
+const WINDOW_FAR_TO: f32 = 0.5;
+// The terraces: the hill's height, the room's land under it, the least
+// weight of a line between two index lines, and the share of the hill's
+// height the tint is halfway at.
+const TERRACE_HILL: f32 = 0.625;
+const TERRACE_LAND: f32 = 0.5;
+const TERRACE_BETWEEN: f32 = 0.45;
+const TERRACE_TINT: f32 = 0.75;
+// The sparks: the cells' growth over the flight, the share of cells with
+// a spark, its jitter, half length (m), the share of the length left at
+// the end, half width (m), the front's soft edge (m), the strike's radius
+// (m), the rest glow and its reach, the light at a silent band; and the
+// cells per pixel the sparks and the motes fade out between.
+const SPARK_SPREAD: f32 = 0.5;
+const SPARK_SHARE: f32 = 0.45;
+const SPARK_JITTER: f32 = 0.2;
+const SPARK_LEN_M: f32 = 0.028;
+const SPARK_SHORT: f32 = 0.4;
+const SPARK_WIDTH_M: f32 = 0.006;
+const SPARK_FRONT_M: f32 = 0.05;
+const SPARK_STRIKE_M: f32 = 0.12;
+const SPARK_REST: f32 = 0.15;
+const SPARK_REST_REACH: f32 = 0.6;
+const SPARK_FLOOR: f32 = 0.5;
+const DOT_FAR_FROM: f32 = 0.2;
+const DOT_FAR_TO: f32 = 0.45;
+// The embers: the bed's drift, its first octave's share, the noise a coal
+// glows from and to, its glow at a silent band and at its fullest; a
+// mote's cell (m), radius (m) and jitter, the share shed at a full band
+// and how softly.
+const EMBER_DRIFT: f32 = 0.05;
+const EMBER_OCTAVE: f32 = 0.7;
+const EMBER_BED_FROM: f32 = 0.35;
+const EMBER_BED_TO: f32 = 0.85;
+const EMBER_FLOOR: f32 = 0.35;
+const EMBER_BED_GAIN: f32 = 0.8;
+const EMBER_MOTE_CELL_M: f32 = 0.08;
+const EMBER_MOTE_M: f32 = 0.006;
+const EMBER_MOTE_JITTER: f32 = 0.3;
+const EMBER_MOTE_SHARE: f32 = 0.5;
+const EMBER_MOTE_SOFT: f32 = 0.05;
+// The heat ramp: the color's shade at no light, the light where it is
+// the color itself and how far toward white at full.
+const HEAT_LOW_R: f32 = 1.0;
+const HEAT_LOW_G: f32 = 0.45;
+const HEAT_LOW_B: f32 = 0.3;
+const HEAT_KNEE: f32 = 0.65;
+const HEAT_WHITE: f32 = 0.7;
 // The spectrum's (the canvas's): the softness of a bar's sides (fraction
 // of its slot) and of its top and cap (fraction of the wall's height),
 // and the bottom glow's height.
@@ -1084,6 +1514,30 @@ fn land(p: vec3<f32>, tau: f32) -> vec4<f32> {
     );
 }
 
+// The land's lines where its height is h (raised by the level, swelled by
+// the bass) and its slope along the face is `slope`: a line wherever h
+// crosses a multiple of the interval, or the traveling line's height.
+// Index lines are always drawn; the lines between weigh `between` at
+// least and show fully as the level rises.
+fn land_lines(h: f32, slope: f32, level: f32, between: f32, px: f32) -> f32 {
+    let v = h / LAND_INTERVAL;
+    let m = round(v);
+    let soft = max(LINE_SOFT_M, px);
+    let half_w = 0.5 * LINE_M * mix(LAND_THIN, 1.0, level);
+    let every = i32(LAND_INDEX_EVERY);
+    var weight = max(between, LAND_BETWEEN * smoothstep(LAND_FEW_FROM, LAND_FEW_TO, level));
+    if ((i32(m) % every) + every) % every == 0 {
+        weight = 1.0;
+    }
+    let d = abs(v - m) * LAND_INTERVAL / slope;
+    let dt = abs(h - fx.shape.w) / slope;
+    let light = max(
+        weight * (1.0 - smoothstep(half_w - soft, half_w + soft, d)),
+        fx.rings[0].w * (1.0 - smoothstep(half_w - soft, half_w + soft, dt)),
+    );
+    return light * mix(LAND_FLOOR, 1.0, level);
+}
+
 // The contours: x a line's light where the land's height, raised by the
 // level and swelled by the bass, crosses a multiple of the interval, or
 // where it crosses the traveling line's height; y how high the land is,
@@ -1102,25 +1556,138 @@ fn contours_light(world: vec3<f32>, px: f32) -> vec2<f32> {
     let across = dot(l.yzw, n);
     let slope = max(amp * sqrt(max(dot(l.yzw, l.yzw) - across * across, 0.0)), LAND_SLOPE_MIN);
     let h = amp * l.x + LAND_TIDE * level;
-    let v = h / LAND_INTERVAL;
-    let m = round(v);
-    let soft = max(LINE_SOFT_M, px);
-    let half_w = 0.5 * LINE_M * mix(LAND_THIN, 1.0, level);
-    let every = i32(LAND_INDEX_EVERY);
-    var weight = LAND_BETWEEN * smoothstep(LAND_FEW_FROM, LAND_FEW_TO, level);
-    if ((i32(m) % every) + every) % every == 0 {
-        weight = 1.0;
-    }
-    let d = abs(v - m) * LAND_INTERVAL / slope;
-    let dt = abs(h - fx.shape.w) / slope;
-    let light = max(
-        weight * (1.0 - smoothstep(half_w - soft, half_w + soft, d)),
-        fx.rings[0].w * (1.0 - smoothstep(half_w - soft, half_w + soft, dt)),
-    );
     return vec2<f32>(
-        light * mix(LAND_FLOOR, 1.0, level),
+        land_lines(h, slope, level, 0.0, px),
         smoothstep(-LAND_TINT_HALF, LAND_TINT_HALF, l.x),
     );
+}
+
+// A building's windows: a grid of cells, a lit pane in the middle of
+// each. A window is lit when the lit share passes its own level, so the
+// share lit follows the band; each tick picks a quarter of the windows
+// and the highs push those over their level. Where a cell is a few pixels
+// the panes fade into their mean light.
+fn windows_light(uv: vec2<f32>, px: f32) -> f32 {
+    let cell = vec2<f32>(fx.shape.w, fx.shape.w * WINDOW_ASPECT);
+    let p = uv / cell;
+    let i = floor(p);
+    let f = p - i;
+    let c = vec2<i32>(i);
+    let own = 0.5 + 0.5 * hash(c, 11u);
+    let rank = 0.5 + 0.5 * hash(c, 12u);
+    let tick = u32(max(fx.audio.w * WINDOW_FLICKER_HZ + 8.0 * rank, 0.0));
+    let picked = step(1.0 - 2.0 * WINDOW_FLICKER_SHARE, hash(c, 13u + tick));
+    let lit = mix(WINDOW_LIT_FLOOR, WINDOW_LIT_FULL, clamp(band_level(), 0.0, 1.0));
+    let high = WINDOW_FLICKER * clamp(fx.audio2.y, 0.0, 1.0);
+    let on = smoothstep(own - WINDOW_SOFT, own + WINDOW_SOFT, lit + high * picked);
+    let soft = max(vec2<f32>(px) / cell, vec2<f32>(0.02));
+    let q = abs(f - 0.5);
+    let half = 0.5 * vec2<f32>(WINDOW_PANE_U, WINDOW_PANE_V);
+    let pane = (1.0 - smoothstep(half.x - soft.x, half.x + soft.x, q.x))
+        * (1.0 - smoothstep(half.y - soft.y, half.y + soft.y, q.y));
+    let near = pane * on * mix(WINDOW_DIM, 1.0, rank);
+    let mean = WINDOW_PANE_U * WINDOW_PANE_V * 0.5 * (WINDOW_DIM + 1.0)
+        * clamp(lit + high * WINDOW_FLICKER_SHARE, 0.0, 1.0);
+    let far = smoothstep(WINDOW_FAR_FROM, WINDOW_FAR_TO, px / cell.x);
+    return mix(near, mean, far) * edge_fade(uv);
+}
+
+// The terraces: the contours' lines over the room's land with a hill
+// added, highest at the face's middle, so the lines close into rings
+// round it; y the tint, low land to high.
+fn terraces_light(uv: vec2<f32>, world: vec3<f32>, px: f32) -> vec2<f32> {
+    let level = clamp(fx.shape.y, 0.0, 1.0);
+    let amp = 1.0 + LAND_BREATH * clamp(fx.shape.z, 0.0, 1.0);
+    let l = land(world, fx.shape.x);
+    let a = normalize(fx.corners[1].xyz - fx.corners[0].xyz);
+    let b = normalize(fx.corners[3].xyz - fx.corners[0].xyz);
+    let half = max(fx.face.xy, vec2<f32>(1e-3));
+    let r = uv / half;
+    let rr = dot(r, r);
+    let height = TERRACE_LAND * l.x + TERRACE_HILL * (1.0 - min(rr, 1.0));
+    let g = TERRACE_LAND * vec2<f32>(dot(l.yzw, a), dot(l.yzw, b))
+        - step(rr, 1.0) * 2.0 * TERRACE_HILL * r / half;
+    let slope = max(amp * length(g), LAND_SLOPE_MIN);
+    let h = amp * height + LAND_TIDE * level;
+    return vec2<f32>(
+        land_lines(h, slope, level, TERRACE_BETWEEN, px),
+        smoothstep(-LAND_TINT_HALF, LAND_TINT_HALF, height - TERRACE_TINT * TERRACE_HILL),
+    );
+}
+
+// The sparks: on the beat the face's middle flashes; as the envelope
+// falls a front runs out to the corners and short streaks behind it, each
+// in a cell that grows with the flight, point away from the strike and
+// fade. Between strikes the middle glows with the band.
+fn sparks_light(uv: vec2<f32>, px: f32) -> f32 {
+    let env = clamp(fx.audio.z, 0.0, 1.0);
+    let level = clamp(band_level(), 0.0, 1.0);
+    let reach = length(fx.face.xy);
+    let r = length(uv);
+    let dir = uv / max(r, 1e-4);
+    let fly = 1.0 - env;
+    let cell = fx.shape.w * (1.0 + SPARK_SPREAD * fly);
+    let p = uv / cell;
+    let i = floor(p);
+    let f = p - i;
+    let c = vec2<i32>(i);
+    let seed = 21u + u32(clamp(fx.audio2.w, 0.0, 0.999) * 4.0);
+    let h1 = hash(c, seed);
+    let h2 = hash(c, seed + 4u);
+    let present = step(1.0 - 2.0 * SPARK_SHARE, hash(c, seed + 8u));
+    let q = (f - 0.5 - SPARK_JITTER * vec2<f32>(h1, h2)) * cell;
+    let along = dot(q, dir) / (SPARK_LEN_M * mix(SPARK_SHORT, 1.0, env));
+    let across = dot(q, vec2<f32>(-dir.y, dir.x)) / max(SPARK_WIDTH_M, px);
+    let d = max(1.0 - along * along - across * across, 0.0);
+    let front = reach * sqrt(fly);
+    let shown = 1.0 - smoothstep(front, front + SPARK_FRONT_M, r);
+    let small = 1.0 - smoothstep(DOT_FAR_FROM, DOT_FAR_TO, px / fx.shape.w);
+    let flight = d * d * present * shown * small * env;
+    let s = r / SPARK_STRIKE_M;
+    let strike = env * env * max(1.0 - s * s, 0.0);
+    let g = r / max(SPARK_REST_REACH * reach, 1e-3);
+    let rest = SPARK_REST * level * max(1.0 - g * g, 0.0);
+    return clamp(max(flight, strike) * mix(SPARK_FLOOR, 1.0, level) + rest, 0.0, 1.0)
+        * edge_fade(uv);
+}
+
+// The embers: a bed of coals, two octaves of noise drifting slowly,
+// glowing where the noise is high and brighter with the band; over it
+// motes, one to a cell, drifting one way, more of them the higher the
+// band.
+fn embers_light(uv: vec2<f32>, px: f32) -> f32 {
+    let level = clamp(band_level(), 0.0, 1.0);
+    let drift = EMBER_DRIFT * fx.audio.w;
+    let n1 = noise(uv / fx.shape.w + vec2<f32>(0.8, 0.6) * drift, 31u).x;
+    let n2 = noise(
+        2.0 * uv / fx.shape.w + vec2<f32>(17.31, 5.13) + vec2<f32>(-0.6, 0.8) * drift,
+        32u,
+    ).x;
+    let bed = 0.5 + 0.5 * (EMBER_OCTAVE * n1 + (1.0 - EMBER_OCTAVE) * n2);
+    let coal = EMBER_BED_GAIN * smoothstep(EMBER_BED_FROM, EMBER_BED_TO, bed)
+        * mix(EMBER_FLOOR, 1.0, level);
+    let p = (uv - vec2<f32>(0.8, 0.6) * (fx.params.w * fx.audio.w)) / EMBER_MOTE_CELL_M;
+    let i = floor(p);
+    let f = p - i;
+    let c = vec2<i32>(i);
+    let h1 = hash(c, 33u);
+    let h2 = hash(c, 34u);
+    let rank = 0.5 + 0.5 * hash(c, 35u);
+    let q = (f - 0.5 - EMBER_MOTE_JITTER * vec2<f32>(h1, h2)) * EMBER_MOTE_CELL_M;
+    let rad = max(EMBER_MOTE_M, px);
+    let d = max(1.0 - dot(q, q) / (rad * rad), 0.0);
+    let shed = EMBER_MOTE_SHARE * level;
+    let on = 1.0 - smoothstep(shed - EMBER_MOTE_SOFT, shed + EMBER_MOTE_SOFT, rank);
+    let small = 1.0 - smoothstep(DOT_FAR_FROM, DOT_FAR_TO, px / EMBER_MOTE_CELL_M);
+    return max(coal, d * d * on * small) * edge_fade(uv);
+}
+
+// The heat ramp: a deep shade of the color at no light, the color at the
+// knee, toward white at full.
+fn heat_rgb(c: vec3<f32>, t: f32) -> vec3<f32> {
+    let low = c * vec3<f32>(HEAT_LOW_R, HEAT_LOW_G, HEAT_LOW_B);
+    let hot = mix(c, vec3<f32>(1.0), HEAT_WHITE);
+    return mix(mix(low, c, smoothstep(0.0, HEAT_KNEE, t)), hot, smoothstep(HEAT_KNEE, 1.0, t));
 }
 
 // The wall spectrum: bars of light climbing the face, the bar index along
@@ -1170,6 +1737,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         light = pulse_light(in.uv);
     } else if id == BEHAVIOR_SPECTRUM {
         light = spectrum_light(in.uv);
+    } else if id == BEHAVIOR_WINDOWS {
+        light = windows_light(in.uv, px);
+    } else if id == BEHAVIOR_TERRACES {
+        let c = terraces_light(in.uv, in.world, px);
+        light = c.x;
+        rgb = mix(rgb, fx.rings[0].rgb, c.y);
+    } else if id == BEHAVIOR_SPARKS {
+        // Hot at the strike, the surface's color in flight, deeper as a
+        // spark dies.
+        light = sparks_light(in.uv, px);
+        rgb = heat_rgb(rgb, light);
+    } else if id == BEHAVIOR_EMBERS {
+        light = embers_light(in.uv, px);
+        rgb = heat_rgb(rgb, light);
     }
     let a = fx.color.w * clamp(fx.params.x, 0.0, 1.0) * clamp(light, 0.0, 1.0);
     return vec4<f32>(rgb * a, a);
@@ -1280,6 +1861,55 @@ mod tests {
             ("BEHAVIOR_CURLS", SurfaceBehavior::Curls.id() as f32),
             ("BEHAVIOR_PULSE", SurfaceBehavior::Pulse.id() as f32),
             ("BEHAVIOR_CONTOURS", SurfaceBehavior::Contours.id() as f32),
+            ("BEHAVIOR_EMBERS", SurfaceBehavior::Embers.id() as f32),
+            ("BEHAVIOR_SPARKS", SurfaceBehavior::Sparks.id() as f32),
+            ("BEHAVIOR_WINDOWS", SurfaceBehavior::Windows.id() as f32),
+            ("BEHAVIOR_TERRACES", SurfaceBehavior::Terraces.id() as f32),
+            ("WINDOW_ASPECT", WINDOW_ASPECT),
+            ("WINDOW_PANE_U", WINDOW_PANE[0]),
+            ("WINDOW_PANE_V", WINDOW_PANE[1]),
+            ("WINDOW_LIT_FLOOR", WINDOW_LIT[0]),
+            ("WINDOW_LIT_FULL", WINDOW_LIT[1]),
+            ("WINDOW_SOFT", WINDOW_SOFT),
+            ("WINDOW_DIM", WINDOW_DIM),
+            ("WINDOW_FLICKER", WINDOW_FLICKER),
+            ("WINDOW_FLICKER_SHARE", WINDOW_FLICKER_SHARE),
+            ("WINDOW_FLICKER_HZ", WINDOW_FLICKER_HZ),
+            ("WINDOW_FAR_FROM", WINDOW_FAR[0]),
+            ("WINDOW_FAR_TO", WINDOW_FAR[1]),
+            ("TERRACE_HILL", TERRACE_HILL),
+            ("TERRACE_LAND", TERRACE_LAND),
+            ("TERRACE_BETWEEN", TERRACE_BETWEEN),
+            ("TERRACE_TINT", TERRACE_TINT),
+            ("SPARK_SPREAD", SPARK_SPREAD),
+            ("SPARK_SHARE", SPARK_SHARE),
+            ("SPARK_JITTER", SPARK_JITTER),
+            ("SPARK_LEN_M", SPARK_LEN_M),
+            ("SPARK_SHORT", SPARK_SHORT),
+            ("SPARK_WIDTH_M", SPARK_WIDTH_M),
+            ("SPARK_FRONT_M", SPARK_FRONT_M),
+            ("SPARK_STRIKE_M", SPARK_STRIKE_M),
+            ("SPARK_REST", SPARK_REST),
+            ("SPARK_REST_REACH", SPARK_REST_REACH),
+            ("SPARK_FLOOR", SPARK_FLOOR),
+            ("DOT_FAR_FROM", DOT_FAR[0]),
+            ("DOT_FAR_TO", DOT_FAR[1]),
+            ("EMBER_DRIFT", EMBER_DRIFT),
+            ("EMBER_OCTAVE", EMBER_OCTAVE),
+            ("EMBER_BED_FROM", EMBER_BED[0]),
+            ("EMBER_BED_TO", EMBER_BED[1]),
+            ("EMBER_FLOOR", EMBER_FLOOR),
+            ("EMBER_BED_GAIN", EMBER_BED_GAIN),
+            ("EMBER_MOTE_CELL_M", EMBER_MOTE_CELL_M),
+            ("EMBER_MOTE_M", EMBER_MOTE_M),
+            ("EMBER_MOTE_JITTER", EMBER_MOTE_JITTER),
+            ("EMBER_MOTE_SHARE", EMBER_MOTE_SHARE),
+            ("EMBER_MOTE_SOFT", EMBER_MOTE_SOFT),
+            ("HEAT_LOW_R", HEAT_LOW[0]),
+            ("HEAT_LOW_G", HEAT_LOW[1]),
+            ("HEAT_LOW_B", HEAT_LOW[2]),
+            ("HEAT_KNEE", HEAT_KNEE),
+            ("HEAT_WHITE", HEAT_WHITE),
             ("LAND_INTERVAL", LAND_INTERVAL),
             ("LAND_INDEX_EVERY", LAND_INDEX_EVERY as f32),
             ("LAND_TIDE", LAND_TIDE),
@@ -2353,5 +2983,405 @@ mod tests {
         }
         // The band's default is the rms.
         assert_eq!(SurfaceBehavior::Contours.default_band(), BAND_RMS);
+    }
+
+    /// Board #5543: the rows of the four looks. Windows carry their cell
+    /// (a frame's smaller), sparks theirs, embers a coal's size and their
+    /// motes' speed, and terraces the land, as the contours do.
+    #[test]
+    fn the_scene_looks_rows_carry_their_shapes() {
+        use crate::surfaces::KIND_OTHER;
+        let audio = Audio {
+            mid: 0.4,
+            land: Land {
+                clock: 3.0,
+                levels: [0.1, 0.2, 0.3, 0.4],
+                breath: 0.5,
+                travel: 0.25,
+                travel_light: 0.2,
+            },
+            ..Audio::default()
+        };
+        let of = |kind: u32, behavior: SurfaceBehavior, band: u32| {
+            let s = Slot {
+                band,
+                ..slot(table(), kind, behavior)
+            };
+            rows(&s, audio, None, None, 0.0)
+        };
+        let w = of(KIND_TABLE, SurfaceBehavior::Windows, BAND_MID);
+        assert_close!(w[4][3], 17.0);
+        assert_close!(w[9], [0.0, 0.0, 0.0, WINDOW_CELL_M]);
+        assert_close!(w[6][3], WINDOW_PEAK_ALPHA);
+        assert_close!(w[5][2], BAND_MID as f32);
+        let frame = of(KIND_FRAME, SurfaceBehavior::Windows, BAND_MID);
+        assert_close!(frame[9][3], WINDOW_FRAME_CELL_M);
+        const { assert!(WINDOW_FRAME_CELL_M < WINDOW_CELL_M) };
+        let s = of(KIND_TABLE, SurfaceBehavior::Sparks, BAND_BASS);
+        assert_close!(s[4][3], 2.0);
+        assert_close!(s[9], [0.0, 0.0, 0.0, SPARK_CELL_M]);
+        assert_close!(s[6][3], SPARK_PEAK_ALPHA);
+        let e = of(KIND_OTHER, SurfaceBehavior::Embers, BAND_MID);
+        assert_close!(e[4][3], 1.0);
+        assert_close!(e[9], [0.0, 0.0, 0.0, EMBER_COAL_M]);
+        assert_close!(e[5][3], EMBER_MOTE_M_S);
+        assert_close!(e[6][3], EMBER_PEAK_ALPHA);
+        // Terraces: the contours' rows, on the band the slot follows.
+        let t = of(KIND_TABLE, SurfaceBehavior::Terraces, BAND_MID);
+        let c = of(KIND_TABLE, SurfaceBehavior::Contours, BAND_MID);
+        assert_close!(t[4][3], 18.0);
+        assert_close!(t[9], [3.0, 0.3, 0.5, 0.25]);
+        assert_eq!(t[5..], c[5..]);
+        assert_close!(t[RINGS_ROW][3], 0.2);
+    }
+
+    /// Windows (board #5543): the share lit follows the band, the highs
+    /// only add light, a pane sits in the middle of its cell with dark
+    /// between, and a cell of a few pixels draws the mean.
+    #[test]
+    fn the_windows_light_with_the_band_and_flicker_with_the_highs() {
+        let cell = WINDOW_CELL_M;
+        let size = Vec2::new(cell, cell * WINDOW_ASPECT);
+        let center = |i: i32, j: i32| (Vec2::new(i as f32, j as f32) + 0.5) * size;
+        let px = 0.001;
+        // The share of 40 x 40 windows lit, counted at each pane's middle.
+        let share = |level: f32, high: f32, clock: f32| {
+            let mut lit = 0;
+            for i in -20..20 {
+                for j in -20..20 {
+                    lit +=
+                        u32::from(windows_light(center(i, j), cell, level, high, clock, px) > 0.25);
+                }
+            }
+            lit as f32 / 1600.0
+        };
+        let quiet = share(0.0, 0.0, 5.0);
+        let half = share(0.5, 0.0, 5.0);
+        let full = share(1.0, 0.0, 5.0);
+        assert!((quiet - WINDOW_LIT[0]).abs() < 0.05, "{quiet}");
+        assert!(
+            (half - 0.5 * (WINDOW_LIT[0] + WINDOW_LIT[1])).abs() < 0.05,
+            "{half}"
+        );
+        assert!((full - WINDOW_LIT[1]).abs() < 0.05, "{full}");
+        // The highs light a share of the windows picked this tick more.
+        let flick = share(0.5, 1.0, 5.0);
+        assert!(
+            flick > half + 0.03 && flick < half + WINDOW_FLICKER,
+            "{flick}"
+        );
+        // More of the band or of the highs never takes light away, at any
+        // point and any time: the flash limiter's rule holds through it.
+        for k in 0..400 {
+            let uv = Vec2::new(0.013 * k as f32 - 2.0, 0.0071 * k as f32 - 1.1);
+            let clock = 0.37 * k as f32;
+            let mut last = 0.0;
+            for step in 0..=10 {
+                let x = step as f32 / 10.0;
+                let now = windows_light(uv, cell, x, 0.3, clock, px);
+                assert!(now >= last - 1e-6, "{uv} level {x}");
+                last = now;
+                assert!((0.0..=1.0).contains(&now));
+            }
+            let mut last = 0.0;
+            for step in 0..=10 {
+                let x = step as f32 / 10.0;
+                let now = windows_light(uv, cell, 0.4, x, clock, px);
+                assert!(now >= last - 1e-6, "{uv} high {x}");
+                last = now;
+            }
+        }
+        // A lit window: its pane's middle carries its light, the corner
+        // of its cell none.
+        let (i, j) = (-20..20)
+            .flat_map(|i| (-20..20).map(move |j| (i, j)))
+            .find(|&(i, j)| windows_light(center(i, j), cell, 1.0, 0.0, 5.0, px) > 0.9)
+            .expect("a bright window");
+        let corner = Vec2::new(i as f32, j as f32) * size + 0.02 * size;
+        assert_close!(windows_light(corner, cell, 1.0, 0.0, 5.0, px), 0.0);
+        // A tick later other windows are picked: the highs' light moves.
+        let a: Vec<bool> = (0..200)
+            .map(|k| windows_light(center(k % 20, k / 20), cell, 0.5, 1.0, 5.0, px) > 0.25)
+            .collect();
+        let b: Vec<bool> = (0..200)
+            .map(|k| windows_light(center(k % 20, k / 20), cell, 0.5, 1.0, 5.5, px) > 0.25)
+            .collect();
+        assert_ne!(a, b);
+        // Far away (a cell 2 pixels wide and under) every point draws the
+        // same mean, the panes' share of the face times the share lit.
+        let far = WINDOW_FAR[1] * cell;
+        let mean = windows_light(center(0, 0), cell, 0.5, 0.0, 5.0, far);
+        for k in 0..50 {
+            let uv = Vec2::new(0.0173 * k as f32, 0.0291 * k as f32);
+            assert_close!(windows_light(uv, cell, 0.5, 0.0, 5.0, far), mean);
+        }
+        let want = WINDOW_PANE[0]
+            * WINDOW_PANE[1]
+            * 0.5
+            * (WINDOW_DIM + 1.0)
+            * 0.5
+            * (WINDOW_LIT[0] + WINDOW_LIT[1]);
+        assert_close!(mean, want);
+        // The smallest cell is 6 pixels of the half-size faces layer at
+        // 3 m (840 pixels across about 97 degrees).
+        let px_at_3m = 3.0 * (97.0f32.to_radians() / 840.0);
+        assert!(WINDOW_FRAME_CELL_M / px_at_3m > 6.0);
+    }
+
+    /// Terraces (board #5543): a hill on the room's land, its slope the
+    /// height's own, flat past the ellipse the face's edges touch.
+    #[test]
+    fn a_terraced_face_is_a_hill_on_the_rooms_land() {
+        let face = table();
+        let half = face.half;
+        let at = |uv: Vec2| face.center + face.axes[0] * uv.x + face.axes[1] * uv.y;
+        let terraced = |uv: Vec2| {
+            let (h, g) = land(at(uv), 7.0);
+            terrace(
+                uv,
+                half,
+                h,
+                Vec2::new(g.dot(face.axes[0]), g.dot(face.axes[1])),
+            )
+        };
+        // The slope is the height's gradient along the face.
+        let e = 1e-3;
+        for k in 0..60 {
+            let uv = Vec2::new(
+                half[0] * (0.031 * k as f32 - 0.9),
+                half[1] * (0.6 - 0.019 * k as f32),
+            );
+            let r = uv / Vec2::from(half);
+            if (r.dot(r) - 1.0).abs() < 0.05 {
+                continue;
+            }
+            let (_, slope) = terraced(uv);
+            let du = (terraced(uv + Vec2::X * e).0 - terraced(uv - Vec2::X * e).0) / (2.0 * e);
+            let dv = (terraced(uv + Vec2::Y * e).0 - terraced(uv - Vec2::Y * e).0) / (2.0 * e);
+            assert!((Vec2::new(du, dv).length() - slope).abs() < 2e-2, "{uv}");
+        }
+        // On level land the height is the hill's alone: all of it at the
+        // middle, none on the ellipse and none past it.
+        let flat = |uv: Vec2| terrace(uv, half, 0.0, Vec2::ZERO);
+        assert_close!(flat(Vec2::ZERO).0, TERRACE_HILL);
+        assert_close!(flat(Vec2::new(half[0], 0.0)).0, 0.0);
+        assert_close!(flat(Vec2::new(0.0, -half[1])).0, 0.0);
+        assert_close!(flat(Vec2::new(half[0], half[1])).0, 0.0);
+        assert_close!(flat(Vec2::new(half[0], half[1])).1, 0.0);
+        // The same height all round an ellipse: the lines are rings.
+        let ring = |a: f32| flat(0.6 * Vec2::new(half[0] * a.cos(), half[1] * a.sin())).0;
+        for k in 0..12 {
+            assert_close!(ring(k as f32 * 0.5), ring(0.0));
+        }
+        // Five intervals from the middle to the ellipse.
+        assert_close!(TERRACE_HILL / LAND_INTERVAL, 5.0);
+        // The room's land bends the rings but does not break them: its
+        // share of the height stays under the hill's.
+        const { assert!(TERRACE_LAND < TERRACE_HILL) };
+        // Quiet: a line between two index lines still shows, where the
+        // contours draw none.
+        let between = 2.0 * LAND_INTERVAL;
+        let quiet = terrace_light(between, 1.0, 0.0, 0.0, [0.0; 2], 0.001);
+        assert_close!(quiet, TERRACE_BETWEEN * LAND_FLOOR);
+        assert_close!(contour_light(between, 1.0, 0.0, 0.0, [0.0; 2], 0.001), 0.0);
+        // An index line, and every line at a full level, as the contours'.
+        for (h, level) in [(0.0, 0.0), (between, 1.0), (0.0, 1.0)] {
+            let h = h - LAND_TIDE * level;
+            assert_close!(
+                terrace_light(h, 1.0, level, 0.0, [0.0; 2], 0.001),
+                contour_light(h, 1.0, level, 0.0, [0.0; 2], 0.001)
+            );
+        }
+    }
+
+    /// Sparks (board #5543): the strike on the beat, the sparks behind a
+    /// front that runs out as the envelope falls, the glow between.
+    #[test]
+    fn the_sparks_fly_out_from_the_strike_and_fade() {
+        let half = table().half;
+        let reach = Vec2::from(half).length();
+        let px = 0.001;
+        // On the beat: the middle at full, nothing outside the strike.
+        assert_close!(sparks_light(Vec2::ZERO, half, 1.0, 1.0, 0.0, px), 1.0);
+        for k in 0..200 {
+            let uv = Vec2::new(0.006 * k as f32 - 0.6, 0.0035 * k as f32 - 0.35);
+            let v = sparks_light(uv, half, 1.0, 0.0, 0.0, px);
+            assert!((0.0..=1.0).contains(&v));
+            assert_eq!(v > 0.0, uv.length() < SPARK_STRIKE_M, "{uv}");
+        }
+        // The front: no spark past it, sparks behind it.
+        let sparks = |env: f32, bar: f32| {
+            let mut found = Vec::new();
+            for i in -60..60 {
+                for j in -35..35 {
+                    let uv = Vec2::new(i as f32, j as f32) * 0.01;
+                    // The strike's own light is not a spark.
+                    if uv.length() > SPARK_STRIKE_M
+                        && sparks_light(uv, half, env, 0.0, bar, px) > 0.02
+                    {
+                        found.push((i, j));
+                    }
+                }
+            }
+            found
+        };
+        let env = 0.6;
+        let front = reach * (1.0f32 - env).sqrt();
+        let found = sparks(env, 0.0);
+        assert!(found.len() > 20, "{}", found.len());
+        for (i, j) in &found {
+            let r = Vec2::new(*i as f32, *j as f32).length() * 0.01;
+            assert!(r <= front + SPARK_FRONT_M + 1e-3, "{r} past {front}");
+        }
+        // Later the front has gone further and the sparks are dimmer.
+        let later = sparks(0.3, 0.0);
+        let far = |v: &[(i32, i32)]| {
+            v.iter()
+                .map(|(i, j)| Vec2::new(*i as f32, *j as f32).length())
+                .fold(0.0, f32::max)
+        };
+        assert!(far(&later) > far(&found));
+        let peak = |env: f32| {
+            (0..7000)
+                .map(|k| {
+                    let uv = Vec2::new((k % 100) as f32 * 0.012 - 0.6, (k / 100) as f32 * 0.01);
+                    if uv.length() > SPARK_STRIKE_M {
+                        sparks_light(uv, half, env, 1.0, 0.0, px)
+                            - sparks_light(uv, half, 0.0, 1.0, 0.0, px)
+                    } else {
+                        0.0
+                    }
+                })
+                .fold(0.0, f32::max)
+        };
+        assert!(peak(0.6) > peak(0.3) && peak(0.3) > peak(0.1));
+        // Each beat of the bar has other sparks.
+        assert_ne!(sparks(env, 0.0), sparks(env, 0.3));
+        assert_eq!(sparks(env, 0.3), sparks(env, 0.4));
+        // The envelope gone: the glow alone, with the band, widest at the
+        // middle and none past its reach.
+        assert_close!(
+            sparks_light(Vec2::ZERO, half, 0.0, 1.0, 0.0, px),
+            SPARK_REST
+        );
+        assert_close!(sparks_light(Vec2::ZERO, half, 0.0, 0.0, 0.0, px), 0.0);
+        let out = Vec2::new(SPARK_REST_REACH * reach + 0.01, 0.0);
+        assert_close!(sparks_light(out, half, 0.0, 1.0, 0.0, px), 0.0);
+        // More of the band never takes light away.
+        for k in 0..300 {
+            let uv = Vec2::new(0.004 * k as f32 - 0.6, 0.0023 * k as f32 - 0.35);
+            let mut last = 0.0;
+            for step in 0..=10 {
+                let now = sparks_light(uv, half, 0.5, step as f32 / 10.0, 0.0, px);
+                assert!(now >= last - 1e-6, "{uv}");
+                last = now;
+            }
+        }
+        // Far away the sparks are gone and the strike stays.
+        let far_px = DOT_FAR[1] * SPARK_CELL_M;
+        for (i, j) in &found {
+            let uv = Vec2::new(*i as f32, *j as f32) * 0.01;
+            assert_close!(sparks_light(uv, half, env, 0.0, 0.0, far_px), 0.0);
+        }
+        assert_close!(sparks_light(Vec2::ZERO, half, 1.0, 1.0, 0.0, far_px), 1.0);
+    }
+
+    /// Embers (board #5543): a bed that glows with the band and never
+    /// goes out, and motes shed with it.
+    #[test]
+    fn the_embers_glow_with_the_band_and_shed_motes() {
+        let px = 0.001;
+        let pts: Vec<Vec2> = (0..4000)
+            .map(|k| Vec2::new((k % 80) as f32 * 0.011 - 0.4, (k / 80) as f32 * 0.009 - 0.2))
+            .collect();
+        let mean = |level: f32, clock: f32| {
+            pts.iter()
+                .map(|&uv| embers_light(uv, level, clock, px))
+                .sum::<f32>()
+                / pts.len() as f32
+        };
+        // The bed: lit with the band silent, brighter with it, some of the
+        // face dark and none of it over the bed's gain but a mote.
+        let (quiet, loud) = (mean(0.0, 3.0), mean(1.0, 3.0));
+        assert!(quiet > 0.03 && loud > 2.0 * quiet, "{quiet} {loud}");
+        let dark = pts
+            .iter()
+            .filter(|&&uv| embers_light(uv, 1.0, 3.0, px) < 0.02)
+            .count();
+        assert!(dark > pts.len() / 10 && dark < pts.len() * 7 / 10, "{dark}");
+        // More of the band never takes light away, at any point and time.
+        for (k, &uv) in pts.iter().enumerate().step_by(7) {
+            let clock = 0.21 * k as f32;
+            let mut last = 0.0;
+            for step in 0..=10 {
+                let now = embers_light(uv, step as f32 / 10.0, clock, px);
+                assert!(now >= last - 1e-6 && (0.0..=1.0).contains(&now), "{uv}");
+                last = now;
+            }
+        }
+        // Motes: points brighter than the bed can be, more of them the
+        // higher the band, none with it silent but the few at the soft
+        // edge.
+        let motes = |level: f32| {
+            let mut n = 0;
+            for i in 0..400 {
+                for j in 0..400 {
+                    let uv = Vec2::new(i as f32, j as f32) * 0.002;
+                    n += u32::from(embers_light(uv, level, 3.0, px) > EMBER_BED_GAIN + 0.05);
+                }
+            }
+            n
+        };
+        let (none, some, many) = (motes(0.0), motes(0.5), motes(1.0));
+        assert!(
+            some > 4 * none.max(1) && many > some,
+            "{none} {some} {many}"
+        );
+        // The bed drifts: the same point changes over a minute, slowly.
+        let a = embers_light(pts[900], 1.0, 3.0, px);
+        let near = embers_light(pts[900], 1.0, 3.1, px);
+        assert!((a - near).abs() < 0.1);
+        assert!((mean(1.0, 3.0) - mean(1.0, 63.0)).abs() < 0.05);
+        assert!(pts.iter().any(|&uv| {
+            (embers_light(uv, 1.0, 3.0, px) - embers_light(uv, 1.0, 63.0, px)).abs() > 0.3
+        }));
+    }
+
+    /// The heat ramp (board #5543): deep at no light, the surface's color
+    /// at the knee, toward white at full, and never a saturated red.
+    #[test]
+    fn the_heat_ramp_runs_from_a_deep_shade_to_white_and_is_never_red() {
+        let amber = crate::surfaces::AMBER;
+        let low = heat_rgb(amber, 0.0);
+        for (c, (a, l)) in low.iter().zip(amber.iter().zip(HEAT_LOW)) {
+            assert_close!(*c, a * l);
+        }
+        assert_close!(heat_rgb(amber, HEAT_KNEE), amber);
+        let hot = heat_rgb(amber, 1.0);
+        for (h, a) in hot.iter().zip(amber) {
+            assert_close!(*h, a + (1.0 - a) * HEAT_WHITE);
+        }
+        // Every channel only rises with the light.
+        let mut last = low;
+        for step in 1..=50 {
+            let now = heat_rgb(amber, step as f32 / 50.0);
+            for (n, l) in now.iter().zip(last) {
+                assert!(*n >= l - 1e-6);
+            }
+            last = now;
+        }
+        // The flash rule's saturated red is a red share of 0.8 or more:
+        // the ramp stays under it on every palette color, so the embers
+        // and the sparks make no red flash.
+        for index in 1..=7 {
+            let color = surface_color(index, KIND_TABLE, [1.0; 3]);
+            for step in 0..=50 {
+                let [r, g, b] = heat_rgb(color, step as f32 / 50.0);
+                assert!(
+                    r / (r + g + b) < crate::flash::RED_SHARE,
+                    "color {index} at {step}"
+                );
+            }
+        }
     }
 }

@@ -5426,12 +5426,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         _ => (0, behavior.default_band()),
                     };
                     let spectrum = behavior == SurfaceBehavior::Spectrum;
-                    // Board #5462: a look not offered (astrolabe and
-                    // fenestra, held back) shows nothing, as embers and
-                    // sparks do; the lanes log the surfaces on one.
+                    // Board #5462: a look held back (astrolabe and
+                    // fenestra) shows nothing; the lanes log the surfaces
+                    // on one. Board #5543: embers and sparks, which the
+                    // wearer's lists still leave out, and the looks only a
+                    // theme gives draw.
                     if spectrum != (spectrum_box == Some(k))
                         || (!spectrum && !behavior.draws_on_face())
-                        || !behavior.offered()
+                        || behavior.held_back()
                         || b.hidden
                         || (k == stage_k && scene_floor)
                         || (behavior == SurfaceBehavior::Rings && ripple.is_none())
