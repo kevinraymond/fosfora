@@ -551,6 +551,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       which is every theme, and the veil in a room with none; live)
     //   adb shell setprop debug.fosfora.depthlightpoints 0|1     (depth light: 0 draws no points, the mesh still drawn in the light's passes and order,
     //       to cost the points apart from the veil; default 1; live)
+    //   adb shell setprop debug.fosfora.depthlighttops 0|1       (board #5543, depth light: the beams, the grass, the bubbles and the meters draw on upright
+    //       surfaces; 1 = off one, on a top or a slant, they draw the points as they did; default 0, nothing there, the thing's dark
+    //       base alone; live)
     //   adb shell setprop debug.fosfora.sonar 0|1|2              (board #5511, sonar.rs: on each downbeat a shell of light leaves the wearer and travels out, and
     //       what the depth light draws shows a bright line where the shell crosses it, with a short tail behind; standing lines of equal
     //       distance come up while the song builds and fade on the drop; 0 off, the depth light as it was; 1 the depth light's things;

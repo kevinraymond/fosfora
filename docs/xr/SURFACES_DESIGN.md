@@ -2061,6 +2061,17 @@ four draws at exactly `ALPHA_LOW / ALPHA_HIGH` of its light with the room
 black, over the hard cutout
 (`every_look_draws_with_the_room_visible_and_with_it_black`).
 
+**Nothing on a top.** The beams, the grass, the bubbles and the meters
+draw on upright surfaces, and off one they fell back to the points. The
+owner, worn on Nov 18: "All the themes have the same dots on the depth
+detected stuff." From a chair most of what the depth map sees is tops and
+slants, so the fallback was most of what he saw. Now those four draw
+nothing there and the thing stays its dark base, the light fading out as a
+surface turns from upright to level. `debug.fosfora.depthlighttops 1` puts
+the points back, live, to compare. The coals, the sparkle and the glints
+are points themselves and keep every plane, so Flint, Tide and Mirror
+still show dots on tops, each in its own way.
+
 ## The air per theme (Nov 18, board #5543)
 
 **Why.** The fireflies were the same in every theme. The owner's rule for

@@ -86,8 +86,8 @@
 //!   falling behind it: the sides' color along the streak, the tops' at
 //!   the head. The heads travel up on a clock the band drives
 //!   ([`BEAM_TRAVEL_HZ`]), slow in silence and fast on a kick, and the
-//!   streak's length follows the band. A top shows the points, in the
-//!   tops' color: the beams seen end on.
+//!   streak's length follows the band. A top shows nothing, or with the
+//!   tops' switch on the points in the tops' color: the beams seen end on.
 //! - *Coals* ([`coal`]; Flint). The points as lumps of heat: a cone from
 //!   each center, its own slow smolder, and the band's level squared, so
 //!   a kick flares. The color runs a ramp by the heat ([`look_color`]):
@@ -100,14 +100,15 @@
 //!   its tip, the sides' color at the root and the tops' at the tip. The
 //!   tips bend ([`grass_bend`]) with a wave that crosses the room: wider
 //!   with the band, and leaning one way with the gust, the overall
-//!   loudness smoothed ([`Drive::step_wind`]). A top shows the points,
-//!   moved a little by the same wind.
+//!   loudness smoothed ([`Drive::step_wind`]). A top shows nothing, or
+//!   with the switch on the points, moved a little by the same wind.
 //! - *Bubbles* ([`bubble`]; Drift). On an upright surface a point, read
 //!   wider across ([`BUBBLE_PACK`]) and drawn out along up
 //!   ([`BUBBLE_STRETCH`]), is a lane that snakes ([`BUBBLE_WOBBLE`]). A
 //!   bubble passes every [`BUBBLE_PERIOD`] cells of it, rising on a clock
 //!   the band drives ([`BUBBLE_RISE_HZ`]): a round rim in the sides'
-//!   color with a highlight in the tops'. A top shows the points.
+//!   color with a highlight in the tops'. A top shows nothing, or with
+//!   the switch on the points.
 //! - *Sparkle* ([`sparkle`]; Tide). The points, dim ([`SPARKLE_DIM`]),
 //!   each flaring briefly on its own clock as strong as the band, and all
 //!   of them as the floor's wash front passes under ([`sparkle_front`]).
@@ -122,7 +123,18 @@
 //!   meter of [`METER_SEGS`] segments standing on it. A third of the
 //!   meters show the bass, a third the mids, a third the highs, each lit
 //!   to its band's level in its band's color (`fireflies::BAND_COLORS`).
-//!   A top shows the points, each as bright as its band.
+//!   A top shows nothing, or with the switch on the points, each as
+//!   bright as its band.
+//!
+//! **Nothing on a top** ([`with_tops`], `debug.fosfora.depthlighttops`).
+//! The beams, the grass, the bubbles and the meters are looks of upright
+//! things, and off an upright surface they fell back to the points. Worn,
+//! every theme then showed the same dots, since from a chair most of what
+//! the depth map sees is tops and slants. Now they draw nothing there and
+//! the thing stays its dark base; the light fades out as a surface turns
+//! from upright to level, by the planes' own weights. The knob at 1 puts
+//! the points back, live, to compare. The coals, the sparkle and the
+//! glints are points themselves and keep every plane.
 //!
 //! What a look reads of the room beside the drive rides one more row
 //! ([`MORE_ROW`], [`Around`]): the wash's front, the orbit's center and
@@ -267,6 +279,7 @@ pub const KNOB_GAIN: &str = "debug.fosfora.depthlightgain";
 pub const KNOB_FILL: &str = "debug.fosfora.depthlightfill";
 pub const KNOB_VEIL: &str = "debug.fosfora.depthlightveil";
 pub const KNOB_POINTS: &str = "debug.fosfora.depthlightpoints";
+pub const KNOB_TOPS: &str = "debug.fosfora.depthlighttops";
 
 /// Rows of [`rows`], the end of `struct EnvEye` from `light` on
 /// (`env_depth::LIGHT_ROW`): the light's own, the look's two from
@@ -549,6 +562,10 @@ pub struct DepthLightOptions {
     /// the mesh still drawn with the veil and in its order (off): the
     /// points' cost apart, for a cost run.
     pub points: bool,
+    /// `debug.fosfora.depthlighttops`: off an upright surface the beams,
+    /// the grass, the bubbles and the meters fall back to the points
+    /// (on), or draw nothing there (off, the default; [`with_tops`]).
+    pub tops: bool,
 }
 
 impl Default for DepthLightOptions {
@@ -560,6 +577,7 @@ impl Default for DepthLightOptions {
             veil: true,
             veil_forced: false,
             points: true,
+            tops: false,
         }
     }
 }
@@ -571,6 +589,7 @@ impl DepthLightOptions {
     /// range the nearest end. `depthlightpoints` off only at `0` too. The
     /// veil's knob at `0` or `1` also takes the veil from the room's theme
     /// ([`Self::under`]); unset or empty leaves it the theme's.
+    /// `depthlighttops` on only at `1`.
     pub fn from_knobs(prop: impl Fn(&str) -> Option<String>) -> Self {
         let d = Self::default();
         let number = |name: &str| {
@@ -586,6 +605,7 @@ impl DepthLightOptions {
             veil: !off(KNOB_VEIL),
             veil_forced: matches!(prop(KNOB_VEIL).as_deref().map(str::trim), Some("0" | "1")),
             points: !off(KNOB_POINTS),
+            tops: prop(KNOB_TOPS).as_deref().map(str::trim) == Some("1"),
         }
     }
 
@@ -613,7 +633,7 @@ impl DepthLightOptions {
             return "off (debug.fosfora.depthlight 0): the depth map writes depth only".to_owned();
         }
         format!(
-            "on, points · gain {} · fill {} · {} · a point's peak alpha {ALPHA_LOW} with the room plain to {ALPHA_HIGH} black · cells {CELL_M} m at 1 m, doubling each octave · the light falls to {FAR_FLOOR} from {} to {} m · two masses part at {JUMP_MIN_M} m or {JUMP_REL} of the distance",
+            "on, points · gain {} · fill {} · {} · {} · a point's peak alpha {ALPHA_LOW} with the room plain to {ALPHA_HIGH} black · cells {CELL_M} m at 1 m, doubling each octave · the light falls to {FAR_FLOOR} from {} to {} m · two masses part at {JUMP_MIN_M} m or {JUMP_REL} of the distance",
             self.gain,
             self.fill,
             match (self.veil, self.points) {
@@ -625,6 +645,11 @@ impl DepthLightOptions {
                 (true, false) => "no points (debug.fosfora.depthlightpoints 0), the veil alone",
                 (false, false) =>
                     "no points (debug.fosfora.depthlightpoints 0) and the hard cutout (debug.fosfora.depthlightveil 0)",
+            },
+            if self.tops {
+                "points on the tops under a look of upright things (debug.fosfora.depthlighttops 1)"
+            } else {
+                "nothing on the tops under a look of upright things"
             },
             FADE_M[0],
             FADE_M[1],
@@ -1114,6 +1139,29 @@ pub fn with_look(mut rows: [[f32; 4]; ROWS], look: DepthLook) -> [[f32; 4]; ROWS
     rows
 }
 
+/// `rows` with the tops' switch in the look's fourth lane ([`LOOK_ROW`]).
+/// The beams, the grass, the bubbles and the meters draw on upright
+/// surfaces. Off one, on a top or a slant, they drew the points, and worn
+/// every theme then showed the same dots: from a chair most of what the
+/// depth map sees is tops (the owner, Nov 18). With `tops` off, the
+/// default, they draw nothing there and the thing stays its dark base;
+/// on (`debug.fosfora.depthlighttops 1`), the points as before. The
+/// points, the coals, the sparkle and the glints are made of points and
+/// draw on every plane either way.
+pub fn with_tops(mut rows: [[f32; 4]; ROWS], tops: bool) -> [[f32; 4]; ROWS] {
+    rows[LOOK_ROW][3] = f32::from(u8::from(tops));
+    rows
+}
+
+/// Whether `look` draws on upright surfaces alone, so that off one it has
+/// only the points to fall back to ([`with_tops`]).
+pub fn upright_look(look: DepthLook) -> bool {
+    matches!(
+        look,
+        DepthLook::Beams | DepthLook::Grass | DepthLook::Bubbles | DepthLook::Meters
+    )
+}
+
 /// What a look reads of the room beside the drive (board #5543).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Around {
@@ -1248,19 +1296,22 @@ pub fn frame(
     Frame {
         rows: with_sonar(
             with_around(
-                with_look(
-                    rows(
-                        drive,
-                        if opts.points {
-                            peak_alpha(level, opts.gain)
-                        } else {
-                            0.0
-                        },
-                        colors(theme, key),
-                        opts.fill,
-                        veil_share(level, opts.veil),
+                with_tops(
+                    with_look(
+                        rows(
+                            drive,
+                            if opts.points {
+                                peak_alpha(level, opts.gain)
+                            } else {
+                                0.0
+                            },
+                            colors(theme, key),
+                            opts.fill,
+                            veil_share(level, opts.veil),
+                        ),
+                        look(theme),
                     ),
-                    look(theme),
+                    opts.tops,
                 ),
                 around,
             ),
@@ -1989,12 +2040,12 @@ pub fn look_color(rows: &[[f32; 4]; ROWS], tint: f32) -> [f32; 3] {
 /// interpolated normal `normal`, read at `radius_scale` ([`look_radius`]),
 /// where the world moves by `fw` across a pixel: the light, 0..1, and its
 /// tint ([`look_color`]). The points' planes, octaves and fades, each
-/// read the look's own: on an upright plane the beams' streaks or the
-/// grass's blades, on the level plane their points seen from the end
-/// (the beams' in the tops' color, the grass's moved by the wind); the
-/// coals, the sparkle and the glints on every plane; the meters on an
-/// upright plane and their points on the level one; the bubbles on an upright plane,
-/// the points on the level one. The fade for small cells counts the closer
+/// read the look's own: on an upright plane the beams' streaks, the
+/// grass's blades, the bubbles or the meters, and on the level plane
+/// nothing, or with the tops' switch on ([`with_tops`]) their points seen
+/// from the end (the beams' in the tops' color, the grass's moved by the
+/// wind, a meter's as bright as its band); the coals, the sparkle and the
+/// glints on every plane. The fade for small cells counts the closer
 /// packing across and the longer features along up. The WGSL's
 /// `look_light`.
 pub fn look_light(
@@ -2033,6 +2084,10 @@ pub fn look_light(
     } else {
         0.0
     };
+    // Off an upright plane a look of upright things draws the points, or
+    // nothing ([`with_tops`]). The plane's weight still counts in `used`,
+    // so the light fades out as a surface turns from upright to level.
+    let dark_tops = upright_look(look) && rows[LOOK_ROW][3] < 0.5;
     let (mut sum, mut used) = (Vec2::ZERO, 0.0);
     for j in 0..2 {
         let wo = if j == 1 { next } else { 1.0 - next };
@@ -2058,6 +2113,7 @@ pub fn look_light(
             let aa = 1.0 - smoothstep(cell_row[2], cell_row[3], fine);
             if aa > 0.0 {
                 let s = match look {
+                    _ if dark_tops && !upright => Vec2::ZERO,
                     DepthLook::Beams if upright => beam(rows, tile, g, f, k, o, radius_scale),
                     DepthLook::Beams => {
                         let v = plane_points(rows, tile, g, k, o, radius_scale);
@@ -2832,6 +2888,84 @@ mod tests {
             fw,
         );
         assert!(top.x == 0.0 || (top.y - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_look_of_upright_things_draws_nothing_on_a_top_unless_asked() {
+        let fw = Vec3::splat(5e-4);
+        let (eye, grid) = wall_grid();
+        // The wall's points laid level, as a top 0.5 m up, and the wall
+        // itself; the light summed over each with the normal `n`.
+        let top: Vec<Vec3> = grid.iter().map(|p| Vec3::new(p.x, 0.5, -p.y)).collect();
+        let light = |rows: &[[f32; 4]; ROWS], at: &[Vec3], n: Vec3| {
+            let radius = look_radius(rows, 1.0, 0.0);
+            at.iter()
+                .map(|&p| f64::from(look_light(rows, tile(), eye, p, n, radius, fw).x))
+                .sum::<f64>()
+        };
+        let slant = Vec3::new(0.0, 1.0, 1.0);
+        // Beams, grass, bubbles and meters: nothing on a top by default,
+        // the points there with the switch on, the wall the same either
+        // way, and a slant between the two, never brighter for the
+        // switch being off.
+        for theme in [Theme::Aurora, Theme::Contour, Theme::Drift, Theme::Classic] {
+            let off = look_rows(theme, 1.0, 1.0, 0.0);
+            let look = look_of(&off);
+            assert!(upright_look(look), "{}", look.name());
+            assert_close!(off[LOOK_ROW][3], 0.0);
+            let on = with_tops(off, true);
+            assert_close!(on[LOOK_ROW][3], 1.0);
+            assert_eq!(with_tops(on, false), off);
+            assert!(light(&off, &top, Vec3::Y) < 1e-12, "{}", look.name());
+            assert!(light(&on, &top, Vec3::Y) > 0.0, "{}", look.name());
+            let wall = light(&off, &grid, Vec3::Z);
+            assert!(wall > 0.0, "{}", look.name());
+            let same = (light(&on, &grid, Vec3::Z) - wall).abs() < 1e-9;
+            assert!(same, "{}", look.name());
+            let (dim, lit) = (light(&off, &grid, slant), light(&on, &grid, slant));
+            assert!(dim > 0.0 && dim < lit, "{}: {dim} {lit}", look.name());
+        }
+        // Coals, sparkle and glints are points themselves: every plane,
+        // whatever the switch says.
+        for theme in [Theme::Flint, Theme::Tide, Theme::Mirror] {
+            let off = look_rows(theme, 1.0, 1.0, 0.0);
+            let look = look_of(&off);
+            assert!(!upright_look(look), "{}", look.name());
+            let on = with_tops(off, true);
+            let lit = light(&off, &top, Vec3::Y);
+            assert!(lit > 0.0, "{}", look.name());
+            let same = (light(&on, &top, Vec3::Y) - lit).abs() < 1e-9;
+            assert!(same, "{}", look.name());
+        }
+        assert!(!upright_look(DepthLook::Points));
+        // The knob: on only at 1, and the frame carries it.
+        let knob = |v: Option<&'static str>| {
+            DepthLightOptions::from_knobs(|name| v.filter(|_| name == KNOB_TOPS).map(str::to_owned))
+        };
+        assert!(!DepthLightOptions::default().tops);
+        assert!(!knob(None).tops && !knob(Some("0")).tops && !knob(Some("")).tops);
+        assert!(knob(Some("1")).tops && knob(Some(" 1 ")).tops);
+        assert!(knob(None).describe().contains("nothing on the tops"));
+        assert!(
+            knob(Some("1"))
+                .describe()
+                .contains("debug.fosfora.depthlighttops 1")
+        );
+        let d = Drive::default();
+        let rows_of = |opts: &DepthLightOptions| {
+            frame(
+                opts,
+                &d,
+                Some(Theme::Aurora),
+                [0.7, 0.3, 1.0],
+                1.0,
+                &NO_SONAR,
+                &Around::default(),
+            )
+            .rows
+        };
+        assert_close!(rows_of(&knob(None))[LOOK_ROW][3], 0.0);
+        assert_close!(rows_of(&knob(Some("1")))[LOOK_ROW][3], 1.0);
     }
 
     #[test]

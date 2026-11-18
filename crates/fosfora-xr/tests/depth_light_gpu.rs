@@ -1600,6 +1600,14 @@ fn each_look_matches_its_cpu_mirror() {
             let seams = if look == DepthLook::Bubbles { 2 } else { 1 };
             fragment_matches(device, queue, &rows, 200 * seams);
         }
+        // The points on a top, as the looks of upright things drew them
+        // until `debug.fosfora.depthlighttops` (off by default: nothing).
+        if depth_light::upright_look(look) {
+            eprintln!("{} with the points on its tops", look.name());
+            let rows = depth_light::with_tops(look_rows(theme, look, 1.0, 0.9, 0.7, 3.7), true);
+            let seams = if look == DepthLook::Bubbles { 2 } else { 1 };
+            fragment_matches(device, queue, &rows, 200 * seams);
+        }
         eprintln!("{} under a sweep", look.name());
         let rows = depth_light::with_sonar(look_rows(theme, look, 1.0, 0.5, 0.3, 3.7), &sweep);
         assert!(depth_light::swept(&rows));

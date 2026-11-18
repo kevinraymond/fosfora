@@ -607,7 +607,8 @@ struct EnvEye {
     light_size: vec4<f32>,
     // The look (depth_light.rs, board #5543). x its id: 0 the points, 1
     // beams, 2 coals, 3 grass, 4 bubbles, 5 sparkle, 6 glints, 7 meters; y
-    // the music 0..1, z the gust 0..1
+    // the music 0..1, z the gust 0..1, w 1 when the looks of upright things
+    // (beams, grass, bubbles, meters) draw the points on a top, 0 nothing
     light_look: vec4<f32>,
     // The looks' clocks, each 0..1 of a cycle: x the beams' travel, y the
     // grass's sway, z the bubbles' rise
@@ -1308,9 +1309,10 @@ fn look_color(tint: f32) -> vec3<f32> {
 // A look's light at world point p with the unit normal n, read at
 // radius_scale, the world moving by fw across a pixel: x the light, 0..1,
 // y its tint. The points' planes, octaves and fades, each plane reading
-// the look's own: on an upright plane the beams' streaks or the grass's
-// blades, on the level plane their points seen from the end; the coals on
-// every plane.
+// the look's own: on an upright plane the beams' streaks, the grass's
+// blades, the bubbles or the meters, and on the level plane nothing, or
+// their points seen from the end with light_look.w on; the coals, the
+// sparkle and the glints on every plane.
 fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> vec2<f32> {
     let look = look_id();
     let beams = look == LOOK_BEAMS;
@@ -1336,6 +1338,10 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
     if glints {
         speck = glint_speck(p);
     }
+    // Off an upright plane a look of upright things draws the points, or
+    // nothing. The plane's weight still counts in `used`, so the light
+    // fades out as a surface turns from upright to level.
+    let dark_tops = (beams || grass || bubbles || meters) && env.light_look.w < 0.5;
     var sum = vec2<f32>(0.0);
     var used = 0.0;
     for (var j = 0; j < 2; j++) {
@@ -1364,7 +1370,9 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
             let aa = 1.0 - smoothstep(env.light_cell.z, env.light_cell.w, fine);
             if aa > 0.0 {
                 var s = vec2<f32>(0.0);
-                if beams {
+                if dark_tops && !upright {
+                    s = vec2<f32>(0.0);
+                } else if beams {
                     if upright {
                         s = beam(g, f, k, o, radius_scale);
                     } else {
