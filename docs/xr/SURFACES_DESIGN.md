@@ -2067,10 +2067,12 @@ owner, worn on Nov 18: "All the themes have the same dots on the depth
 detected stuff." From a chair most of what the depth map sees is tops and
 slants, so the fallback was most of what he saw. Now those four draw
 nothing there and the thing stays its dark base, the light fading out as a
-surface turns from upright to level. `debug.fosfora.depthlighttops 1` puts
-the points back, live, to compare. The coals, the sparkle and the glints
-are points themselves and keep every plane, so Flint, Tide and Mirror
-still show dots on tops, each in its own way.
+surface turns from upright to level. `debug.fosfora.depthlighttops` is
+the points' size there, 0 to 1, live: 1 puts the points back as they were,
+0.25 draws them at a quarter of their size (the owner asked to try that),
+0, the default, nothing. The coals, the sparkle and the glints are points
+themselves and keep every plane at their own size, so Flint, Tide and
+Mirror still show dots on tops, each in its own way.
 
 ### The soft edge of what occludes (Nov 18)
 

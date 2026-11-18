@@ -150,9 +150,10 @@
 //! every theme then showed the same dots, since from a chair most of what
 //! the depth map sees is tops and slants. Now they draw nothing there and
 //! the thing stays its dark base; the light fades out as a surface turns
-//! from upright to level, by the planes' own weights. The knob at 1 puts
-//! the points back, live, to compare. The coals, the sparkle and the
-//! glints are points themselves and keep every plane.
+//! from upright to level, by the planes' own weights. The knob is the
+//! points' size there, 0 to 1, live: 1 puts them back as they were, 0.25 a
+//! quarter of their size (the owner asked to try that). The coals, the
+//! sparkle and the glints are points themselves and keep every plane.
 //!
 //! What a look reads of the room beside the drive rides one more row
 //! ([`MORE_ROW`], [`Around`]): the wash's front, the orbit's center and
@@ -582,9 +583,10 @@ pub struct DepthLightOptions {
     /// points' cost apart, for a cost run.
     pub points: bool,
     /// `debug.fosfora.depthlighttops`: off an upright surface the beams,
-    /// the grass, the bubbles and the meters fall back to the points
-    /// (on), or draw nothing there (off, the default; [`with_tops`]).
-    pub tops: bool,
+    /// the grass, the bubbles and the meters fall back to the points at
+    /// this share of their size, 0 to 1 ([`with_tops`]): 0, the default,
+    /// is nothing there, 1 the points as they were.
+    pub tops: f32,
     /// `debug.fosfora.depthedge`: where the map hides the surfaces' light
     /// at every level (a theme that occludes, or the veil's knob at 0), it
     /// hides it with a soft edge (on, the default; [`with_edge`]) or with
@@ -601,7 +603,7 @@ impl Default for DepthLightOptions {
             veil: true,
             veil_forced: false,
             points: true,
-            tops: false,
+            tops: 0.0,
             edge: true,
         }
     }
@@ -614,7 +616,7 @@ impl DepthLightOptions {
     /// range the nearest end. `depthlightpoints` off only at `0` too. The
     /// veil's knob at `0` or `1` also takes the veil from the room's theme
     /// ([`Self::under`]); unset or empty leaves it the theme's.
-    /// `depthlighttops` on only at `1`, `depthedge` off only at `0`.
+    /// `depthlighttops` is a size from 0 to 1, `depthedge` off only at `0`.
     pub fn from_knobs(prop: impl Fn(&str) -> Option<String>) -> Self {
         let d = Self::default();
         let number = |name: &str| {
@@ -630,7 +632,7 @@ impl DepthLightOptions {
             veil: !off(KNOB_VEIL),
             veil_forced: matches!(prop(KNOB_VEIL).as_deref().map(str::trim), Some("0" | "1")),
             points: !off(KNOB_POINTS),
-            tops: prop(KNOB_TOPS).as_deref().map(str::trim) == Some("1"),
+            tops: number(KNOB_TOPS).map_or(d.tops, |v| v.clamp(0.0, 1.0)),
             edge: !off(KNOB_EDGE),
         }
     }
@@ -679,10 +681,13 @@ impl DepthLightOptions {
                 (false, false) =>
                     "no points (debug.fosfora.depthlightpoints 0) and the hard cutout (debug.fosfora.depthlightveil 0)",
             },
-            if self.tops {
-                "points on the tops under a look of upright things (debug.fosfora.depthlighttops 1)"
+            if self.tops > 0.0 {
+                format!(
+                    "points at {} of their size on the tops under a look of upright things (debug.fosfora.depthlighttops)",
+                    self.tops
+                )
             } else {
-                "nothing on the tops under a look of upright things"
+                "nothing on the tops under a look of upright things".to_owned()
             },
             if self.edge {
                 "a soft edge where the map hides the surfaces' light"
@@ -1210,17 +1215,18 @@ pub fn with_look(mut rows: [[f32; 4]; ROWS], look: DepthLook) -> [[f32; 4]; ROWS
     rows
 }
 
-/// `rows` with the tops' switch in the look's fourth lane ([`LOOK_ROW`]).
+/// `rows` with the tops' size in the look's fourth lane ([`LOOK_ROW`]).
 /// The beams, the grass, the bubbles and the meters draw on upright
 /// surfaces. Off one, on a top or a slant, they drew the points, and worn
 /// every theme then showed the same dots: from a chair most of what the
-/// depth map sees is tops (the owner, Nov 18). With `tops` off, the
-/// default, they draw nothing there and the thing stays its dark base;
-/// on (`debug.fosfora.depthlighttops 1`), the points as before. The
-/// points, the coals, the sparkle and the glints are made of points and
-/// draw on every plane either way.
-pub fn with_tops(mut rows: [[f32; 4]; ROWS], tops: bool) -> [[f32; 4]; ROWS] {
-    rows[LOOK_ROW][3] = f32::from(u8::from(tops));
+/// depth map sees is tops (the owner, Nov 18). With `tops` at 0, the
+/// default, they draw nothing there and the thing stays its dark base; at
+/// 1 (`debug.fosfora.depthlighttops 1`), the points as before; between,
+/// the points at that share of their size (he asked to try a quarter).
+/// The points, the coals, the sparkle and the glints are made of points
+/// and draw on every plane at their own size either way.
+pub fn with_tops(mut rows: [[f32; 4]; ROWS], tops: f32) -> [[f32; 4]; ROWS] {
+    rows[LOOK_ROW][3] = unit(tops);
     rows
 }
 
@@ -2189,7 +2195,8 @@ pub fn look_light(
     // Off an upright plane a look of upright things draws the points, or
     // nothing ([`with_tops`]). The plane's weight still counts in `used`,
     // so the light fades out as a surface turns from upright to level.
-    let dark_tops = upright_look(look) && rows[LOOK_ROW][3] < 0.5;
+    let dark_tops = upright_look(look) && rows[LOOK_ROW][3] <= 0.0;
+    let top_scale = radius_scale * rows[LOOK_ROW][3];
     let (mut sum, mut used) = (Vec2::ZERO, 0.0);
     for j in 0..2 {
         let wo = if j == 1 { next } else { 1.0 - next };
@@ -2218,24 +2225,24 @@ pub fn look_light(
                     _ if dark_tops && !upright => Vec2::ZERO,
                     DepthLook::Beams if upright => beam(rows, tile, g, f, k, o, radius_scale),
                     DepthLook::Beams => {
-                        let v = plane_points(rows, tile, g, k, o, radius_scale);
+                        let v = plane_points(rows, tile, g, k, o, top_scale);
                         Vec2::new(v, v)
                     }
                     DepthLook::Grass if upright => blade(rows, tile, g, k, o, radius_scale, bend),
                     DepthLook::Grass => {
                         let at = g + Vec2::splat(GRASS_TOP_SHIFT * bend);
-                        let v = plane_points(rows, tile, at, k, o, radius_scale);
+                        let v = plane_points(rows, tile, at, k, o, top_scale);
                         Vec2::new(v, v * v)
                     }
                     DepthLook::Bubbles if upright => bubble(rows, tile, g, k, o, radius_scale),
                     DepthLook::Bubbles => {
-                        let v = plane_points(rows, tile, g, k, o, radius_scale);
+                        let v = plane_points(rows, tile, g, k, o, top_scale);
                         Vec2::new(v, 0.5 * v * v)
                     }
                     DepthLook::Sparkle => sparkle(rows, tile, g, k, o, radius_scale, front),
                     DepthLook::Glints => glint(rows, tile, g, k, o, radius_scale, speck),
                     DepthLook::Meters if upright => meter(rows, tile, g, f, k, o, radius_scale),
-                    DepthLook::Meters => meter_top(rows, tile, g, k, o, radius_scale),
+                    DepthLook::Meters => meter_top(rows, tile, g, k, o, top_scale),
                     _ => coal(rows, tile, g, k, o, radius_scale),
                 };
                 sum += wo * wk * aa * s;
@@ -3017,11 +3024,21 @@ mod tests {
             let look = look_of(&off);
             assert!(upright_look(look), "{}", look.name());
             assert_close!(off[LOOK_ROW][3], 0.0);
-            let on = with_tops(off, true);
+            let on = with_tops(off, 1.0);
             assert_close!(on[LOOK_ROW][3], 1.0);
-            assert_eq!(with_tops(on, false), off);
+            assert_eq!(with_tops(on, 0.0), off);
             assert!(light(&off, &top, Vec3::Y) < 1e-12, "{}", look.name());
             assert!(light(&on, &top, Vec3::Y) > 0.0, "{}", look.name());
+            // A quarter of their size: points still, with less light than
+            // whole ones.
+            let quarter = with_tops(off, 0.25);
+            assert_close!(quarter[LOOK_ROW][3], 0.25);
+            let small = light(&quarter, &top, Vec3::Y);
+            assert!(
+                small > 0.0 && small < light(&on, &top, Vec3::Y),
+                "{}: {small}",
+                look.name()
+            );
             let wall = light(&off, &grid, Vec3::Z);
             assert!(wall > 0.0, "{}", look.name());
             let same = (light(&on, &grid, Vec3::Z) - wall).abs() < 1e-9;
@@ -3035,25 +3052,30 @@ mod tests {
             let off = look_rows(theme, 1.0, 1.0, 0.0);
             let look = look_of(&off);
             assert!(!upright_look(look), "{}", look.name());
-            let on = with_tops(off, true);
+            let on = with_tops(off, 1.0);
             let lit = light(&off, &top, Vec3::Y);
             assert!(lit > 0.0, "{}", look.name());
             let same = (light(&on, &top, Vec3::Y) - lit).abs() < 1e-9;
             assert!(same, "{}", look.name());
         }
         assert!(!upright_look(DepthLook::Points));
-        // The knob: on only at 1, and the frame carries it.
+        // The knob: a size from 0 to 1, and the frame carries it.
         let knob = |v: Option<&'static str>| {
             DepthLightOptions::from_knobs(|name| v.filter(|_| name == KNOB_TOPS).map(str::to_owned))
         };
-        assert!(!DepthLightOptions::default().tops);
-        assert!(!knob(None).tops && !knob(Some("0")).tops && !knob(Some("")).tops);
-        assert!(knob(Some("1")).tops && knob(Some(" 1 ")).tops);
+        assert_close!(DepthLightOptions::default().tops, 0.0);
+        for none in [None, Some("0"), Some(""), Some("x"), Some("-1")] {
+            assert_close!(knob(none).tops, 0.0);
+        }
+        assert_close!(knob(Some("1")).tops, 1.0);
+        assert_close!(knob(Some(" 1 ")).tops, 1.0);
+        assert_close!(knob(Some("0.25")).tops, 0.25);
+        assert_close!(knob(Some("3")).tops, 1.0);
         assert!(knob(None).describe().contains("nothing on the tops"));
         assert!(
-            knob(Some("1"))
+            knob(Some("0.25"))
                 .describe()
-                .contains("debug.fosfora.depthlighttops 1")
+                .contains("points at 0.25 of their size on the tops")
         );
         let d = Drive::default();
         let rows_of = |opts: &DepthLightOptions| {
@@ -3070,6 +3092,7 @@ mod tests {
         };
         assert_close!(rows_of(&knob(None))[LOOK_ROW][3], 0.0);
         assert_close!(rows_of(&knob(Some("1")))[LOOK_ROW][3], 1.0);
+        assert_close!(rows_of(&knob(Some("0.25")))[LOOK_ROW][3], 0.25);
     }
 
     #[test]

@@ -607,8 +607,9 @@ struct EnvEye {
     light_size: vec4<f32>,
     // The look (depth_light.rs, board #5543). x its id: 0 the points, 1
     // beams, 2 coals, 3 grass, 4 bubbles, 5 sparkle, 6 glints, 7 meters; y
-    // the music 0..1, z the gust 0..1, w 1 when the looks of upright things
-    // (beams, grass, bubbles, meters) draw the points on a top, 0 nothing
+    // the music 0..1, z the gust 0..1, w the size of the points the looks
+    // of upright things (beams, grass, bubbles, meters) draw on a top, as a
+    // share of their own, 0 for nothing
     light_look: vec4<f32>,
     // The looks' clocks, each 0..1 of a cycle: x the beams' travel, y the
     // grass's sway, z the bubbles' rise; w 1 with the soft edge on: the
@@ -1358,7 +1359,9 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
     // Off an upright plane a look of upright things draws the points, or
     // nothing. The plane's weight still counts in `used`, so the light
     // fades out as a surface turns from upright to level.
-    let dark_tops = (beams || grass || bubbles || meters) && env.light_look.w < 0.5;
+    // Those points' size is light_look.w of their own, 0 for nothing.
+    let dark_tops = (beams || grass || bubbles || meters) && env.light_look.w <= 0.0;
+    let top_scale = radius_scale * env.light_look.w;
     var sum = vec2<f32>(0.0);
     var used = 0.0;
     for (var j = 0; j < 2; j++) {
@@ -1393,21 +1396,21 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
                     if upright {
                         s = beam(g, f, k, o, radius_scale);
                     } else {
-                        let v = plane_points(g, k, o, radius_scale);
+                        let v = plane_points(g, k, o, top_scale);
                         s = vec2<f32>(v, v);
                     }
                 } else if grass {
                     if upright {
                         s = blade(g, k, o, radius_scale, bend);
                     } else {
-                        let v = plane_points(g + vec2<f32>(GRASS_TOP_SHIFT * bend), k, o, radius_scale);
+                        let v = plane_points(g + vec2<f32>(GRASS_TOP_SHIFT * bend), k, o, top_scale);
                         s = vec2<f32>(v, v * v);
                     }
                 } else if bubbles {
                     if upright {
                         s = bubble(g, k, o, radius_scale);
                     } else {
-                        let v = plane_points(g, k, o, radius_scale);
+                        let v = plane_points(g, k, o, top_scale);
                         s = vec2<f32>(v, 0.5 * v * v);
                     }
                 } else if sparkles {
@@ -1418,7 +1421,7 @@ fn look_light(p: vec3<f32>, fw: vec3<f32>, n: vec3<f32>, radius_scale: f32) -> v
                     if upright {
                         s = meter(g, f, k, o, radius_scale);
                     } else {
-                        s = meter_top(g, k, o, radius_scale);
+                        s = meter_top(g, k, o, top_scale);
                     }
                 } else {
                     s = coal(g, k, o, radius_scale);
