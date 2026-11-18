@@ -57,8 +57,13 @@
         </intent>
     </queries>
 
+    <!-- The icon is assets/icon/icon_256x256.png (the desktop app's F) on a
+         dark ground, scaled into res/mipmap-*. The headset shows it for a
+         build installed over adb; a build from Meta's store shows the cover
+         art uploaded with the store listing instead. -->
     <application
         android:label="Fosfora XR"
+        android:icon="@mipmap/ic_launcher"
         android:hasCode="false"
         android:allowBackup="false">
 
