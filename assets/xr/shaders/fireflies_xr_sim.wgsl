@@ -55,6 +55,44 @@
 //   radius with the loudness as the limit glides it (aux[1239].w), each
 //   scaled by the music knob (aux[1239].x).
 //
+// The air per theme (board #5543, aux[1240] and aux[1241]). A theme makes
+// the fireflies something else in the same slots, under the same count and
+// cap, drawn the same way: stars, ash, spray, plankton, a mirror ball's
+// specks. A particle keeps the stamp and the motion it was born with
+// (flags.y and flags.z) and its color. When the air's stamp changes (the
+// room's theme changed) the particles of the old one fade out over
+// XR_AIR_SWAP_S, keeping their own motion and color while they do, die, and
+// their slots fill with the new air, which fades in. Nothing jumps from one
+// motion to the other. With no theme the stamp, the motion and the tint are
+// 0: the fireflies above, unchanged.
+//   The band (aux[1241].z) is the level the light follows, where the
+//   fireflies follow the loudness: u.rms, u.bass, u.mid or the higher of
+//   u.presence and u.brilliance, each as the flash limit lets it through.
+//   Tinted by band (Classic), a particle follows the bass, the mids or the
+//   highs by its slot and takes that band's color.
+//   Twinkle: stars. Born in the upper part of the slab (from
+//   XR_STAR_Y_LOW), each on one slow circle at XR_STAR_DRIFT of the drift
+//   speed, so nearly still. Each flickers on its own period
+//   (XR_STAR_PERIOD_S, at most 1.1 times a second), shallow with the band
+//   silent (down to XR_STAR_CALM of its peak) and deep with it full (down
+//   to XR_FLY_GLOW_LOW), so the band makes them scintillate while their
+//   light together stays about level.
+//   Rise: ash, sparks, spray. Born in the lowest XR_RISE_BIRTH of the
+//   half extent over the floor, let go with the band: a dead slot fills at
+//   XR_FLY_SPAWN_HZ times the band's level, and at XR_RISE_IDLE of it with
+//   the band silent. It goes up at XR_RISE_SPEED times the drift speed
+//   with a small sway, lives XR_RISE_LIFE_S, fades and shrinks over the
+//   last part of that (from XR_RISE_FADE), and dies.
+//   Drift: plankton. All carried the one way XR_DRIFT_DIR at
+//   XR_DRIFT_SPEED times the drift speed, each with a small wobble of its
+//   own. One that leaves the volume comes back in on the far side, where
+//   the fade toward the bounds has it unseen.
+//   Orbit: a mirror ball's specks. Each has a radius, a height and an
+//   angle of its own and goes round the anchor's upright axis by the
+//   orbit's phase (aux[1241].w), which the XR app steps, so all turn
+//   together and the depth light can turn with them. Its place is a
+//   function of its slot and the phase alone.
+//
 // Hand particles. A burst (the instrument rows) or a pour (the pour row)
 // claims dead hand slots, and when few are dead takes living hand particles,
 // the old ones first. A hand particle is loose in the room until it dies of
@@ -129,10 +167,19 @@
 //                   speed (m/s)
 //   aux[1239]       x = how strongly the fireflies answer the music (0 =
 //                   not at all), y = the hand particles' gravity (m/s^2),
-//                   z = their edge-flow strength, w = the loudness gliding,
-//                   0..1, for the fireflies' size
+//                   z = their edge-flow strength, w = the air's band
+//                   gliding, 0..1, for the fireflies' size
+//   aux[1240]       the air's color (board #5543): rgb linear, w = how a
+//                   particle is tinted: 0 the fireflies' own two tints, 1
+//                   this color, 2 by the band it follows
+//   aux[1241]       the air: x = its stamp (0 with no theme, else a whole
+//                   number per theme), y = its motion (0 wander, 1
+//                   twinkle, 2 rise, 3 drift, 4 orbit), z = the band its
+//                   light follows (0 rms, 1 bass, 2 mid, 3 high), w = the
+//                   orbit's phase (radians)
 // All zero (nothing written yet) means no obstacles, no fireflies, no
-// gravity and no edge flow.
+// gravity and no edge flow, and the air all zero is the fireflies as they
+// were before themes gave it anything.
 //
 // Sim-cut mask (crates/fosfora-xr/src/sim_cut.rs, `debug.fosfora.simcut`):
 // aux[2].x as u32 bits, 0 in production. The bits are flux_xr_sim.wgsl's.
@@ -154,9 +201,11 @@ const XR_AUX_POUR: u32 = 180u;
 const XR_AUX_CELLS: u32 = 213u;
 const XR_CELLS_MAX: u32 = 16u;
 const XR_AUX_CELL_ROWS: u32 = 1024u;   // XR_CELLS_MAX^3 / 4
-// After the box cell list; the XR app uploads 1240 rows.
+// After the box cell list; the XR app uploads 1242 rows.
 const XR_AUX_FIREFLIES: u32 = 1238u;
-const XR_AUX_FIREFLY_ROWS: u32 = 2u;
+const XR_AUX_FIREFLY_ROWS: u32 = 4u;
+const XR_AUX_AIR_COLOR: u32 = 1240u;   // XR_AUX_FIREFLIES + 2
+const XR_AUX_AIR: u32 = 1241u;
 
 // The most fireflies alive at once (fireflies::FIREFLY_CAP).
 const XR_FLY_CAP: u32 = 3000u;
@@ -197,6 +246,52 @@ const XR_FLY_MUSIC_SIZE: f32 = 0.35;
 // Their two tints (linear RGB): a warm yellow and a yellow green.
 const XR_FLY_WARM: vec3f = vec3f(1.0, 0.8, 0.32);
 const XR_FLY_GREEN: vec3f = vec3f(0.7, 1.0, 0.35);
+
+// The air per theme (board #5543). The motions (fireflies::motion_id) and
+// the tints (fireflies::Tint).
+const XR_AIR_WANDER: u32 = 0u;
+const XR_AIR_TWINKLE: u32 = 1u;
+const XR_AIR_RISE: u32 = 2u;
+const XR_AIR_DRIFT: u32 = 3u;
+const XR_AIR_ORBIT: u32 = 4u;
+const XR_TINT_COLOR: f32 = 1.0;
+const XR_TINT_BAND: f32 = 2.0;
+// How long the old air takes to fade out when the stamp changes (s), and
+// how far toward white a particle's own share takes the theme's color.
+const XR_AIR_SWAP_S: f32 = 0.75;
+const XR_AIR_WHITE: f32 = 0.2;
+// By band: the colors of the bass, the mids and the highs (linear RGB;
+// fireflies::BAND_COLORS: Classic's floor, tables and walls).
+const XR_BAND_BASS: vec3f = vec3f(0.58, 0.32, 1.0);
+const XR_BAND_MID: vec3f = vec3f(0.22, 0.52, 1.0);
+const XR_BAND_HIGH: vec3f = vec3f(1.0, 0.86, 0.68);
+// Twinkle: where the stars' slab starts (of the half extent), their share
+// of the drift speed, their size against a firefly's, the shortest and
+// longest flicker period (s) and how dim a star gets with the band silent.
+const XR_STAR_Y_LOW: f32 = 0.1;
+const XR_STAR_DRIFT: f32 = 0.08;
+const XR_STAR_SIZE: f32 = 0.6;
+const XR_STAR_PERIOD_S: vec2f = vec2f(0.9, 2.2);
+const XR_STAR_CALM: f32 = 0.55;
+// Rise: the depth of the layer over the floor a particle is born in (of
+// the half extent), the share of the spawn rate with the band silent, its
+// speed against the drift speed, its sideways sway against its speed, how
+// long it fades in (s), its shortest and longest life (s), and the share
+// of its life from which it fades and shrinks.
+const XR_RISE_BIRTH: f32 = 0.05;
+const XR_RISE_IDLE: f32 = 0.04;
+const XR_RISE_SPEED: f32 = 5.0;
+const XR_RISE_SWAY: f32 = 0.2;
+const XR_RISE_IN_S: f32 = 0.4;
+const XR_RISE_LIFE_S: vec2f = vec2f(5.0, 10.0);
+const XR_RISE_FADE: f32 = 0.5;
+// Drift: the one way (a unit vector, level), the speed against the drift
+// speed, a particle's own wobble against it, and how far across the half
+// extent it wraps to the far side (past 1, where it is unseen).
+const XR_DRIFT_DIR: vec3f = vec3f(0.94, 0.0, 0.3412);
+const XR_DRIFT_SPEED: f32 = 1.5;
+const XR_DRIFT_WOBBLE: f32 = 0.3;
+const XR_DRIFT_WRAP: f32 = 1.02;
 
 // Bursts: the radius the 0.3..1.2 m/s speeds are for, a streak's sprite and
 // opacity against an impact's, an impact's opacity, how far toward white the
@@ -824,33 +919,99 @@ fn xr_hand_step(idx: u32, p_in: Particle, cut: u32) {
 
 // ---- fireflies ------------------------------------------------------------------
 
-// A firefly for slot idx: a point uniform in the volume, unseen until its
-// first update fades it in.
+// The level of band `band` (aux[1241].z's numbering), 0..1, as the flash
+// limit lets it through.
+fn xr_band_level(band: u32) -> f32 {
+    if band == 1u {
+        return clamp(u.bass, 0.0, 1.0);
+    }
+    if band == 2u {
+        return clamp(u.mid, 0.0, 1.0);
+    }
+    if band == 3u {
+        return clamp(max(u.presence, u.brilliance), 0.0, 1.0);
+    }
+    return clamp(u.rms, 0.0, 1.0);
+}
+
+// The band slot idx's particle follows: the air's, or by its slot when the
+// air is tinted by band.
+fn xr_air_band(idx: u32) -> u32 {
+    if aux[XR_AUX_AIR_COLOR].home.w > XR_TINT_BAND - 0.5 {
+        return idx % 3u + 1u;
+    }
+    return u32(clamp(aux[XR_AUX_AIR].home.z, 0.0, 3.0) + 0.5);
+}
+
+// Where slot idx's particle is on the orbit at `phase`: a radius, a height
+// and an angle of its own (fireflies::orbit_place).
+fn xr_orbit_place(idx: u32, half: f32, phase: f32) -> vec3f {
+    let own = xr_own4(idx, 1u);
+    let r = sqrt(own.z) * half * XR_FLY_SPAN;
+    let a = phase + own.y * XR_TAU;
+    return vec3f(r * cos(a), mix(XR_FLY_Y_LOW, XR_FLY_Y_HIGH, own.w) * half, r * sin(a));
+}
+
+// A particle of the air for slot idx: a firefly at a point uniform in the
+// volume, a star in its upper part, a rising one in the layer over the
+// floor, an orbiting one at its place. Unseen until its first update fades
+// it in. It carries the air's stamp and motion (flags.y, flags.z).
 fn xr_fly_spawn(idx: u32, half: f32) -> Particle {
     let r = xr_rand3(idx, 0u);
     let own = xr_own4(idx, 2u);
-    var p: Particle;
-    p.pos_life = vec4f(
+    let tint = aux[XR_AUX_AIR_COLOR].home;
+    let air = aux[XR_AUX_AIR].home;
+    let motion = u32(clamp(air.y, 0.0, 4.0) + 0.5);
+    var y = mix(XR_FLY_Y_LOW, XR_FLY_Y_HIGH, r.y);
+    if motion == XR_AIR_TWINKLE {
+        y = mix(XR_STAR_Y_LOW, XR_FLY_Y_HIGH, r.y);
+    } else if motion == XR_AIR_RISE {
+        y = XR_FLY_Y_LOW + XR_RISE_BIRTH * r.y;
+    }
+    var pos = vec3f(
         (r.x * 2.0 - 1.0) * half * XR_FLY_SPAN,
-        mix(XR_FLY_Y_LOW, XR_FLY_Y_HIGH, r.y) * half,
-        (r.z * 2.0 - 1.0) * half * XR_FLY_SPAN,
-        XR_FLY
+        y * half,
+        (r.z * 2.0 - 1.0) * half * XR_FLY_SPAN
     );
+    if motion == XR_AIR_ORBIT {
+        pos = xr_orbit_place(idx, half, air.w);
+    }
+    var rgb = mix(XR_FLY_WARM, XR_FLY_GREEN, own.x);
+    if tint.w > XR_TINT_BAND - 0.5 {
+        let band = idx % 3u;
+        rgb = select(select(XR_BAND_HIGH, XR_BAND_MID, band == 1u), XR_BAND_BASS, band == 0u);
+    } else if tint.w > XR_TINT_COLOR - 0.5 {
+        rgb = mix(tint.rgb, vec3f(1.0), XR_AIR_WHITE * own.x);
+    }
+    var p: Particle;
+    p.pos_life = vec4f(pos, XR_FLY);
     p.vel_size = vec4f(0.0);
-    p.color = vec4f(mix(XR_FLY_WARM, XR_FLY_GREEN, own.x), 0.0);
-    p.flags = vec4f(0.0);
+    p.color = vec4f(rgb, 0.0);
+    p.flags = vec4f(0.0, air.x, f32(motion), 0.0);
     return p;
 }
 
-// One frame of a living firefly. `count` is how many the knob asks for.
+// One frame of a living particle of the air. `count` is how many are asked
+// for.
 fn xr_fly_step(idx: u32, p_in: Particle, half: f32, count: u32, cut: u32) {
     var p = p_in;
     let dt = u.delta_time;
     let fly = aux[XR_AUX_FIREFLIES].home;
     let knobs = aux[XR_AUX_FIREFLIES + 1u].home;
-    // Past the count it fades out and dies; under it, it fades in.
-    let wanted = idx < count;
-    let presence = p.flags.x + select(-1.0, 1.0, wanted) * dt / XR_FLY_FADE_S;
+    let air = aux[XR_AUX_AIR].home;
+    // The motion it was born with, and whether it is still the air's.
+    let motion = u32(clamp(p.flags.z, 0.0, 4.0) + 0.5);
+    let same = abs(p.flags.y - air.x) < 0.5;
+    // Past the count, or of an air that is gone, it fades out and dies;
+    // else it fades in.
+    let wanted = idx < count && same;
+    var fade_s = XR_FLY_FADE_S;
+    if !same {
+        fade_s = XR_AIR_SWAP_S;
+    } else if wanted && motion == XR_AIR_RISE {
+        fade_s = XR_RISE_IN_S;
+    }
+    let presence = p.flags.x + select(-1.0, 1.0, wanted) * dt / fade_s;
     if presence <= 0.0 && !wanted {
         p.pos_life.w = 0.0;
         write_particle(idx, p);
@@ -858,15 +1019,66 @@ fn xr_fly_step(idx: u32, p_in: Particle, half: f32, count: u32, cut: u32) {
     }
     let own = xr_own4(idx, 1u);
     let look = xr_own4(idx, 2u);
-
-    // The drift: slow sines of time, on this firefly's own rates and phases.
+    let level = xr_band_level(xr_air_band(idx));
+    let music = max(knobs.x, 0.0);
+    let speed = max(fly.w, 0.0) * (0.6 + 0.8 * look.y) / 1.1;
     let rate = XR_TAU / XR_FLY_TURN_S * (0.5 + 0.5 * own.x);
     let a = u.time * rate + own.y * XR_TAU;
-    let b = u.time * rate * 0.618 + own.z * XR_TAU;
-    let c = u.time * rate * 0.414 + own.w * XR_TAU;
-    let dir = vec3f(cos(a) + XR_FLY_LOOP * cos(b), 0.5 * sin(c), sin(a) + XR_FLY_LOOP * sin(b));
-    let vel = dir * (max(fly.w, 0.0) * (0.6 + 0.8 * look.y) / 1.1);
-    let pos = p.pos_life.xyz + vel * dt;
+
+    var vel = vec3f(0.0);
+    var pos = p.pos_life.xyz;
+    // Its own rhythm, 0..1, its share of its life left (rise), and its size
+    // against a firefly's.
+    var glow = 1.0;
+    var left = 1.0;
+    var scale = 1.0;
+    var age = p.flags.w;
+    if motion == XR_AIR_TWINKLE {
+        // One slow circle, nearly still.
+        vel = vec3f(cos(a), 0.0, sin(a)) * (speed * XR_STAR_DRIFT);
+        pos += vel * dt;
+        // Its flicker: shallow with the band silent, deep with it full.
+        let period = mix(XR_STAR_PERIOD_S.x, XR_STAR_PERIOD_S.y, look.z);
+        let wave = 0.5 - 0.5 * cos(fract(u.time / period + look.w) * XR_TAU);
+        let deep = level * min(music * 2.0, 1.0);
+        glow = mix(mix(XR_STAR_CALM, XR_FLY_GLOW_LOW, deep), 1.0, wave);
+        scale = XR_STAR_SIZE;
+    } else if motion == XR_AIR_RISE {
+        // Up, with a small sway, until its life is over.
+        let up = speed * XR_RISE_SPEED;
+        vel = vec3f(cos(a) * XR_RISE_SWAY, 1.0, sin(a) * XR_RISE_SWAY) * up;
+        pos += vel * dt;
+        age += dt;
+        let life = mix(XR_RISE_LIFE_S.x, XR_RISE_LIFE_S.y, look.z);
+        if age >= life {
+            p.pos_life.w = 0.0;
+            write_particle(idx, p);
+            return;
+        }
+        left = 1.0 - smoothstep(XR_RISE_FADE, 1.0, age / life);
+        scale = 0.5 + 0.5 * left;
+    } else if motion == XR_AIR_DRIFT {
+        // Carried the one way, with a wobble of its own; back in on the
+        // far side, where it is unseen.
+        let c = u.time * rate * 0.414 + own.w * XR_TAU;
+        let wobble = vec3f(cos(a), 0.5 * sin(c), sin(a)) * XR_DRIFT_WOBBLE;
+        vel = (XR_DRIFT_DIR + wobble) * (speed * XR_DRIFT_SPEED);
+        pos += vel * dt;
+        let wrap = half * XR_DRIFT_WRAP;
+        pos.x -= 2.0 * wrap * (step(wrap, pos.x) - step(wrap, -pos.x));
+        pos.z -= 2.0 * wrap * (step(wrap, pos.z) - step(wrap, -pos.z));
+    } else if motion == XR_AIR_ORBIT {
+        // Its place on the orbit at the app's phase.
+        pos = xr_orbit_place(idx, half, air.w);
+    } else {
+        // The drift: slow sines of time, on this firefly's own rates and
+        // phases.
+        let b = u.time * rate * 0.618 + own.z * XR_TAU;
+        let c = u.time * rate * 0.414 + own.w * XR_TAU;
+        let dir = vec3f(cos(a) + XR_FLY_LOOP * cos(b), 0.5 * sin(c), sin(a) + XR_FLY_LOOP * sin(b));
+        vel = dir * speed;
+        pos += vel * dt;
+    }
 
     // Out of the volume: born again inside it.
     let across = max(abs(pos.x), abs(pos.z)) / half;
@@ -880,18 +1092,20 @@ fn xr_fly_step(idx: u32, p_in: Particle, half: f32, count: u32, cut: u32) {
         return;
     }
 
-    // Its own slow rhythm, lifted by the loudness.
-    let period = mix(XR_FLY_PERIOD_S.x, XR_FLY_PERIOD_S.y, look.z);
-    let wave = 0.5 - 0.5 * cos(fract(u.time / period + look.w) * XR_TAU);
-    let glow = mix(XR_FLY_GLOW_LOW, 1.0, wave * wave);
-    let music = max(knobs.x, 0.0);
-    let light = 1.0 + music * XR_FLY_MUSIC_LIGHT * clamp(u.rms, 0.0, 1.0);
+    // Its own slow rhythm (a star's and a rising one's are theirs, above),
+    // lifted by the band.
+    if motion != XR_AIR_TWINKLE && motion != XR_AIR_RISE {
+        let period = mix(XR_FLY_PERIOD_S.x, XR_FLY_PERIOD_S.y, look.z);
+        let wave = 0.5 - 0.5 * cos(fract(u.time / period + look.w) * XR_TAU);
+        glow = mix(XR_FLY_GLOW_LOW, 1.0, wave * wave);
+    }
+    let light = 1.0 + music * XR_FLY_MUSIC_LIGHT * level;
     let swell = 1.0 + music * XR_FLY_MUSIC_SIZE * clamp(knobs.w, 0.0, 1.0);
     let bound = (1.0 - smoothstep(1.0 - XR_FLY_EDGE_FADE, 1.0, across))
         * (1.0 - smoothstep(0.0, XR_FLY_EDGE_FADE, max(XR_FLY_Y_LOW - up, up - XR_FLY_Y_HIGH)));
     var alpha = clamp(max(fly.z, 0.0) * glow * light, 0.0, 1.0)
-        * clamp(presence, 0.0, 1.0) * bound;
-    var size = max(fly.y, 0.0) * (0.7 + 0.6 * own.x) * (0.75 + 0.25 * glow) * swell;
+        * clamp(presence, 0.0, 1.0) * bound * left;
+    var size = max(fly.y, 0.0) * (0.7 + 0.6 * own.x) * (0.75 + 0.25 * glow) * swell * scale;
 
     // Near the head a sprite fills the view: fade it out and shrink it,
     // from farther out than a hand particle, which is born at the hand.
@@ -906,6 +1120,7 @@ fn xr_fly_step(idx: u32, p_in: Particle, half: f32, count: u32, cut: u32) {
     p.vel_size = vec4f(vel, size);
     p.color.a = alpha;
     p.flags.x = clamp(presence, 0.0, 1.0);
+    p.flags.w = age;
     write_particle(idx, p);
     if (cut & XR_CUT_ATOMICS) != 0u {
         alive_indices_out[idx] = idx;
@@ -934,7 +1149,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         if idx < count {
             // A firefly's slot: filled within about a second, not all on
             // one frame.
-            if xr_rand3(idx, 11u).x < XR_FLY_SPAWN_HZ * u.delta_time {
+            // A rising one is let go with its band.
+            var spawn_hz = XR_FLY_SPAWN_HZ;
+            if u32(clamp(aux[XR_AUX_AIR].home.y, 0.0, 4.0) + 0.5) == XR_AIR_RISE {
+                spawn_hz *= mix(XR_RISE_IDLE, 1.0, xr_band_level(xr_air_band(idx)));
+            }
+            if xr_rand3(idx, 11u).x < spawn_hz * u.delta_time {
                 write_particle(idx, xr_fly_spawn(idx, half));
                 mark_alive(idx);
             } else {

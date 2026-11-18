@@ -364,7 +364,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       tri/pull do not apply)
     //   adb shell setprop debug.fosfora.fireflies 2000           (board #5470, fireflies.rs: how many fireflies, 0..3000, the cap
     //       (`fireflies::FIREFLY_CAP`); the ones past a lower count fade out over 1.5 s and a higher count fills in about a second;
-    //       default 2000; this and the six knobs after it are live: polled once a second, each change logged)
+    //       default 2000; set, it decides; unset or empty, the room's theme gives the count with the air's color, band and motion
+    //       (board #5543, `themes::Air`: stars, ash, spray, plankton, a mirror ball's specks) and a room with no theme has 2000;
+    //       this and the six knobs after it are live: polled once a second, each change logged)
     //   adb shell setprop debug.fosfora.fireflysize 0.02         (the fireflies' sprite radius, m, 0.002..0.04; each is 0.7 to 1.3 of it;
     //       default 0.02)
     //   adb shell setprop debug.fosfora.fireflygain 0.8          (the fireflies' brightness, 0..2: the opacity at the top of a firefly's
@@ -1405,9 +1407,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     if mode == Mode::World {
         info!("{}", fireflies.line());
     }
-    // The loudness as the flash limit glides it, from the last frame's
+    // The air's band as the flash limit glides it, from the last frame's
     // audio: what the fireflies' size swells with.
     let mut firefly_swell = 0.0f32;
+    // Board #5543: the room's theme makes the fireflies its own air
+    // (`fireflies::Look`): the theme the sim's rows were last made for,
+    // the one last logged, and the orbit's phase.
+    let mut firefly_theme: Option<crate::themes::Theme> = None;
+    let mut firefly_air_logged: Option<Option<crate::themes::Theme>> = None;
+    let mut firefly_orbit = 0.0f32;
     let mut scene = None;
     let mut particles = None;
     let mut static_quad = None;
@@ -4055,6 +4063,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     ([[0.0; 4]; crate::instruments::INSTRUMENT_ROWS], [0.0; 4])
                 };
                 p.set_obstacles(queue, &set);
+                // Board #5543: the air is the saved theme's, as the edges
+                // and the depth light are; logged when it changes.
+                firefly_theme = surface_lanes.saved_theme();
+                firefly_orbit = crate::fireflies::orbit_step(firefly_orbit, dt, fireflies.drift);
+                if firefly_air_logged != Some(firefly_theme) {
+                    info!(
+                        "{} · {} asked",
+                        crate::fireflies::Look::of(firefly_theme).line(firefly_theme),
+                        fireflies.under(firefly_theme).count
+                    );
+                    firefly_air_logged = Some(firefly_theme);
+                }
                 if let Some(s) = scene.as_deref_mut() {
                     s.set_world_inputs(
                         queue,
@@ -4074,9 +4094,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             live_levels.iter().copied(),
                         )),
                         // Board #5470: the fireflies' knobs, and the
-                        // loudness their size swells with.
-                        &fireflies,
+                        // level their size swells with. Board #5543: the
+                        // count, the color, the band and the motion the
+                        // room's theme gives them, and their light goes
+                        // through dark with the surfaces' when a track
+                        // brings its theme, so the old air is unseen when
+                        // the new one takes its slots.
+                        &crate::fireflies::Knobs {
+                            brightness: fireflies.brightness * bringing.veil(),
+                            ..fireflies.under(firefly_theme)
+                        },
                         firefly_swell,
+                        &crate::fireflies::Look::of(firefly_theme),
+                        firefly_orbit,
                     );
                 }
                 if let Some(offset) = hand_mesh_test {
@@ -5104,10 +5134,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // levels gliding (`flash::Limiter::glided`).
             let mut f_shapes = f;
             flash_limit.glided(f_shapes.as_slice_mut());
-            // Board #5470: the loudness gliding is what the fireflies'
-            // size swells with, from the next frame's sim inputs on. Their
-            // light reads the limited loudness itself, in the sim.
-            firefly_swell = f_shapes.rms;
+            // Board #5470: the level gliding is what the fireflies' size
+            // swells with, from the next frame's sim inputs on. Their
+            // light reads the limited level itself, in the sim. Board
+            // #5543: the level of the band the room's theme gives the air.
+            firefly_swell = crate::fireflies::Look::of(firefly_theme).level([
+                f_shapes.rms,
+                f_shapes.bass,
+                f_shapes.mid,
+                f_shapes.presence.max(f_shapes.brilliance),
+            ]);
             (last_rms, last_bass) = (f.rms, f.bass);
             if hop.beat_fired {
                 beat_env = 1.0;
@@ -5974,8 +6010,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 } else {
                     ""
                 },
-                fireflies.fireflies(density),
-                fireflies.count
+                fireflies.under(firefly_theme).fireflies(density),
+                fireflies.under(firefly_theme).count
             );
         }
         // The space size: the world effect's volume, applied when the
@@ -6188,7 +6224,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 info!(
                     "particles alive {} of a pool of {pool} · fireflies asked {} (cap {})",
                     scene.alive_count(),
-                    fireflies.fireflies(density_set),
+                    fireflies.under(firefly_theme).fireflies(density_set),
                     crate::fireflies::FIREFLY_CAP
                 );
             }

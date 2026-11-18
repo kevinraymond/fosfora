@@ -24,6 +24,23 @@
 //! strongly they answer the music, and the hand particles' gravity and
 //! edge-flow strength. Each is clamped to its range, and a value that does
 //! not parse keeps the default.
+//!
+//! **The air per theme** (board #5543, [`Look`]). A theme makes the
+//! fireflies something else: stars, ash, spray, plankton, a mirror ball's
+//! specks. It is the same pool, the same slots under the same count and
+//! cap, the same sprites and the same draw. What the theme gives
+//! (`themes::Air`) is a color, the band their light follows, a count and a
+//! motion, and the sim's header says how each motion goes. The count is the
+//! theme's unless `debug.fosfora.fireflies` is set, which wins
+//! ([`Knobs::under`]). A room with no theme has the fireflies as they
+//! were. When the theme changes, the particles of the old air fade out
+//! where they are, in their own motion and color, and the new ones are
+//! born into theirs, so nothing jumps. When a track brings its theme
+//! through dark (`themes::Bringing`), `app.rs` dims the air's brightness
+//! by the same veil as the surfaces' light.
+
+use crate::surface_fx::{BAND_BASS, BAND_HIGH, BAND_MID, BAND_RMS, BANDS};
+use crate::themes::{AirColor, Motion, Theme};
 
 /// The world effect's name, as its preset has it.
 pub const EFFECT: &str = "Fireflies";
@@ -38,7 +55,7 @@ const _: () = assert!(FIREFLY_CAP < POOL_CAP);
 
 /// The rows the sim reads after the box cell list (`XR_AUX_FIREFLIES`,
 /// `XR_AUX_FIREFLY_ROWS`).
-pub const ROWS: usize = 2;
+pub const ROWS: usize = 4;
 
 /// The fireflies' count (`debug.fosfora.fireflies`), 0 to [`FIREFLY_CAP`].
 /// In the preset's 6 m volume, 2,000 is about one every 0.36 m.
@@ -85,11 +102,196 @@ pub const KNOB_MUSIC: &str = "debug.fosfora.fireflymusic";
 pub const KNOB_GRAVITY: &str = "debug.fosfora.handgravity";
 pub const KNOB_EDGE_FLOW: &str = "debug.fosfora.edgeflow";
 
+/// By band (`themes::AirColor::ByBand`): the colors of the particles that
+/// follow the bass, the mids and the highs. They are the colors of the
+/// parts of Classic that follow those bands: the floor's own, whose rings
+/// the bass spreads, the tables' own, which the mids move, and the walls'
+/// own, the spectrum's. The app has no other colors per band: the edge
+/// bars and the spectrum draw every band in the surface's one color.
+pub const BAND_COLORS: [[f32; 3]; 3] = [
+    crate::surfaces::VIOLET,
+    crate::surfaces::BLUE,
+    crate::surfaces::WARM_WHITE,
+];
+
+/// The orbit's turn rate (rad/s) per m/s of the drift speed: at the
+/// default drift one turn in about 42 s.
+pub const ORBIT_RAD_PER_M: f32 = 2.5;
+
+/// The orbit's phase a frame of `dt` seconds later at the drift speed
+/// `drift` (m/s), kept in 0..TAU. The XR app steps it and hands it to the
+/// sim ([`Knobs::rows`]), so anything else that should turn with the
+/// particles can read the same number.
+pub fn orbit_step(phase: f32, dt: f32, drift: f32) -> f32 {
+    if !(phase.is_finite() && dt.is_finite() && drift.is_finite()) {
+        return 0.0;
+    }
+    (phase + dt.max(0.0) * drift.max(0.0) * ORBIT_RAD_PER_M).rem_euclid(std::f32::consts::TAU)
+}
+
+/// Where an orbiting particle is at `phase`, in meters from the anchor
+/// (the sim's `xr_orbit_place`): `radius` of the way out (0..1, its own),
+/// `angle` its own (radians) and `height` its own share of the slab, in a
+/// volume of half extent `half` whose slab runs from `slab[0]` to
+/// `slab[1]` of it and whose particles span `span` of it.
+pub fn orbit_place(
+    phase: f32,
+    (radius, angle, height): (f32, f32, f32),
+    half: f32,
+    span: f32,
+    slab: [f32; 2],
+) -> [f32; 3] {
+    let r = radius.sqrt() * half * span;
+    let a = phase + angle;
+    [
+        r * a.cos(),
+        (slab[0] + (slab[1] - slab[0]) * height) * half,
+        r * a.sin(),
+    ]
+}
+
+/// How a particle of the air is tinted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Tint {
+    /// The fireflies' own two tints, a warm yellow and a yellow green.
+    Own,
+    /// One color (linear RGB), each particle a little toward white.
+    Color([f32; 3]),
+    /// The color of the band it follows ([`BAND_COLORS`]).
+    ByBand,
+}
+
+/// The motion's number in the sim's row (`XR_AIR_*`).
+pub fn motion_id(motion: Motion) -> u32 {
+    match motion {
+        Motion::Wander => 0,
+        Motion::Twinkle => 1,
+        Motion::Rise => 2,
+        Motion::Drift => 3,
+        Motion::Orbit => 4,
+    }
+}
+
+/// What the air's particles are (board #5543): the fireflies, or what the
+/// room's theme makes of them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Look {
+    /// Which air this is: 0 with no theme, else the theme's place in the
+    /// cycle from 1. A particle carries the stamp it was born with, and
+    /// the sim fades out the ones whose stamp is not the air's.
+    pub stamp: u32,
+    pub tint: Tint,
+    /// The audio band the light and the size follow (`surface_fx::BAND_*`).
+    pub band: u32,
+    pub motion: Motion,
+}
+
+impl Default for Look {
+    /// The fireflies as they were: their own tints, the loudness, the
+    /// wander.
+    fn default() -> Self {
+        Self {
+            stamp: 0,
+            tint: Tint::Own,
+            band: BAND_RMS,
+            motion: Motion::Wander,
+        }
+    }
+}
+
+impl Look {
+    /// The air in a room whose saved theme is `theme`: the theme's
+    /// (`themes::Theme::air`), or the fireflies with none. A color index
+    /// is the surface palette's; the key's tint is not the air's to
+    /// follow, and reads as white.
+    pub fn of(theme: Option<Theme>) -> Self {
+        let Some(theme) = theme else {
+            return Self::default();
+        };
+        let air = theme.air();
+        let place = Theme::ALL.iter().position(|t| *t == theme).unwrap_or(0);
+        Self {
+            stamp: place as u32 + 1,
+            tint: match air.color {
+                AirColor::Index(i) => Tint::Color(crate::surfaces::surface_color(
+                    i,
+                    crate::surfaces::KIND_OTHER,
+                    [1.0; 3],
+                )),
+                AirColor::ByBand => Tint::ByBand,
+            },
+            band: air.band.min(BANDS - 1),
+            motion: air.motion,
+        }
+    }
+
+    /// The sim's two rows for the air (the layout is in the sim's header):
+    /// the color and how a particle is tinted, then the stamp, the motion,
+    /// the band and the orbit's `phase`.
+    pub fn rows(&self, phase: f32) -> [[f32; 4]; 2] {
+        let (rgb, tint) = match self.tint {
+            Tint::Own => ([0.0; 3], 0.0),
+            Tint::Color(c) => (c, 1.0),
+            Tint::ByBand => ([0.0; 3], 2.0),
+        };
+        let phase = if phase.is_finite() { phase } else { 0.0 };
+        [
+            [rgb[0], rgb[1], rgb[2], tint],
+            [
+                self.stamp as f32,
+                motion_id(self.motion) as f32,
+                self.band as f32,
+                phase,
+            ],
+        ]
+    }
+
+    /// The band's level in the four the surfaces read (`rms`, `bass`,
+    /// `mid`, `high`), 0..1: what the size swells with, from the levels
+    /// gliding. Tinted by band, every particle has a band of its own, and
+    /// the size follows the loudness.
+    pub fn level(&self, [rms, bass, mid, high]: [f32; 4]) -> f32 {
+        let level = match (self.tint, self.band) {
+            (Tint::ByBand, _) => rms,
+            (_, BAND_BASS) => bass,
+            (_, BAND_MID) => mid,
+            (_, BAND_HIGH) => high,
+            _ => rms,
+        };
+        if level.is_finite() {
+            level.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// The air in a few words, for the log: "air: warm white, high,
+    /// twinkle (theme aurora)", "air: the fireflies (no theme saved)".
+    pub fn line(&self, theme: Option<Theme>) -> String {
+        let Some(theme) = theme else {
+            return "air: the fireflies (no theme saved)".to_owned();
+        };
+        let color = match theme.air().color {
+            AirColor::Index(i) => crate::surfaces::color_name(i),
+            AirColor::ByBand => "by band",
+        };
+        format!(
+            "air: {color}, {}, {} (theme {})",
+            crate::surface_fx::band_name(self.band),
+            self.motion.name(),
+            theme.name()
+        )
+    }
+}
+
 /// The live knobs, each inside its range.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Knobs {
     /// The fireflies' count, at most [`FIREFLY_CAP`].
     pub count: u32,
+    /// The count's knob is set to a number, so it decides and the room's
+    /// theme does not ([`Self::under`]).
+    pub count_forced: bool,
     /// Their sprite radius (m).
     pub size: f32,
     /// Their peak opacity with the music silent.
@@ -108,6 +310,7 @@ impl Default for Knobs {
     fn default() -> Self {
         Self {
             count: COUNT,
+            count_forced: false,
             size: SIZE_M,
             brightness: BRIGHTNESS,
             drift: DRIFT_M_S,
@@ -121,7 +324,9 @@ impl Default for Knobs {
 impl Knobs {
     /// The knobs as set, each read through `prop` (a system property by
     /// name, `None` unset). A value that is not a finite number takes the
-    /// default, and one out of range the nearest end of it.
+    /// default, and one out of range the nearest end of it. The count's
+    /// knob at a number also takes the count from the room's theme
+    /// ([`Self::under`]); unset, empty or unreadable leaves it the theme's.
     pub fn from_knobs(prop: impl Fn(&str) -> Option<String>) -> Self {
         let d = Self::default();
         let number = |name: &str| {
@@ -131,6 +336,7 @@ impl Knobs {
         };
         Self {
             count: number(KNOB_COUNT).map_or(d.count, |v| v.clamp(0.0, FIREFLY_CAP as f32) as u32),
+            count_forced: number(KNOB_COUNT).is_some(),
             size: number(KNOB_SIZE).map_or(d.size, |v| v.clamp(SIZE_RANGE_M[0], SIZE_RANGE_M[1])),
             brightness: number(KNOB_BRIGHTNESS)
                 .map_or(d.brightness, |v| v.clamp(0.0, BRIGHTNESS_MAX)),
@@ -138,6 +344,21 @@ impl Knobs {
             music: number(KNOB_MUSIC).map_or(d.music, |v| v.clamp(0.0, 1.0)),
             gravity: number(KNOB_GRAVITY).map_or(d.gravity, |v| v.clamp(0.0, HAND_GRAVITY_MAX)),
             edge_flow: number(KNOB_EDGE_FLOW).map_or(d.edge_flow, |v| v.clamp(0.0, EDGE_FLOW_MAX)),
+        }
+    }
+
+    /// These knobs in a room whose saved theme is `theme` (board #5543):
+    /// the count is the theme's (`themes::Air::count`, held to
+    /// [`FIREFLY_CAP`]) unless the count's knob is set. With no theme the
+    /// count is the knob's or the default.
+    #[must_use]
+    pub fn under(self, theme: Option<Theme>) -> Self {
+        match theme {
+            Some(t) if !self.count_forced => Self {
+                count: t.air().count.min(FIREFLY_CAP),
+                ..self
+            },
+            _ => self,
         }
     }
 
@@ -154,17 +375,19 @@ impl Knobs {
         ((count as f32 * density).round() as u32).min(count)
     }
 
-    /// The sim's two rows (the layout is in the sim's header): the count at
-    /// `density`, the size, the brightness and the drift speed, then the
+    /// The sim's four rows (the layout is in the sim's header): the count
+    /// at `density`, the size, the brightness and the drift speed; the
     /// music knob, the hand particles' gravity and edge-flow strength, and
-    /// `swell`, the loudness as the flash limit glides it, 0..1, which the
-    /// fireflies' size follows.
-    pub fn rows(&self, density: f32, swell: f32) -> [[f32; 4]; ROWS] {
+    /// `swell`, the air's band as the flash limit glides it, 0..1, which
+    /// the size follows ([`Look::level`]); then the air's two
+    /// ([`Look::rows`]) with the orbit's `phase` ([`orbit_step`]).
+    pub fn rows(&self, density: f32, swell: f32, air: &Look, phase: f32) -> [[f32; 4]; ROWS] {
         let swell = if swell.is_finite() {
             swell.clamp(0.0, 1.0)
         } else {
             0.0
         };
+        let [color, air] = air.rows(phase);
         [
             [
                 f32::from_bits(self.fireflies(density)),
@@ -173,6 +396,8 @@ impl Knobs {
                 self.drift,
             ],
             [self.music, self.gravity, self.edge_flow, swell],
+            color,
+            air,
         ]
     }
 
@@ -241,6 +466,7 @@ pub fn hand_steal(count: u32, alive: u32, pool: u32, fireflies: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::surfaces::{KIND_FLOOR, KIND_TABLE, KIND_WALL};
 
     const PRESET: &str = include_str!("../../../assets/xr/effects/fireflies_xr_world.pfx");
     const SIM: &str = include_str!("../../../assets/xr/shaders/fireflies_xr_sim.wgsl");
@@ -345,7 +571,8 @@ mod tests {
                     n <= k.count && n <= FIREFLY_CAP,
                     "{value} at {density}: {n}"
                 );
-                assert_eq!(k.rows(density, 0.5)[0][0].to_bits(), n);
+                let rows = k.rows(density, 0.5, &Look::default(), 0.0);
+                assert_eq!(rows[0][0].to_bits(), n);
             }
         }
         assert_eq!(knobs_of(&[(KNOB_COUNT, "3001")]).count, FIREFLY_CAP);
@@ -357,7 +584,7 @@ mod tests {
         };
         assert_eq!(over.fireflies(1.0), FIREFLY_CAP);
         // The pool: the preset's, or the count knob's, never past the cap.
-        let rows = 1240;
+        let rows = 1242;
         assert_eq!(pool(None, POOL_CAP, rows), POOL_CAP);
         for knob in [
             None,
@@ -410,6 +637,7 @@ mod tests {
             set,
             Knobs {
                 count: 1_500,
+                count_forced: true,
                 size: 0.03,
                 brightness: 1.2,
                 drift: 0.1,
@@ -481,6 +709,7 @@ mod tests {
     fn the_rows_carry_the_knobs_in_the_sims_lanes() {
         let k = Knobs {
             count: 1_000,
+            count_forced: false,
             size: 0.012,
             brightness: 0.9,
             drift: 0.05,
@@ -488,7 +717,8 @@ mod tests {
             gravity: 3.0,
             edge_flow: 1.5,
         };
-        let rows = k.rows(0.5, 0.25);
+        let fireflies = Look::default();
+        let rows = k.rows(0.5, 0.25, &fireflies, 0.0);
         assert_eq!(rows[0][0].to_bits(), 500);
         for (got, want) in rows[0][1..].iter().zip([0.012, 0.9, 0.05]) {
             assert_close!(*got, want);
@@ -497,9 +727,13 @@ mod tests {
             assert_close!(*got, want);
         }
         // The swell is a level, 0..1, and a bad one is silence.
-        assert_close!(k.rows(1.0, 3.0)[1][3], 1.0);
-        assert_close!(k.rows(1.0, -3.0)[1][3], 0.0);
-        assert_close!(k.rows(1.0, f32::NAN)[1][3], 0.0);
+        assert_close!(k.rows(1.0, 3.0, &fireflies, 0.0)[1][3], 1.0);
+        assert_close!(k.rows(1.0, -3.0, &fireflies, 0.0)[1][3], 0.0);
+        assert_close!(k.rows(1.0, f32::NAN, &fireflies, 0.0)[1][3], 0.0);
+        // With no theme the air's two rows are all zero: the fireflies as
+        // they were, which is also what a sim reads before anything is
+        // written.
+        assert_eq!(rows[2..], [[0.0; 4]; 2]);
         // The log names every knob's value.
         assert_eq!(
             Knobs::default().line(),
@@ -563,6 +797,13 @@ mod tests {
         );
         assert_eq!(get("XR_AUX_FIREFLIES"), 1238);
         assert_eq!(get("XR_AUX_FIREFLY_ROWS") as usize, ROWS);
+        // The air's two rows (board #5543) follow the knobs' two.
+        assert_eq!(get("XR_AUX_AIR_COLOR"), get("XR_AUX_FIREFLIES") + 2);
+        assert_eq!(get("XR_AUX_AIR"), get("XR_AUX_FIREFLIES") + 3);
+        assert_eq!(
+            get("XR_AUX_FIREFLIES") + get("XR_AUX_FIREFLY_ROWS"),
+            get("XR_AUX_AIR") + 1
+        );
         assert_close!(sim_f32(&module, "XR_EDGE_BAND_M"), EDGE_BAND_M);
         assert_close!(
             sim_f32(&module, "XR_POUR_SPREAD"),
@@ -601,9 +842,270 @@ mod tests {
         ] {
             assert!(!code.contains(banned), "the sim uses {banned}");
         }
-        // The fireflies' light reads the loudness the flash limit lets
-        // through, and nothing else of the music.
-        assert!(code.contains("XR_FLY_MUSIC_LIGHT * clamp(u.rms, 0.0, 1.0)"));
+        // The light reads the air's band as the flash limit lets it
+        // through, and nothing else of the music: the loudness, the bass,
+        // the mids or the highs (board #5543), read in `xr_band_level`.
+        assert!(code.contains("let light = 1.0 + music * XR_FLY_MUSIC_LIGHT * level;"));
+        assert!(code.contains("let level = xr_band_level(xr_air_band(idx));"));
+        assert!(code.contains("return clamp(u.rms, 0.0, 1.0);"));
+    }
+
+    /// A vector constant's lanes.
+    fn sim_vec(module: &naga::Module, name: &str) -> Vec<f32> {
+        let (_, c) = module
+            .constants
+            .iter()
+            .find(|(_, c)| c.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("const {name}"));
+        let naga::Expression::Compose { ref components, .. } = module.global_expressions[c.init]
+        else {
+            panic!("const {name} is not a vector");
+        };
+        components
+            .iter()
+            .map(|&h| match module.global_expressions[h] {
+                naga::Expression::Literal(naga::Literal::F32(v)) => v,
+                ref e => panic!("const {name} holds {e:?}"),
+            })
+            .collect()
+    }
+
+    /// Board #5543: what a theme gives the air reaches the sim's rows, and
+    /// a room with no theme has the fireflies as they were.
+    #[test]
+    fn the_air_is_the_themes_and_the_fireflies_with_none() {
+        use crate::surfaces::{AMBER, GREEN, ROSE, TEAL, WARM_WHITE};
+        let none = Look::of(None);
+        assert_eq!(none, Look::default());
+        assert_eq!(
+            (none.stamp, none.tint, none.band, none.motion),
+            (0, Tint::Own, BAND_RMS, Motion::Wander)
+        );
+        assert_eq!(none.rows(1.5), [[0.0; 4], [0.0, 0.0, 0.0, 1.5]]);
+        assert_eq!(none.line(None), "air: the fireflies (no theme saved)");
+        // Each theme its own stamp, never the fireflies' 0, so a change of
+        // theme is a change of air.
+        let mut stamps: Vec<u32> = Theme::ALL
+            .into_iter()
+            .map(|t| Look::of(Some(t)).stamp)
+            .collect();
+        assert!(stamps.iter().all(|s| *s > 0));
+        stamps.sort_unstable();
+        stamps.dedup();
+        assert_eq!(stamps.len(), Theme::ALL.len());
+        // The video's three, then the rest: the color, the band, the
+        // motion.
+        let air = |t: Theme| {
+            let l = Look::of(Some(t));
+            (l.tint, l.band, l.motion)
+        };
+        let color = Tint::Color;
+        assert_eq!(
+            air(Theme::Aurora),
+            (color(WARM_WHITE), BAND_HIGH, Motion::Twinkle)
+        );
+        assert_eq!(air(Theme::Flint), (color(AMBER), BAND_BASS, Motion::Rise));
+        assert_eq!(
+            air(Theme::Contour),
+            (color(GREEN), BAND_HIGH, Motion::Wander)
+        );
+        assert_eq!(air(Theme::Drift), (color(TEAL), BAND_HIGH, Motion::Drift));
+        assert_eq!(air(Theme::Tide), (color(ROSE), BAND_BASS, Motion::Rise));
+        assert_eq!(
+            air(Theme::Mirror),
+            (color(WARM_WHITE), BAND_HIGH, Motion::Orbit)
+        );
+        assert_eq!(
+            air(Theme::Classic),
+            (Tint::ByBand, BAND_HIGH, Motion::Wander)
+        );
+        // The rows: the color and the tint's number, then the stamp, the
+        // motion, the band and the orbit's phase.
+        let aurora = Look::of(Some(Theme::Aurora));
+        let [c, a] = aurora.rows(0.25);
+        assert_close!(c, [WARM_WHITE[0], WARM_WHITE[1], WARM_WHITE[2], 1.0]);
+        assert_close!(a, [aurora.stamp as f32, 1.0, BAND_HIGH as f32, 0.25]);
+        assert_close!(Look::of(Some(Theme::Classic)).rows(0.0)[0][3], 2.0);
+        assert_close!(Look::of(Some(Theme::Flint)).rows(f32::NAN)[1][3], 0.0);
+        let knobs = Knobs::default();
+        assert_eq!(knobs.rows(1.0, 0.0, &aurora, 0.25)[2..], [c, a]);
+        // The words.
+        assert_eq!(
+            aurora.line(Some(Theme::Aurora)),
+            "air: warm white, high, twinkle (theme aurora)"
+        );
+        assert_eq!(
+            Look::of(Some(Theme::Classic)).line(Some(Theme::Classic)),
+            "air: by band, high, wander (theme classic)"
+        );
+        // The level the size swells with: the air's band, gliding; the
+        // loudness for the fireflies and for an air tinted by band.
+        let levels = [0.2, 0.7, 0.4, 0.9];
+        assert_close!(none.level(levels), 0.2);
+        assert_close!(Look::of(Some(Theme::Flint)).level(levels), 0.7);
+        assert_close!(aurora.level(levels), 0.9);
+        assert_close!(Look::of(Some(Theme::Classic)).level(levels), 0.2);
+        assert_close!(aurora.level([0.0, 0.0, 0.0, 7.0]), 1.0);
+        assert_close!(aurora.level([0.0, 0.0, 0.0, f32::NAN]), 0.0);
+    }
+
+    /// The count is the theme's, held to the cap, unless the count's knob
+    /// is set; with no theme it is the knob's or the default.
+    #[test]
+    fn the_count_is_the_themes_unless_the_knob_is_set() {
+        let d = Knobs::default();
+        assert!(!d.count_forced);
+        assert_eq!(d.under(None), d);
+        for t in Theme::ALL {
+            let k = d.under(Some(t));
+            assert_eq!(k.count, t.air().count, "{t:?}");
+            assert!(k.count <= FIREFLY_CAP);
+            assert_eq!(
+                Knobs {
+                    count: d.count,
+                    ..k
+                },
+                d,
+                "{t:?}"
+            );
+        }
+        assert_eq!(d.under(Some(Theme::Flint)).count, 1_500);
+        assert_eq!(d.under(Some(Theme::Tide)).count, 1_000);
+        // The knob at a number wins, 0 too; unset, empty or unreadable
+        // leaves the count the theme's.
+        for (value, forced, flint) in [
+            ("800", true, 800),
+            ("0", true, 0),
+            ("9999", true, FIREFLY_CAP),
+            ("", false, 1_500),
+            (" ", false, 1_500),
+            ("many", false, 1_500),
+            ("NaN", false, 1_500),
+        ] {
+            let k = knobs_of(&[(KNOB_COUNT, value)]);
+            assert_eq!(k.count_forced, forced, "{value:?}");
+            assert_eq!(k.under(Some(Theme::Flint)).count, flint, "{value:?}");
+        }
+        assert!(!knobs_of(&[(KNOB_SIZE, "0.03")]).count_forced);
+    }
+
+    /// The sim's side of the air: its numbers for the motions and the
+    /// bands are this crate's, and each motion's constants keep what the
+    /// motion promises.
+    #[test]
+    fn the_sims_air_is_the_one_the_rows_name() {
+        let module = sim_module();
+        let u = |name: &str| sim_u32(&module, name);
+        let f = |name: &str| sim_f32(&module, name);
+        let v = |name: &str| sim_vec(&module, name);
+        // The motions' numbers.
+        for (motion, name) in [
+            (Motion::Wander, "XR_AIR_WANDER"),
+            (Motion::Twinkle, "XR_AIR_TWINKLE"),
+            (Motion::Rise, "XR_AIR_RISE"),
+            (Motion::Drift, "XR_AIR_DRIFT"),
+            (Motion::Orbit, "XR_AIR_ORBIT"),
+        ] {
+            assert_eq!(u(name), motion_id(motion), "{name}");
+        }
+        assert_eq!(Motion::ALL.len(), 5);
+        assert_close!(f("XR_TINT_COLOR"), 1.0);
+        assert_close!(f("XR_TINT_BAND"), 2.0);
+        // The bands' numbers are the surfaces' (`surface_fx::BAND_*`).
+        assert_eq!((BAND_RMS, BAND_BASS, BAND_MID, BAND_HIGH), (0, 1, 2, 3));
+        for (band, read) in [
+            ("1u", "clamp(u.bass, 0.0, 1.0)"),
+            ("2u", "clamp(u.mid, 0.0, 1.0)"),
+            ("3u", "clamp(max(u.presence, u.brilliance), 0.0, 1.0)"),
+        ] {
+            let want = format!("if band == {band} {{\n        return {read};");
+            assert!(SIM.contains(&want), "{want}");
+        }
+        // By band: the bass, the mids and the highs in Classic's colors.
+        assert_close!(v("XR_BAND_BASS"), BAND_COLORS[0].to_vec());
+        assert_close!(v("XR_BAND_MID"), BAND_COLORS[1].to_vec());
+        assert_close!(v("XR_BAND_HIGH"), BAND_COLORS[2].to_vec());
+        assert_close!(BAND_COLORS[0], crate::surfaces::palette(KIND_FLOOR));
+        assert_close!(BAND_COLORS[1], crate::surfaces::palette(KIND_TABLE));
+        assert_close!(BAND_COLORS[2], crate::surfaces::palette(KIND_WALL));
+        // The fastest any particle goes against the drift speed.
+        let top = 1.4 / 1.1;
+        // A star is nearly still, high in the room, and its own flicker
+        // turns about once a second at most: a third of the three a
+        // second the flash rule allows, were one star a region.
+        assert!(DRIFT_M_S * top * f("XR_STAR_DRIFT") < 0.01);
+        assert!(f("XR_STAR_Y_LOW") > 0.0 && f("XR_STAR_Y_LOW") < f("XR_FLY_Y_HIGH"));
+        let star = v("XR_STAR_PERIOD_S");
+        assert!(1.0 / star[0] < 1.2 && star[0] < star[1]);
+        assert!(f("XR_STAR_CALM") > f("XR_FLY_GLOW_LOW") && f("XR_STAR_CALM") < 1.0);
+        // A rising one is born on the floor, on average climbs past a
+        // seated eye (1.2 m), and the fastest over the longest life is
+        // still inside the volume, so it ends by fading and not by being
+        // born again. It fades over the last half of its life.
+        let (low, high, out) = (f("XR_FLY_Y_LOW"), f("XR_FLY_Y_HIGH"), f("XR_FLY_OUT"));
+        let half = 3.0;
+        let life = v("XR_RISE_LIFE_S");
+        let up = DRIFT_M_S * f("XR_RISE_SPEED");
+        assert!(f("XR_RISE_BIRTH") <= 0.1);
+        assert!(up / 1.1 * 0.5 * (life[0] + life[1]) > 1.2 + 0.3);
+        assert!(up * top * life[1] < (high + (out - 1.0) - low) * half);
+        assert!((0.3..=0.7).contains(&f("XR_RISE_FADE")));
+        assert!(f("XR_RISE_IDLE") > 0.0 && f("XR_RISE_IDLE") < 0.2);
+        assert!(f("XR_RISE_SWAY") < 0.5);
+        // The drift's way is one level direction, and a particle comes
+        // back in where it is unseen: past the bound and well short of
+        // where one is taken as out.
+        let dir = glam::Vec3::from_slice(&v("XR_DRIFT_DIR"));
+        assert!((dir.length() - 1.0).abs() < 1e-3, "{dir}");
+        assert_close!(dir.y, 0.0);
+        assert!(f("XR_DRIFT_WRAP") > 1.0 && f("XR_DRIFT_WRAP") < out);
+        assert!(f("XR_DRIFT_WOBBLE") < 0.5);
+        // The old air fades out faster than a firefly thins.
+        assert!(f("XR_AIR_SWAP_S") < f("XR_FLY_FADE_S"));
+        // The wander is the fireflies' own, as it was.
+        assert!(SIM.contains(
+            "let dir = vec3f(cos(a) + XR_FLY_LOOP * cos(b), 0.5 * sin(c), sin(a) + XR_FLY_LOOP * sin(b));"
+        ));
+    }
+
+    /// The orbit: one phase for every particle, stepped by the app, and a
+    /// particle's radius and height its own, so it keeps both.
+    #[test]
+    fn an_orbit_keeps_its_radius_and_turns_with_the_phase() {
+        use std::f32::consts::TAU;
+        let module = sim_module();
+        let slab = [
+            sim_f32(&module, "XR_FLY_Y_LOW"),
+            sim_f32(&module, "XR_FLY_Y_HIGH"),
+        ];
+        let span = sim_f32(&module, "XR_FLY_SPAN");
+        let own = (0.36, 1.0, 0.5);
+        let at = |phase: f32| glam::Vec3::from(orbit_place(phase, own, 3.0, span, slab));
+        let level = |p: glam::Vec3| glam::Vec2::new(p.x, p.z).length();
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        let start = at(0.0);
+        // The square root of its own share of the way out, so the
+        // particles fill the disk evenly.
+        assert!(near(level(start), 0.6 * 3.0 * span));
+        assert!(near(start.y, (slab[0] + slab[1]) * 0.5 * 3.0));
+        let mut phase = 0.0;
+        for _ in 0..60 * 72 {
+            phase = orbit_step(phase, 1.0 / 72.0, DRIFT_M_S);
+            assert!((0.0..TAU).contains(&phase));
+            let p = at(phase);
+            assert!(near(level(p), level(start)), "{p}");
+            assert!(near(p.y, start.y), "{p}");
+        }
+        // A minute at the default drift: 0.15 rad/s, a turn in about 42 s.
+        assert_close!(DRIFT_M_S * ORBIT_RAD_PER_M, 0.15);
+        assert!((phase - (60.0 * 0.15f32).rem_euclid(TAU)).abs() < 1e-2);
+        // Half a turn puts it across the anchor.
+        let across = at(std::f32::consts::PI);
+        assert!(near(across.x, -start.x) && near(across.z, -start.z));
+        // No drift, no turn; bad input starts over.
+        assert_close!(orbit_step(1.0, 1.0, 0.0), 1.0);
+        assert_close!(orbit_step(f32::NAN, 1.0, 0.1), 0.0);
+        assert_close!(orbit_step(1.0, f32::INFINITY, 0.1), 0.0);
     }
 
     #[test]
