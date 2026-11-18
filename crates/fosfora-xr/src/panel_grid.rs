@@ -15,9 +15,10 @@
 //! action. The pointer picks a row by its height alone (a row owns half
 //! the gap above and below it, so the rows tile the block), a column by
 //! the side of the panel's center it is on, and a half of the cell by the
-//! side of the cell's center. The Music cell is the one exception (board
+//! side of the cell's center. The Music row is the one exception (board
 //! #5385): its two end boxes and the middle between them are three
-//! targets ([`end_box`]).
+//! targets ([`end_box`]). Since board #5572 it has the bottom row to
+//! itself, so its middle holds a track's whole title.
 
 use crate::release::Surface;
 
@@ -47,12 +48,14 @@ pub const STATUS_PAD: f32 = 4.0;
 /// has a row to find; since board #5393 the two share the left cell and
 /// Roam has the right one), over the agent's provider (board #3776), over
 /// the pitcher and debug toggles, over the room editor's (board #3326),
-/// over the particles' (step 2c), over the music's (board #3472). The
-/// release surface (board #4204) leaves out the pitcher and debug row
-/// ([`menu`]). Board #5470: the world effect's `<` `>` row, which was on
-/// top, went with the effects it stepped, so the menu was one row shorter
-/// until the Limit flashing row took that place.
-pub const MENU_ROWS: usize = 7;
+/// over the particles' (step 2c), over Voice and Theme, over the music's
+/// (board #3472). The release surface (board #4204) leaves out the pitcher
+/// and debug row ([`menu`]). Board #5470: the world effect's `<` `>` row,
+/// which was on top, went with the effects it stepped, so the menu was one
+/// row shorter until the Limit flashing row took that place. Board #5572:
+/// Voice and Theme, which shared the music's row, have the row over it,
+/// so the menu is one row taller.
+pub const MENU_ROWS: usize = 8;
 /// The rows Edit room adds under its own (board #3472, D3): the pointed
 /// surface's color, band and strength.
 pub const SURFACE_ROWS: usize = 3;
@@ -79,7 +82,11 @@ pub enum MenuRow {
     /// its cell with "All: none" on the developer surface (`all_none`)
     /// and has the cell to itself on the release one.
     Cloud { all_none: bool },
-    /// The Music cell beside Voice and Theme.
+    /// The Voice toggle beside the Theme control, a cell each (board
+    /// #5572; until then two halves of a cell on the music's row).
+    VoiceTheme,
+    /// The music's `<`, play or stop and `>` across the row (board #5572),
+    /// so the track's title has the row's width.
     Music,
 }
 
@@ -103,6 +110,7 @@ pub fn menu(surface: Surface, editing: bool) -> Vec<MenuRow> {
     rows.push(MenuRow::Cloud {
         all_none: developer,
     });
+    rows.push(MenuRow::VoiceTheme);
     rows.push(MenuRow::Music);
     rows
 }
@@ -140,15 +148,17 @@ pub const MIN_FONT: f32 = 12.0;
 /// room to spare: about 250 points in the texture dumps. 300 since the
 /// Agent row (board #3776), the most that leaves room for the fullest
 /// block (320 before). Board #5534: the Limit flashing row fills that
-/// block again, as the effect's row did until board #5470.
-pub const HEADER_H: f32 = 300.0;
+/// block again, as the effect's row did until board #5470. Board #5572:
+/// 260 since Voice and Theme took a row of their own, which leaves the
+/// header's 250 points and 10 to spare over the fullest block.
+pub const HEADER_H: f32 = 260.0;
 /// The debug panel's -/+ steppers (`STEPPERS` in `hud.rs`, which checks
 /// the count), two to a row.
 pub const STEPPERS: usize = 10;
 /// The most rows the debug panel shows: the steppers' pair rows, then the
 /// menu's rows (Limit flashing, Recenter and Rescan, Agent, Pitcher and
 /// Debug, Edit room and its status, with Edit room on the surface's Color,
-/// Band and Strength, Particles and All: none, Music and Voice).
+/// Band and Strength, Particles and All: none, Voice and Theme, Music).
 pub const fn debug_rows(editing: bool) -> usize {
     STEPPERS.div_ceil(2) + menu_rows(Surface::Developer, editing)
 }
@@ -279,6 +289,13 @@ pub fn cell_w() -> f32 {
     cell(row(PANEL_H, 0), 0).width()
 }
 
+/// The width the Music row gives a track's title (points): the row between
+/// its `<` and `>`, less the 2 points `hud.rs` draws the button in from
+/// each of them and the 3 it keeps the words from each of its ends.
+pub fn music_title_w() -> f32 {
+    row(PANEL_H, 0).middle().width() - 4.0 - 6.0
+}
+
 /// The width half a cell gives its words (points): `hud.rs` splits a cell
 /// at its center and leaves half a column's gap on each side of the split.
 pub fn half_w() -> f32 {
@@ -357,6 +374,21 @@ mod tests {
         // Each end box is as wide as a stepper's, 2 cm on the panel.
         assert_close!(left.width(), END_BOX_W);
         assert!(c.middle().width() > 100.0, "{:?}", c.middle());
+        // The Music row (board #5572): the same three across the whole
+        // row, `<` at its left end, `>` at its right, 300 points between.
+        let r = row(PANEL_H, 0);
+        let (left, right) = r.end_boxes();
+        assert_eq!(end_box(r, r.min[0]), Some(false));
+        assert_eq!(end_box(r, left.max[0] - 0.1), Some(false));
+        assert_eq!(end_box(r, left.max[0]), None);
+        assert_eq!(end_box(r, PANEL_W * 0.5), None);
+        assert_eq!(end_box(r, right.min[0] - 0.1), None);
+        assert_eq!(end_box(r, right.min[0]), Some(true));
+        assert_eq!(end_box(r, r.max[0]), Some(true));
+        assert_close!(r.middle().width(), 300.0);
+        // The play button covers both columns' sides of the center, so
+        // the column the pointer is on picks nothing here.
+        assert!(left.max[0] < PANEL_W * 0.5 && right.min[0] > PANEL_W * 0.5);
     }
 
     #[test]
@@ -483,30 +515,34 @@ mod tests {
         // its own (D3). The Agent row (board #3776) added one. Recenter
         // and Rescan joining the menu (board #4192) added none: the panel
         // had them. The effect row's going (board #5470) took one away,
-        // and the Limit flashing row (board #5534) took its place, so the
-        // header has no row of headroom over the fullest block.
-        assert_eq!(debug_rows(false), 12);
-        assert_eq!(debug_rows(true), 15);
+        // and the Limit flashing row (board #5534) took its place. Voice
+        // and Theme's own row (board #5572) added one, and the header
+        // gave up 40 points for it, so the header has no row of headroom
+        // over the fullest block.
+        assert_eq!(debug_rows(false), 13);
+        assert_eq!(debug_rows(true), 16);
+        assert_close!(HEADER_H, 260.0);
         for editing in [false, true] {
             assert!(block_top(PANEL_H, debug_rows(editing)) >= MARGIN + HEADER_H);
         }
         assert!(block_top(PANEL_H, debug_rows(true) + 1) < MARGIN + HEADER_H);
-        // The hand menu: a title over seven rows (Limit flashing on top
+        // The hand menu: a title over eight rows (Limit flashing on top
         // since board #5534, Recenter and Rescan under it since board
         // #4192, the Agent row under them since board #3776; the effect's
-        // row was on top until board #5470), or ten with Edit room on, 40
+        // row was on top until board #5470; Voice and Theme over the
+        // music's since board #5572), or eleven with Edit room on, 40
         // points taller for each past the first. No row or font shrinks
         // for them.
         let dev = Surface::Developer;
-        assert_eq!((menu_rows(dev, false), menu_rows(dev, true)), (7, 10));
-        assert_close!(menu_h(menu_rows(dev, false)), 324.0);
-        assert_close!(menu_h(menu_rows(dev, true)), 444.0);
+        assert_eq!((menu_rows(dev, false), menu_rows(dev, true)), (8, 11));
+        assert_close!(menu_h(menu_rows(dev, false)), 364.0);
+        assert_close!(menu_h(menu_rows(dev, true)), 484.0);
         // The release surface (board #4204): one row fewer, 40 points
         // shorter.
         let rel = Surface::Release;
-        assert_eq!((menu_rows(rel, false), menu_rows(rel, true)), (6, 9));
-        assert_close!(menu_h(menu_rows(rel, false)), 284.0);
-        assert_close!(menu_h(menu_rows(rel, true)), 404.0);
+        assert_eq!((menu_rows(rel, false), menu_rows(rel, true)), (7, 10));
+        assert_close!(menu_h(menu_rows(rel, false)), 324.0);
+        assert_close!(menu_h(menu_rows(rel, true)), 444.0);
         for editing in [false, true] {
             for surface in [dev, rel] {
                 let n = menu_rows(surface, editing);
@@ -570,27 +606,49 @@ mod tests {
         for text in whole {
             fits(text, FONT_BUTTON, cell_w());
         }
+        // Board #5572: Voice and Theme have a cell each, so every state
+        // of both is one line at the button's size, "Voice: no mic" and
+        // "Theme: Contour*" too, which half a cell did not hold.
+        for (on, mic) in [(false, true), (true, true), (true, false)] {
+            fits(crate::voice::toggle_words(on, mic), FONT_BUTTON, cell_w());
+        }
+        assert!(width("Voice: no mic", FONT_BUTTON) > half_w());
+        for theme in crate::themes::Theme::ALL {
+            let edited = format!("Theme: {}*", theme.title());
+            fits(&edited, FONT_BUTTON, cell_w());
+            assert!(width(&edited, FONT_BUTTON) > half_w(), "{edited}");
+        }
+        fits("Theme: custom", FONT_BUTTON, cell_w());
         // Half a cell, on one line at the button's size.
-        for text in ["Recenter", "Rescan", "All: none", "Voice: on", "Voice: off"] {
+        for text in ["Recenter", "Rescan", "All: none"] {
             fits(text, FONT_BUTTON, half_w());
         }
-        // Half a cell, a name over a value: Edges over its state, Theme
-        // over the theme (cut to fit 6 points short of the half, though
-        // none needs it).
+        // Half a cell, a name over a value: Edges over its state.
         fits("Edges", FONT_LABEL, half_w());
         for _ in 0..5 {
             fits(edges.value(), FONT_VALUE, half_w());
             edges = edges.next();
         }
-        fits("Theme", FONT_LABEL, half_w());
-        for theme in crate::themes::Theme::ALL {
-            fits(&format!("{}*", theme.title()), FONT_VALUE, half_w() - 6.0);
-        }
-        // The Music cell's press words over the title, between `<` `>`.
-        let music = cell(row(PANEL_H, 0), 0).middle().width() - 4.0;
+        // The Music row's press words over the title, between `<` `>`.
+        // Board #5572: with the row to itself the title has 290 points,
+        // where the cell beside Voice and Theme gave it 97. Each bundled
+        // track's title is whole, and "Turn the Walls to Stone", the
+        // longest, was cut to under half of itself before.
+        assert_close!(music_title_w(), 290.0);
+        let before = cell(row(PANEL_H, 0), 0).middle().width() - 4.0 - 6.0;
+        assert_close!(before, 97.0);
         for playing in [true, false] {
-            fits(crate::music::label(playing), FONT_LABEL, music);
+            fits(crate::music::label(playing), FONT_LABEL, music_title_w());
         }
+        for title in [
+            "Let the Night Come In",
+            "Turn the Walls to Stone",
+            "High Meadow",
+        ] {
+            fits(title, FONT_VALUE, music_title_w());
+        }
+        let longest = width("Turn the Walls to Stone", FONT_VALUE);
+        assert!(before < 0.6 * longest, "{before} of {longest}");
         // The status cell: one line at the value's size, or at most two at
         // the label's, word by word (`hud.rs` cuts a third).
         let status = cell_w() - 2.0 * STATUS_PAD;
@@ -633,6 +691,7 @@ mod tests {
                 Developer,
                 Edit,
                 Cloud { all_none: true },
+                VoiceTheme,
                 Music
             ]
         );
@@ -648,6 +707,7 @@ mod tests {
                 SurfaceParam(1),
                 SurfaceParam(2),
                 Cloud { all_none: true },
+                VoiceTheme,
                 Music
             ]
         );
@@ -668,6 +728,7 @@ mod tests {
                 Agent,
                 Edit,
                 Cloud { all_none: false },
+                VoiceTheme,
                 Music
             ]
         );
@@ -682,6 +743,7 @@ mod tests {
                 SurfaceParam(1),
                 SurfaceParam(2),
                 Cloud { all_none: false },
+                VoiceTheme,
                 Music
             ]
         );

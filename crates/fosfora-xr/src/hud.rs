@@ -18,15 +18,16 @@
 //! Immersion (board #3776, #5384), the particle pitcher's on/off toggle
 //! and the debug panel's, then the room editor's toggle beside its status
 //! ("desk: curls", board #3326), under that the Particles toggle
-//! (`room_edit::Cloud`) beside "All: none" and the Edges control, and at
-//! the bottom the music's play/stop (`music.rs`, board #3472), with the
-//! track's title and `<` `>` for the previous and the next track around
-//! it (board #5385, `playlist.rs`), and the Voice toggle and the Theme
-//! control sharing the cell beside it (board #5415). With
+//! (`room_edit::Cloud`) beside "All: none" and the Edges control, under
+//! that the Voice toggle beside the Theme control (board #5415; a cell
+//! each since board #5572), and at the bottom, across the row, the music's
+//! play/stop (`music.rs`, board #3472) with the track's title and `<` `>`
+//! for the previous and the next track around it (board #5385,
+//! `playlist.rs`). With
 //! Edit room on, three more rows under the editor's (board #3472, D3):
 //! the color, the band and the strength of the surface under the beam,
 //! each stepped with `<` and `>`, the menu growing upward to hold them.
-//! The release surface (board #4204, `release.rs`) shows six rows, the
+//! The release surface (board #4204, `release.rs`) shows seven rows, the
 //! menu without the pitcher's and the debug panel's row and without "All:
 //! none", the rows closed up, and never the debug panel.
 //! With debug on the same quad grows upward into the debug
@@ -995,6 +996,10 @@ enum Control<'a> {
     Button(Target, &'a str),
     /// Two cells side by side (`None`: an empty one).
     Pair([Option<Cell<'a>>; 2]),
+    /// The music across the row (board #5385, #5572): `<` and `>` in the
+    /// row's end boxes, the previous and the next track, and between them
+    /// play or stop, the press's words over the track's title.
+    Music { playing: bool, title: &'a str },
     /// Text across the row, no target: a status.
     Text(String),
 }
@@ -1011,10 +1016,10 @@ enum Cell<'a> {
     Button(Target, &'a str),
     /// Text only, no target: a status.
     Label(&'a str),
-    /// The Music cell (board #5385): `<` and `>` in its end boxes, the
-    /// previous and the next track, and between them play or stop, the
-    /// press's words over the track's title.
-    Music { playing: bool, title: &'a str },
+    /// One action whose words are a name and its value on one line,
+    /// "Theme: Aurora*" (board #5572: the Theme control with a cell of its
+    /// own).
+    Named(Target, &'a str, &'a str),
     /// Two actions, one in each half of the cell (board #5393: Recenter
     /// and Rescan), picked by the half the pointer is on, as a stepper's
     /// -/+ are.
@@ -1023,9 +1028,8 @@ enum Cell<'a> {
 
 /// One half of a [`Cell::Halves`]: its action and its words, on one line
 /// at the button's size, or as a name over a value (`value`), as a
-/// stepper's label sits over its value: the Theme control (board #5415),
-/// whose "Theme: Aurora*" in one line at the button's size is wider than a
-/// half.
+/// stepper's label sits over its value: the Edges control, whose "Edges:
+/// theme" in one line at the button's size is wider than a half.
 #[derive(Clone, Copy)]
 struct Half<'a> {
     target: Target,
@@ -1054,22 +1058,23 @@ impl<'a> Half<'a> {
 }
 
 impl Control<'_> {
-    /// The target at `hit` on this row; `end` is the end box of the cell
-    /// under the pointer, if it is in one (`grid::end_box`).
+    /// The target at `hit` on this row; `end` is the end box under the
+    /// pointer, if it is in one (`grid::end_box`): the row's own for the
+    /// Music row.
     fn target(&self, hit: grid::Hit, end: Option<bool>) -> Option<Target> {
         match self {
             Self::Wide { left, right, .. } => Some(if hit.col == 1 { right.0 } else { left.0 }),
             Self::Button(t, _) => Some(*t),
             Self::Text(_) => None,
+            Self::Music { .. } => Some(match end {
+                Some(false) => Target::PrevTrack,
+                Some(true) => Target::NextTrack,
+                None => Target::ToggleMusic,
+            }),
             Self::Pair(cells) => match cells[hit.col].as_ref()? {
                 Cell::Stepper { index, .. } => Some(Target::Step(*index, hit.right)),
-                Cell::Button(t, _) => Some(*t),
+                Cell::Button(t, _) | Cell::Named(t, ..) => Some(*t),
                 Cell::Label(_) => None,
-                Cell::Music { .. } => Some(match end {
-                    Some(false) => Target::PrevTrack,
-                    Some(true) => Target::NextTrack,
-                    None => Target::ToggleMusic,
-                }),
                 Cell::Halves(halves) => Some(halves[usize::from(hit.right)].target),
             },
         }
@@ -1091,9 +1096,15 @@ impl Rows<'_> {
             let k = n - 1 - i;
             let row = grid::row(bottom, k);
             let on = hit.filter(|h| h.row == k);
-            let end = on
-                .zip(self.cursor)
-                .and_then(|(h, c)| grid::end_box(grid::cell(row, h.col), c.x));
+            // The Music row's end boxes are the row's own; any other
+            // row's are its cells'.
+            let end = on.zip(self.cursor).and_then(|(h, c)| {
+                let area = match control {
+                    Control::Music { .. } => row,
+                    _ => grid::cell(row, h.col),
+                };
+                grid::end_box(area, c.x)
+            });
             if let Some(h) = on
                 && let Some(t) = control.target(h, end)
             {
@@ -1117,6 +1128,10 @@ impl Rows<'_> {
                 }
                 Control::Button(t, label) => self.button(painter, row, *t, label, on.is_some()),
                 Control::Text(text) => label(painter, row, text),
+                Control::Music { playing, title } => {
+                    let under = on.and_then(|h| control.target(h, end));
+                    self.music(painter, row, *playing, title, under);
+                }
                 Control::Pair(cells) => {
                     for (col, cell) in cells.iter().enumerate() {
                         let area = grid::cell(row, col);
@@ -1154,9 +1169,9 @@ impl Rows<'_> {
                                 self.button(painter, area, *t, label, on.is_some());
                             }
                             Some(Cell::Label(text)) => label(painter, area, text),
-                            Some(Cell::Music { playing, title }) => {
-                                let under = on.and_then(|h| control.target(h, end));
-                                self.music(painter, area, *playing, title, under);
+                            Some(Cell::Named(t, name, value)) => {
+                                let words = format!("{name}: {value}");
+                                self.button(painter, area, *t, &words, on.is_some());
                             }
                             Some(Cell::Halves(halves)) => {
                                 // A column's gap between the halves, so they
@@ -1255,10 +1270,12 @@ impl Rows<'_> {
         }
     }
 
-    /// The Music cell (board #5385) in `area`: `<` and `>` in the end
-    /// boxes, drawn as a stepper's -/+, and the play/stop button between
-    /// them, the press's words ("Music: stop") over the track's title cut
-    /// to fit. `under` is the part under the pointer, by its target.
+    /// The Music row (board #5385) in `area`, the whole row since board
+    /// #5572: `<` and `>` in the end boxes, drawn as a stepper's -/+, and
+    /// the play/stop button between them, the press's words ("Music:
+    /// stop") over the track's title, cut to fit if it is longer than the
+    /// row (`grid::music_title_w`). `under` is the part under the pointer,
+    /// by its target.
     /// Board #5553: while the music plays the button is on, outlined in
     /// orange, and the title is orange: what is playing now.
     fn music(
@@ -1304,7 +1321,8 @@ impl Rows<'_> {
 
     /// One action filling `area`, `hovered` when the pointer is on it. Its
     /// words on one line, the value after a ": " in the value's color
-    /// ("Voice: on" with an orange "on" while it is on).
+    /// ("Voice: on" with an orange "on" while it is on, "Theme: Aurora"
+    /// with the theme always orange).
     fn button(
         &self,
         painter: &egui::Painter,
@@ -1313,12 +1331,19 @@ impl Rows<'_> {
         label: &str,
         hovered: bool,
     ) {
-        let (_, s) = self.style(target, hovered);
+        let (look, s) = self.style(target, hovered);
+        // The Theme control's value is orange at rest (board #5553): the
+        // theme the room wears now.
+        let value_ink = if target == Target::CycleTheme {
+            style::now_value(look, s)
+        } else {
+            s.value
+        };
         let r = rect(area);
         cell(painter, r, s);
         let (name, value) = style::name_value(label);
         let mut job = egui::text::LayoutJob::default();
-        for (part, ink) in [(name, s.text), (value, s.value)] {
+        for (part, ink) in [(name, s.text), (value, value_ink)] {
             if part.is_empty() {
                 continue;
             }
@@ -1338,11 +1363,11 @@ impl Rows<'_> {
     }
 
     /// One action filling `area` whose words are a name over a value
-    /// (board #5415, the Theme control: "Theme" over "Drift*"), laid out
-    /// as the Music cell's press words over its title: the name in the
-    /// label font, the value in the value font, cut to fit. The Theme
-    /// control's value is orange at rest (board #5553): the theme the room
-    /// wears now.
+    /// ("Edges" over "theme"), laid out as the music's press words over
+    /// its title: the name in the label font, the value in the value
+    /// font, cut to fit. For a control whose words on one line are wider
+    /// than its half of a cell. The Theme control was one until board
+    /// #5572 gave it a cell.
     fn named_button(
         &self,
         painter: &egui::Painter,
@@ -1351,12 +1376,8 @@ impl Rows<'_> {
         (name, value): (&str, &str),
         hovered: bool,
     ) {
-        let (look, s) = self.style(target, hovered);
-        let ink = if target == Target::CycleTheme {
-            style::now_value(look, s)
-        } else {
-            s.value
-        };
+        let (_, s) = self.style(target, hovered);
+        let ink = s.value;
         let r = rect(area);
         cell(painter, r, s);
         painter.text(
@@ -1598,12 +1619,8 @@ fn panel_ui(
         block.extend(surface_rows(view.surface_params));
     }
     block.push(cloud_row(controls.cloud, controls.edges, true));
-    block.push(music_row(
-        controls.music,
-        view.track,
-        (controls.voice, controls.mic),
-        view.theme,
-    ));
+    block.push(voice_theme_row((controls.voice, controls.mic), view.theme));
+    block.push(music_row(controls.music, view.track));
     let bottom = grid::PANEL_H;
     rows.block(ui, bottom, &block);
     header_end > grid::block_top(bottom, block.len())
@@ -1637,12 +1654,10 @@ fn menu_ui(
                 grid::MenuRow::Cloud { all_none } => {
                     cloud_row(controls.cloud, controls.edges, all_none)
                 }
-                grid::MenuRow::Music => music_row(
-                    controls.music,
-                    view.track,
-                    (controls.voice, controls.mic),
-                    view.theme,
-                ),
+                grid::MenuRow::VoiceTheme => {
+                    voice_theme_row((controls.voice, controls.mic), view.theme)
+                }
+                grid::MenuRow::Music => music_row(controls.music, view.track),
             })
         })
         .collect();
@@ -1685,45 +1700,33 @@ fn surface_rows(params: Option<(u32, u32, f32)>) -> [Control<'static>; grid::SUR
 
 /// The music's row, the bottom row in both layouts: play or stop (board
 /// #3472) with the track's `title` and `<` `>` around it (board #5385,
-/// [`Cell::Music`]), and the voice path's toggle in the right cell (board
-/// #3751, V4), so no row count changes. The state is in the words, and
-/// in the outline and the orange of what is on (board #5553).
-///
-/// Board #5415: the Theme control shares the right cell with Voice, a half
-/// each, as Recenter and Rescan share theirs: "Theme" over the theme
-/// (`theme`: "Drift", "Drift*" once edited by hand, "custom"), each press
-/// the next theme on the whole room. The debug panel's header leaves no
-/// room for another row, and every full cell holds a control the wearer
-/// reaches for. Voice gives up half its cell: "Voice: off" fits a half at
-/// the button's size (68 of 90 points), and the toggle is a setting, saved
-/// and rarely pressed. "Theme: Aurora*" on one line does not fit a half at
-/// the button's size (113 points), and at the label's 12 points it would
-/// fill it to 3 points a side, so the name sits over the value as a
-/// stepper's label over its value, the value at the 16 points of every
-/// other control. The theme takes the right half, the side the newer
-/// control took beside Recenter and All: none.
-///
-/// Board #5453: `voice` is the toggle and whether the microphone is
-/// allowed (`voice::toggle_words`). "Voice: no mic" is wider than a half
-/// at the button's size (94 of 90 points), so it sits as the Theme half
-/// beside it does, "Voice" over "no mic".
-fn music_row<'a>(
-    playing: bool,
-    title: &'a str,
-    voice: (bool, bool),
-    theme: &'a str,
-) -> Control<'a> {
-    let words = crate::voice::toggle_words(voice.0, voice.1);
-    let voice = match words.split_once(": ") {
-        Some((name, value)) if voice.0 && !voice.1 => Half::named(Target::ToggleVoice, name, value),
-        _ => Half::one(Target::ToggleVoice, words),
-    };
+/// [`Control::Music`]). Board #5572: it has the row to itself. Beside
+/// Voice and Theme the title had 97 points, which cut "Turn the Walls to
+/// Stone" to under half; across the row it has 290 and every bundled
+/// title is whole. The owner, worn: "make the < > and music button on its
+/// own row, so more of the song title can be seen". The state is in the
+/// words, and in the outline and the orange of what is on (board #5553).
+fn music_row(playing: bool, title: &str) -> Control<'_> {
+    Control::Music { playing, title }
+}
+
+/// Voice and Theme, the row over the music's in both layouts (board
+/// #5572), a cell each: the voice path's toggle on the left (board #3751,
+/// V4; `voice::toggle_words`, "Voice: no mic" when the microphone is not
+/// allowed, board #5453) and the Theme control on the right (board #5415:
+/// "Theme: Drift", "Drift*" once edited by hand, "custom"; each press the
+/// next theme on the whole room). Until board #5572 the two were halves
+/// of one cell beside the music, where "Theme: Aurora*" and "Voice: no
+/// mic" were wider than a half and sat as a name over a value. A cell
+/// holds each on one line at the button's size
+/// (`panel_grid`'s `every_menu_word_fits_its_cell`).
+fn voice_theme_row(voice: (bool, bool), theme: &str) -> Control<'_> {
     Control::Pair([
-        Some(Cell::Music { playing, title }),
-        Some(Cell::Halves([
-            voice,
-            Half::named(Target::CycleTheme, "Theme", theme),
-        ])),
+        Some(Cell::Button(
+            Target::ToggleVoice,
+            crate::voice::toggle_words(voice.0, voice.1),
+        )),
+        Some(Cell::Named(Target::CycleTheme, "Theme", theme)),
     ])
 }
 

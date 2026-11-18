@@ -2131,9 +2131,11 @@ menu, ray only, seems to be the answer."
   had been. This one is where the wearer asked for it, as the spoken one
   is, and it still closes after 3 s with no pointer on it.
 - **Inside the glasses' design area.** At 45 cm the menu is 25 degrees
-  wide. The release menu (14 cm) runs from 3 degrees over the view's
-  center to 15 under, and the tallest (the developer's with Edit room on,
-  22 cm) from 8 over to 20 under. The design area is 58 by 54.
+  wide. The release menu (16 cm, seven rows) runs from 4 degrees over the
+  view's center to 16 under, and the tallest (the developer's with Edit
+  room on, 24 cm) from 9 over to 21 under. The design area is 58 by 54.
+  These are with the row added below; before it they were 3 and 15, and
+  8 and 20.
 - **Ray only.** The fingertip poke no longer presses the menu.
   `debug.fosfora.menupoke 1` brings it back; default 0, polled once a
   second.
@@ -2158,6 +2160,27 @@ closes it."
 
 Checked by the desktop tests and the Android build. Not worn: the dwell,
 the look-back and the parked place are first values.
+
+**The music has its own row** (the same sitting, on 51b1937). With the
+menu parked and pressed by the ray the owner said it works, and asked:
+"maybe make the < > and music button on its own row, so more of the song
+title can be seen?" The music's `<`, play or stop and `>` now cross the
+bottom row, and Voice and Theme, which were two halves of the cell beside
+it, are a pair on the row over it, a cell each. The title has 290 points
+where it had 97: "Turn the Walls to Stone" was cut to under half and is
+whole now, as every bundled title is. "Voice: no mic" and "Theme:
+Contour*" fit a cell on one line, so neither sits as a name over a value
+any more. The targets and every spoken form are unchanged.
+
+The rows, top to bottom. The release menu: Limit flashing; Recenter and
+Rescan beside Roam; Agent beside Immersion; Edit room beside its status
+(Color, Band and Strength under it while it is on); Particles beside
+Edges; Voice beside Theme; Music. The developer's menu has the Pitcher
+and Debug panel row over Edit room and "All: none" sharing the Edges
+cell. Seven rows on the release surface and eight on the developer's, ten
+and eleven with Edit room on; the menu grew upward by one row, 40 points
+or 2 cm, with its bottom edge where it was. The debug panel's header gave
+up 40 points for the row (`HEADER_H` 260, its 250 and 10 to spare).
 
 ## The labels a new wearer meets (board #5461)
 

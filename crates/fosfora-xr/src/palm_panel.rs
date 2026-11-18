@@ -2287,11 +2287,12 @@ mod tests {
         }
         // The parked menu sits inside the glasses' design area, 58 by 54
         // degrees about the view's center: 25 degrees wide, and at its
-        // tallest (the developer's menu with Edit room on, 22 cm) from 8
-        // degrees over the center to 20 under.
+        // tallest (the developer's menu with Edit room on, 24 cm since
+        // Voice and Theme have their own row, board #5572) from 9 degrees
+        // over the center to 21 under. The release menu is 16 cm.
         let half_w = (PANEL_W_M * 0.5 / PARK_AHEAD_M).atan().to_degrees();
         assert!(half_w < 29.0, "{half_w}");
-        for h in [0.142f32, 0.222] {
+        for h in [0.162f32, 0.242] {
             let top = ((h * 0.5 - PARK_BELOW_M) / PARK_AHEAD_M)
                 .atan()
                 .to_degrees();

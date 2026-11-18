@@ -173,7 +173,7 @@ On the release surface:
 
 - **The hand menu** has no Debug panel row, no Pitcher toggle and no "All:
   none" cell. The Pitcher and Debug panel row is gone and the rows under it
-  move up, so the menu is six rows instead of seven (nine with Edit room
+  move up, so the menu is seven rows instead of eight (ten with Edit room
   on). The Limit flashing row, the wearer's photosensitive setting, is on
   both surfaces (board #5534). The edge bars' control takes the whole cell
   "All: none" shared. The
