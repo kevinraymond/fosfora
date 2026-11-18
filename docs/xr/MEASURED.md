@@ -3969,8 +3969,11 @@ The app's own time does not move beyond the drift between the two rows at
 0. The filter costs the compositor 0.35 to 0.5 ms. A screencap shows it:
 with the quality filter Contour's lines are thinner and their edges clean,
 with the normal one a little crisper than off
-(`recordings/facesharpen-nov18/compare-crops.jpg`, outside the repo). Not
-yet worn; the default stays off until it is.
+(`recordings/facesharpen-nov18/compare-crops.jpg`, outside the repo).
+
+Worn the same night with `facesharpen 2`: "The upscale should stay on
+default, it looks good." The quality filter is the default from then on;
+`facesharpen 0` turns it off.
 
 **What else it could have been.**
 

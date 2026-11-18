@@ -34,12 +34,19 @@ pub enum Sharpen {
 }
 
 impl Sharpen {
-    /// The knob's value: 1 normal, 2 quality, anything else off.
+    /// What a launch with the knob unset runs: the quality filter. Worn on
+    /// Nov 18 it "looks good", and it costs the app's frame nothing
+    /// (`MEASURED.md`).
+    pub const DEFAULT: Self = Self::Quality;
+
+    /// The knob's value: 0 off, 1 normal, 2 quality; unset or anything
+    /// else, [`Self::DEFAULT`].
     pub fn from_knob(value: Option<&str>) -> Self {
         match value.map(str::trim) {
+            Some("0") => Self::Off,
             Some("1") => Self::Normal,
             Some("2") => Self::Quality,
-            _ => Self::Off,
+            _ => Self::DEFAULT,
         }
     }
 
@@ -62,7 +69,7 @@ pub struct FacesOptions {
     /// recommended size, [`FACE_SCALE_MIN`]..[`FACE_SCALE_MAX`].
     pub scale: f32,
     /// `debug.fosfora.facesharpen 0|1|2`: the filter on the faces layer's
-    /// upsample ([`Sharpen`]; default 0).
+    /// upsample ([`Sharpen`]; default 2, the quality filter).
     pub sharpen: Sharpen,
 }
 
@@ -204,7 +211,7 @@ mod tests {
             FacesOptions {
                 layer: true,
                 scale: FACE_SCALE_DEFAULT,
-                sharpen: Sharpen::Off
+                sharpen: Sharpen::Quality
             }
         );
         let o = FacesOptions::from_knobs(Some("0"), Some("0.3"), Some("1"), true);
@@ -216,11 +223,14 @@ mod tests {
                 sharpen: Sharpen::Normal
             }
         );
-        // 2 is the quality filter; anything else is off.
+        // 0 turns the filter off, 2 names the quality one, and anything
+        // else is the default, which is the quality filter.
         let sharpen = |v| FacesOptions::from_knobs(None, None, Some(v), true).sharpen;
+        assert_eq!(sharpen("0"), Sharpen::Off);
         assert_eq!(sharpen("2"), Sharpen::Quality);
         assert_eq!(sharpen(" 2 "), Sharpen::Quality);
-        assert_eq!(sharpen("3"), Sharpen::Off);
+        assert_eq!(sharpen("3"), Sharpen::DEFAULT);
+        assert_eq!(Sharpen::DEFAULT, Sharpen::Quality);
         assert_eq!(
             [Sharpen::Off, Sharpen::Normal, Sharpen::Quality].map(Sharpen::name),
             ["off", "normal", "quality"]
