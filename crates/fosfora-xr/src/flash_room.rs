@@ -815,6 +815,11 @@ impl Show {
                 Map::Sky => (sky::RESOLUTION, effect.params()),
                 Map::Reflection => (sky::RESOLUTION, effect.reflection_params()),
             };
+            // As `app.rs`: a floor's reflection at the theme's share.
+            let strength = match map {
+                Map::Reflection => strength * self.theme.reflection(),
+                _ => strength,
+            };
             let rows = surface_port::rows(
                 &face,
                 strength,
@@ -2276,7 +2281,7 @@ fn sweep_run(
     let theme = Some(Theme::Aurora);
     let light_opts = DepthLightOptions {
         gain: light_gain,
-        ..DepthLightOptions::default()
+        ..DepthLightOptions::default().under(theme)
     };
     let tile = depth_light::points_tile();
     let regions: Vec<_> = surfaces.iter().map(|s| sweep_region(eye, s)).collect();

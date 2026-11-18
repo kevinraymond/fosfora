@@ -3067,12 +3067,12 @@ mod tests {
         assert_eq!(out.strips.len(), 4);
         assert!(out.strips.iter().all(|s| s.inset > 0.0));
         assert!(near(out.tunnels[0].normal, Vec3::Z), "the wall first");
-        // Drift, or no theme saved: every kind on the face, as worn.
-        for theme in [Some(Theme::Drift), None] {
-            let out = draw(&room(Choice::Theme, theme));
-            assert!(out.tunnels.is_empty());
-            assert_eq!(out.strips.len(), 16);
-        }
+        // No theme saved: every kind on the face.
+        let out = draw(&room(Choice::Theme, None));
+        assert!(out.tunnels.is_empty());
+        assert_eq!(out.strips.len(), 16);
+        // Drift (board #5543): no bars on a wall, a table or the floor.
+        assert!(draw(&room(Choice::Theme, Some(Theme::Drift))).is_empty());
         // Forced, every kind in that mode whatever the theme.
         let out = draw(&room(Choice::Force(Mode::Standing), Some(Theme::Mirror)));
         assert!(out.tunnels.is_empty());

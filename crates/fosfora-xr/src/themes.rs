@@ -20,79 +20,75 @@
 //! `debug.fosfora.theme` knob ([`Knob`]). Each is built from the catalogue
 //! (`SurfaceBehavior::catalogue`), every pairing on its kind's own list.
 //!
-//! The seven. The four first ones color by one rule: the room's planes
-//! (walls, floor, ceiling) one color, what stands in it (tables, frames,
-//! other) the other, so a table reads against the floor and a frame
-//! against its wall. Classic, Drift and Tide keep the edge bars on the
-//! face for every kind.
+//! **Three more rows** (board #5543). A theme also says what the depth
+//! light draws on what the depth map sees ([`Depth`]: a look, the sides'
+//! and the tops' colors, a band, and whether it hides the surfaces' light
+//! behind it), what the air carries ([`Air`]: the fireflies' pool as
+//! stars, ash, spray or plankton, by a color, a band, a count and a
+//! motion), and how much of the sky a floor reflects
+//! ([`Theme::reflection`]). None of the three is saved: like the edges
+//! they follow the saved theme's name.
 //!
-//! - **Classic**: the built-in defaults ([`SurfaceBehavior::default_for`]),
-//!   each kind's own color, the behavior's band, full strength. Applying it
-//!   gives exactly a room with no file. Only Classic runs the wall spectrum:
-//!   the edge bars carry the spectrum on every edge in every theme. A fresh
-//!   room on the headset starts on Aurora instead (board #5447,
-//!   `lanes::RoomLanes::with_fresh_theme`), so Classic is a theme picked
-//!   and saved by name like the others.
-//! - **Drift**, the calm one: tables streamlines, the floor rings, walls
-//!   streamlines, the ceiling rings, frames the pulse, other surfaces the
-//!   curls. The planes blue, the rest teal. The frames' pulse, the one look
-//!   in it that jumps on the downbeat, at 0.6.
-//! - **Tide**: walls the pulse, the floor curls, tables curls, the ceiling
-//!   the pulse, frames the rings, other surfaces the pulse. The planes
-//!   violet, the rest rose.
-//! - **Aurora** (board #5436): one sky. Walls and the ceiling the
-//!   desktop's Aurora, drawn as one sky around the room (`sky.rs`), the
-//!   floor its reflection, all three in the key's tint and their edges
-//!   off, so nothing cuts the sky at a corner. Tables, frames and other
-//!   surfaces run no behavior and their edges go in, teal: tunnels of
-//!   light under the sky.
-//! - **Mirror**: the edges carry it. Walls, the ceiling, tables, frames and
-//!   other surfaces run no behavior and their edges go in, each face a
-//!   tunnel of light; the floor keeps the rings with the bars on its face,
-//!   so nothing opens under a seated wearer's feet. Warm white on the walls
-//!   and the ceiling, blue on the rest.
-//! - **Flint** (board #5533): hardness and angles, for music with drums
-//!   and distortion. Its character is where a seated or lying wearer
-//!   looks: the walls and the ceiling are shards, cells whose edges jump
-//!   with the kick, drawn in one color ([`Look::mono`]) so the facets are
-//!   gray with white edges, steel, and not the effect's own stained
-//!   glass. The walls' are untinted and the ceiling's warm white, at the
-//!   strength a ceiling's shards are capped to while the flash limit is
-//!   on (`surfaces::CEILING_SHARDS_LIMITED`): the ceiling is the nearest
-//!   face, a cell there is wider than the 10 degrees the flash rule
-//!   counts in, and at full strength its edges moving with the onsets
-//!   took one song over three flashes. The
-//!   floor is tessera's grid of tiles, blue. Tables are shards too, warm
-//!   white. Frames take the reticle and other surfaces shards, both
-//!   amber, the one hot color. The edge bars are on the face of the
-//!   room's planes and of the frames, so the room's own corners are lit
-//!   lines, and stand on tables and other surfaces, a fence of spikes on
-//!   each rim. A first version had bezel on the walls and nothing on the
-//!   ceiling: bezel is a border, so the walls were dark with chrome at
-//!   their rim. Prism is angular too and was left out: it turns and
-//!   swells, and it is the catalogue's hardest flasher before the limiter.
-//! - **Contour** (board #5533): gentle rolling scenery, for music that
-//!   swells and has no drum to hit. Walls, the ceiling and the floor run
-//!   the contours (`surface_fx.rs`): one landscape's contour lines round
-//!   the whole room, green on the low land and warm white on the high.
-//!   Their edge bars are off, as Aurora's are, so no bar cuts the land at
-//!   a corner. Tables and frames run nothing and keep their outline on the
-//!   face, warm white, which reads against the green lines. Other surfaces
-//!   run the curls at 0.4, warm white: small closed rings beside the
-//!   map's.
+//! The seven, each one scene, as the owner's theme file has them
+//! (`themes_new.csv`, Nov 18). A row whose effect is not built yet keeps
+//! the look it had, and a depth look that is not built draws as the
+//! points ([`DepthLook::built`]).
 //!
-//! Every band is the behavior's own ([`SurfaceBehavior::default_band`]):
-//! the rms for the flows, the bass for the rings and the pulse, as Drift
-//! asks; a band per theme waits for signal dumps of real songs to choose it
-//! by. Every strength is 1 but Drift's frames, Contour's other surfaces
-//! and Flint's ceiling.
+//! - **Classic**, the hi-fi: the built-in defaults
+//!   ([`SurfaceBehavior::default_for`]), each kind's own color, the
+//!   behavior's band, full strength, so applying it gives exactly a room
+//!   with no file. Only Classic runs the wall spectrum. The tables' edge
+//!   bars stand on their rims as level meters. A fresh room on the headset
+//!   starts on Aurora instead (board #5447,
+//!   `lanes::RoomLanes::with_fresh_theme`). The file also moves its tables
+//!   and other surfaces to the mids, which waits: a band that is not the
+//!   behavior's own would end "a room with no file runs Classic".
+//! - **Drift**, deep underwater: blue water on the walls (streamlines,
+//!   currents) and the ceiling (rings, the surface from below), teal on
+//!   the rest: curls round the tables and other things, sand ripples on
+//!   the floor (the contours at 0.3), shafts of light in the frames (the
+//!   pulse at 0.6). No bars but the frames'.
+//! - **Tide**, a shore at dusk: a violet sky breathing with the bar on
+//!   the walls and the ceiling (the pulse, the ceiling's at 0.6), rose on
+//!   what stands in it: rings on the tables, tide pools, and curls on
+//!   other things. The floor waits for the wash and keeps the violet curls.
+//! - **Aurora** (board #5436), a night city under the lights: walls and
+//!   the ceiling the desktop's Aurora, drawn as one sky around the room
+//!   (`sky.rs`), the floor its reflection at 0.3 of what it was, all three
+//!   in the key's tint and their edges off, so nothing cuts the sky at a
+//!   corner. Tables, frames and other surfaces wait for the windows and
+//!   keep their teal tunnels.
+//! - **Mirror**, a club of infinity mirrors: tables and other surfaces run
+//!   no behavior and their edges go in, each face a tunnel of light. The
+//!   walls add bezel, chrome round each tunnel, and the floor is
+//!   tessera's lit tiles with the bars on its face, both in one color.
+//!   The ceiling waits for astrolabe and the frames for fenestra, held
+//!   back for flashing, and keep their tunnels.
+//! - **Flint** (board #5533), a forge in a cave: the walls and the
+//!   ceiling are shards, cells whose edges jump with the kick, drawn in
+//!   one color ([`Look::mono`]), warm white, so they read as glowing
+//!   fissures in stone and not the effect's own stained glass. The
+//!   ceiling's are dim, 0.4, under the strength a ceiling's shards are
+//!   capped to while the flash limit is on
+//!   (`surfaces::CEILING_SHARDS_LIMITED`). The floor is tessera's
+//!   flagstones in cold blue at 0.5, and the frames pulse amber on the
+//!   bass, firelight through the cave's mouth. Tables wait for the sparks
+//!   and other surfaces for the embers, and keep their shards and their
+//!   standing bars.
+//! - **Contour** (board #5533), a meadow drawn as a map: the floor and
+//!   the walls run the contours (`surface_fx.rs`), one landscape's lines
+//!   round the room, green on the low land and warm white on the high,
+//!   their edge bars off as Aurora's are. The ceiling is streamlines at
+//!   0.4, wind and thin cloud, and the frames pulse with the loudness, a
+//!   sunrise, both warm white. Tables and other surfaces wait for the
+//!   terraces.
 //!
-//! No theme adds a behavior but Contour, whose look was made with it; it
-//! is in the catalogue like any other and a hand can put it on a surface.
+//! One pairing departs from the room editor's lists
+//! (`SurfaceBehavior::catalogue`): Tide's tables run the rings.
 
 use crate::edge_bars::Mode;
 use crate::room_file::RoomFile;
-use crate::surface_fx::{BAND_BASS, BAND_RMS};
+use crate::surface_fx::{BAND_BASS, BAND_HIGH, BAND_MID, BAND_RMS};
 use crate::surfaces::{
     COLOR_KEY, KIND_CEILING, KIND_FLOOR, KIND_FRAME, KIND_NAMES, KIND_TABLE, KIND_WALL,
     SurfaceBehavior,
@@ -265,71 +261,82 @@ impl Theme {
         let look = Look::new;
         let face = Mode::Face;
         Some(match self {
+            // The hi-fi. The tables' bars stand on their rims as level
+            // meters (board #5543).
             Self::Classic => {
                 let behavior = B::default_for(kind);
-                look(behavior, 0, behavior.default_band(), 1.0, face)
+                let edges = if kind == KIND_TABLE {
+                    Mode::Standing
+                } else {
+                    face
+                };
+                look(behavior, 0, behavior.default_band(), 1.0, edges)
             }
+            // Board #5543: deep underwater. Blue water on the walls and
+            // the ceiling, teal life on the rest; no bars but the frames'.
             Self::Drift => match kind {
-                KIND_TABLE => look(B::Streamlines, TEAL, BAND_RMS, 1.0, face),
-                KIND_FLOOR => look(B::Rings, BLUE, BAND_BASS, 1.0, face),
-                KIND_WALL => look(B::Streamlines, BLUE, BAND_RMS, 1.0, face),
-                KIND_CEILING => look(B::Rings, BLUE, BAND_BASS, 1.0, face),
-                KIND_FRAME => look(B::Pulse, TEAL, BAND_BASS, 0.6, face),
-                _ => look(B::Curls, TEAL, BAND_RMS, 1.0, face),
+                KIND_FLOOR => look(B::Contours, TEAL, BAND_BASS, 0.3, Mode::Off),
+                KIND_WALL => look(B::Streamlines, BLUE, BAND_RMS, 1.0, Mode::Off),
+                KIND_CEILING => look(B::Rings, BLUE, BAND_BASS, 1.0, Mode::Off),
+                KIND_FRAME => look(B::Pulse, TEAL, BAND_RMS, 0.6, face),
+                _ => look(B::Curls, TEAL, BAND_MID, 1.0, Mode::Off),
             },
+            // Board #5543: a shore at dusk. The floor waits for the wash
+            // and keeps the curls and its bars until then.
             Self::Tide => match kind {
-                KIND_TABLE => look(B::Curls, ROSE, BAND_RMS, 1.0, face),
+                KIND_TABLE => look(B::Rings, ROSE, BAND_BASS, 1.0, Mode::Off),
                 KIND_FLOOR => look(B::Curls, VIOLET, BAND_RMS, 1.0, face),
-                KIND_WALL => look(B::Pulse, VIOLET, BAND_BASS, 1.0, face),
-                KIND_CEILING => look(B::Pulse, VIOLET, BAND_BASS, 1.0, face),
+                KIND_WALL => look(B::Pulse, VIOLET, BAND_BASS, 1.0, Mode::Off),
+                KIND_CEILING => look(B::Pulse, VIOLET, BAND_BASS, 0.6, Mode::Off),
                 KIND_FRAME => look(B::Rings, ROSE, BAND_BASS, 1.0, face),
-                _ => look(B::Pulse, ROSE, BAND_BASS, 1.0, face),
+                _ => look(B::Curls, ROSE, BAND_MID, 1.0, Mode::Off),
             },
             // Board #5436: the sky on the walls and the ceiling, its
             // reflection on the floor, one tint over all three so the
-            // sky has no seam of color at the ceiling's edge.
+            // sky has no seam of color at the ceiling's edge. Tables,
+            // frames and other surfaces wait for the windows and keep
+            // their tunnels until then.
             Self::Aurora => match kind {
                 KIND_FLOOR | KIND_WALL | KIND_CEILING => {
                     look(B::Aurora, COLOR_KEY, BAND_RMS, 1.0, Mode::Off)
                 }
                 _ => look(B::None, TEAL, BAND_RMS, 1.0, Mode::In),
             },
+            // Board #5543: a club of infinity mirrors. The ceiling waits
+            // for astrolabe and the frames for fenestra, both held back
+            // (`SurfaceBehavior::held_back`), and keep their tunnels.
             Self::Mirror => match kind {
-                KIND_TABLE => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
-                KIND_FLOOR => look(B::Rings, BLUE, BAND_BASS, 1.0, face),
-                KIND_WALL => look(B::None, WARM_WHITE, BAND_RMS, 1.0, Mode::In),
+                KIND_FLOOR => look(B::Tessera, BLUE, BAND_BASS, 1.0, face).in_one_color(),
+                KIND_WALL => look(B::Bezel, WARM_WHITE, BAND_RMS, 1.0, Mode::In).in_one_color(),
                 KIND_CEILING => look(B::None, WARM_WHITE, BAND_RMS, 1.0, Mode::In),
                 KIND_FRAME => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
-                _ => look(B::None, BLUE, BAND_RMS, 1.0, Mode::In),
+                _ => look(B::None, BLUE, BAND_MID, 1.0, Mode::In),
             },
-            // Board #5533: the angular looks, steel blue on the room's
-            // planes, warm white on the tables and the ceiling's outline,
-            // amber on the rest.
+            // Boards #5533, #5543: a forge in a cave. Warm white fissures
+            // on the walls and the ceiling, cold blue flagstones, amber
+            // firelight in the frames. Tables and other surfaces wait for
+            // the sparks and the embers and keep their shards until then.
             Self::Flint => match kind {
                 KIND_TABLE => {
                     look(B::Shards, WARM_WHITE, BAND_RMS, 1.0, Mode::Standing).in_one_color()
                 }
-                KIND_FLOOR => look(B::Tessera, BLUE, BAND_RMS, 1.0, face),
-                KIND_WALL => look(B::Shards, 0, BAND_RMS, 1.0, face).in_one_color(),
-                KIND_CEILING => look(
-                    B::Shards,
-                    WARM_WHITE,
-                    BAND_RMS,
-                    crate::surfaces::CEILING_SHARDS_LIMITED,
-                    face,
-                )
-                .in_one_color(),
-                KIND_FRAME => look(B::Reticle, AMBER, BAND_RMS, 1.0, face),
+                KIND_FLOOR => look(B::Tessera, BLUE, BAND_BASS, 0.5, Mode::Off).in_one_color(),
+                KIND_WALL => look(B::Shards, WARM_WHITE, BAND_RMS, 1.0, face).in_one_color(),
+                KIND_CEILING => {
+                    look(B::Shards, WARM_WHITE, BAND_RMS, 0.4, Mode::Off).in_one_color()
+                }
+                KIND_FRAME => look(B::Pulse, AMBER, BAND_BASS, 0.8, face),
                 _ => look(B::Shards, AMBER, BAND_RMS, 1.0, Mode::Standing).in_one_color(),
             },
-            // Board #5533: one landscape round the room, its edges off so
-            // nothing cuts it at a corner; what stands in it calm, in the
-            // high land's warm white.
+            // Boards #5533, #5543: a meadow drawn as a map. One landscape
+            // on the floor and the walls, its edges off so nothing cuts it
+            // at a corner, wind on the ceiling and a sunrise in the
+            // frames. Tables and other surfaces wait for the terraces.
             Self::Contour => match kind {
-                KIND_FLOOR | KIND_WALL | KIND_CEILING => {
-                    look(B::Contours, GREEN, BAND_RMS, 1.0, Mode::Off)
-                }
-                KIND_TABLE | KIND_FRAME => look(B::None, WARM_WHITE, BAND_RMS, 1.0, face),
+                KIND_FLOOR | KIND_WALL => look(B::Contours, GREEN, BAND_RMS, 1.0, Mode::Off),
+                KIND_CEILING => look(B::Streamlines, WARM_WHITE, BAND_RMS, 0.4, Mode::Off),
+                KIND_FRAME => look(B::Pulse, WARM_WHITE, BAND_RMS, 0.6, face),
+                KIND_TABLE => look(B::None, WARM_WHITE, BAND_RMS, 1.0, face),
                 _ => look(B::Curls, WARM_WHITE, BAND_RMS, 0.4, face),
             },
         })
@@ -385,6 +392,198 @@ impl Theme {
                     .is_none_or(|look| look.runs(file.resolve(&e.uuid, e.kind)))
             })
     }
+}
+
+/// How the depth light draws what the depth map sees (board #5543,
+/// `depth_light.rs`). Every look stays on the thing's surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepthLook {
+    /// Points of light, the first look.
+    Points,
+    /// Tightly packed streaks running up the thing, launched on the kick.
+    Beams,
+    /// Points on a heat ramp that smolder with the band and flare on the
+    /// kick.
+    Coals,
+    /// Short blades that sway with the band and gust with the loudness.
+    Grass,
+    /// Points let go with the band that slide up the thing and wobble.
+    Bubbles,
+    /// Dim points that flare briefly.
+    Sparkle,
+    /// Specks that sweep over the points together, round the room's
+    /// center.
+    Glints,
+    /// Points drawn as level meters, each on one band.
+    Meters,
+}
+
+impl DepthLook {
+    /// Every look.
+    pub const ALL: [Self; 8] = [
+        Self::Points,
+        Self::Beams,
+        Self::Coals,
+        Self::Grass,
+        Self::Bubbles,
+        Self::Sparkle,
+        Self::Glints,
+        Self::Meters,
+    ];
+
+    /// The name the log uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Points => "points",
+            Self::Beams => "beams",
+            Self::Coals => "coals",
+            Self::Grass => "grass",
+            Self::Bubbles => "bubbles",
+            Self::Sparkle => "sparkle",
+            Self::Glints => "glints",
+            Self::Meters => "meters",
+        }
+    }
+
+    /// Whether the depth light draws this look yet. One that is not built
+    /// draws as the points, in the theme's colors and on its band.
+    pub fn built(self) -> bool {
+        self == Self::Points
+    }
+}
+
+/// What a theme gives the depth light (board #5543).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Depth {
+    pub look: DepthLook,
+    /// The color indices (as [`Look::color`]) of the sides and of the
+    /// tops.
+    pub colors: [u32; 2],
+    /// The audio band (`surface_fx::BAND_*`).
+    pub band: u32,
+    /// Whether what the depth map sees hides the surfaces' light behind it
+    /// at every immersion level, as a black base under its own light. With
+    /// it off that light shows between the points once the room is dark
+    /// (`depth_light::veil`).
+    pub occlude: bool,
+}
+
+/// How the air's particles move (board #5543, `fireflies.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Motion {
+    /// The fireflies' own loops.
+    Wander,
+    /// Nearly still and high in the room, the light flickering with the
+    /// band: stars.
+    Twinkle,
+    /// Up from the floor and fading, let go with the band: ash, spray.
+    Rise,
+    /// Carried slowly one shared way: plankton.
+    Drift,
+    /// All round the room's center together: a mirror ball's specks.
+    Orbit,
+}
+
+impl Motion {
+    /// Every motion.
+    pub const ALL: [Self; 5] = [
+        Self::Wander,
+        Self::Twinkle,
+        Self::Rise,
+        Self::Drift,
+        Self::Orbit,
+    ];
+
+    /// The name the log uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Wander => "wander",
+            Self::Twinkle => "twinkle",
+            Self::Rise => "rise",
+            Self::Drift => "drift",
+            Self::Orbit => "orbit",
+        }
+    }
+}
+
+/// The color a theme gives the air's particles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AirColor {
+    /// A color index of the surface palette, from 1.
+    Index(u32),
+    /// Each particle the color of the band it follows.
+    ByBand,
+}
+
+/// What a theme gives the air (board #5543): the fireflies' pool and
+/// sprites as something else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Air {
+    pub color: AirColor,
+    /// The audio band (`surface_fx::BAND_*`).
+    pub band: u32,
+    /// How many, under `fireflies::FIREFLY_CAP`.
+    pub count: u32,
+    pub motion: Motion,
+}
+
+impl Theme {
+    /// What the depth light draws under this theme.
+    pub fn depth(self) -> Depth {
+        let depth = |look, colors, band| Depth {
+            look,
+            colors,
+            band,
+            occlude: true,
+        };
+        match self {
+            // By band once the meters are built; other's own until then.
+            Self::Classic => depth(DepthLook::Meters, [0, 0], BAND_RMS),
+            Self::Drift => depth(DepthLook::Bubbles, [TEAL, WARM_WHITE], BAND_BASS),
+            Self::Tide => depth(DepthLook::Sparkle, [ROSE, ROSE], BAND_HIGH),
+            Self::Aurora => depth(DepthLook::Beams, [TEAL, COLOR_KEY], BAND_BASS),
+            Self::Mirror => depth(DepthLook::Glints, [WARM_WHITE, WARM_WHITE], BAND_HIGH),
+            // The heat ramp once the coals are built.
+            Self::Flint => depth(DepthLook::Coals, [AMBER, WARM_WHITE], BAND_BASS),
+            Self::Contour => depth(DepthLook::Grass, [GREEN, WARM_WHITE], BAND_MID),
+        }
+    }
+
+    /// What the air carries under this theme.
+    pub fn air(self) -> Air {
+        let air = |color, band, count, motion| Air {
+            color,
+            band,
+            count,
+            motion,
+        };
+        let index = AirColor::Index;
+        match self {
+            Self::Classic => air(AirColor::ByBand, BAND_HIGH, 2000, Motion::Wander),
+            Self::Drift => air(index(TEAL), BAND_HIGH, 1500, Motion::Drift),
+            Self::Tide => air(index(ROSE), BAND_BASS, 1000, Motion::Rise),
+            Self::Aurora => air(index(WARM_WHITE), BAND_HIGH, 2000, Motion::Twinkle),
+            Self::Mirror => air(index(WARM_WHITE), BAND_HIGH, 1500, Motion::Orbit),
+            Self::Flint => air(index(AMBER), BAND_BASS, 1500, Motion::Rise),
+            Self::Contour => air(index(GREEN), BAND_HIGH, 2000, Motion::Wander),
+        }
+    }
+
+    /// The share of the sky's reflection a floor shows under this theme
+    /// (`sky::REFLECT_GAIN` is 1): Aurora's is dimmed, so the floor reads
+    /// as dark water or ice. No other theme has a sky.
+    pub fn reflection(self) -> f32 {
+        match self {
+            Self::Aurora => 0.3,
+            _ => 1.0,
+        }
+    }
+}
+
+/// The share of the sky's reflection a floor shows in a room whose saved
+/// theme is `theme` ([`Theme::reflection`]); all of it with none.
+pub fn reflection(theme: Option<Theme>) -> f32 {
+    theme.map_or(1.0, Theme::reflection)
 }
 
 /// How the edge bars draw the edges of a surface of `kind` in a room whose
@@ -744,15 +943,18 @@ mod tests {
 
     #[test]
     fn every_look_is_on_its_kinds_list_with_a_valid_color_and_band() {
-        // No departures from the catalogue: each pairing is on its kind's
-        // own list (`SurfaceBehavior::catalogue`), so none needed listing.
+        // One departure from the catalogue (`SurfaceBehavior::catalogue`):
+        // Tide's tables run the rings, tide pools, which the room editor's
+        // list for a table does not carry.
         for theme in Theme::ALL {
             assert_eq!(theme.looks().count(), KIND_NAMES.len(), "{theme:?}");
             for (kind, look) in theme.looks() {
                 let what = format!("{} {}", theme.name(), kind_name(kind));
-                assert!(
+                let departs = (theme, kind, look.behavior) == (Theme::Tide, KIND_TABLE, B::Rings);
+                assert_eq!(
                     B::catalogue(kind).contains(&look.behavior),
-                    "{what}: {} is not on the list",
+                    !departs,
+                    "{what}: {}",
                     look.behavior.name()
                 );
                 assert!(look.color <= COLOR_KEY, "{what}");
@@ -769,9 +971,15 @@ mod tests {
         for (kind, _) in KIND_NAMES {
             let look = Theme::Classic.look(kind).expect("a named kind");
             let behavior = B::default_for(kind);
+            // The tables' bars stand (board #5543); the rest on the face.
+            let edges = if kind == KIND_TABLE {
+                Mode::Standing
+            } else {
+                Mode::Face
+            };
             assert_eq!(
                 look,
-                Look::new(behavior, 0, behavior.default_band(), 1.0, Mode::Face),
+                Look::new(behavior, 0, behavior.default_band(), 1.0, edges),
                 "{}",
                 kind_name(kind)
             );
@@ -785,167 +993,182 @@ mod tests {
         }
     }
 
+    /// One theme's rows in `KIND_NAMES`' order (table, floor, wall,
+    /// ceiling, frame, other): the behavior, the color, the band, the
+    /// strength, the edges and whether in one color.
+    fn table(t: Theme) -> Vec<(B, u32, u32, f32, Mode, bool)> {
+        t.looks()
+            .map(|(_, l)| (l.behavior, l.color, l.band, l.strength, l.edges, l.mono))
+            .collect()
+    }
+
     #[test]
-    fn the_four_as_the_brief_names_them() {
-        let behaviors =
-            |t: Theme| -> Vec<SurfaceBehavior> { t.looks().map(|(_, l)| l.behavior).collect() };
-        // In KIND_NAMES' order: table, floor, wall, ceiling, frame, other.
+    fn the_seven_as_the_theme_file_has_them() {
+        use crate::surface_fx::BAND_MID as MID;
+        let (rms, bass) = (BAND_RMS, BAND_BASS);
+        let (off, face, stand, into) = (Mode::Off, Mode::Face, Mode::Standing, Mode::In);
+        // Board #5543, themes_new.csv, a row per part. A row whose effect
+        // is not built yet is as it was before.
         assert_eq!(
-            behaviors(Theme::Classic),
+            table(Theme::Drift),
             [
-                B::Streamlines,
-                B::Rings,
-                B::Spectrum,
-                B::None,
-                B::Pulse,
-                B::Curls
+                (B::Curls, TEAL, MID, 1.0, off, false),
+                (B::Contours, TEAL, bass, 0.3, off, false),
+                (B::Streamlines, BLUE, rms, 1.0, off, false),
+                (B::Rings, BLUE, bass, 1.0, off, false),
+                (B::Pulse, TEAL, rms, 0.6, face, false),
+                (B::Curls, TEAL, MID, 1.0, off, false),
             ]
         );
+        // The floor waits for the wash.
         assert_eq!(
-            behaviors(Theme::Drift),
+            table(Theme::Tide),
             [
-                B::Streamlines,
-                B::Rings,
-                B::Streamlines,
-                B::Rings,
-                B::Pulse,
-                B::Curls
+                (B::Rings, ROSE, bass, 1.0, off, false),
+                (B::Curls, VIOLET, rms, 1.0, face, false),
+                (B::Pulse, VIOLET, bass, 1.0, off, false),
+                (B::Pulse, VIOLET, bass, 0.6, off, false),
+                (B::Rings, ROSE, bass, 1.0, face, false),
+                (B::Curls, ROSE, MID, 1.0, off, false),
             ]
         );
+        // Tables, frames and other surfaces wait for the windows.
+        let sky = (B::Aurora, COLOR_KEY, rms, 1.0, off, false);
+        let tunnel = (B::None, TEAL, rms, 1.0, into, false);
         assert_eq!(
-            behaviors(Theme::Tide),
-            [B::Curls, B::Curls, B::Pulse, B::Pulse, B::Rings, B::Pulse]
+            table(Theme::Aurora),
+            [tunnel, sky, sky, sky, tunnel, tunnel]
         );
+        // The ceiling waits for astrolabe and the frames for fenestra.
         assert_eq!(
-            behaviors(Theme::Aurora),
-            [B::None, B::Aurora, B::Aurora, B::Aurora, B::None, B::None]
+            table(Theme::Mirror),
+            [
+                (B::None, BLUE, MID, 1.0, into, false),
+                (B::Tessera, BLUE, bass, 1.0, face, true),
+                (B::Bezel, WARM_WHITE, rms, 1.0, into, true),
+                (B::None, WARM_WHITE, rms, 1.0, into, false),
+                (B::None, BLUE, rms, 1.0, into, false),
+                (B::None, BLUE, MID, 1.0, into, false),
+            ]
         );
+        // Tables wait for the sparks and other surfaces for the embers.
+        // The ceiling's shards are under their cap for the flash rule.
         assert_eq!(
-            behaviors(Theme::Mirror),
-            [B::None, B::Rings, B::None, B::None, B::None, B::None]
+            table(Theme::Flint),
+            [
+                (B::Shards, WARM_WHITE, rms, 1.0, stand, true),
+                (B::Tessera, BLUE, bass, 0.5, off, true),
+                (B::Shards, WARM_WHITE, rms, 1.0, face, true),
+                (B::Shards, WARM_WHITE, rms, 0.4, off, true),
+                (B::Pulse, AMBER, bass, 0.8, face, false),
+                (B::Shards, AMBER, rms, 1.0, stand, true),
+            ]
         );
-        // Only Classic runs the wall spectrum.
+        let ceiling = Theme::Flint.look(KIND_CEILING).expect("ceiling");
+        assert!(ceiling.strength <= crate::surfaces::CEILING_SHARDS_LIMITED);
+        // Tables and other surfaces wait for the terraces.
+        assert_eq!(
+            table(Theme::Contour),
+            [
+                (B::None, WARM_WHITE, rms, 1.0, face, false),
+                (B::Contours, GREEN, rms, 1.0, off, false),
+                (B::Contours, GREEN, rms, 1.0, off, false),
+                (B::Streamlines, WARM_WHITE, rms, 0.4, off, false),
+                (B::Pulse, WARM_WHITE, rms, 0.6, face, false),
+                (B::Curls, WARM_WHITE, rms, 0.4, face, false),
+            ]
+        );
+        // Only Classic runs the wall spectrum, and no theme a look that
+        // draws nothing (`SurfaceBehavior::offered`).
         for theme in Theme::ALL {
             let spectrum = theme.looks().any(|(_, l)| l.behavior == B::Spectrum);
             assert_eq!(spectrum, theme == Theme::Classic, "{theme:?}");
-        }
-        // The colors: Drift blue and teal, Tide violet and rose, Aurora
-        // the key's tint on the sky and teal on the rest.
-        let colors = |t: Theme| -> Vec<u32> { t.looks().map(|(_, l)| l.color).collect() };
-        assert!(
-            colors(Theme::Drift)
-                .iter()
-                .all(|c| [BLUE, TEAL].contains(c))
-        );
-        assert!(
-            colors(Theme::Tide)
-                .iter()
-                .all(|c| [VIOLET, ROSE].contains(c))
-        );
-        for (kind, l) in Theme::Aurora.looks() {
-            let sky = [KIND_FLOOR, KIND_WALL, KIND_CEILING].contains(&kind);
-            let want = if sky { COLOR_KEY } else { TEAL };
-            assert_eq!(l.color, want, "{}", kind_name(kind));
-        }
-        // Mirror: warm white on the walls and the ceiling, blue on the
-        // rest.
-        for (kind, l) in Theme::Mirror.looks() {
-            let want = if [KIND_WALL, KIND_CEILING].contains(&kind) {
-                WARM_WHITE
-            } else {
-                BLUE
-            };
-            assert_eq!(l.color, want, "{}", kind_name(kind));
-        }
-        // Flint (board #5533): the angular looks alone, and no look that
-        // is held back for flashing.
-        assert_eq!(
-            behaviors(Theme::Flint),
-            [
-                B::Shards,
-                B::Tessera,
-                B::Shards,
-                B::Shards,
-                B::Reticle,
-                B::Shards
-            ]
-        );
-        for theme in Theme::ALL {
             assert!(
                 theme.looks().all(|(_, l)| l.behavior.offered()),
                 "{theme:?}"
             );
         }
-        // Steel, white and one hot color. The walls' shards untinted, so
-        // gray, the ceiling's and the tables' warm white, the floor's
-        // grid blue, the rest amber. Every shards in one color, without
-        // the effect's own hues; no other theme asks that of any look.
-        for (kind, l) in Theme::Flint.looks() {
-            let want = match kind {
-                KIND_WALL => 0,
-                KIND_FLOOR => BLUE,
-                KIND_TABLE | KIND_CEILING => WARM_WHITE,
-                _ => AMBER,
-            };
-            assert_eq!(l.color, want, "{}", kind_name(kind));
-            assert_eq!(l.mono, l.behavior == B::Shards, "{}", kind_name(kind));
-            // The ceiling's facets at their cap, for the flash rule.
-            let cap = crate::surfaces::CEILING_SHARDS_LIMITED;
-            let ceiling = kind == KIND_CEILING;
-            assert_close!(l.strength, if ceiling { cap } else { 1.0 });
-        }
-        for theme in Theme::ALL.into_iter().filter(|t| *t != Theme::Flint) {
-            assert!(theme.looks().all(|(_, l)| !l.mono), "{theme:?}");
-        }
-        // It follows the room's theme and the look the theme gave the
-        // kind: a surface edited to another look, another theme and a
+        // One color follows the room's theme and the look the theme gave
+        // the kind: a surface edited to another look, another theme and a
         // room with none draw every look in its own colors.
         let flint = Some(Theme::Flint);
         assert!(mono(flint, KIND_WALL, B::Shards));
         assert!(mono(flint, KIND_TABLE, B::Shards));
+        assert!(mono(flint, KIND_FLOOR, B::Tessera));
         assert!(!mono(flint, KIND_WALL, B::Bezel));
-        assert!(!mono(flint, KIND_FLOOR, B::Tessera));
         assert!(!mono(flint, KIND_FLOOR, B::Shards));
         assert!(!mono(flint, crate::surfaces::KIND_NONE, B::Shards));
         assert!(!mono(Some(Theme::Classic), KIND_TABLE, B::Shards));
         assert!(!mono(None, KIND_TABLE, B::Shards));
-        // Contour (board #5533): the contours on the room's three planes
-        // and nowhere else, green; the rest warm white, nothing on the
-        // tables and the frames, the curls at 0.4 on other surfaces.
+    }
+
+    #[test]
+    fn every_theme_has_a_depth_light_and_an_air_of_its_own() {
+        use crate::surface_fx::{BAND_HIGH as HIGH, BAND_MID as MID};
+        // Board #5543, themes_new.csv: the depth-detected row. The look,
+        // the sides' and the tops' colors, the band; every one occludes.
+        let depth = |t: Theme| {
+            let d = t.depth();
+            assert!(d.occlude, "{t:?}");
+            assert!(d.colors.iter().all(|c| *c <= COLOR_KEY), "{t:?}");
+            (d.look, d.colors, d.band)
+        };
+        use DepthLook as D;
+        assert_eq!(depth(Theme::Classic), (D::Meters, [0, 0], BAND_RMS));
         assert_eq!(
-            behaviors(Theme::Contour),
-            [
-                B::None,
-                B::Contours,
-                B::Contours,
-                B::Contours,
-                B::None,
-                B::Curls
-            ]
+            depth(Theme::Drift),
+            (D::Bubbles, [TEAL, WARM_WHITE], BAND_BASS)
         );
-        for (kind, l) in Theme::Contour.looks() {
-            let land = [KIND_FLOOR, KIND_WALL, KIND_CEILING].contains(&kind);
-            assert_eq!(l.color, if land { GREEN } else { WARM_WHITE });
-            let other = kind == crate::surfaces::KIND_OTHER;
-            assert_close!(l.strength, if other { 0.4 } else { 1.0 });
-        }
-        // Only Contour runs the contours.
-        for theme in Theme::ALL {
-            let contours = theme.looks().any(|(_, l)| l.behavior == B::Contours);
-            assert_eq!(contours, theme == Theme::Contour, "{theme:?}");
-        }
-        // Every band the behavior's own: Drift's rms, but the bass where
-        // the behavior's default is the bass.
-        for theme in Theme::ALL {
-            for (_, l) in theme.looks() {
-                assert_eq!(l.band, l.behavior.default_band(), "{theme:?}");
-            }
-        }
-        assert!(
-            Theme::Drift
-                .looks()
-                .all(|(_, l)| l.band == BAND_RMS || l.behavior.default_band() == BAND_BASS)
+        assert_eq!(depth(Theme::Tide), (D::Sparkle, [ROSE, ROSE], HIGH));
+        assert_eq!(
+            depth(Theme::Aurora),
+            (D::Beams, [TEAL, COLOR_KEY], BAND_BASS)
         );
+        assert_eq!(
+            depth(Theme::Mirror),
+            (D::Glints, [WARM_WHITE, WARM_WHITE], HIGH)
+        );
+        assert_eq!(
+            depth(Theme::Flint),
+            (D::Coals, [AMBER, WARM_WHITE], BAND_BASS)
+        );
+        assert_eq!(depth(Theme::Contour), (D::Grass, [GREEN, WARM_WHITE], MID));
+        // Only the points are built: every other look draws as them.
+        for look in DepthLook::ALL {
+            assert_eq!(look.built(), look == D::Points, "{}", look.name());
+        }
+        // The air row: the color, the band, the count and the motion.
+        let air = |t: Theme| {
+            let a = t.air();
+            assert!(a.count <= crate::fireflies::FIREFLY_CAP, "{t:?}");
+            (a.color, a.band, a.count, a.motion)
+        };
+        let index = AirColor::Index;
+        use Motion as M;
+        assert_eq!(
+            air(Theme::Classic),
+            (AirColor::ByBand, HIGH, 2000, M::Wander)
+        );
+        assert_eq!(air(Theme::Drift), (index(TEAL), HIGH, 1500, M::Drift));
+        assert_eq!(air(Theme::Tide), (index(ROSE), BAND_BASS, 1000, M::Rise));
+        assert_eq!(
+            air(Theme::Aurora),
+            (index(WARM_WHITE), HIGH, 2000, M::Twinkle)
+        );
+        assert_eq!(
+            air(Theme::Mirror),
+            (index(WARM_WHITE), HIGH, 1500, M::Orbit)
+        );
+        assert_eq!(air(Theme::Flint), (index(AMBER), BAND_BASS, 1500, M::Rise));
+        assert_eq!(air(Theme::Contour), (index(GREEN), HIGH, 2000, M::Wander));
+        // The floor's reflection: Aurora's dimmed, all of it elsewhere and
+        // with no theme.
+        assert_close!(Theme::Aurora.reflection(), 0.3);
+        assert_close!(reflection(Some(Theme::Aurora)), 0.3);
+        for t in Theme::ALL.into_iter().filter(|t| *t != Theme::Aurora) {
+            assert_close!(t.reflection(), 1.0);
+        }
+        assert_close!(reflection(None), 1.0);
     }
 
     #[test]
@@ -1057,23 +1280,7 @@ mod tests {
             // A kind without a name: on the face.
             assert_eq!(theme.edges(KIND_NONE), Mode::Face);
         }
-        // Classic, Drift and Tide keep the bars on the face for every
-        // kind, as they were worn.
-        for theme in [Theme::Classic, Theme::Drift, Theme::Tide] {
-            assert!(
-                theme.looks().all(|(_, l)| l.edges == Mode::Face),
-                "{theme:?}"
-            );
-        }
-        // Aurora (board #5436): the sky's planes off, so nothing cuts it
-        // at a corner, the rest in.
-        for (kind, l) in Theme::Aurora.looks() {
-            let sky = [KIND_FLOOR, KIND_WALL, KIND_CEILING].contains(&kind);
-            let want = if sky { Mode::Off } else { Mode::In };
-            assert_eq!(l.edges, want, "{}", kind_name(kind));
-            assert_eq!(l.behavior == B::Aurora, sky, "{}", kind_name(kind));
-            assert_eq!(l.behavior == B::None, !sky, "{}", kind_name(kind));
-        }
+        // The log names a mode only where it is not on the face.
         assert!(
             Theme::Aurora
                 .summary()
@@ -1084,34 +1291,11 @@ mod tests {
                 .summary()
                 .contains("table none@1.00 teal rms edges in")
         );
-        // Mirror: in everywhere but the floor, which keeps the rings and
-        // the bars on its face; no surface behavior but the floor's.
-        for (kind, l) in Theme::Mirror.looks() {
-            let floor = kind == KIND_FLOOR;
-            let want = if floor { Mode::Face } else { Mode::In };
-            assert_eq!(l.edges, want, "{}", kind_name(kind));
-            assert_eq!(l.behavior == B::Rings, floor, "{}", kind_name(kind));
-            assert_eq!(l.behavior == B::None, !floor, "{}", kind_name(kind));
-        }
-        // Flint (board #5533): the bars on the face of the room's planes
-        // and of the frames, standing on what has a rim.
-        for (kind, l) in Theme::Flint.looks() {
-            let rim = [KIND_TABLE, crate::surfaces::KIND_OTHER].contains(&kind);
-            let want = if rim { Mode::Standing } else { Mode::Face };
-            assert_eq!(l.edges, want, "{}", kind_name(kind));
-        }
         assert!(
             Theme::Flint
                 .summary()
                 .contains("table shards@1.00 warm white rms edges stand")
         );
-        // Contour (board #5533): the land's planes off, as Aurora's sky,
-        // the rest on the face.
-        for (kind, l) in Theme::Contour.looks() {
-            let land = [KIND_FLOOR, KIND_WALL, KIND_CEILING].contains(&kind);
-            let want = if land { Mode::Off } else { Mode::Face };
-            assert_eq!(l.edges, want, "{}", kind_name(kind));
-        }
         assert!(
             Theme::Contour
                 .summary()
@@ -1120,7 +1304,10 @@ mod tests {
         assert!(
             Theme::Contour
                 .summary()
-                .contains("other curls@0.40 warm white rms")
+                .contains("other curls@0.40 warm white rms \u{b7}")
+                || Theme::Contour
+                    .summary()
+                    .ends_with("other curls@0.40 warm white rms")
         );
         // The room's theme decides; with none saved (fresh or custom),
         // every kind on the face.
@@ -1132,30 +1319,34 @@ mod tests {
             );
         }
         assert_eq!(edge_mode(Some(Theme::Mirror), KIND_WALL), Mode::In);
-        // The log names a mode only where it is not on the face.
-        assert!(!Theme::Drift.summary().contains("edges"));
         assert!(
-            Theme::Mirror
+            Theme::Drift
                 .summary()
-                .contains("wall none@1.00 warm white rms edges in")
+                .contains("frame pulse@0.60 teal rms \u{b7}")
         );
         assert!(
             Theme::Mirror
                 .summary()
-                .contains("floor rings@1.00 blue bass \u{b7}")
+                .contains("wall bezel@1.00 warm white rms edges in")
+        );
+        assert!(
+            Theme::Mirror
+                .summary()
+                .contains("floor tessera@1.00 blue bass \u{b7}")
         );
     }
 
     #[test]
     fn a_look_runs_what_resolves_to_it() {
-        let drift_floor = Theme::Drift.look(KIND_FLOOR).unwrap();
+        // Drift's ceiling: the rings, blue, on the bass.
+        let drift_floor = Theme::Drift.look(KIND_CEILING).unwrap();
         assert_eq!(drift_floor.params(), Some([BLUE as f32, BAND_BASS as f32]));
         assert!(drift_floor.runs((B::Rings, 1.0, [1.0, 1.0])));
         assert!(!drift_floor.runs((B::Rings, 0.9, [1.0, 1.0])));
         assert!(!drift_floor.runs((B::Rings, 1.0, [6.0, 1.0])));
         assert!(!drift_floor.runs((B::Curls, 1.0, [1.0, 1.0])));
         let frame = Theme::Drift.look(KIND_FRAME).unwrap();
-        assert!(frame.runs((B::Pulse, 0.6, [TEAL as f32, BAND_BASS as f32])));
+        assert!(frame.runs((B::Pulse, 0.6, [TEAL as f32, BAND_RMS as f32])));
     }
 
     #[test]

@@ -1816,6 +1816,76 @@ pulse on the walls and the ceiling, the curls on the floor), then Classic
 board #5431 it does pick the edge bars' mode per kind; Mirror's worn look
 and its cost seated are still to take.
 
+## Themes as scenes (Nov 18, board #5543)
+
+**Why.** The owner wore the seven and found the parts of a theme
+unrelated: the surfaces had a look each, but the depth light borrowed the
+colors of "other" surfaces and the fireflies were the same in every
+theme. He wrote each theme out as one scene, a row per part
+(`themes_new.csv`): a night city under the lights, a forge in a cave, a
+meadow drawn as a map, a hi-fi, deep water, a shore at dusk, a club of
+infinity mirrors.
+
+**What a theme is now** (`themes.rs`). The six surface rows as before,
+and three more that follow the saved theme's name like the edges, so the
+room file is unchanged:
+
+- **The depth light** (`themes::Depth`): a look, the colors of its sides
+  and its tops, a band, and whether it occludes. Before, it took all of
+  these from the row for other surfaces.
+- **The air** (`themes::Air`): the fireflies' pool and sprites as
+  something else, by a color, a band, a count and a motion (wander,
+  twinkle, rise, drift, orbit).
+- **The floor's reflection** (`Theme::reflection`): the share of the
+  sky's reflection a floor shows. Aurora's is 0.3, so the floor reads as
+  dark water or ice. It scales the reflection's strength in `app.rs`; no
+  shader changed. Only Aurora has a sky, so the file's values for Tide
+  and Mirror wait for a decision on what their floors mirror.
+
+**Occlude.** Every theme's depth light occludes: what the depth map sees
+hides the surfaces' light behind it at every immersion level, a black
+base under its own light. That is the hard cutout `depthlightveil 0`
+always gave (`depth_light.rs`, the veil), now the default under a theme.
+The knob at 0 or 1 still decides over the theme, and a room with no theme
+keeps the veil. What comes back with it is the map's coarse silhouette
+at the edge of a real thing, which the veil was made to hide.
+
+**The rows.** Each cell is behavior, color, band, strength, edges; "one
+color" is the ported effect without its own hues. A row in italics waits
+for an effect that is not built and is as it was.
+
+| kind | Drift | Tide | Aurora | Mirror | Flint | Contour |
+| --- | --- | --- | --- | --- | --- | --- |
+| table | curls, teal, mid, 1, off | rings, rose, bass, 1, off | *none, teal, rms, 1, in (windows)* | none, blue, mid, 1, in | *shards, warm white, rms, 1, stand (sparks)* | *none, warm white, rms, 1, face (terraces)* |
+| floor | contours, teal, bass, 0.3, off | *curls, violet, rms, 1, face (wash)* | aurora (the reflection at 0.3), key, rms, 1, off | tessera, blue, bass, 1, face, one color | tessera, blue, bass, 0.5, off, one color | contours, green, rms, 1, off |
+| wall | streamlines, blue, rms, 1, off | pulse, violet, bass, 1, off | aurora (the sky), key, rms, 1, off | bezel, warm white, rms, 1, in, one color | shards, warm white, rms, 1, face, one color | contours, green, rms, 1, off |
+| ceiling | rings, blue, bass, 1, off | pulse, violet, bass, 0.6, off | aurora (the sky), key, rms, 1, off | *none, warm white, rms, 1, in (astrolabe)* | shards, warm white, rms, 0.4, off, one color | streamlines, warm white, rms, 0.4, off |
+| frame | pulse, teal, rms, 0.6, face | rings, rose, bass, 1, face | *none, teal, rms, 1, in (windows)* | *none, blue, rms, 1, in (fenestra)* | pulse, amber, bass, 0.8, face | pulse, warm white, rms, 0.6, face |
+| other | curls, teal, mid, 1, off | curls, rose, mid, 1, off | *none, teal, rms, 1, in (windows)* | none, blue, mid, 1, in | *shards, amber, rms, 1, stand (embers)* | *curls, warm white, rms, 0.4, face (terraces)* |
+| depth light | bubbles, teal and warm white, bass | sparkle, rose, high | beams, teal and the key, bass | glints, warm white, high | coals, the heat ramp, bass | grass, green and warm white, mid |
+| air | teal, high, 1500, drift | rose, bass, 1000, rise | warm white, high, 2000, twinkle | warm white, high, 1500, orbit | amber, bass, 1500, rise | green, high, 2000, wander |
+
+Classic keeps the built-in defaults, with the tables' bars standing as
+level meters, meters on the depth light and the air colored by band. The
+file also moves its tables and other surfaces to the mids. That waits: a
+band that is not the behavior's own would end the rule that a room with no
+file runs Classic.
+
+**What is not built.** Three surface effects (windows, terraces, wash),
+seven depth looks (every one but the points; each draws as the points
+until it is built, in the theme's colors and on its band), four motions
+of the air, and the two colors that are not one color (the heat ramp, by
+band). Sparks and embers were the particle cloud's and draw nothing since
+the cloud went (board #5470); they come back drawn on the face. Astrolabe
+and fenestra are held back for flashing (board #5462). Tide's tables run
+the rings, which a table's list in the room editor does not carry: the
+one pairing off the catalogue.
+
+**Every depth look stays on the surface** (the owner, Nov 18). The depth
+light shades the depth map's mesh and nothing else, so a beam is a streak
+running up a chair and a bubble a point sliding up it; nothing leaves the
+thing for the air.
+
 ## The contours (Nov 16, board #5533)
 
 **Why.** The owner asked for "gentle rolling and topographic scenery"

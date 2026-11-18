@@ -65,10 +65,12 @@
 //! version as a slow wave of light, one every [`BAND_SPACING_M`] of height,
 //! drifting up, its crests tinted toward the top's color, its profile the
 //! same triangle wave squared. A surface that faces up takes the
-//! top's color. The colors are the theme's ([`colors`]): the color the
-//! theme gives other surfaces, and the key's tint where the theme uses it
-//! anywhere. Aurora draws teal and the key's tint; a room with no theme
-//! other's own green.
+//! top's color. The colors and the band are the theme's
+//! ([`colors`], [`band`]): since board #5543 its own row for the depth
+//! light (`themes::Depth`), not the row for other surfaces. Aurora draws
+//! teal and the key's tint on the bass; a room with no theme other's own
+//! green. The row also names a look (`themes::DepthLook`); only the points
+//! are built, and every other look draws as them until it is.
 //!
 //! **Stable in time.** A point is a function of the world position alone:
 //! its cell and its place in the cell come from the position projected on
@@ -103,8 +105,8 @@
 //! immersion level from [`ALPHA_LOW`] with the room plain to [`ALPHA_HIGH`]
 //! with it black, times `depthlightgain`, the band's wave and the twinkle.
 //! At a quarter covered the light averages well under a lit surface's. The
-//! crests follow the band the theme gives other surfaces ([`band`]; the rms
-//! for Aurora), smoothed ([`MUSIC_ATTACK_S`], [`MUSIC_RELEASE_S`]).
+//! crests follow the band the theme gives the depth light ([`band`]; the
+//! bass for Aurora), smoothed ([`MUSIC_ATTACK_S`], [`MUSIC_RELEASE_S`]).
 //!
 //! **Draw order.** With the veil letting some light through, the eye pass
 //! draws the box and hand occluders, the quad, the surfaces when they are
@@ -141,8 +143,10 @@
 //! (default 1; 0 is the frame as it was, with depth only, no color write
 //! and the old order), `depthlightgain` (0 to [`GAIN_MAX`], default 1),
 //! `depthlightfill` (the share covered, [`FILL_RANGE`], default [`FILL`]),
-//! `depthlightveil 0|1` (default 1; 0 keeps the hard cutout at every
-//! level) and `depthlightpoints 0|1` (default 1; 0 draws no points, the
+//! `depthlightveil 0|1` (0 keeps the hard cutout at every level, 1 the
+//! veil; unset, the room's theme decides: the hard cutout where its depth
+//! light occludes, board #5543, [`DepthLightOptions::under`], which is
+//! every theme, and the veil in a room with none) and `depthlightpoints 0|1` (default 1; 0 draws no points, the
 //! mesh still drawn in the light's passes and order, to cost the points
 //! apart). It needs the occluder's mesh. With the full-screen pass
 //! (`envdepthmesh 0`, or `envdepthfilter 0` or 1) or the gray diagnostic
@@ -313,6 +317,9 @@ pub struct DepthLightOptions {
     /// `debug.fosfora.depthlightveil`: the surfaces' light shows through
     /// with the room dark (on), or the hard cutout at every level (off).
     pub veil: bool,
+    /// The veil's knob is set to 0 or 1, so it decides and the room's
+    /// theme does not ([`Self::under`]).
+    pub veil_forced: bool,
     /// `debug.fosfora.depthlightpoints`: the points drawn (on), or none,
     /// the mesh still drawn with the veil and in its order (off): the
     /// points' cost apart, for a cost run.
@@ -326,6 +333,7 @@ impl Default for DepthLightOptions {
             gain: 1.0,
             fill: FILL,
             veil: true,
+            veil_forced: false,
             points: true,
         }
     }
@@ -335,7 +343,9 @@ impl DepthLightOptions {
     /// The options the five knobs ask, each read through `prop` (a system
     /// property by name, `None` unset): `depthlight` and `depthlightveil`
     /// off only at `0`; an unreadable number is the default, one out of
-    /// range the nearest end. `depthlightpoints` off only at `0` too.
+    /// range the nearest end. `depthlightpoints` off only at `0` too. The
+    /// veil's knob at `0` or `1` also takes the veil from the room's theme
+    /// ([`Self::under`]); unset or empty leaves it the theme's.
     pub fn from_knobs(prop: impl Fn(&str) -> Option<String>) -> Self {
         let d = Self::default();
         let number = |name: &str| {
@@ -349,7 +359,21 @@ impl DepthLightOptions {
             gain: number(KNOB_GAIN).map_or(d.gain, |v| v.clamp(0.0, GAIN_MAX)),
             fill: number(KNOB_FILL).map_or(d.fill, |v| v.clamp(FILL_RANGE[0], FILL_RANGE[1])),
             veil: !off(KNOB_VEIL),
+            veil_forced: matches!(prop(KNOB_VEIL).as_deref().map(str::trim), Some("0" | "1")),
             points: !off(KNOB_POINTS),
+        }
+    }
+
+    /// These options in a room whose saved theme is `theme` (board
+    /// #5543): a theme whose depth light occludes (`themes::Depth::
+    /// occlude`) keeps the hard cutout at every level, unless the veil's
+    /// knob is set. With no theme the veil is the knob's.
+    #[must_use]
+    pub fn under(self, theme: Option<Theme>) -> Self {
+        let occlude = theme.is_some_and(|t| t.depth().occlude);
+        Self {
+            veil: self.veil && (self.veil_forced || !occlude),
+            ..self
         }
     }
 
@@ -368,6 +392,8 @@ impl DepthLightOptions {
             self.gain,
             self.fill,
             match (self.veil, self.points) {
+                (true, true) if !self.veil_forced =>
+                    "veil the theme's: the hard cutout where its depth light occludes, else the surfaces' light shows through by the immersion level",
                 (true, true) => "veil on: the surfaces' light shows through by the immersion level",
                 (false, true) =>
                     "veil off (debug.fosfora.depthlightveil 0): the hard cutout at every level",
@@ -533,53 +559,68 @@ pub fn veil(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
     ]
 }
 
-/// Whether `theme` gives any kind of surface the key's tint.
+/// Whether `theme` gives the light the key's tint, on its sides or its
+/// tops.
 pub fn uses_key(theme: Option<Theme>) -> bool {
-    theme.is_some_and(|t| t.looks().any(|(_, l)| l.color == COLOR_KEY))
+    theme.is_some_and(|t| t.depth().colors.contains(&COLOR_KEY))
 }
 
-/// The color index the light's sides take under `theme`: the one it gives
-/// other surfaces; 0 (other's own) with no theme.
-pub fn side_index(theme: Option<Theme>) -> u32 {
-    theme
-        .and_then(|t| t.look(KIND_OTHER))
-        .map_or(0, |l| l.color)
+/// The color indices of the light's sides and tops under `theme`
+/// (`themes::Depth::colors`); 0 (other's own) for both with no theme.
+pub fn color_indices(theme: Option<Theme>) -> [u32; 2] {
+    theme.map_or([0, 0], |t| t.depth().colors)
 }
 
 /// The sides' and the tops' colors (linear RGB) under `theme` while the
-/// key's tint is `key`: the sides the color the theme gives other
-/// surfaces, the tops the key's tint where the theme uses it anywhere,
-/// else the sides' color. With no theme, other's own color on both.
+/// key's tint is `key`: the theme's two for the depth light (board #5543).
+/// With no theme, other's own color on both.
 pub fn colors(theme: Option<Theme>, key: [f32; 3]) -> [[f32; 3]; 2] {
-    let side = surface_color(side_index(theme), KIND_OTHER, key);
-    let top = if uses_key(theme) { key } else { side };
-    [side, top]
+    color_indices(theme).map(|i| surface_color(i, KIND_OTHER, key))
 }
 
-/// The colors in words, for the log: "teal sides, the key's tint on top
-/// (theme aurora)".
+/// The colors in words, for the log: "depth light: beams as points, teal
+/// sides, the key's tint on top, bass, occluding (theme aurora)".
 pub fn colors_line(theme: Option<Theme>) -> String {
-    let side = color_name(side_index(theme));
-    let side = if side == "kind" { "other's own" } else { side };
-    let top = if uses_key(theme) {
-        "the key's tint on top".to_owned()
-    } else {
-        "the same on top".to_owned()
+    let word = |i: u32| match color_name(i) {
+        "kind" => "other's own",
+        "key" => "the key's tint",
+        name => name,
     };
-    let name = theme.map_or_else(
-        || "no theme saved".to_owned(),
-        |t| format!("theme {}", t.name()),
-    );
-    format!("depth light: {side} sides, {top} ({name})")
+    let [side, top] = color_indices(theme);
+    let top = if top == side {
+        "the same on top".to_owned()
+    } else {
+        format!("{} on top", word(top))
+    };
+    let Some(theme) = theme else {
+        return format!(
+            "depth light: {} sides, {top}, {} (no theme saved)",
+            word(side),
+            crate::surface_fx::band_name(band(None)),
+        );
+    };
+    let depth = theme.depth();
+    let look = if depth.look.built() {
+        depth.look.name().to_owned()
+    } else {
+        format!("{} as points", depth.look.name())
+    };
+    format!(
+        "depth light: {look}, {} sides, {top}, {}{} (theme {})",
+        word(side),
+        crate::surface_fx::band_name(depth.band),
+        if depth.occlude { ", occluding" } else { "" },
+        theme.name()
+    )
 }
 
 /// The audio band (`surface_fx::BAND_*`) the crests and the swell follow
-/// under `theme`: the one it gives other surfaces; with no theme, other's
+/// under `theme`: the one it gives the depth light; with no theme, other's
 /// default behavior's.
 pub fn band(theme: Option<Theme>) -> u32 {
-    theme.and_then(|t| t.look(KIND_OTHER)).map_or_else(
+    theme.map_or_else(
         || SurfaceBehavior::default_for(KIND_OTHER).default_band(),
-        |l| l.band,
+        |t| t.depth().band,
     )
 }
 
@@ -1206,7 +1247,7 @@ mod tests {
         mesh_texel,
     };
     use crate::math::{self, Fov};
-    use crate::surfaces::{GREEN, TEAL};
+    use crate::surfaces::{GREEN, TEAL, WARM_WHITE};
     use glam::Quat;
     use std::f32::consts::TAU;
 
@@ -1948,27 +1989,64 @@ mod tests {
     #[test]
     fn the_colors_follow_the_theme() {
         let key = [0.9, 0.3, 1.0];
+        // Board #5543: the theme's own two for the depth light.
         assert!(uses_key(Some(Theme::Aurora)));
         assert_close!(colors(Some(Theme::Aurora), key), [TEAL, key]);
         assert!(!uses_key(Some(Theme::Drift)));
-        assert_close!(colors(Some(Theme::Drift), key), [TEAL, TEAL]);
+        assert_close!(colors(Some(Theme::Drift), key), [TEAL, WARM_WHITE]);
         assert_close!(colors(Some(Theme::Classic), key), [GREEN, GREEN]);
         assert_close!(colors(None, key), [GREEN, GREEN]);
         for t in Theme::ALL {
-            let c = t.look(KIND_OTHER).expect("other").color;
-            assert_close!(colors(Some(t), key)[0], surface_color(c, KIND_OTHER, key));
+            let [side, top] = t.depth().colors;
+            assert_eq!(color_indices(Some(t)), [side, top]);
+            assert_close!(
+                colors(Some(t), key),
+                [
+                    surface_color(side, KIND_OTHER, key),
+                    surface_color(top, KIND_OTHER, key)
+                ]
+            );
+            assert_eq!(band(Some(t)), t.depth().band);
         }
         assert_eq!(
             colors_line(Some(Theme::Aurora)),
-            "depth light: teal sides, the key's tint on top (theme aurora)"
+            "depth light: beams as points, teal sides, the key's tint on top, bass, occluding (theme aurora)"
+        );
+        assert_eq!(
+            colors_line(Some(Theme::Tide)),
+            "depth light: sparkle as points, rose sides, the same on top, high, occluding (theme tide)"
         );
         assert_eq!(
             colors_line(None),
-            "depth light: other's own sides, the same on top (no theme saved)"
+            "depth light: other's own sides, the same on top, rms (no theme saved)"
         );
-        assert_eq!(band(Some(Theme::Aurora)), crate::surface_fx::BAND_RMS);
-        assert_eq!(band(Some(Theme::Tide)), BAND_BASS);
+        assert_eq!(band(Some(Theme::Aurora)), BAND_BASS);
+        assert_eq!(band(Some(Theme::Contour)), BAND_MID);
         assert_eq!(band(None), crate::surface_fx::BAND_RMS);
+        // A theme whose depth light occludes keeps the hard cutout; the
+        // veil's knob at 0 or 1 decides over it, and with no theme the
+        // veil is the knob's.
+        let d = DepthLightOptions::default();
+        assert!(d.veil && !d.veil_forced);
+        for t in Theme::ALL {
+            assert!(!d.under(Some(t)).veil, "{t:?}");
+        }
+        assert!(d.under(None).veil);
+        let knob = |v: &'static str| {
+            DepthLightOptions::from_knobs(|name| (name == KNOB_VEIL).then(|| v.to_owned()))
+        };
+        assert!(knob("1").veil_forced && knob("1").under(Some(Theme::Aurora)).veil);
+        assert!(knob("0").veil_forced && !knob("0").under(None).veil);
+        assert!(!knob("").veil_forced && !knob("").under(Some(Theme::Aurora)).veil);
+        assert!(!knob(" ").veil_forced && knob(" ").under(None).veil);
+        assert_eq!(
+            DepthLightOptions { gain: 2.0, ..d }.under(Some(Theme::Flint)),
+            DepthLightOptions {
+                gain: 2.0,
+                veil: false,
+                ..d
+            }
+        );
         let audio = Audio {
             rms: 0.2,
             bass: 0.7,
@@ -2118,7 +2196,10 @@ mod tests {
         let off = knobs(&[(KNOB, "0")]);
         assert!(on.lit(None) && !on.lit(Some("x")) && !off.lit(None));
         let line = on.line(None);
-        assert!(line.starts_with("depth light: on, points · gain 1 · fill 0.25 · veil on"));
+        assert!(
+            line.starts_with("depth light: on, points · gain 1 · fill 0.25 · veil the theme's")
+        );
+        assert!(knobs(&[(KNOB_VEIL, "1")]).line(None).contains("veil on:"));
         assert!(knobs(&[(KNOB_VEIL, "0")]).line(None).contains("veil off"));
         assert!(
             off.line(None)

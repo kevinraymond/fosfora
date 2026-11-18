@@ -542,7 +542,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.depthlightfill 0.25      (depth light: the share of a surface the points cover, 0.05..0.33; live)
     //   adb shell setprop debug.fosfora.depthlightveil 0|1       (depth light: 1 the sky, the lit faces and the edge bars show through what the depth map
     //       occludes by the immersion level, all of them with the room black, none with it plain; 0 the hard cutout at every level,
-    //       for the A/B; default 1; live)
+    //       for the A/B; unset or empty, the room's theme decides (board #5543): the hard cutout where its depth light occludes,
+    //       which is every theme, and the veil in a room with none; live)
     //   adb shell setprop debug.fosfora.depthlightpoints 0|1     (depth light: 0 draws no points, the mesh still drawn in the light's passes and order,
     //       to cost the points apart from the veil; default 1; live)
     //   adb shell setprop debug.fosfora.sonar 0|1|2              (board #5511, sonar.rs: on each downbeat a shell of light leaves the wearer and travels out, and
@@ -5532,9 +5533,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                     // Board #5533: its colors are the theme's, so it goes
                     // through dark with the surfaces when a track brings one.
+                    // Board #5543: a theme whose depth light occludes keeps
+                    // the hard cutout, unless the veil's knob is set.
                     let depth_light = crate::depth_light::DepthLightOptions {
                         gain: depth_light.gain * bringing.veil(),
-                        ..depth_light
+                        ..depth_light.under(light_theme)
                     };
                     gfx.set_depth_light(Some(&crate::depth_light::frame(
                         &depth_light,
@@ -5596,6 +5599,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                     Map::Reflection => {
                                         (crate::sky::RESOLUTION, effect.reflection_params())
                                     }
+                                };
+                                // Board #5543: a floor's reflection at
+                                // the share the room's theme gives it.
+                                let strength = match map {
+                                    Map::Reflection => {
+                                        strength * crate::themes::reflection(light_theme)
+                                    }
+                                    _ => strength,
                                 };
                                 let rows = crate::surface_port::rows(
                                     &face,

@@ -2262,12 +2262,13 @@ mod tests {
         limiter.set_on(true);
         assert_close!(drawn(&limiter), cap);
         assert_close!(row[1], 1.0);
-        // Flint's own ceiling sits at the cap, so the limit changes
-        // nothing there until the wearer raises it.
+        // Flint's own ceiling sits under the cap (board #5543: dim
+        // fissures, 0.4), so the limit changes nothing there until the
+        // wearer raises it.
         let flint = crate::themes::Theme::Flint
             .look(KIND_CEILING)
             .expect("a ceiling's look");
         assert_eq!(flint.behavior, B::Shards);
-        assert_close!(flint.strength, cap);
+        assert!(flint.strength <= cap);
     }
 }
