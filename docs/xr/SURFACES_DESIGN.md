@@ -1881,10 +1881,10 @@ picked again.
 every row: windows, terraces, and sparks and embers drawn on the face
 ("Windows, terraces, sparks and embers" below); beams, coals and grass on
 the depth light ("Beams, coals and grass"); and the air's color, band,
-count and five motions ("The air per theme"). Still waiting: the wash
-(Tide's floor), four depth looks (bubbles, sparkle, glints, meters, each
-drawing as the points in the theme's colors and on its band), and the
-depth light's color by band (Classic). Astrolabe and fenestra are held
+count and five motions ("The air per theme"). Every theme's depth light
+now draws its own look: bubbles, sparkle, glints and meters followed
+("The other themes' looks"), the meters in the bands' colors. Still
+waiting: the wash (Tide's floor). Astrolabe and fenestra are held
 back for flashing (board #5462). Mirror's walls
 were tried with bezel and the tunnel together (ef5d5ad, unworn captures
 `recordings/themes3/groundwork-ef5d5ad/mirror*.png`): no chrome showed and
@@ -1964,9 +1964,98 @@ fragment for the grass's wind. No hash, no transcendental, no discard.
 
 **Not yet.** The grass's rows show on a large flat surface, as shelves of
 tufts; a chair or a pile breaks them up, and walls are the room's boxes
-in a scanned room. Bubbles, sparkle, glints and meters have ids and draw
-as the points. Renders of a recorded room in each look come from
+in a scanned room. Renders of a recorded room in each look come from
 `the_recorded_room_in_each_look` (`FOSFORA_LOOK_REC`, `FOSFORA_LOOK_DUMP`).
+
+### The other themes' looks
+
+Built the same way, one at a time, for the four themes outside the video.
+
+- **Bubbles** (Drift: teal, warm white, bass). On an upright surface the
+  tile is read wider across (0.6) and drawn out eight times along up, so
+  a point is a wide lane, and the lane snakes a third of a cell to each
+  side on the sway's clock. A bubble passes every three cells of the lane:
+  a round rim with a little light inside, up to 1.7 cells across, and a
+  small highlight over its center in warm white. The rise is a clock the
+  bass drives, 0.04 periods a second in silence and 0.4 at a full band,
+  so the band lets them go, and a bubble wobbles as it follows the lane.
+  Toward a lane's end the bubble swells in and shrinks out. A top shows
+  the points, mostly teal. Cost by the source: the tile read as often,
+  about fifty-five operations around each read, one wave for the snake,
+  no square root of its own (the round shape is compared squared). On
+  the pulse trains bubbles do not flash without the sweep.
+  Where two lanes meet, a bubble is cut by the seam; the GPU test allows
+  twice the beams' count of pixels there.
+- **Sparkle** (Tide: rose, high). The points, dim, a quarter of their
+  light, until one flares. A point flares briefly on its own clock (the
+  eighth power of a wave, so about a sixth of each cycle), as strong as
+  the highs and a third of that in silence. And it flares as the floor's
+  wash front passes under it: every point within 30 cm of the front, in
+  the plan. The front rides a new row of the light's uniform
+  (`light_more`, `depth_light::Around`): the way it travels over the
+  floor, where it is, and its width. The wash is not merged with this
+  look yet, so `depth_light::wash_front` is a stand-in with the wash's
+  rhythm, a front square to the world's -z that runs 2.5 m to each side
+  of the wearer, out over the first half of the bar and back over the
+  second. The wash's own front goes in that one function. Only Tide has
+  a wash (`depth_light::front`). Cost by the source: the tile read as
+  often, about forty-five operations around each read, and once a
+  fragment a dot product and a smoothstep for the front. On the pulse
+  trains the worst is 1.0 flashes a second, with the sweep.
+- **Glints** (Mirror: warm white, high). The points, dim, a quarter of
+  their light, and a mirror ball's specks sweeping over them. A speck is
+  a slanted shaft of light: the room is turned back by the orbit's phase
+  about a center, and in that turned room two sets of leaning sheets, one
+  every 45 cm, cross; where both waves are high a thing's surface cuts
+  the shaft as a spot. The phase and the center are the air's
+  (`fireflies::orbit_step`, the effect anchor), handed to the light as a
+  cosine and a sine, so the shader takes neither, and a speck keeps its
+  place beside an orbiting particle of the air at every phase
+  (`the_glints_turn_about_the_center_with_the_airs_orbit`). A speck has
+  half its light in silence and all of it at full highs. Cost by the
+  source: the tile read as often, about thirty operations around each
+  read, and once a fragment two waves and a smoothstep. At the default
+  drift a spot 2 m from the center passes a place under once a second.
+  On the pulse trains the worst is 1.5 flashes a second, with the sweep.
+- **Meters** (Classic: by band, rms). An upright surface is cut into
+  rows four cells high (16 cm at 1 m). Each row reads one line of the
+  tile, twice as close across, so a point near the line is a bar on the
+  row's foot: a level meter of six segments with a gap between them. A
+  third of the points show the bass, a third the mids and a third the
+  highs, by the point's phase. A meter is lit up to its band's level, the
+  top segment by the share it has reached, and the rest show faintly as
+  its outline. The color is the band's, the air's by band
+  (`fireflies::BAND_COLORS`): violet for the bass, blue for the mids,
+  warm white for the highs. Classic's row gives no colors (other's own on
+  both), and the meters take none from it. The three levels are the
+  drive's, smoothed as the music is, held by the flash limit while the
+  meters draw (`flash::follower::DEPTH_BANDS`), and ride `light_more`.
+  With the levels held the meters stand still: they have no motion of
+  their own. A top shows the points, each as bright as its band. Cost by
+  the source: the tile read as often, about fifty-five operations around
+  each read. On the pulse trains the worst is 1.0 flashes a second
+  without the sweep and 1.5 with it.
+
+Every theme's depth light now draws a look of its own, and none draws as
+the points.
+
+**The flash rule, the four on the songs.** Over the eleven songs with the
+sweep as it ships, counted as the first three were
+(`the_depth_lights_looks_on_the_dumped_songs_stay_within_three_flashes`,
+77 rows with all seven looks): no region fails. The worst is 2.5 general
+for the bubbles and the glints, on the far wall of one song, the same
+count the beams, the coals and the grass have there, so the sweep's; 2.0
+for the sparkle and the meters. No red flash under any of the four. The
+sparkle's front comes from each song's bar phase in that count.
+
+**Stable.** 4 mm of depth noise moves a bubble, a sparkle or a glint 0.03
+of a cell and a meter 0.06 of its packing; a head move inside an octave
+changes nothing (`a_look_stays_put_under_depth_jitter_and_a_head_move`).
+
+**Each reads with the room visible.** With the room plain every one of the
+four draws at exactly `ALPHA_LOW / ALPHA_HIGH` of its light with the room
+black, over the hard cutout
+(`every_look_draws_with_the_room_visible_and_with_it_black`).
 
 ## The air per theme (Nov 18, board #5543)
 

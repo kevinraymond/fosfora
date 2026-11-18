@@ -1531,23 +1531,42 @@ fn look_rows(
         d.step(1.0 / 72.0, music, 0.0);
         d.step_wind(1.0 / 72.0, gust);
     }
-    depth_light::with_look(
-        depth_light::rows(
-            &d,
-            depth_light::peak_alpha(level, 1.0),
-            depth_light::colors(Some(theme), [0.7, 0.3, 1.0]),
-            depth_light::FILL,
-            0.0,
+    // What the look reads of the room: the wash's front for a theme that
+    // has one, a third of a bar in, 1 m ahead of the eye, over the known
+    // surfaces.
+    // The glints turn about the eye's place, the orbit a little on with
+    // the time.
+    let at = eye().eye_pos;
+    let around = depth_light::Around {
+        front: depth_light::front(Some(theme), 0.35, at),
+        orbit: 0.3 + 0.15 * secs,
+        center: [at.x, at.z],
+        bands: [0.95 * music, 0.6 * music, 0.35 * music],
+    };
+    depth_light::with_around(
+        depth_light::with_look(
+            depth_light::rows(
+                &d,
+                depth_light::peak_alpha(level, 1.0),
+                depth_light::colors(Some(theme), [0.7, 0.3, 1.0]),
+                depth_light::FILL,
+                0.0,
+            ),
+            look,
         ),
-        look,
+        &around,
     )
 }
 
 /// The video's three themes, each with the look its depth light draws.
-const LOOKS: [(Theme, DepthLook); 3] = [
+const LOOKS: [(Theme, DepthLook); 7] = [
     (Theme::Aurora, DepthLook::Beams),
     (Theme::Flint, DepthLook::Coals),
     (Theme::Contour, DepthLook::Grass),
+    (Theme::Drift, DepthLook::Bubbles),
+    (Theme::Tide, DepthLook::Sparkle),
+    (Theme::Mirror, DepthLook::Glints),
+    (Theme::Classic, DepthLook::Meters),
 ];
 
 /// Board #5543: the beams, the coals and the grass over the known
@@ -1574,13 +1593,18 @@ fn each_look_matches_its_cpu_mirror() {
             eprintln!("{} at music {music}, gust {gust}", look.name());
             // Of 739 200 pixels a case. More than the points' handful:
             // where two points' channels meet, a streak's phase and rate
-            // or a blade's height step, not only a twinkle.
-            fragment_matches(device, queue, &rows, 200);
+            // or a blade's height step, not only a twinkle. A bubble's
+            // lane is wider than a point, so two lanes meet more often
+            // and the seam between them, where the phase is two points'
+            // mixed, crosses lit bubbles.
+            let seams = if look == DepthLook::Bubbles { 2 } else { 1 };
+            fragment_matches(device, queue, &rows, 200 * seams);
         }
         eprintln!("{} under a sweep", look.name());
         let rows = depth_light::with_sonar(look_rows(theme, look, 1.0, 0.5, 0.3, 3.7), &sweep);
         assert!(depth_light::swept(&rows));
-        fragment_matches(device, queue, &rows, 300);
+        let seams = if look == DepthLook::Bubbles { 2 } else { 1 };
+        fragment_matches(device, queue, &rows, 300 * seams);
     }
 }
 
@@ -1936,7 +1960,7 @@ fn the_recorded_room_under_the_sweep() {
 /// The recorded room in each look, for the eye (board #5543).
 /// `FOSFORA_LOOK_REC` names a depth recording (`live_rec.rs`; they stay
 /// out of the repository) and `FOSFORA_LOOK_DUMP` a folder for the
-/// pictures (PPM): the points and each of the three looks in its theme's
+/// pictures (PPM): the points and each look in its theme's
 /// colors, quiet and loud, with the room black and with it visible (the
 /// light at its lowest over the stand-in room), and each look a third of
 /// a second on, to see what moved. The view and the target are the
@@ -2061,10 +2085,13 @@ fn the_recorded_room_in_each_look() {
             "{}",
             look.name()
         );
-        assert!(
-            differ(&bits(&loud), &bits(&later)) > 1000,
-            "{}",
-            look.name()
-        );
+        // A third of a second on the look has moved, but for the meters:
+        // they stand where their bands' levels are, and those are held.
+        let moved = differ(&bits(&loud), &bits(&later));
+        if look == DepthLook::Meters {
+            assert_eq!(moved, 0, "{}", look.name());
+        } else {
+            assert!(moved > 1000, "{}", look.name());
+        }
     }
 }

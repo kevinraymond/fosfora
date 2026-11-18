@@ -673,7 +673,10 @@ pub mod follower {
     /// The features' beat, downbeat and drop slots (the limiter's own: 1
     /// from a trigger let through until the light falls).
     pub const TRIGGERS: usize = BARS + crate::canvas::MAX_BARS;
-    pub const COUNT: usize = TRIGGERS + 3;
+    /// The depth light's meters: the bass, the mids and the highs
+    /// (board #5543, `depth_light.rs`).
+    pub const DEPTH_BANDS: usize = TRIGGERS + 3;
+    pub const COUNT: usize = DEPTH_BANDS + 3;
 }
 
 /// The mel bands the limiter holds (the analysis makes 64).

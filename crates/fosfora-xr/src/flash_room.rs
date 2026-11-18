@@ -2305,6 +2305,7 @@ fn sweep_run(
     let mut counters = vec![Counter::new(); surfaces.len()];
     let mut limiter = Limiter::new(true);
     let mut drive = Drive::default();
+    let mut orbit = 0.0f32;
     let mut sonar = crate::sonar::Sonar::default();
     let mut beat_env = 0.0f32;
     let (mut starts, mut lines) = (0, 0.0f32);
@@ -2349,6 +2350,15 @@ fn sweep_run(
         );
         drive.step_wind(dt, depth_light::band_level(&audio, surface_fx::BAND_RMS));
         let shown = drive.with_music(limiter.follow(follower::DEPTH_MUSIC, drive.music()));
+        // The meters' three bands, behind the limiter as `app.rs` has
+        // them, followed only while the meters draw.
+        drive.step_bands(dt, [audio.bass, audio.mid, audio.high]);
+        let mut bands = drive.bands();
+        if depth_light::look(theme) == crate::themes::DepthLook::Meters {
+            limiter.follow_all(follower::DEPTH_BANDS, &mut bands);
+        }
+        // The glints turn with the air's orbit, at the default drift.
+        orbit = crate::fireflies::orbit_step(orbit, dt, crate::fireflies::DRIFT_M_S);
         let started = sonar.step(
             sonar_opts,
             crate::sonar::Input {
@@ -2371,6 +2381,13 @@ fn sweep_run(
             audio.key_tint,
             LEVEL,
             &sonar.rows(sonar_opts, LEVEL),
+            // As `app.rs`: the wash's front for Tide's sparkle.
+            &depth_light::Around {
+                front: depth_light::front(theme, f.bar_phase, eye),
+                orbit,
+                center: [eye.x, eye.z],
+                bands,
+            },
         )
         .rows;
         let swept = depth_light::swept(&rows);
@@ -2516,13 +2533,18 @@ fn the_sweep_over_the_depth_light_stays_within_three_flashes() {
     assert!(failed.is_empty(), "over three flashes: {failed:?}");
 }
 
-/// The video's three themes, each with the look its depth light draws
-/// (board #5543): Aurora's beams, Flint's coals and Contour's grass, on
-/// the band the theme gives them.
-const DEPTH_LOOKS: [(Theme, crate::themes::DepthLook); 3] = [
+/// The themes whose depth light draws a look of its own (board #5543),
+/// each with that look: Aurora's beams, Flint's coals, Contour's grass,
+/// Drift's bubbles, Tide's sparkle, Mirror's glints and Classic's meters,
+/// on the band the theme gives them.
+const DEPTH_LOOKS: [(Theme, crate::themes::DepthLook); 7] = [
     (Theme::Aurora, crate::themes::DepthLook::Beams),
     (Theme::Flint, crate::themes::DepthLook::Coals),
     (Theme::Contour, crate::themes::DepthLook::Grass),
+    (Theme::Drift, crate::themes::DepthLook::Bubbles),
+    (Theme::Tide, crate::themes::DepthLook::Sparkle),
+    (Theme::Mirror, crate::themes::DepthLook::Glints),
+    (Theme::Classic, crate::themes::DepthLook::Meters),
 ];
 
 /// The beams, the coals and the grass behind the limiter as `app.rs` runs

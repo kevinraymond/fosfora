@@ -69,8 +69,7 @@
 //! ([`colors`], [`band`]): since board #5543 its own row for the depth
 //! light (`themes::Depth`), not the row for other surfaces. Aurora draws
 //! teal and the key's tint on the bass; a room with no theme other's own
-//! green. The row also names a look (`themes::DepthLook`, below); one that
-//! is not built draws as the points.
+//! green. The row also names a look (`themes::DepthLook`, below).
 //!
 //! **The looks** (board #5543; [`look_light`], [`look_id`]). A theme's
 //! depth light can draw something other than the points. Each look is the
@@ -103,12 +102,37 @@
 //!   with the band, and leaning one way with the gust, the overall
 //!   loudness smoothed ([`Drive::step_wind`]). A top shows the points,
 //!   moved a little by the same wind.
+//! - *Bubbles* ([`bubble`]; Drift). On an upright surface a point, read
+//!   wider across ([`BUBBLE_PACK`]) and drawn out along up
+//!   ([`BUBBLE_STRETCH`]), is a lane that snakes ([`BUBBLE_WOBBLE`]). A
+//!   bubble passes every [`BUBBLE_PERIOD`] cells of it, rising on a clock
+//!   the band drives ([`BUBBLE_RISE_HZ`]): a round rim in the sides'
+//!   color with a highlight in the tops'. A top shows the points.
+//! - *Sparkle* ([`sparkle`]; Tide). The points, dim ([`SPARKLE_DIM`]),
+//!   each flaring briefly on its own clock as strong as the band, and all
+//!   of them as the floor's wash front passes under ([`sparkle_front`]).
+//!   The front is the wash's ([`wash_front`], the one hook for it).
+//! - *Glints* ([`glint`]; Mirror). The points, dim, under a mirror ball's
+//!   specks ([`glint_speck`]): slanted shafts of light that turn about
+//!   the effect anchor with the air's orbit, so the specks and Mirror's
+//!   particles turn in step.
+//! - *Meters* ([`meter`]; Classic). An upright surface is cut into rows
+//!   [`METER_ROW`] cells high, and a point near a row's line is a level
+//!   meter of [`METER_SEGS`] segments standing on it. A third of the
+//!   meters show the bass, a third the mids, a third the highs, each lit
+//!   to its band's level in its band's color (`fireflies::BAND_COLORS`).
+//!   A top shows the points, each as bright as its band.
+//!
+//! What a look reads of the room beside the drive rides one more row
+//! ([`MORE_ROW`], [`Around`]): the wash's front, the orbit's center and
+//! turn, or the three bands' levels.
 //!
 //! The music reaches a look through the same value the points' crests
 //! take, the one the flash limit follows, so the limiter holds a kick's
-//! flare and a streak's reach as it holds the points. The travel and the
-//! wind are motion and not light, and run on the band as it is. Bubbles,
-//! sparkle, glints and meters have their ids and are not built.
+//! flare and a streak's reach as it holds the points; the meters' three
+//! levels have followers of their own (`flash::follower::DEPTH_BANDS`).
+//! The travel, the rise, the wind, the wash's front and the orbit are
+//! motion and not light, and run as they are. Every look is built.
 //!
 //! **Stable in time.** A point is a function of the world position alone:
 //! its cell and its place in the cell come from the position projected on
@@ -175,7 +199,11 @@
 //! and octave, and counts about the same around each read: the coals about
 //! thirty-five operations (no soft edge, one wave), the beams and the
 //! grass about fifty (two more smoothsteps, a floor and a fract), the
-//! grass one wave more per fragment for the wind. No look adds a
+//! grass one wave more per fragment for the wind, the bubbles about
+//! fifty-five and one wave for the lane's snake, the sparkle about
+//! forty-five and a dot product a fragment for the wash's front, the
+//! glints about thirty and two waves a fragment for the specks, the
+//! meters about fifty-five. No look adds a
 //! transcendental, a hash or a read, and the vertex stage is the same.
 //! These are counts of the source, not a device number.
 //! The eye pass's mesh adds a constant fragment where the veil erases (0 <
@@ -247,11 +275,16 @@ pub const ROWS: usize = SONAR_ROW + crate::sonar::ROWS;
 /// The look's row, `light_look` in `struct EnvEye`: the look's id
 /// ([`look_id`]), the music 0..1 and the gust 0..1.
 pub const LOOK_ROW: usize = 9;
-/// The looks' clocks, `light_move` in `struct EnvEye`: the beams' travel
-/// and the grass's sway, each 0..1 of a cycle.
+/// The looks' clocks, `light_move` in `struct EnvEye`: the beams' travel,
+/// the grass's sway and the bubbles' rise, each 0..1 of a cycle.
 pub const MOVE_ROW: usize = LOOK_ROW + 1;
+/// What the look drawn reads of the room, `light_more` in `struct EnvEye`
+/// ([`Around`], [`with_around`]): for the sparkle the wash's front, for
+/// the glints the center they turn about and the turn, for the meters
+/// the three bands' levels. All 0 for a look that reads nothing there.
+pub const MORE_ROW: usize = MOVE_ROW + 1;
 /// The first of the sweep's rows, `sonar` in `struct EnvEye`.
-pub const SONAR_ROW: usize = MOVE_ROW + 1;
+pub const SONAR_ROW: usize = MORE_ROW + 1;
 
 /// Beams: how many times closer than the points' the streaks stand
 /// across.
@@ -318,6 +351,79 @@ pub const SWAY_HZ: f32 = 0.35;
 /// Grass: how fast the gust follows the loudness up and down (s).
 pub const GUST_ATTACK_S: f32 = 0.4;
 pub const GUST_RELEASE_S: f32 = 1.2;
+/// Bubbles: how the tile is read across, under 1 so a lane is wider than
+/// a point and a bubble up to 1.7 cells across.
+pub const BUBBLE_PACK: f32 = 0.6;
+/// Bubbles: how many times a point is drawn out along the world's up, so
+/// it is the lane its bubbles rise in.
+pub const BUBBLE_STRETCH: f32 = 8.0;
+/// Bubbles: the height (cells) between one bubble and the next in its
+/// lane.
+pub const BUBBLE_PERIOD: f32 = 3.0;
+/// Bubbles: how far a lane snakes to each side (cells), and the height of
+/// one turn of it (cells), so a bubble wobbles as it rises.
+pub const BUBBLE_WOBBLE: f32 = 0.35;
+pub const BUBBLE_WOBBLE_CELLS: f32 = 5.0;
+/// Bubbles: the light inside a bubble as a share of its rim's, and where
+/// the rim rises, as shares of the radius squared.
+pub const BUBBLE_FILL: f32 = 0.3;
+pub const BUBBLE_RIM: [f32; 2] = [0.2, 0.6];
+/// Bubbles: where a bubble's soft edge starts, a share of the radius
+/// squared.
+pub const BUBBLE_EDGE: f32 = 0.6;
+/// Bubbles: how far over the center the highlight sits (a share of the
+/// radius) and its size (a share of the radius squared).
+pub const BUBBLE_SHINE: f32 = 0.45;
+pub const BUBBLE_SHINE_SIZE: f32 = 0.12;
+/// Bubbles: the rise (periods a second, up) in silence and at a full
+/// band, so the band lets them go; the beat envelope adds up to as much
+/// again. A bubble rises at 1, 2 or 3 times it by its size.
+pub const BUBBLE_RISE_HZ: [f32; 2] = [0.04, 0.4];
+/// Sparkle: a point's light between flares, as a share of a flare's.
+pub const SPARKLE_DIM: f32 = 0.25;
+/// Sparkle: a point's own flares with the band silent, as a share of
+/// their light at a full band.
+pub const SPARKLE_QUIET: f32 = 0.3;
+/// Sparkle: how far to each side of the wash's front the points flare (m).
+pub const SPARKLE_FRONT_M: f32 = 0.3;
+/// Sparkle: how far the stand-in front travels to each side of the
+/// wearer (m), until the wash gives its own ([`wash_front`]).
+pub const SPARKLE_REACH_M: f32 = 2.5;
+/// Glints: a point's light away from a speck, as a share of its light
+/// under one.
+pub const GLINT_DIM: f32 = 0.25;
+/// Glints: the distance from one speck to the next (m).
+pub const GLINT_SPACING_M: f32 = 0.45;
+/// Glints: how far the specks' two sets of sheets lean per meter of
+/// height (m), so a speck is a slanted shaft of light and a wall cuts it
+/// as a spot, as a floor does.
+pub const GLINT_TILT: [f32; 2] = [0.8, -0.6];
+/// Glints: where a speck's edge starts and where it is all there, in the
+/// product of the two sheets' waves.
+pub const GLINT_EDGE: [f32; 2] = [0.3, 0.7];
+/// Glints: a speck's light with the band silent, as a share of its light
+/// at a full band.
+pub const GLINT_QUIET: f32 = 0.5;
+/// Meters: how many times closer than the points' the bars stand across.
+pub const METER_PACK: f32 = 2.0;
+/// Meters: the height of one row of meters (cells), a full meter.
+pub const METER_ROW: f32 = 4.0;
+/// Meters: how far up the tile the next row reads (cells), as the
+/// grass's rows do.
+pub const METER_ROW_STEP: f32 = 2.37;
+/// Meters: the segments in a meter, and the share of each left dark
+/// between it and the next.
+pub const METER_SEGS: f32 = 6.0;
+pub const METER_GAP: f32 = 0.3;
+/// Meters: the least soft edge of a segment, a share of it.
+pub const METER_EDGE: f32 = 0.08;
+/// Meters: a segment's light over the band's level, as a share of a lit
+/// one's: the meter's outline.
+pub const METER_GHOST: f32 = 0.12;
+/// Meters: how much nearer a point counts than it is, and a bar's
+/// greatest half-width (cells of the tile), as the grass's blades.
+pub const METER_NEAR: f32 = 0.7;
+pub const METER_REACH: f32 = 0.33;
 
 /// The height of one band of the wave (m).
 pub const BAND_SPACING_M: f32 = 0.2;
@@ -723,9 +829,14 @@ pub fn colors_line(theme: Option<Theme>) -> String {
     } else {
         format!("{} as points", depth.look.name())
     };
+    // The meters take no color from the row: each is its band's.
+    let colors = if drawn(depth.look) == DepthLook::Meters {
+        "each meter its band's color".to_owned()
+    } else {
+        format!("{} sides, {top}", word(side))
+    };
     format!(
-        "depth light: {look}, {} sides, {top}, {}{} (theme {})",
-        word(side),
+        "depth light: {look}, {colors}, {}{} (theme {})",
         crate::surface_fx::band_name(depth.band),
         if depth.occlude { ", occluding" } else { "" },
         theme.name()
@@ -765,6 +876,10 @@ pub struct Drive {
     sway: f32,
     /// The loudness the grass gusts with, smoothed, 0..1.
     gust: f32,
+    /// The bubbles' rise, 0..1 of a period.
+    rise: f32,
+    /// The bass, the mids and the highs the meters show, smoothed, 0..1.
+    bands: [f32; 3],
 }
 
 impl Drive {
@@ -775,7 +890,8 @@ impl Drive {
     /// by [`TWINKLE_HZ`] times one plus the music, both times one plus the
     /// beat and wrapped to a whole cycle. The beams' travel goes on by
     /// [`BEAM_TRAVEL_HZ`] at that music squared, times one plus the beat:
-    /// slow in silence and launched by a kick.
+    /// slow in silence and launched by a kick. The bubbles' rise goes on
+    /// by [`BUBBLE_RISE_HZ`] at that music, times one plus the beat.
     pub fn step(&mut self, dt: f32, level: f32, beat: f32) {
         let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
         let level = unit(level);
@@ -792,6 +908,8 @@ impl Drive {
         let launch =
             BEAM_TRAVEL_HZ[0] + (BEAM_TRAVEL_HZ[1] - BEAM_TRAVEL_HZ[0]) * self.music * self.music;
         self.travel = (self.travel + dt * launch * beat).fract();
+        let rise = BUBBLE_RISE_HZ[0] + (BUBBLE_RISE_HZ[1] - BUBBLE_RISE_HZ[0]) * self.music;
+        self.rise = (self.rise + dt * rise * beat).fract();
     }
 
     /// Advance the wind by `dt` seconds with the overall loudness
@@ -808,6 +926,27 @@ impl Drive {
         };
         self.gust += (loudness - self.gust) * (1.0 - (-dt / tau).exp());
         self.sway = (self.sway + dt * SWAY_HZ * (1.0 + self.gust)).fract();
+    }
+
+    /// Advance the meters' three levels by `dt` seconds toward the bass,
+    /// the mids and the highs `levels` (each 0..1), each as the music
+    /// goes ([`MUSIC_ATTACK_S`] rising, [`MUSIC_RELEASE_S`] falling).
+    pub fn step_bands(&mut self, dt: f32, levels: [f32; 3]) {
+        let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
+        for (band, level) in self.bands.iter_mut().zip(levels) {
+            let level = unit(level);
+            let tau = if level > *band {
+                MUSIC_ATTACK_S
+            } else {
+                MUSIC_RELEASE_S
+            };
+            *band += (level - *band) * (1.0 - (-dt / tau).exp());
+        }
+    }
+
+    /// The meters' three levels: the bass, the mids and the highs, 0..1.
+    pub fn bands(&self) -> [f32; 3] {
+        self.bands
     }
 
     /// The smoothed music, 0..1.
@@ -846,6 +985,11 @@ impl Drive {
     /// The gust, 0..1.
     pub fn gust(&self) -> f32 {
         self.gust
+    }
+
+    /// The bubbles' rise, 0..1 of a period.
+    pub fn rise(&self) -> f32 {
+        self.rise
     }
 }
 
@@ -952,7 +1096,9 @@ pub fn rows(
         [SIZE[0], SIZE[1], SOFT_CORE, TWINKLE_DEPTH],
         // The look: the points until `with_look` names another.
         [0.0, music, unit(drive.gust), 0.0],
-        [drive.travel, drive.sway, 0.0, 0.0],
+        [drive.travel, drive.sway, drive.rise, 0.0],
+        // What the look reads of the room: nothing until `with_around`.
+        [0.0; 4],
     ];
     // The sweep's rows stay 0, no sweep, until `with_sonar` sets them.
     let mut rows = [[0.0f32; 4]; ROWS];
@@ -965,6 +1111,79 @@ pub fn rows(
 pub fn with_look(mut rows: [[f32; 4]; ROWS], look: DepthLook) -> [[f32; 4]; ROWS] {
     rows[LOOK_ROW][0] = look_id(drawn(look)) as f32;
     rows
+}
+
+/// What a look reads of the room beside the drive (board #5543).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Around {
+    /// The wash's front, for the sparkle ([`front`]): the way it travels
+    /// over the floor (x, z, a unit), where it is along that way (m) and
+    /// one over the half-width the points flare in (1/m). All 0 for none.
+    pub front: [f32; 4],
+    /// The air's orbit, for the glints: its phase (radians,
+    /// `fireflies::orbit_step`) and the point it turns about, the effect
+    /// anchor (world x and z).
+    pub orbit: f32,
+    pub center: [f32; 2],
+    /// The bass, the mids and the highs, 0..1, for the meters: the
+    /// drive's ([`Drive::bands`]) as the flash limit lets them through
+    /// (`flash::follower::DEPTH_BANDS`).
+    pub bands: [f32; 3],
+}
+
+/// `rows` with what their look reads of `around` in [`MORE_ROW`]: the
+/// wash's front for the sparkle; for the glints the center and the
+/// orbit's phase as its cosine and sine, so the shader takes neither;
+/// for the meters the three bands' levels; nothing for a look that reads
+/// none.
+pub fn with_around(mut rows: [[f32; 4]; ROWS], around: &Around) -> [[f32; 4]; ROWS] {
+    rows[MORE_ROW] = match look_of(&rows) {
+        DepthLook::Sparkle => around.front,
+        DepthLook::Glints => {
+            let phase = if around.orbit.is_finite() {
+                around.orbit
+            } else {
+                0.0
+            };
+            let [x, z] = around.center;
+            [x, z, phase.cos(), phase.sin()]
+        }
+        DepthLook::Meters => {
+            let [bass, mid, high] = around.bands.map(unit);
+            [bass, mid, high, 0.0]
+        }
+        _ => [0.0; 4],
+    };
+    rows
+}
+
+/// WASH FRONT HOOK. Where the floor's wash front is at `bar_phase` (0..1
+/// of the bar) for a wearer at `center`, as [`Around::front`] has it. The
+/// wash (Tide's floor) is not merged here yet, so this is a stand-in with
+/// the wash's rhythm, one advance and one retreat a bar: a front square to
+/// the world's -z that runs from [`SPARKLE_REACH_M`] behind the wearer to
+/// as far ahead over the first half of the bar and back over the second.
+/// When the wash lands, its own front goes here: the direction it runs
+/// over the floor and its place along it, from the same bar phase.
+pub fn wash_front(bar_phase: f32, center: Vec3) -> [f32; 4] {
+    if !bar_phase.is_finite() {
+        return [0.0; 4];
+    }
+    let out = 1.0 - (2.0 * bar_phase.rem_euclid(1.0) - 1.0).abs();
+    let at = -center.z + SPARKLE_REACH_M * (2.0 * out - 1.0);
+    [0.0, -1.0, at, 1.0 / SPARKLE_FRONT_M]
+}
+
+/// The wash's front in a room whose saved theme is `theme`
+/// ([`wash_front`]): Tide's, whose floor the wash runs over. No other
+/// theme has a wash, so its sparkle, if it had one, flares on its band
+/// alone.
+pub fn front(theme: Option<Theme>, bar_phase: f32, center: Vec3) -> [f32; 4] {
+    if theme == Some(Theme::Tide) {
+        wash_front(bar_phase, center)
+    } else {
+        [0.0; 4]
+    }
 }
 
 /// The look `rows` draw.
@@ -1011,8 +1230,9 @@ pub fn scale_fades(mut rows: [[f32; 4]; ROWS], scale: f32) -> [[f32; 4]; ROWS] {
 }
 
 /// This frame's [`Frame`] under the options `opts`, with `drive` stepped,
-/// the room's `theme`, the key's tint `key`, the immersion `level` and the
-/// sweep's rows `sonar` (`sonar::Sonar::rows`; all 0 for none).
+/// the room's `theme`, the key's tint `key`, the immersion `level`, the
+/// sweep's rows `sonar` (`sonar::Sonar::rows`; all 0 for none) and what
+/// the look reads of the room, `around`.
 pub fn frame(
     opts: &DepthLightOptions,
     drive: &Drive,
@@ -1020,22 +1240,26 @@ pub fn frame(
     key: [f32; 3],
     level: f32,
     sonar: &[[f32; 4]; crate::sonar::ROWS],
+    around: &Around,
 ) -> Frame {
     Frame {
         rows: with_sonar(
-            with_look(
-                rows(
-                    drive,
-                    if opts.points {
-                        peak_alpha(level, opts.gain)
-                    } else {
-                        0.0
-                    },
-                    colors(theme, key),
-                    opts.fill,
-                    veil_share(level, opts.veil),
+            with_around(
+                with_look(
+                    rows(
+                        drive,
+                        if opts.points {
+                            peak_alpha(level, opts.gain)
+                        } else {
+                            0.0
+                        },
+                        colors(theme, key),
+                        opts.fill,
+                        veil_share(level, opts.veil),
+                    ),
+                    look(theme),
                 ),
-                look(theme),
+                around,
             ),
             sonar,
         ),
@@ -1511,6 +1735,202 @@ pub fn blade(
     Vec2::new(light, light * h * h)
 }
 
+/// Bubbles on an upright plane at `g` (across and up, cells): the light
+/// and the light times its tint. The tile is read [`BUBBLE_STRETCH`] times
+/// drawn out along up and [`BUBBLE_PACK`] across, so a point is a wide
+/// lane, and the lane snakes
+/// ([`BUBBLE_WOBBLE`], on the sway's clock). In the lane a bubble passes
+/// every [`BUBBLE_PERIOD`] cells of height, moving up with the rise at 1,
+/// 2 or 3 times it by the point's size, from the point's phase. A bubble
+/// is a round rim, [`BUBBLE_FILL`] of it inside, the point's radius
+/// across, with a highlight over its center. The tint is the highlight:
+/// the sides' color on the rim, the tops' on the shine. Toward a lane's
+/// end the tile's distance grows, so a bubble swells in at the foot and
+/// shrinks out at the head. The WGSL's `bubble`.
+pub fn bubble(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    g: Vec2,
+    k: u32,
+    o: i32,
+    radius_scale: f32,
+) -> Vec2 {
+    let snake = 2.0 * wave(g.y / BUBBLE_WOBBLE_CELLS + rows[MOVE_ROW][1]) - 1.0;
+    let uv = Vec2::new(
+        (g.x + BUBBLE_WOBBLE * snake) * BUBBLE_PACK,
+        g.y / BUBBLE_STRETCH,
+    );
+    let [d, radius, phase, size] = look_point(rows, tile, uv, k, o, radius_scale);
+    if radius <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let rate = 1.0 + (size * 2.999).floor();
+    let x = g.y / BUBBLE_PERIOD - rate * rows[MOVE_ROW][2] + phase;
+    let up = (x - x.floor() - 0.5) * BUBBLE_PERIOD * BUBBLE_PACK;
+    let inv = 1.0 / (radius * radius);
+    let r2 = (d * d + up * up) * inv;
+    let body = 1.0 - smoothstep(BUBBLE_EDGE, 1.0, r2);
+    let rim = smoothstep(BUBBLE_RIM[0], BUBBLE_RIM[1], r2);
+    let shell = body * (BUBBLE_FILL + (1.0 - BUBBLE_FILL) * rim);
+    let over = up - BUBBLE_SHINE * radius;
+    let shine = 1.0 - smoothstep(0.0, BUBBLE_SHINE_SIZE, (d * d + over * over) * inv);
+    let light = shell.max(shine);
+    Vec2::new(light, light * shine)
+}
+
+/// The wash's front over world point `p`, 0..1: 1 on the front, falling
+/// to 0 at [`SPARKLE_FRONT_M`] to either side ([`MORE_ROW`]); 0 with no
+/// wash. The WGSL's `sparkle_front`.
+pub fn sparkle_front(rows: &[[f32; 4]; ROWS], p: Vec3) -> f32 {
+    let [dx, dz, at, inv] = rows[MORE_ROW];
+    if inv <= 0.0 {
+        return 0.0;
+    }
+    1.0 - smoothstep(0.0, 1.0, (p.x * dx + p.z * dz - at).abs() * inv)
+}
+
+/// Sparkle at `g` (cells) on any plane, under the wash's front `front`
+/// ([`sparkle_front`]): the light and the light times its tint. A point,
+/// dim ([`SPARKLE_DIM`]) until it flares. It flares briefly on its own,
+/// the eighth power of a wave on the twinkle's clock at 1, 2 or 3 times
+/// it from the point's phase, as strong as the band ([`SPARKLE_QUIET`] of
+/// it in silence), and as the front passes under it. The tint is the
+/// flare: the sides' color dim, the tops' at a flare. The WGSL's
+/// `sparkle`.
+pub fn sparkle(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    g: Vec2,
+    k: u32,
+    o: i32,
+    radius_scale: f32,
+    front: f32,
+) -> Vec2 {
+    let [d, radius, phase, size] = look_point(rows, tile, g, k, o, radius_scale);
+    if radius <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let core = 1.0 - smoothstep(radius * rows[8][2], radius, d);
+    let rate = 1.0 + (size * 2.999).floor();
+    let w = wave(rate * rows[3][3] + phase);
+    let w2 = w * w;
+    let w4 = w2 * w2;
+    let own = w4 * w4 * (SPARKLE_QUIET + (1.0 - SPARKLE_QUIET) * rows[LOOK_ROW][1]);
+    let flare = own.max(front);
+    let light = core * (SPARKLE_DIM + (1.0 - SPARKLE_DIM) * flare);
+    Vec2::new(light, light * flare)
+}
+
+/// The glints' light over world point `p`, 0..1: the specks a mirror ball
+/// throws, turning about the center with the air's orbit ([`MORE_ROW`]).
+/// The point is turned back by the orbit's phase about the center, and
+/// in that turned room two sets of leaning sheets ([`GLINT_TILT`]), one
+/// every [`GLINT_SPACING_M`], cross in slanted shafts: a speck is where
+/// the product of their waves passes [`GLINT_EDGE`]. Its light is
+/// [`GLINT_QUIET`] of itself in silence and all at a full band. The
+/// WGSL's `glint_speck`.
+pub fn glint_speck(rows: &[[f32; 4]; ROWS], p: Vec3) -> f32 {
+    let [cx, cz, cos, sin] = rows[MORE_ROW];
+    let (dx, dz) = (p.x - cx, p.z - cz);
+    let inv = 1.0 / GLINT_SPACING_M;
+    let a = wave((cos * dx + sin * dz + GLINT_TILT[0] * p.y) * inv);
+    let b = wave((cos * dz - sin * dx + GLINT_TILT[1] * p.y) * inv);
+    smoothstep(GLINT_EDGE[0], GLINT_EDGE[1], a * b)
+        * (GLINT_QUIET + (1.0 - GLINT_QUIET) * rows[LOOK_ROW][1])
+}
+
+/// Glints at `g` (cells) on any plane, under the speck light `speck`
+/// ([`glint_speck`]): the light and the light times its tint. A point,
+/// dim ([`GLINT_DIM`]) until a speck sweeps over it. The tint is the
+/// speck. The WGSL's `glint`.
+pub fn glint(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    g: Vec2,
+    k: u32,
+    o: i32,
+    radius_scale: f32,
+    speck: f32,
+) -> Vec2 {
+    let [d, radius, ..] = look_point(rows, tile, g, k, o, radius_scale);
+    if radius <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let core = 1.0 - smoothstep(radius * rows[8][2], radius, d);
+    let light = core * (GLINT_DIM + (1.0 - GLINT_DIM) * speck);
+    Vec2::new(light, light * speck)
+}
+
+/// The band a point of phase `phase` shows as a meter: 0 the bass, 1 the
+/// mids, 2 the highs, a third of the points each.
+fn meter_band(phase: f32) -> usize {
+    ((phase * 2.999).floor() as usize).min(2)
+}
+
+/// Meters on an upright plane at `g` (across and up, cells), where the
+/// plane moves by `f` across a pixel: the light and the light times its
+/// tint. The plane is cut into rows [`METER_ROW`] cells high, and each
+/// row reads one line of the tile, [`METER_PACK`] times closer across, so
+/// a point near the line ([`METER_NEAR`], [`METER_REACH`]) is a bar
+/// standing on the row's foot: a level meter of [`METER_SEGS`] segments
+/// with a gap between them ([`METER_GAP`]). The point's phase gives the
+/// meter its band ([`meter_band`]); its segments are lit up to that
+/// band's level ([`MORE_ROW`]), the top one by the share it has reached,
+/// and the rest show at [`METER_GHOST`]. The tint is the band: 0 the
+/// bass, a half the mids, 1 the highs ([`look_color`]). The WGSL's
+/// `meter`.
+pub fn meter(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    g: Vec2,
+    f: Vec2,
+    k: u32,
+    o: i32,
+    radius_scale: f32,
+) -> Vec2 {
+    let r = g.y / METER_ROW;
+    let row = r.floor();
+    let u = r - row;
+    let uv = Vec2::new(g.x * METER_PACK, row * METER_ROW_STEP + 0.5);
+    let [d, full, phase, _] = look_point(rows, tile, uv, k, o, radius_scale);
+    let half = full.min(METER_REACH);
+    if half <= 1e-4 {
+        return Vec2::ZERO;
+    }
+    let bar = 1.0 - smoothstep(half * rows[8][2], half, d * METER_NEAR);
+    let band = meter_band(phase);
+    let s = u * METER_SEGS;
+    let n = s.floor();
+    let at = s - n;
+    let edge = (METER_SEGS * f.y / METER_ROW).clamp(METER_EDGE, 0.5 - 0.5 * METER_GAP);
+    let gap = 0.5 * METER_GAP;
+    let seg = smoothstep(gap, gap + edge, at) * (1.0 - smoothstep(1.0 - gap - edge, 1.0 - gap, at));
+    let lit = (rows[MORE_ROW][band] * METER_SEGS - n).clamp(0.0, 1.0);
+    let light = bar * seg * (METER_GHOST + (1.0 - METER_GHOST) * lit);
+    Vec2::new(light, light * 0.5 * band as f32)
+}
+
+/// A meter seen from the end, on the level plane at `g` (cells): the
+/// point, as bright as its band's level over [`METER_GHOST`], tinted as
+/// its band. The WGSL's `meter_top`.
+pub fn meter_top(
+    rows: &[[f32; 4]; ROWS],
+    tile: &[[u8; 4]],
+    g: Vec2,
+    k: u32,
+    o: i32,
+    radius_scale: f32,
+) -> Vec2 {
+    let [d, radius, phase, _] = look_point(rows, tile, g, k, o, radius_scale);
+    if radius <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let core = 1.0 - smoothstep(radius * rows[8][2], radius, d);
+    let band = meter_band(phase);
+    let light = core * (METER_GHOST + (1.0 - METER_GHOST) * rows[MORE_ROW][band]);
+    Vec2::new(light, light * 0.5 * band as f32)
+}
+
 /// The radius factor a look's points are read at, for a vertex keeping
 /// `keep` under the sweep's light `under` (0 without): the points' own
 /// (the fill's radius, the music's swell, the keep), wider for the beams
@@ -1528,21 +1948,32 @@ pub fn look_radius(rows: &[[f32; 4]; ROWS], keep: f32, under: f32) -> f32 {
         .min(point[2] / rows[8][1])
 }
 
-/// How the music lifts a look's light: by the crests' gain for the beams
-/// and the grass; the coals carry it in their heat. The WGSL's
-/// `look_band`.
+/// How the music lifts a look's light: by the crests' gain for the
+/// beams, the grass and the bubbles; the coals carry it in their heat,
+/// the sparkle in its flares, the glints in their specks and the meters
+/// in their levels. The WGSL's `look_band`.
 pub fn look_band(rows: &[[f32; 4]; ROWS]) -> f32 {
-    if look_of(rows) == DepthLook::Coals {
-        1.0
-    } else {
-        rows[0][3]
+    match look_of(rows) {
+        DepthLook::Coals | DepthLook::Sparkle | DepthLook::Glints | DepthLook::Meters => 1.0,
+        _ => rows[0][3],
     }
 }
 
 /// A look's color at `tint`: the sides' at 0 toward the tops' at 1, and
-/// toward the ember color ([`COAL_EMBER`] of the sides') at -1. The WGSL's
-/// `look_color`.
+/// toward the ember color ([`COAL_EMBER`] of the sides') at -1. The
+/// meters take none of the row's: their tint runs over the bands' colors
+/// (`fireflies::BAND_COLORS`, the air's by band), the bass's at 0, the
+/// mids' at a half and the highs' at 1. The WGSL's `look_color`.
 pub fn look_color(rows: &[[f32; 4]; ROWS], tint: f32) -> [f32; 3] {
+    if look_of(rows) == DepthLook::Meters {
+        let [bass, mid, high] = crate::fireflies::BAND_COLORS;
+        let t = tint.clamp(0.0, 1.0);
+        let (low, up) = ((2.0 * t).min(1.0), (2.0 * t - 1.0).max(0.0));
+        return std::array::from_fn(|k| {
+            let c = bass[k] + (mid[k] - bass[k]) * low;
+            c + (high[k] - c) * up
+        });
+    }
     let [side, top] = [rows[1], rows[2]];
     let (up, down) = (tint.clamp(0.0, 1.0), (-tint).clamp(0.0, 1.0));
     std::array::from_fn(|k| {
@@ -1558,7 +1989,9 @@ pub fn look_color(rows: &[[f32; 4]; ROWS], tint: f32) -> [f32; 3] {
 /// read the look's own: on an upright plane the beams' streaks or the
 /// grass's blades, on the level plane their points seen from the end
 /// (the beams' in the tops' color, the grass's moved by the wind); the
-/// coals on every plane. The fade for small cells counts the closer
+/// coals, the sparkle and the glints on every plane; the meters on an
+/// upright plane and their points on the level one; the bubbles on an upright plane,
+/// the points on the level one. The fade for small cells counts the closer
 /// packing across and the longer features along up. The WGSL's
 /// `look_light`.
 pub fn look_light(
@@ -1587,6 +2020,16 @@ pub fn look_light(
     } else {
         0.0
     };
+    let front = if look == DepthLook::Sparkle {
+        sparkle_front(rows, p)
+    } else {
+        0.0
+    };
+    let speck = if look == DepthLook::Glints {
+        glint_speck(rows, p)
+    } else {
+        0.0
+    };
     let (mut sum, mut used) = (Vec2::ZERO, 0.0);
     for j in 0..2 {
         let wo = if j == 1 { next } else { 1.0 - next };
@@ -1606,6 +2049,7 @@ pub fn look_light(
             let fine = match look {
                 DepthLook::Beams if upright => (f.x * BEAM_PACK).max(f.y / BEAM_STRETCH),
                 DepthLook::Grass if upright => (f.x * GRASS_PACK).max(f.y / GRASS_ROW),
+                DepthLook::Meters if upright => (f.x * METER_PACK).max(f.y / METER_ROW),
                 _ => f.x.max(f.y),
             };
             let aa = 1.0 - smoothstep(cell_row[2], cell_row[3], fine);
@@ -1622,6 +2066,15 @@ pub fn look_light(
                         let v = plane_points(rows, tile, at, k, o, radius_scale);
                         Vec2::new(v, v * v)
                     }
+                    DepthLook::Bubbles if upright => bubble(rows, tile, g, k, o, radius_scale),
+                    DepthLook::Bubbles => {
+                        let v = plane_points(rows, tile, g, k, o, radius_scale);
+                        Vec2::new(v, 0.5 * v * v)
+                    }
+                    DepthLook::Sparkle => sparkle(rows, tile, g, k, o, radius_scale, front),
+                    DepthLook::Glints => glint(rows, tile, g, k, o, radius_scale, speck),
+                    DepthLook::Meters if upright => meter(rows, tile, g, f, k, o, radius_scale),
+                    DepthLook::Meters => meter_top(rows, tile, g, k, o, radius_scale),
                     _ => coal(rows, tile, g, k, o, radius_scale),
                 };
                 sum += wo * wk * aa * s;
@@ -2059,6 +2512,9 @@ mod tests {
             d.step(1.0 / 72.0, music, 0.0);
             d.step_wind(1.0 / 72.0, gust);
         }
+        // The wash's front, where a theme has one, a third of a bar in:
+        // over the wall the tests look at.
+        let eye = Vec3::new(0.0, 1.2, 0.0);
         frame(
             &DepthLightOptions::default().under(Some(theme)),
             &d,
@@ -2066,6 +2522,12 @@ mod tests {
             [0.7, 0.3, 1.0],
             level,
             &NO_SONAR,
+            &Around {
+                front: front(Some(theme), 0.35, eye),
+                orbit: 0.9,
+                center: [eye.x, eye.z],
+                bands: [0.9 * music, 0.6 * music, 0.3 * music],
+            },
         )
         .rows
     }
@@ -2081,10 +2543,14 @@ mod tests {
         (eye, grid)
     }
 
-    const BUILT: [(Theme, DepthLook); 3] = [
+    const BUILT: [(Theme, DepthLook); 7] = [
         (Theme::Aurora, DepthLook::Beams),
         (Theme::Flint, DepthLook::Coals),
         (Theme::Contour, DepthLook::Grass),
+        (Theme::Drift, DepthLook::Bubbles),
+        (Theme::Tide, DepthLook::Sparkle),
+        (Theme::Mirror, DepthLook::Glints),
+        (Theme::Classic, DepthLook::Meters),
     ];
 
     #[test]
@@ -2103,17 +2569,22 @@ mod tests {
             assert_eq!(look(Some(theme)), want);
             assert_eq!(look_of(&look_rows(theme, 1.0, 0.5, 0.5)), want);
         }
-        // A theme whose look is not built draws the points.
-        assert_eq!(look(Some(Theme::Tide)), DepthLook::Points);
-        assert_close!(look_rows(Theme::Tide, 1.0, 0.5, 0.5)[LOOK_ROW][0], 0.0);
+        // Every theme's look is built: none draws as the points.
+        for theme in Theme::ALL {
+            assert_ne!(look(Some(theme)), DepthLook::Points, "{theme:?}");
+        }
         // The look's rows: the id, the music and the gust; the clocks.
         let mut d = Drive::default();
         d.step(0.5, 0.8, 0.0);
         d.step_wind(0.5, 0.6);
         let rows = with_look(rows(&d, 0.2, [TEAL, GREEN], FILL, 0.0), DepthLook::Grass);
         assert_close!(rows[LOOK_ROW], [3.0, d.music(), d.gust(), 0.0]);
-        assert_close!(rows[MOVE_ROW], [d.travel(), d.sway(), 0.0, 0.0]);
-        const { assert!(MOVE_ROW == LOOK_ROW + 1 && SONAR_ROW == MOVE_ROW + 1) };
+        assert_close!(rows[MOVE_ROW], [d.travel(), d.sway(), d.rise(), 0.0]);
+        assert_close!(rows[MORE_ROW], [0.0; 4]);
+        const {
+            assert!(MOVE_ROW == LOOK_ROW + 1 && MORE_ROW == MOVE_ROW + 1);
+            assert!(SONAR_ROW == MORE_ROW + 1);
+        };
         // The WGSL's constants are these.
         let vec = |v: &[f32]| {
             let inner: Vec<String> = v.iter().map(|x| format!("{x:?}")).collect();
@@ -2140,6 +2611,29 @@ mod tests {
             ("GRASS_SWAY_BAND", GRASS_SWAY_BAND),
             ("GRASS_LEAN", GRASS_LEAN),
             ("GRASS_TOP_SHIFT", GRASS_TOP_SHIFT),
+            ("BUBBLE_PACK", BUBBLE_PACK),
+            ("BUBBLE_STRETCH", BUBBLE_STRETCH),
+            ("BUBBLE_PERIOD", BUBBLE_PERIOD),
+            ("BUBBLE_WOBBLE", BUBBLE_WOBBLE),
+            ("BUBBLE_WOBBLE_CELLS", BUBBLE_WOBBLE_CELLS),
+            ("BUBBLE_FILL", BUBBLE_FILL),
+            ("BUBBLE_EDGE", BUBBLE_EDGE),
+            ("BUBBLE_SHINE", BUBBLE_SHINE),
+            ("BUBBLE_SHINE_SIZE", BUBBLE_SHINE_SIZE),
+            ("SPARKLE_DIM", SPARKLE_DIM),
+            ("SPARKLE_QUIET", SPARKLE_QUIET),
+            ("GLINT_DIM", GLINT_DIM),
+            ("GLINT_SPACING_M", GLINT_SPACING_M),
+            ("GLINT_QUIET", GLINT_QUIET),
+            ("METER_PACK", METER_PACK),
+            ("METER_ROW", METER_ROW),
+            ("METER_ROW_STEP", METER_ROW_STEP),
+            ("METER_SEGS", METER_SEGS),
+            ("METER_GAP", METER_GAP),
+            ("METER_EDGE", METER_EDGE),
+            ("METER_GHOST", METER_GHOST),
+            ("METER_NEAR", METER_NEAR),
+            ("METER_REACH", METER_REACH),
         ] {
             let line = format!("const {name}: f32 = {value:?};");
             assert!(ENV_DEPTH_WGSL.contains(&line), "{line}");
@@ -2147,6 +2641,22 @@ mod tests {
         for line in [
             format!("const COAL_EMBER: vec3<f32> = {};", vec(&COAL_EMBER)),
             format!("const GRASS_WIND: vec2<f32> = {};", vec(&GRASS_WIND)),
+            format!("const BUBBLE_RIM: vec2<f32> = {};", vec(&BUBBLE_RIM)),
+            format!("const GLINT_TILT: vec2<f32> = {};", vec(&GLINT_TILT)),
+            format!("const GLINT_EDGE: vec2<f32> = {};", vec(&GLINT_EDGE)),
+            // The bands' colors are the air's by band, one list for both.
+            format!(
+                "const METER_BASS: vec3<f32> = {};",
+                vec(&crate::fireflies::BAND_COLORS[0])
+            ),
+            format!(
+                "const METER_MID: vec3<f32> = {};",
+                vec(&crate::fireflies::BAND_COLORS[1])
+            ),
+            format!(
+                "const METER_HIGH: vec3<f32> = {};",
+                vec(&crate::fireflies::BAND_COLORS[2])
+            ),
         ] {
             assert!(ENV_DEPTH_WGSL.contains(&line), "{line}");
         }
@@ -2228,6 +2738,7 @@ mod tests {
             let pack = match look {
                 DepthLook::Beams => BEAM_PACK,
                 DepthLook::Grass => GRASS_PACK,
+                DepthLook::Meters => METER_PACK,
                 _ => 1.0,
             };
             let (mut worst_shift, mut changed) = (0.0f32, 0usize);
@@ -2435,6 +2946,304 @@ mod tests {
         let top = Vec3::new(0.1, 0.5, -0.9);
         let v = look_light(&still, tile(), eye, top, Vec3::Y, radius, fw);
         assert!((0.0..=1.0).contains(&v.x) && (0.0..=1.0).contains(&v.y));
+    }
+
+    #[test]
+    fn the_bubbles_rise_and_carry_a_highlight() {
+        let fw = Vec3::splat(5e-4);
+        let (eye, grid) = wall_grid();
+        let rows = look_rows(Theme::Drift, 1.0, 0.6, 0.3);
+        assert_eq!(look_of(&rows), DepthLook::Bubbles);
+        let radius = look_radius(&rows, 1.0, 0.0);
+        let at = |rise: f32| -> Vec<Vec2> {
+            let mut r = rows;
+            r[MOVE_ROW][2] = rise;
+            grid.iter()
+                .map(|&p| look_light(&r, tile(), eye, p, Vec3::Z, radius, fw))
+                .collect()
+        };
+        // A whole period on, every bubble is where the last one was.
+        let (start, wrapped) = (at(0.2), at(1.2));
+        for (a, b) in start.iter().zip(&wrapped).step_by(11) {
+            assert!((*a - *b).abs().max_element() < 1e-3, "{a} {b}");
+        }
+        // A little on, the light has moved up: it matches the light a
+        // little lower before better than the light in place. Slowest
+        // bubbles move a twentieth of a period, 5 points of the grid.
+        let later = at(0.25);
+        let diff = |shift: usize| -> f32 {
+            (shift * 200..grid.len())
+                .map(|i| (later[i].x - start[i - shift * 200].x).abs())
+                .sum::<f32>()
+                / (grid.len() - shift * 200) as f32
+        };
+        let step = (0.05 * BUBBLE_PERIOD * CELL_M / 0.003).round() as usize;
+        assert!(step >= 2);
+        eprintln!(
+            "bubbles 0.05 of a period on: the light differs by {:.4} in place, {:.4} moved up {step} points",
+            diff(0),
+            diff(step)
+        );
+        assert!(diff(step) < diff(0));
+        // The shine is the tops' color and smaller than the bubble; the
+        // rim is the sides'. With the room black both show.
+        let lit = start.iter().filter(|v| v.x > 0.5).count();
+        let shine = start.iter().filter(|v| v.x > 0.5 && v.y > 0.6).count();
+        let rim = start.iter().filter(|v| v.x > 0.5 && v.y < 0.2).count();
+        eprintln!("bubbles: {lit} points lit, {shine} of them shine, {rim} rim");
+        assert!(shine > 0 && rim > shine, "{shine} {rim}");
+        // A top shows the points: a bubble seen from above is a dot.
+        let top = Vec3::new(0.01, 0.8, -1.0);
+        let v = look_light(&rows, tile(), eye, top, Vec3::Y, radius, fw);
+        assert!((0.0..=1.0).contains(&v.x) && (0.0..=1.0).contains(&v.y));
+        // The rise's clock: slow in silence, faster with the band.
+        let (mut quiet, mut loud) = (Drive::default(), Drive::default());
+        for _ in 0..72 {
+            quiet.step(1.0 / 72.0, 0.0, 0.0);
+            loud.step(1.0 / 72.0, 1.0, 0.0);
+        }
+        assert_close!(quiet.rise(), BUBBLE_RISE_HZ[0]);
+        assert!(loud.rise() > 0.8 * BUBBLE_RISE_HZ[1] && loud.rise() <= BUBBLE_RISE_HZ[1]);
+    }
+
+    #[test]
+    fn the_sparkle_is_dim_and_flares_on_its_band_and_under_the_washs_front() {
+        let fw = Vec3::splat(5e-4);
+        let (eye, grid) = wall_grid();
+        // The wall is 1 m ahead. The stand-in front runs from 2.5 m
+        // behind the wearer to 2.5 m ahead over half a bar and back.
+        let center = Vec3::new(0.3, 1.2, 0.0);
+        assert_close!(wash_front(0.0, center), [0.0, -1.0, -2.5, 1.0 / 0.3]);
+        assert_close!(wash_front(0.5, center)[2], 2.5);
+        assert_close!(wash_front(0.25, center)[2], 0.0);
+        assert_close!(wash_front(0.75, center)[2], 0.0);
+        assert_close!(wash_front(1.25, center), wash_front(0.25, center));
+        let none = |row: [f32; 4]| row.iter().all(|v| *v == 0.0);
+        assert!(none(wash_front(f32::NAN, center)));
+        // Tide alone has a wash.
+        for t in Theme::ALL {
+            let has = !none(front(Some(t), 0.3, center));
+            assert_eq!(has, t == Theme::Tide, "{t:?}");
+        }
+        assert!(none(front(None, 0.3, center)));
+        // Only the sparkle reads the front.
+        let around = Around {
+            front: wash_front(0.35, eye),
+            ..Around::default()
+        };
+        for look in DepthLook::ALL {
+            let rows = with_around(with_look(lit_rows(), look), &around);
+            // The glints read the orbit: at none, a cosine of 1. The
+            // meters read the bands, here silent.
+            let reads = [DepthLook::Sparkle, DepthLook::Glints].contains(&look);
+            assert_eq!(!none(rows[MORE_ROW]), reads, "{}", look.name());
+        }
+        // The light over the wall with the front far away, quiet and
+        // loud, and with it on the wall.
+        let base = look_rows(Theme::Tide, 1.0, 0.0, 0.0);
+        assert_eq!(look_of(&base), DepthLook::Sparkle);
+        let radius = look_radius(&base, 1.0, 0.0);
+        let total = |rows: &[[f32; 4]; ROWS]| -> (f32, f32) {
+            let (mut light, mut most) = (0.0f32, 0.0f32);
+            for &p in &grid {
+                let v = look_light(rows, tile(), eye, p, Vec3::Z, radius, fw);
+                assert!((0.0..=1.0).contains(&v.x) && (0.0..=1.0 + 1e-4).contains(&v.y));
+                light += v.x;
+                most = most.max(v.x);
+            }
+            (light, most)
+        };
+        let mut away = base;
+        away[MORE_ROW] = [0.0; 4];
+        let mut loud = away;
+        loud[LOOK_ROW][1] = 1.0;
+        let mut under = away;
+        under[MORE_ROW] = wash_front(0.35, eye);
+        assert_close!(sparkle_front(&under, Vec3::new(0.2, 1.0, -1.0)), 1.0);
+        assert_close!(sparkle_front(&under, Vec3::new(0.2, 1.0, -1.4)), 0.0);
+        assert_close!(sparkle_front(&away, Vec3::new(0.2, 1.0, -1.0)), 0.0);
+        let (quiet, quiet_most) = total(&away);
+        let (loud, loud_most) = total(&loud);
+        let (front, front_most) = total(&under);
+        eprintln!(
+            "sparkle over the wall: {quiet:.0} quiet (most {quiet_most:.2}), {loud:.0} loud ({loud_most:.2}), {front:.0} under the front ({front_most:.2})"
+        );
+        // Quiet, most points sit at their dim light and a few flare a
+        // little; loud, the flares reach full; under the front all do.
+        assert!(
+            quiet > 0.0 && quiet_most < SPARKLE_DIM + (1.0 - SPARKLE_DIM) * SPARKLE_QUIET + 1e-3
+        );
+        assert!(loud > quiet && loud_most > 0.95);
+        assert!(front > 2.0 * quiet && front_most > 0.99);
+        // Brief: loud, with no front, the flares add under a third to the
+        // dim light of all the points.
+        assert!(loud < 1.6 * quiet, "{loud} {quiet}");
+    }
+
+    #[test]
+    fn the_glints_turn_about_the_center_with_the_airs_orbit() {
+        let center = [0.4f32, -0.7];
+        let rows_at = |phase: f32, music: f32| {
+            let mut rows = with_around(
+                with_look(lit_rows(), DepthLook::Glints),
+                &Around {
+                    orbit: phase,
+                    center,
+                    ..Around::default()
+                },
+            );
+            rows[LOOK_ROW][1] = music;
+            rows
+        };
+        assert_close!(rows_at(0.0, 0.0)[MORE_ROW], [0.4, -0.7, 1.0, 0.0]);
+        assert_close!(rows_at(f32::NAN, 0.0)[MORE_ROW], [0.4, -0.7, 1.0, 0.0]);
+        // A speck rides the orbit: what a particle of the air sees at its
+        // place (`fireflies::orbit_place`, which the sim mirrors) is the
+        // same at every phase, so the glints and the air turn in step.
+        let mut lit = 0;
+        for k in 0..400 {
+            let own = (
+                0.05 + 0.9 * (k % 20) as f32 / 20.0,
+                0.31 * k as f32,
+                (k / 20) as f32 / 20.0,
+            );
+            let at = |phase: f32| {
+                let [x, y, z] = crate::fireflies::orbit_place(phase, own, 3.0, 0.9, [-0.3, 0.55]);
+                Vec3::new(center[0] + x, 1.0 + y, center[1] + z)
+            };
+            let first = glint_speck(&rows_at(0.0, 1.0), at(0.0));
+            lit += usize::from(first > 0.5);
+            for phase in [0.4f32, 1.7, 3.9, 6.1] {
+                let v = glint_speck(&rows_at(phase, 1.0), at(phase));
+                assert!((v - first).abs() < 2e-3, "{k} {phase}: {v} {first}");
+            }
+            assert!((0.0..=1.0).contains(&first));
+        }
+        // The specks are sparse and there: between a twentieth and a
+        // third of the places are under one.
+        eprintln!("glints: {lit} of 400 places under a speck");
+        assert!(lit > 20 && lit < 130, "{lit}");
+        // Silent, a speck keeps a share of its light.
+        let p = (0..2000)
+            .map(|k| Vec3::new(0.013 * k as f32 - 13.0, 1.0, 0.007 * k as f32))
+            .max_by(|a, b| {
+                glint_speck(&rows_at(0.0, 1.0), *a).total_cmp(&glint_speck(&rows_at(0.0, 1.0), *b))
+            })
+            .expect("a point");
+        let (loud, quiet) = (
+            glint_speck(&rows_at(0.0, 1.0), p),
+            glint_speck(&rows_at(0.0, 0.0), p),
+        );
+        assert!(loud > 0.95, "{loud}");
+        assert_close!(quiet, loud * GLINT_QUIET);
+        // Over the wall: dim points everywhere, bright ones under the
+        // specks, and the bright ones move as the orbit turns.
+        let fw = Vec3::splat(5e-4);
+        let (eye, grid) = wall_grid();
+        let rows = look_rows(Theme::Mirror, 1.0, 0.8, 0.0);
+        assert_eq!(look_of(&rows), DepthLook::Glints);
+        let radius = look_radius(&rows, 1.0, 0.0);
+        let wall = |rows: &[[f32; 4]; ROWS]| -> Vec<f32> {
+            grid.iter()
+                .map(|&p| look_light(rows, tile(), eye, p, Vec3::Z, radius, fw).x)
+                .collect()
+        };
+        let now = wall(&rows);
+        let mut turned = rows;
+        turned[MORE_ROW][2] = 0.4f32.cos();
+        turned[MORE_ROW][3] = 0.4f32.sin();
+        let later = wall(&turned);
+        let bright = |v: &[f32]| v.iter().filter(|x| **x > 0.6).count();
+        let dim = now.iter().filter(|x| **x > 0.15 && **x < 0.3).count();
+        let moved = now
+            .iter()
+            .zip(&later)
+            .filter(|(a, b)| (**a > 0.6) != (**b > 0.6))
+            .count();
+        eprintln!(
+            "glints over the wall: {dim} points dim, {} bright, {} bright a turn of 0.4 rad on, {moved} changed",
+            bright(&now),
+            bright(&later)
+        );
+        assert!(dim > bright(&now) && bright(&now) > 0 && bright(&later) > 0);
+        assert!(moved > 0);
+    }
+
+    #[test]
+    fn the_meters_stand_as_high_as_their_bands_in_the_bands_colors() {
+        let fw = Vec3::splat(5e-4);
+        let (eye, grid) = wall_grid();
+        let rows_at = |bands: [f32; 3]| {
+            let mut rows = look_rows(Theme::Classic, 1.0, 0.5, 0.0);
+            rows[MORE_ROW] = [bands[0], bands[1], bands[2], 0.0];
+            rows
+        };
+        let rows = rows_at([0.0; 3]);
+        assert_eq!(look_of(&rows), DepthLook::Meters);
+        let radius = look_radius(&rows, 1.0, 0.0);
+        // The light of each band's meters over the wall: by the tint, 0
+        // the bass, a half the mids, 1 the highs.
+        let by_band = |rows: &[[f32; 4]; ROWS]| -> [f32; 3] {
+            let mut sum = [0.0f32; 3];
+            for &p in &grid {
+                let v = look_light(rows, tile(), eye, p, Vec3::Z, radius, fw);
+                assert!((0.0..=1.0).contains(&v.x) && (0.0..=1.0 + 1e-4).contains(&v.y));
+                if v.x > 0.05 {
+                    sum[((v.y * 2.0).round() as usize).min(2)] += v.x;
+                }
+            }
+            sum
+        };
+        let silent = by_band(&rows);
+        let bass = by_band(&rows_at([1.0, 0.0, 0.0]));
+        let highs = by_band(&rows_at([0.0, 0.0, 1.0]));
+        let all = by_band(&rows_at([1.0; 3]));
+        eprintln!(
+            "meters over the wall, by band: silent {silent:.0?}, bass {bass:.0?}, highs {highs:.0?}, all {all:.0?}"
+        );
+        // Silent, every meter shows its outline. A band at full lights
+        // its own meters to the top and leaves the others alone.
+        assert!(silent.iter().all(|s| *s > 0.0));
+        assert!(bass[0] > 4.0 * silent[0], "{bass:?}");
+        assert!((bass[1] - silent[1]).abs() < 1e-3 * silent[1].max(1.0));
+        assert!((bass[2] - silent[2]).abs() < 1e-3 * silent[2].max(1.0));
+        assert!(highs[2] > 4.0 * silent[2] && (highs[0] - silent[0]).abs() < 1e-2);
+        // Half a level lights the lower half: half the light of a full
+        // one, over the outline.
+        let half = by_band(&rows_at([0.5, 0.0, 0.0]));
+        let share = (half[0] - silent[0]) / (bass[0] - silent[0]);
+        assert!((share - 0.5).abs() < 0.08, "{share}");
+        // The colors are the air's by band, and a blend between two.
+        let [b, m, h] = crate::fireflies::BAND_COLORS;
+        assert_close!(look_color(&rows, 0.0), b);
+        assert_close!(look_color(&rows, 0.5), m);
+        assert_close!(look_color(&rows, 1.0), h);
+        assert_close!(look_color(&rows, 0.25)[0], 0.5 * (b[0] + m[0]));
+        assert_close!(look_color(&rows, -1.0), b);
+        // A top shows the points, each as bright as its band.
+        let top = Vec3::new(0.01, 0.8, -1.0);
+        let lit = look_light(&rows_at([1.0; 3]), tile(), eye, top, Vec3::Y, radius, fw);
+        let dark = look_light(&rows, tile(), eye, top, Vec3::Y, radius, fw);
+        assert!(lit.x >= dark.x && lit.x <= 1.0);
+        // The bands' levels, smoothed as the music is.
+        let mut d = Drive::default();
+        for _ in 0..72 {
+            d.step_bands(1.0 / 72.0, [1.0, 0.5, 0.0]);
+        }
+        assert!(d.bands()[0] > 0.99 && (d.bands()[1] - 0.5).abs() < 0.01);
+        assert_close!(d.bands()[2], 0.0);
+        d.step_bands(MUSIC_RELEASE_S, [0.0; 3]);
+        assert!((d.bands()[0] - (-1.0f32).exp()).abs() < 0.01);
+        let mut bad = Drive::default();
+        bad.step_bands(f32::NAN, [f32::NAN; 3]);
+        assert_eq!(bad, Drive::default());
+        // The rows carry them for the meters alone, each held in 0..1.
+        let around = Around {
+            bands: [0.2, 1.5, f32::NAN],
+            ..Around::default()
+        };
+        let with = with_around(with_look(lit_rows(), DepthLook::Meters), &around);
+        assert_close!(with[MORE_ROW], [0.2, 1.0, 0.0, 0.0]);
     }
 
     #[test]
@@ -2965,8 +3774,8 @@ mod tests {
             "depth light: beams, teal sides, the key's tint on top, bass, occluding (theme aurora)"
         );
         assert_eq!(
-            colors_line(Some(Theme::Tide)),
-            "depth light: sparkle as points, rose sides, the same on top, high, occluding (theme tide)"
+            colors_line(Some(Theme::Classic)),
+            "depth light: meters, each meter its band's color, rms, occluding (theme classic)"
         );
         assert_eq!(
             colors_line(None),
@@ -3082,6 +3891,7 @@ mod tests {
             "light_size",
             "light_look",
             "light_move",
+            "light_more",
             "sonar",
         ]
         .into_iter()
@@ -3127,6 +3937,7 @@ mod tests {
             [1.0; 3],
             1.0,
             &NO_SONAR,
+            &Around::default(),
         );
         assert_close!(no_points.rows[0][2], 0.0);
         assert!(
@@ -3170,7 +3981,15 @@ mod tests {
         assert!(change.starts_with("depth light: on") && change.contains("(was: off"));
         // The frame: the veil by the level, or 1 with it off.
         let drive = Drive::default();
-        let f = frame(&on, &drive, Some(Theme::Aurora), [1.0; 3], 0.75, &NO_SONAR);
+        let f = frame(
+            &on,
+            &drive,
+            Some(Theme::Aurora),
+            [1.0; 3],
+            0.75,
+            &NO_SONAR,
+            &Around::default(),
+        );
         assert!(f.veil);
         assert_close!(f.rows[4][3], 0.25);
         let f = frame(
@@ -3180,6 +3999,7 @@ mod tests {
             [1.0; 3],
             0.75,
             &NO_SONAR,
+            &Around::default(),
         );
         assert!(!f.veil);
         assert_close!(f.rows[4][3], 1.0);
