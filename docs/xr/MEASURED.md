@@ -4191,3 +4191,33 @@ red to near white under Flint, and green blades under Contour.
 
 Not measured: anything worn, and grass against the points back to back.
 
+## The video's three themes with every row (board #5543, Nov 18)
+
+Debug eb99b43 (xr-themes3: the groundwork, the depth looks, the air and
+the surface effects, a box's top alone), the same headset (8 h up), knobs
+and procedure as the two passes before it, one launch per theme.
+
+| theme | App med / p90 / max (ms) | min fps | air, alive of asked |
+| --- | --- | --- | --- |
+| Aurora: windows, beams, stars | 8.36 / 9.06 / 9.23 | 70 | 2000 of 2000 |
+| Flint: sparks, embers, coals, ash | 7.98 / 8.67 / 8.98 | 71 | 1366 of 1500 |
+| Contour: terraces, grass, fireflies | 7.92 / 8.37 / 8.90 | 71 | 2000 of 2000 |
+
+The whole of each theme costs what its groundwork did (8.57, 7.91 and
+7.29 ms an hour before). Flint's air is under its count because the rise
+lets particles go with the band and they die at the top. The log names the
+air (`air: amber, bass, rise (theme flint) · 1500 asked`).
+
+Flash count on this commit, desktop, limiter on, eleven songs by seven
+themes: 77 rows, 0 failing regions; worst general 3.0 (Aurora, Classic,
+Flint), worst red 2.0 (Aurora). Output
+`recordings/themes3/all-eb99b43/flash/songs-themes.txt`.
+
+Captures: `recordings/themes3/all-eb99b43/` (`sheet.jpg`). Aurora's stars
+sit high and small. Flint's ash rises amber over the floor. Under Aurora
+the storage units and the tables are black shapes against the sky: the
+windows are on their tops, which a seated eye does not see, and the theme
+turns their edge bars off. The sides are the next commit's.
+
+Not measured: anything worn.
+
