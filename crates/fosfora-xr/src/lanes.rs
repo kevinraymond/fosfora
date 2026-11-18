@@ -404,7 +404,7 @@ pub struct RoomLanes {
     theme_knob: crate::themes::Knob,
     /// The theme a room with no theme saved and nothing edited by hand
     /// starts on ([`Self::with_fresh_theme`]); `None` keeps the built-in
-    /// defaults (Classic).
+    /// defaults.
     fresh_theme: Option<Theme>,
     /// The room is fresh (its file missing at load, or saved with no theme
     /// and nothing edited by hand, or just cleared) and the fresh theme is
@@ -456,7 +456,7 @@ impl RoomLanes {
     /// then it holds the theme as if the wearer had picked it. A room with
     /// a theme saved, Classic included, or with surfaces edited by hand and
     /// no theme (custom), is left as it is. Someone who installs the app
-    /// first sees the look it was made for, not Classic.
+    /// first sees the look it was made for, not the bare defaults.
     #[must_use]
     pub fn with_fresh_theme(mut self, theme: Theme) -> Self {
         self.fresh_theme = Some(theme);
@@ -807,8 +807,8 @@ impl RoomLanes {
 
     /// What the hand menu's Theme control shows for the room as it is now
     /// (board #5415, `themes::Shown::of`): the saved theme, marked edited
-    /// once something was changed by hand, or with none saved Classic or
-    /// custom.
+    /// once something was changed by hand, or with none saved custom
+    /// (Classic if the looks happen to be Classic's).
     pub fn theme(&self) -> Shown {
         Shown::of(&self.file)
     }
@@ -1154,7 +1154,7 @@ impl RoomLanes {
                 // too. A saved Classic names its theme, so it stays.
                 self.fresh_pending = self.fresh_theme.is_some()
                     && file.theme.is_none()
-                    && Theme::Classic.runs_in(&file);
+                    && crate::themes::built_in(&file);
                 self.file = file;
             }
             Loaded::Failed(e) => warn!(
@@ -2339,33 +2339,36 @@ mod tests {
     }
 
     #[test]
-    fn classic_gives_exactly_the_built_in_defaults() {
+    fn classic_gives_the_built_in_behaviors_with_what_stands_on_the_mids() {
         let (dir, _, _, _) = fresh("theme-classic");
         let boxes = themed_room();
         let id = room_of(&boxes);
         let mut lanes = RoomLanes::new(dir.clone());
         lanes.update(id, &boxes);
-        let (fresh_rows, fresh_behaviors) = lane_rows(&RoomFile::default(), &boxes);
+        let (_, fresh_behaviors) = lane_rows(&RoomFile::default(), &boxes);
         hand_assign(&mut lanes, &boxes);
         lanes.apply_theme(Theme::Drift, &boxes, "test");
         lanes.apply_theme(Theme::Classic, &boxes, "test");
         assert!(lanes.update(id, &boxes));
-        assert_close!(lanes.rows()[..], fresh_rows[..]);
+        // Every kind on its built-in behavior, in its own color at full
+        // strength. Tables and other surfaces follow the mids (board
+        // #5543), so Classic is no longer a room with no file.
         assert_eq!(lanes.behaviors, fresh_behaviors);
-        // And as a room with no file goes on: the kind defaults are the built-ins
-        // with no look, so a behavior set by hand afterwards runs its own
-        // band, as it would have without the theme.
+        on_theme(&lanes, &boxes, Theme::Classic);
         for (kind, _) in crate::surfaces::KIND_NAMES {
-            assert_eq!(
-                lanes.file.resolve_kind(kind),
-                RoomFile::default().resolve_kind(kind)
-            );
+            let (behavior, strength, params) = lanes.file.resolve_kind(kind);
+            let (built_in, ..) = RoomFile::default().resolve_kind(kind);
+            assert_eq!(behavior, built_in);
+            assert_close!(strength, 1.0);
+            let mids = [KIND_TABLE, crate::surfaces::KIND_OTHER].contains(&kind);
+            let band = if mids {
+                crate::surface_fx::BAND_MID
+            } else {
+                behavior.default_band()
+            };
+            assert_close!(params, [0.0, band as f32]);
         }
-        lanes.set_kind(KIND_TABLE, B::Pulse, &boxes);
-        assert_eq!(
-            lanes.params_of(0, &boxes),
-            (0, B::Pulse.default_band(), 1.0)
-        );
+        assert!(!Theme::Classic.runs_in(&RoomFile::default()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2407,10 +2410,11 @@ mod tests {
         again.all_none(&boxes);
         assert_eq!(again.theme(), Shown::Edited(Theme::Aurora));
         // The knob's clear without a fresh theme: the built-in defaults,
-        // Classic, no theme saved.
+        // no theme saved, which no theme runs since Classic went to the
+        // mids (board #5543).
         assert!(again.poll_knob(Some("clear"), false, &boxes));
         assert_eq!(again.file.theme, None);
-        assert_eq!(again.theme(), Shown::Theme(Theme::Classic));
+        assert_eq!(again.theme(), Shown::Custom);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2441,12 +2445,13 @@ mod tests {
         assert_eq!(lanes.next_theme(&boxes, "test"), Theme::Classic);
         assert_eq!(lanes.theme(), Shown::Theme(Theme::Classic));
         assert_ne!(std::fs::read_to_string(&path).unwrap(), old);
-        // Saved before themes with no entries: Classic.
+        // Saved before themes with no entries: the built-in defaults,
+        // which no theme runs.
         let bare = r#"{ "version": 2, "kind_defaults": {}, "anchors": [] }"#;
         std::fs::write(&path, bare).unwrap();
         let mut fresh_file = RoomLanes::new(dir.clone());
         fresh_file.update(id, &boxes);
-        assert_eq!(fresh_file.theme(), Shown::Theme(Theme::Classic));
+        assert_eq!(fresh_file.theme(), Shown::Custom);
         assert_eq!(fresh_file.file.theme, None);
         // A version 1 file reads too, its entries custom.
         let v1 = format!(
@@ -2460,9 +2465,9 @@ mod tests {
         assert_eq!(older.theme(), Shown::Custom);
         assert_eq!(older.behavior(1), B::None);
         // No file at all and no fresh theme: the built-in defaults,
-        // Classic.
+        // custom.
         let (dir2, boxes2, id2, none) = fresh("theme-none");
-        assert_eq!(none.theme(), Shown::Theme(Theme::Classic));
+        assert_eq!(none.theme(), Shown::Custom);
         assert!(!room_path(&dir2, id2.unwrap()).exists());
         let _ = boxes2;
         let _ = std::fs::remove_dir_all(&dir);
@@ -2472,8 +2477,10 @@ mod tests {
     #[test]
     fn the_control_steps_through_the_themes_and_wraps() {
         let (dir, boxes, _, mut lanes) = fresh("theme-cycle");
-        // Round the whole cycle from Classic and one step on: every theme
-        // in the cycle's order, then Classic and Drift again.
+        // From a room with no theme the first press is Classic, the
+        // start of the cycle. Then round the whole cycle and one step on:
+        // every theme in the cycle's order, then Classic and Drift again.
+        assert_eq!(lanes.next_theme(&boxes, "test"), Theme::Classic);
         let n = Theme::ALL.len();
         let seen: Vec<Theme> = (0..=n).map(|_| lanes.next_theme(&boxes, "test")).collect();
         let want: Vec<Theme> = (1..=n + 1).map(|i| Theme::ALL[i % n]).collect();
@@ -2562,12 +2569,12 @@ mod tests {
         assert_eq!(third.params_of(0, &boxes).0, 4);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
         // Without a fresh theme a room with no file keeps the built-in
-        // defaults (Classic) and writes nothing.
+        // defaults (no theme, custom) and writes nothing.
         std::fs::remove_file(&path).unwrap();
         let mut plain = RoomLanes::new(dir.clone());
         plain.update(id, &boxes);
         assert_eq!(plain.saved_theme(), None);
-        assert_eq!(plain.theme(), Shown::Theme(Theme::Classic));
+        assert_eq!(plain.theme(), Shown::Custom);
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&picked_dir);
@@ -2700,7 +2707,7 @@ mod tests {
         plain.update(id, &boxes);
         assert!(plain.poll_knob(Some("clear"), false, &boxes));
         plain.update(id, &boxes);
-        assert_eq!(plain.theme(), Shown::Theme(Theme::Classic));
+        assert_eq!(plain.theme(), Shown::Custom);
         assert_eq!(plain.saved_theme(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }

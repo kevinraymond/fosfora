@@ -34,15 +34,15 @@
 //! the look it had, and a depth look that is not built draws as the
 //! points ([`DepthLook::built`]).
 //!
-//! - **Classic**, the hi-fi: the built-in defaults
-//!   ([`SurfaceBehavior::default_for`]), each kind's own color, the
-//!   behavior's band, full strength, so applying it gives exactly a room
-//!   with no file. Only Classic runs the wall spectrum. The tables' edge
-//!   bars stand on their rims as level meters. A fresh room on the headset
-//!   starts on Aurora instead (board #5447,
-//!   `lanes::RoomLanes::with_fresh_theme`). The file also moves its tables
-//!   and other surfaces to the mids, which waits: a band that is not the
-//!   behavior's own would end "a room with no file runs Classic".
+//! - **Classic**, the hi-fi: each kind's built-in behavior
+//!   ([`SurfaceBehavior::default_for`]) in its own color at full strength.
+//!   Tables and other surfaces follow the mids and every other kind the
+//!   behavior's own band, and the tables' edge bars stand on their rims as
+//!   level meters. Only Classic runs the wall spectrum. Until board #5543
+//!   Classic was exactly a room with no file; the mids ended that, and a
+//!   room on the built-in defaults now shows as custom ([`Shown`]). A
+//!   fresh room on the headset starts on Aurora (board #5447,
+//!   `lanes::RoomLanes::with_fresh_theme`).
 //! - **Drift**, deep underwater: blue water on the walls (streamlines,
 //!   currents) and the ceiling (rings, the surface from below), teal on
 //!   the rest: curls round the tables and other things, sand ripples on
@@ -270,16 +270,21 @@ impl Theme {
         let look = Look::new;
         let face = Mode::Face;
         Some(match self {
-            // The hi-fi. The tables' bars stand on their rims as level
-            // meters (board #5543).
+            // The hi-fi (board #5543): the built-in defaults, with the
+            // tables and other surfaces on the mids and the tables' bars
+            // standing on their rims as level meters.
             Self::Classic => {
                 let behavior = B::default_for(kind);
+                let band = match kind {
+                    KIND_TABLE | crate::surfaces::KIND_OTHER => BAND_MID,
+                    _ => behavior.default_band(),
+                };
                 let edges = if kind == KIND_TABLE {
                     Mode::Standing
                 } else {
                     face
                 };
-                look(behavior, 0, behavior.default_band(), 1.0, edges)
+                look(behavior, 0, band, 1.0, edges)
             }
             // Board #5543: deep underwater. Blue water on the walls and
             // the ceiling, teal life on the rest; no bars but the frames'.
@@ -404,6 +409,26 @@ impl Theme {
                     .is_none_or(|look| look.runs(file.resolve(&e.uuid, e.kind)))
             })
     }
+}
+
+/// Whether `file` runs the built-in defaults and nothing else: every named
+/// kind's default, and every entry of a named kind, resolves to the kind's
+/// built-in behavior ([`SurfaceBehavior::default_for`]) in its own color,
+/// on the behavior's own band, at full strength. With no theme saved that
+/// is a room nobody has touched (board #5447). It was "runs Classic" until
+/// Classic's tables and other surfaces went to the mids (board #5543).
+pub fn built_in(file: &RoomFile) -> bool {
+    let built_in = |kind: u32| {
+        let behavior = SurfaceBehavior::default_for(kind);
+        Look::new(behavior, 0, behavior.default_band(), 1.0, Mode::Face)
+    };
+    KIND_NAMES
+        .iter()
+        .all(|&(kind, _)| built_in(kind).runs(file.resolve_kind(kind)))
+        && file.anchors.iter().all(|e| {
+            KIND_NAMES.iter().all(|&(kind, _)| kind != e.kind)
+                || built_in(e.kind).runs(file.resolve(&e.uuid, e.kind))
+        })
 }
 
 /// How the depth light draws what the depth map sees (board #5543,
@@ -622,16 +647,17 @@ pub fn mono(theme: Option<Theme>, kind: u32, behavior: SurfaceBehavior) -> bool 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shown {
     /// The room runs this theme: the one saved with it, or Classic for a
-    /// file with none that runs the built-in defaults. On the headset such
-    /// a room is fresh and runs Aurora first (board #5447,
-    /// `lanes::RoomLanes::with_fresh_theme`), so this shows Classic only
-    /// without a room or a fresh theme.
+    /// file with none whose looks are Classic's all the same.
     Theme(Theme),
     /// This theme was applied and something was edited by hand since: the
     /// edit stays, and so does the saved name.
     Edited(Theme),
-    /// No theme saved and the room is not Classic: assigned by hand before
-    /// themes existed.
+    /// No theme saved and the room is not Classic: assigned by hand
+    /// before themes existed, or the built-in defaults, which no theme
+    /// runs since Classic's tables and other surfaces went to the mids
+    /// (board #5543). On the headset a room on the defaults is fresh and
+    /// runs Aurora first (board #5447,
+    /// `lanes::RoomLanes::with_fresh_theme`).
     Custom,
 }
 
@@ -981,30 +1007,43 @@ mod tests {
     }
 
     #[test]
-    fn classic_is_the_kind_defaults() {
+    fn classic_is_the_kind_defaults_with_what_stands_on_the_mids() {
         for (kind, _) in KIND_NAMES {
             let look = Theme::Classic.look(kind).expect("a named kind");
             let behavior = B::default_for(kind);
-            // The tables' bars stand (board #5543); the rest on the face.
+            // The tables' bars stand, and tables and other surfaces
+            // follow the mids (board #5543); the rest as built in.
             let edges = if kind == KIND_TABLE {
                 Mode::Standing
             } else {
                 Mode::Face
             };
+            let mids = [KIND_TABLE, crate::surfaces::KIND_OTHER].contains(&kind);
+            let band = if mids {
+                BAND_MID
+            } else {
+                behavior.default_band()
+            };
             assert_eq!(
                 look,
-                Look::new(behavior, 0, behavior.default_band(), 1.0, edges),
+                Look::new(behavior, 0, band, 1.0, edges),
                 "{}",
                 kind_name(kind)
             );
-            // Nothing a fresh room lacks: no params.
-            assert_eq!(look.params(), None);
+            // A band that is not the behavior's own is written to the
+            // room; the rest write nothing a fresh room lacks.
+            let written = mids.then_some([0.0, BAND_MID as f32]);
+            assert_eq!(look.params(), written, "{}", kind_name(kind));
         }
-        // The built-in defaults (a room file nobody wrote) run Classic.
-        assert!(Theme::Classic.runs_in(&RoomFile::default()));
-        for theme in Theme::ALL.into_iter().filter(|t| *t != Theme::Classic) {
+        // So the built-in defaults (a room file nobody wrote) run no
+        // theme, Classic included, and show as custom.
+        for theme in Theme::ALL {
             assert!(!theme.runs_in(&RoomFile::default()), "{theme:?}");
         }
+        assert_eq!(Shown::of(&RoomFile::default()), Shown::Custom);
+        // A room nobody has touched is still told apart: the built-in
+        // defaults and nothing else.
+        assert!(built_in(&RoomFile::default()));
     }
 
     /// One theme's rows in `KIND_NAMES`' order (table, floor, wall,

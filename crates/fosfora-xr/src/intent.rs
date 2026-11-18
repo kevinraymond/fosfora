@@ -3191,9 +3191,10 @@ mod tests {
         let card = say("What can I say?");
         assert_eq!(card.label.lines().count(), HELP_LINES);
         assert_close!(card.seconds, CARD_S);
-        // With another clause, still the card.
+        // With another clause, still the card. From a room with no theme
+        // the next theme is Classic, the start of the cycle.
         let r = say("Next theme and what can I say?");
-        assert!(r.label.starts_with("theme: Drift\n"), "{}", r.label);
+        assert!(r.label.starts_with("theme: Classic\n"), "{}", r.label);
         assert_close!(r.seconds, CARD_S);
         let r = say("what are the walls");
         assert_close!(r.seconds, HELP_S);

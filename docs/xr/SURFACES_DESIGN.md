@@ -1865,11 +1865,17 @@ for an effect that is not built and is as it was.
 | depth light | bubbles, teal and warm white, bass | sparkle, rose, high | beams, teal and the key, bass | glints, warm white, high | coals, the heat ramp, bass | grass, green and warm white, mid |
 | air | teal, high, 1500, drift | rose, bass, 1000, rise | warm white, high, 2000, twinkle | warm white, high, 1500, orbit | amber, bass, 1500, rise | green, high, 2000, wander |
 
-Classic keeps the built-in defaults, with the tables' bars standing as
-level meters, meters on the depth light and the air colored by band. The
-file also moves its tables and other surfaces to the mids. That waits: a
-band that is not the behavior's own would end the rule that a room with no
-file runs Classic.
+Classic is the built-in behaviors in each kind's own color, with the
+tables' bars standing as level meters, meters on the depth light and the
+air colored by band. Its tables and other surfaces follow the mids, as the
+file asks (the owner, Nov 18: "Let's get the mids in there for Classic and
+lose the rule"). The rule lost: Classic was exactly a room with no file,
+so a room on the built-in defaults showed "Theme: Classic". It now shows
+"Theme: custom", and the first press from there is Classic. A fresh room
+is told apart by `themes::built_in` (the built-in defaults and nothing
+else), so it still starts on Aurora. A room saved on Classic by an older
+build keeps its tables on the rms and shows "Classic*" until Classic is
+picked again.
 
 **What is built since, and what is not.** The video's three themes have
 every row: windows, terraces, and sparks and embers drawn on the face
