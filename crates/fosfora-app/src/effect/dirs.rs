@@ -8,10 +8,13 @@
 //! its shaders changes. Each directory is watched recursively, so a `.pfx` and
 //! its `.wgsl` can sit side by side or in subfolders.
 //!
-//! A relative `shader` path in an extra directory's `.pfx` resolves against
+//! A relative shader path in an extra directory's `.pfx` resolves against
 //! that `.pfx`'s own directory, not `assets/shaders/`, so a generator can ship
-//! a self-contained folder. [`localize`] does the rewrite, at scan and again
-//! on every hot reload of the file.
+//! a self-contained folder. That covers `shader`, each pass's `shader`, and the
+//! `compute_shader` of `particles`, `reaction_diffusion` and `trail_field`.
+//! [`localize`] does the rewrite, at scan and again on every hot reload of the
+//! file. Images and videos a particle emitter names still resolve under
+//! `assets/`, unless the path is absolute.
 //!
 //! A brand-new `.pfx` is picked up at the next start, as in `assets/effects/`.
 
@@ -55,6 +58,15 @@ fn localize_in(effect: &mut PfxEffect, pfx_path: &Path, dirs: &[PathBuf]) {
     fix(&mut effect.shader);
     for pass in &mut effect.passes {
         fix(&mut pass.shader);
+    }
+    if let Some(particles) = effect.particles.as_mut() {
+        fix(&mut particles.compute_shader);
+        if let Some(rd) = particles.reaction_diffusion.as_mut() {
+            fix(&mut rd.compute_shader);
+        }
+        if let Some(tf) = particles.trail_field.as_mut() {
+            fix(&mut tf.compute_shader);
+        }
     }
 }
 
@@ -160,6 +172,37 @@ mod tests {
         let once = e.shader.clone();
         localize_in(&mut e, &pfx, &dirs);
         assert_eq!(e.shader, once, "a second call changes nothing");
+    }
+
+    // A particle effect's simulation shaders were left pointing into
+    // assets/shaders, so an extra-dir particle effect loaded its fragment
+    // shader from its own folder and failed to find its compute shader.
+    #[test]
+    fn extra_dir_particle_effects_read_compute_shaders_beside_their_pfx() {
+        let root = std::env::temp_dir().join("tessera");
+        let dirs = vec![root.clone()];
+        let mut e: PfxEffect = serde_json::from_value(serde_json::json!({
+            "name": "Swarm", "shader": "swarm.wgsl",
+            "particles": {
+                "compute_shader": "swarm_sim.wgsl",
+                "reaction_diffusion": { "compute_shader": "sim/rd.wgsl" },
+                "trail_field": { "compute_shader": "sim/trail.wgsl" }
+            }
+        }))
+        .unwrap();
+        localize_in(&mut e, &root.join("swarm.pfx"), &dirs);
+        let p = e.particles.as_ref().unwrap();
+        assert_eq!(Path::new(&p.compute_shader), root.join("swarm_sim.wgsl"));
+        let rd = p.reaction_diffusion.as_ref().unwrap();
+        assert_eq!(
+            Path::new(&rd.compute_shader),
+            root.join("sim").join("rd.wgsl")
+        );
+        let tf = p.trail_field.as_ref().unwrap();
+        assert_eq!(
+            Path::new(&tf.compute_shader),
+            root.join("sim").join("trail.wgsl")
+        );
     }
 
     #[test]

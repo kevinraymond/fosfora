@@ -89,6 +89,8 @@ pub struct ShaderWatcher {
     /// What could not be watched, for a one-time note in the status bar.
     /// Taken by the first frame.
     degraded: Option<String>,
+    /// The shared WGSL library, `<shaders>/lib`, absolute like notify's paths.
+    lib_dir: PathBuf,
 }
 
 impl ShaderWatcher {
@@ -222,7 +224,16 @@ impl ShaderWatcher {
             trama_receiver: trama_rx,
             seen,
             degraded,
+            lib_dir: shader_dir.join("lib"),
         }
+    }
+
+    /// Is `path` a file of the shared shader library? A change to one
+    /// recompiles every effect. Decided by location, so an extra effect
+    /// folder that sits under some `lib/` directory, or has a `lib/`
+    /// subfolder of its own, is not mistaken for the library.
+    pub fn is_library(&self, path: &std::path::Path) -> bool {
+        path.starts_with(&self.lib_dir)
     }
 
     /// The note for the status bar if some directory could not be watched,
@@ -418,6 +429,34 @@ mod tests {
         assert_eq!(reported.len(), 1, "trama still watched: {reported:?}");
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // A change under ANY `/lib/` path used to count as a library change and
+    // recompile every layer and trama effect: an extra effect folder kept
+    // under some `lib/` directory did that on every save.
+    #[test]
+    fn only_the_shader_library_counts_as_the_library() {
+        let tmp = std::env::temp_dir();
+        let lib_effects = tmp.join("lib").join("my-effects");
+        // Relative, as `assets_dir()` is in the dev workflow; notify reports absolute paths.
+        let w = ShaderWatcher::watching(
+            Path::new("assets/shaders"),
+            Path::new("assets/effects"),
+            Path::new("assets/trama/effects"),
+            &[],
+            std::slice::from_ref(&lib_effects),
+        );
+        let cwd = std::env::current_dir().unwrap();
+        assert!(w.is_library(&cwd.join("assets/shaders/lib/noise.wgsl")));
+        assert!(!w.is_library(&cwd.join("assets/shaders/aurora.wgsl")));
+        assert!(
+            !w.is_library(&lib_effects.join("glow.wgsl")),
+            "a folder under lib/"
+        );
+        assert!(
+            !w.is_library(&tmp.join("mine").join("lib").join("helper.wgsl")),
+            "a lib/ subfolder of an effect folder"
+        );
     }
 
     #[test]

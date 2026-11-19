@@ -1732,9 +1732,7 @@ impl App {
         // Shader hot-reload — submit changed shaders for background compilation
         let changes = self.shader_watcher.drain_changes();
         let trama_changes = self.shader_watcher.drain_trama_changes();
-        let lib_changed = changes
-            .iter()
-            .any(|p| p.to_string_lossy().contains("/lib/"));
+        let lib_changed = changes.iter().any(|p| self.shader_watcher.is_library(p));
         if lib_changed {
             self.effect_loader.reload_library();
         }
