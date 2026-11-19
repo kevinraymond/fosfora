@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v2.9.0 — 2026-11-19
 
 ### Added
 - **Sync offset.** When beat-bound visuals trail the sound in the room, Setup › Audio › Sync offset fires beats, downbeats and the beat and bar phases up to 200 ms early (capped just under half a beat); levels stay as they are. When the sound reaches the audience after the picture, a negative value of up to 250 ms holds every feature back. It also applies to `fosfora --signal`, and leaving it at 0 changes nothing.
@@ -14,7 +14,8 @@
 - **Tempo-synced LFOs as binding sources.** Bind any control to a sine, triangle, saw, square or sample-and-hold LFO from 4 bars down to 1/16, with an optional phase offset, from the new LFO group in the binding matrix or as `lfo.sine.bar` / `lfo.saw.beat.90` in a bindings file; this used to need the external Smart LFO bridge.
 - **Seven more blend modes: Lighten, Darken, Soft Light, Hue, Saturation, Color and Luminosity,** in the layer menus and the web remote, numbered 13–19 over OSC. A preset that says `SoftLight` used to load as Overlay and now gets the real, gentler Soft Light; set it to Overlay to keep the old look. A blend driven from the binding bus still sweeps only modes 0–9.
 - **Opt-in hardware video decode for media layers.** `FOSFORA_HWACCEL=cuda` (or `vaapi`, `qsv`, `vulkan`, `auto`) hands decoding to the GPU and uses a cheaper color conversion, cutting CPU time on a 1080p clip from 17 s to 6.5 s; unset or `none`, nothing changes. A method this machine cannot start logs a warning and decodes in software.
-- **Your own effect folders.** `FOSFORA_EFFECT_DIRS` and `FOSFORA_TRAMA_DIRS` list extra directories (split like `PATH`) whose `.pfx` layer effects and trama `.wgsl` effects load next to the built-in ones and hot-reload when an external tool writes to them. A leading `~` means your home folder, on Windows too.
+- **Your own effect folders.** `FOSFORA_EFFECT_DIRS` and `FOSFORA_TRAMA_DIRS` list extra directories (split like `PATH`) whose `.pfx` layer effects and trama `.wgsl` effects load next to the built-in ones. A `.pfx` there finds its shaders, particle simulation shaders included, beside itself. Saving a file there hot-reloads it and a new trama effect appears at once, but a new `.pfx` needs a restart; a leading `~` means your home folder, on Windows too.
+- **For code embedding the library: `decode::probe_file`** reads a song's length and sample rate from its headers without decoding it, so a caller can refuse a two-hour file before decoding takes about 1.4 GB.
 
 ### Changed
 - **Audio analysis picks up each block of samples as it arrives instead of checking every 10 ms,** so features and beats reach the visuals up to 10 ms sooner, with that much less frame-to-frame jitter.
